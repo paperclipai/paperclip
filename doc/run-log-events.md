@@ -143,8 +143,12 @@ and stop/successor records before restoring the binding. Attachment authorizatio
 keeps its existing requirement for that exact binding. Remote retry claims also
 require the exact saved controller authority and reject a newer task run. The
 event does not prove that a remote provider survived or permit provider replay.
-Skipped retry candidates
-wait 30 seconds before recheck so they cannot fill every bounded claim batch.
+Skipped local retry candidates wait 30 seconds before recheck. Remote admission
+holds use the existing bounded system-recovery backoff independently of provider
+attempts. Permanent ineligibility or policy exhaustion records the terminal
+automatic recovery disposition and board action without releasing the retained
+execution binding, provider, or checkpoint. These settled holds schedule no
+further retry. Repeated blocked visits record only a changed hold reason.
 Undated retries sort first. A failed candidate cannot discard earlier committed
 claims. Queued waiters do not block the original execution owner from recovery;
 they still wait for that owner to settle before normal queue promotion.
@@ -287,8 +291,11 @@ create a task warning, recovery action, Telemetry event, or OpenTelemetry export
 
 ## Native Restart Recovery Run-Log Event
 
-Paperclip writes a `native.recovery.transition` event for every native restart
-classification and for graceful restart suspension. This immutable run-log
+Paperclip writes a `native.recovery.transition` event for native restart
+classifications and for graceful restart suspension. A blocked remote retry
+records a changed hold reason once; repeated visits with the same hold reason,
+an existing future deadline, or a live lease do not append another transition.
+This immutable run-log
 record lets operators reconstruct recovery decisions without exporting data to
 Paperclip Telemetry or OpenTelemetry.
 

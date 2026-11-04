@@ -1619,9 +1619,16 @@ The task lock, controller claim, run status and recovery event commit together.
 A new failed retry consumes the existing provider attempt budget; replacing an
 active controller does not. The claim permits only inspection and attachment to
 the recorded remote execution. Missing live provider evidence
-still prevents replay or replacement. Ineligible retries retain a 30-second
-recovery deadline. The run log records a changed hold reason once instead of
-repeating the same warning on every sweep. A historical exhausted retry can
+still prevents replay or replacement. Admission holds use the existing system
+recovery policy: five backoff retries within a 30-minute window, with persisted
+jitter and a budget separate from provider attempts. A newer source or an ended
+task cannot become eligible and exhausts this automatic policy immediately.
+Exhaustion gives the board a manual reconciliation action and stops retry
+deadlines. It preserves execution and checkout bindings, the provider PID and
+checkpoint, and does not request environment settlement or file preservation:
+none of those facts prove the old provider stopped. Live leases stay read-only
+until their own deadline. The run log records a changed hold reason once instead
+of repeating the same warning on every sweep. A historical provider-budget-exhausted retry can
 release its task lock only after the same admission, controller fence and exact
 remote authority checks pass. Existing terminal recovery then preserves the
 provider evidence and gives the board a reconciliation action; it authorizes no

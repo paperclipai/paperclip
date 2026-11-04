@@ -1,5 +1,4 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
@@ -56,8 +55,7 @@ import {
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
 
-import { readNativeSessionResumptionAgent } from "./native-session-resumption-admission.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 
@@ -317,19 +315,7 @@ export async function claimNativeSessionResumptions(input: {
         nativePhaseUpdatedAt: now,
         updatedAt: now,
       }).where(eq(heartbeatRuns.id, row.run.id));
-      await notifyStatusCardIssueChange(tx, run.companyId);
-      await tx.update(issues).set({
-        executionRunId: run.id,
-        executionAgentNameKey: agent.name.trim().toLowerCase() || null,
-        executionLockedAt: now,
-        updatedAt: now,
-      }).where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
-      if (issue.executionRunId !== run.id) await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: run.companyId, runId: run.id, agentId: run.agentId,
-        eventType: "native.recovery.execution_reclaimed", stream: "system", level: "info",
-        message: "Reclaimed the original task execution for native session recovery.",
-        payload: { issueId: issue.id },
-      });
+      await restoreNativeSessionExecution(tx as unknown as Db, { issue, run, agentName: agent.name, now });
       return true;
     }).catch((error: unknown) => {
       claimFailed = true;

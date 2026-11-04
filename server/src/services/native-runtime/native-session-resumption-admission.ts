@@ -1,10 +1,44 @@
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../recovery/pause-hold-guard.js";
 import { readRunCancellation } from "../run-cancellation.js";
 import { getNativeReviewAssignment } from "./native-review-participant.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { normalizeAgentNameKey } from "../heartbeat/retries.js";
+
+export async function restoreNativeSessionExecution(db: Db, input: {
+  issue: Pick<typeof issues.$inferSelect, "id" | "executionRunId">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId">;
+  agentName: string;
+  now: Date;
+}) {
+  const { issue, run, now } = input;
+  await notifyStatusCardIssueChange(db, run.companyId);
+  const restored = await db.update(issues).set({ executionRunId: run.id,
+    executionAgentNameKey: normalizeAgentNameKey(input.agentName), executionLockedAt: now, updatedAt: now,
+  }).where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId),
+    or(isNull(issues.executionRunId), eq(issues.executionRunId, run.id)),
+  )).returning({ id: issues.id });
+  if (!restored.length) throw new Error("native_session_execution_binding_changed");
+  if (issue.executionRunId !== run.id) await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId, runId: run.id, agentId: run.agentId,
+    eventType: "native.recovery.execution_reclaimed", stream: "system", level: "info",
+    message: "Reclaimed the original task execution for native session recovery.", payload: { issueId: issue.id },
+  });
+}
+
+function nativeSessionResumptionStopped(run: typeof heartbeatRuns.$inferSelect,
+  coordinator: typeof nativeRunFinalizations.$inferSelect) {
+  const cancellation = readRunCancellation(run.resultJson);
+  const nativeCancellation = run.resultJson?.nativeCancellation as { scope?: unknown; dispatchState?: unknown } | undefined;
+  return (cancellation?.source === "operator" && cancellation.expected) ||
+    (["run", "issue"].includes(String(nativeCancellation?.scope)) &&
+      ["pending", "acknowledged"].includes(String(nativeCancellation?.dispatchState))) ||
+    typeof coordinator.failureDetail?.successorRunId === "string";
+}
 
 export async function readNativeSessionResumptionAgent(db: Db, input: {
   issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "executionRunId" | "checkoutRunId" | "assigneeAgentId">;
@@ -34,11 +68,6 @@ export async function readNativeSessionResumptionAgent(db: Db, input: {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
   )).limit(1);
   if (competing) return null;
-  const cancellation = readRunCancellation(run.resultJson);
-  const nativeCancellation = run.resultJson?.nativeCancellation as { scope?: unknown; dispatchState?: unknown } | undefined;
-  if ((cancellation?.source === "operator" && cancellation.expected) ||
-      (["run", "issue"].includes(String(nativeCancellation?.scope)) &&
-        ["pending", "acknowledged"].includes(String(nativeCancellation?.dispatchState))) ||
-      typeof coordinator.failureDetail?.successorRunId === "string") return null;
+  if (nativeSessionResumptionStopped(run, coordinator)) return null;
   return agent;
 }

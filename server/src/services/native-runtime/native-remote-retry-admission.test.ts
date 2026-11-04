@@ -19,6 +19,7 @@ import { claimNativeSessionResumptions } from "./native-finalization-reconciler.
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { readSystemRecovery, SYSTEM_RECOVERY_MAX_RETRIES } from "../system-recovery-state.js";
 
 describeEmbeddedPostgres("remote native retry execution admission", () => {
   const environment = nativeRestartFixture();
@@ -140,10 +141,19 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       controller: environment.current.successor, restartKind: "hard", runIds: [f.runId] });
     expect(dispositions.every(value => value.kind === "blocked")).toBe(true);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(beforeTask);
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(beforeRun);
+    const [afterRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [afterOwner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (["done", "cancelled", "newer-completed-input"].includes(gate)) {
+      expect(afterOwner).toMatchObject({ phase: "terminal_failure", attempt: 1, nextAttemptAt: null,
+        failureDetail: { systemRecovery: { state: "exhausted" } } });
+      expect(afterRun).toMatchObject({ status: "failed", processPid: beforeRun.processPid,
+        runnerProfileJson: beforeRun.runnerProfileJson });
+      return;
+    }
+    expect(afterRun).toEqual(beforeRun);
+    expect(afterOwner.failureDetail).toMatchObject(beforeOwner.failureDetail!);
     expect({ ...afterOwner, nextAttemptAt: beforeOwner.nextAttemptAt, updatedAt: beforeOwner.updatedAt,
-      recoveryHistory: beforeOwner.recoveryHistory }).toEqual(beforeOwner);
+      recoveryHistory: beforeOwner.recoveryHistory, failureDetail: beforeOwner.failureDetail }).toEqual(beforeOwner);
     if (gate === "execution-owner") expect(afterOwner).toEqual(beforeOwner);
     else expect(afterOwner.nextAttemptAt!.getTime()).toBeGreaterThan(beforeOwner.nextAttemptAt!.getTime());
   });
@@ -289,18 +299,23 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     const now = new Date();
     const attempt = (at: Date) => claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId], now: at });
-    expect(await attempt(now)).toMatchObject([{ kind: "blocked", reason: "native_retry_admission_ineligible",
-      retryAt: new Date(now.getTime() + 30_000), transitionUnchanged: false }]);
-    expect(await attempt(new Date(now.getTime() + 29_999))).toEqual([]);
-    expect(await attempt(new Date(now.getTime() + 30_000))).toMatchObject([{ kind: "blocked", transitionUnchanged: true }]);
+    const [first] = await attempt(now);
+    expect(first).toMatchObject({ kind: "blocked", reason: "native_retry_admission_ineligible", transitionUnchanged: false });
+    if (!("retryAt" in first) || !first.retryAt) throw new Error("missing first retry deadline");
+    expect(first.retryAt.getTime() - now.getTime()).toBeGreaterThanOrEqual(24_000);
+    expect(first.retryAt.getTime() - now.getTime()).toBeLessThanOrEqual(36_000);
+    expect(await attempt(new Date(first.retryAt.getTime() - 1))).toEqual([]);
+    const [second] = await attempt(first.retryAt);
+    expect(second).toMatchObject({ kind: "blocked", transitionUnchanged: true });
+    if (!("retryAt" in second) || !second.retryAt) throw new Error("missing second retry deadline");
+    expect(second.retryAt.getTime() - first.retryAt.getTime()).toBeGreaterThanOrEqual(48_000);
     let [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(owner).toMatchObject({ phase: "retryable_failure", attempt: 1,
-      nextAttemptAt: new Date(now.getTime() + 60_000), recoveryHistory: [{ reason: "native_retry_admission_ineligible" }] });
+      nextAttemptAt: second.retryAt, recoveryHistory: [{ reason: "native_retry_admission_ineligible" }] });
     await f.db.update(agents).set({ status: "active" }).where(eq(agents.id, f.agentId));
     await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
       status: "succeeded", createdAt: new Date(now.getTime() + 1_000) });
-    expect(await attempt(new Date(now.getTime() + 60_000))).toMatchObject([{ kind: "blocked",
-      reason: "native_retry_source_superseded", transitionUnchanged: false }]);
+    expect(await attempt(second.retryAt)).toMatchObject([{ kind: "blocked", reason: "native_retry_source_superseded" }]);
     [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(owner.recoveryHistory).toMatchObject([{ reason: "native_retry_admission_ineligible" }, { reason: "native_retry_source_superseded" }]);
   });
@@ -326,6 +341,116 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked" }]);
       expect(writes).toBe(1);
     } finally { interception.mockRestore(); }
+  });
+
+  it.each(["done", "cancelled", "superseded"] as const)("settles a permanently %s remote retry without recurring work", async gate => {
+    for (const lock of ["released", "retained"]) {
+      const f = await failedRemoteRun("remote");
+      if (lock === "retained") await f.db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId })
+        .where(eq(issues.id, f.issueId));
+      if (gate === "superseded") await f.db.insert(heartbeatRuns).values({ companyId: f.companyId,
+        agentId: f.agentId, issueId: f.issueId, status: "succeeded", createdAt: new Date(Date.now() + 1_000) });
+      else await f.db.update(issues).set({ status: gate }).where(eq(issues.id, f.issueId));
+      const onClaim = vi.fn();
+      const environmentWake = vi.fn(), stopWatchingEnvironment = subscribeDeliveryWork(f.db, DELIVERY_QUEUES.nativeEnvironmentSettlement, environmentWake);
+      const [disposition] = await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId], onClaim });
+      expect(disposition).toMatchObject({ kind: "blocked" });
+      expect(disposition).not.toHaveProperty("retryAt");
+      expect(onClaim).not.toHaveBeenCalled();
+      expect(environmentWake).not.toHaveBeenCalled();
+      stopWatchingEnvironment();
+      expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({
+        executionRunId: lock === "retained" ? f.runId : null, checkoutRunId: lock === "retained" ? f.runId : null });
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null, attempt: 1 });
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+        .toMatchObject({ processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
+      const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(f.db, DELIVERY_QUEUES.nativeProcessSessions, wake);
+      const transaction = vi.spyOn(f.db, "transaction");
+      try {
+        for (const elapsed of [30_000, 60_000, 3_600_000]) expect(await claimNativeRestartRecoveries({ db: f.db,
+          controller: environment.current.successor, restartKind: "hard", runIds: [f.runId],
+          now: new Date(Date.now() + elapsed), onClaim })).toEqual([]);
+        expect(transaction).not.toHaveBeenCalled();
+        expect(wake).not.toHaveBeenCalled();
+      } finally { transaction.mockRestore(); unsubscribe(); }
+    }
+  });
+
+  it.each(["paused", "Stop", "missing-authority"] as const)("bounds %s holds and preserves the provider and own task lock for manual reconciliation", async gate => {
+    const f = await failedRemoteRun("remote");
+    if (gate === "paused") await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    if (gate === "Stop") await f.db.update(heartbeatRuns).set({ resultJson: {
+      nativeCancellation: { scope: "run", dispatchState: "pending" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    if (gate === "missing-authority") await f.db.delete(nativeRunnerCheckpoints)
+      .where(and(eq(nativeRunnerCheckpoints.companyId, f.companyId), eq(nativeRunnerCheckpoints.runId, f.runId)));
+    await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    await f.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    let now = new Date();
+    const onClaim = vi.fn();
+    const environmentWake = vi.fn(), stopWatchingEnvironment = subscribeDeliveryWork(f.db, DELIVERY_QUEUES.nativeEnvironmentSettlement, environmentWake);
+    for (let index = 0; index <= SYSTEM_RECOVERY_MAX_RETRIES; index += 1) {
+      const [disposition] = await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId], now, onClaim });
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const policy = readSystemRecovery(owner.failureDetail);
+      expect(policy).not.toBeNull();
+      expect(owner.attempt).toBe(3);
+      if (index < SYSTEM_RECOVERY_MAX_RETRIES) {
+        expect(owner.phase).toBe("retryable_failure");
+        expect(policy).toMatchObject({ state: "awaiting_evidence" });
+        expect(disposition).toHaveProperty("retryAt", owner.nextAttemptAt);
+        now = owner.nextAttemptAt!;
+      } else {
+        expect(owner).toMatchObject({ phase: "terminal_failure", nextAttemptAt: null });
+        expect(policy).toMatchObject({ state: "exhausted" });
+        expect(disposition).not.toHaveProperty("retryAt");
+      }
+    }
+    expect(onClaim).not.toHaveBeenCalled();
+    expect(environmentWake).not.toHaveBeenCalled();
+    stopWatchingEnvironment();
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ executionRunId: f.runId });
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
+    expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
+      .toMatchObject([{ ownerType: "board", wakePolicy: null,
+        evidence: { automaticAdmissionExhausted: true, executorStopEvidence: "unverified", providerPid: 1386, checkpointPreserved: true },
+        nextAction: expect.stringContaining("original executor stop and state remain unverified") }]);
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId], now: new Date(now.getTime() + 3_600_000) })).toEqual([]);
+  });
+
+  it("resumes the original provider when eligibility returns before admission backoff exhausts", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId] });
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    await f.db.update(agents).set({ status: "active" }).where(eq(agents.id, f.agentId));
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId], now: owner.nextAttemptAt! }))
+      .toMatchObject([{ kind: "reattach_remote_runner", providerAttempt: 2, runId: f.runId }]);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ status: "running", processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.runId);
+  });
+
+  it("does not settle permanently ineligible work while the original controller is active", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(f.db, DELIVERY_QUEUES.nativeProcessSessions, wake);
+    try {
+      expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId], liveRunExecutions: new Set([f.runId]) }))
+        .toMatchObject([{ kind: "awaiting_evidence", reason: "current_controller_preparing" }]);
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+      expect(wake).not.toHaveBeenCalled();
+      expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+    } finally { unsubscribe(); }
   });
 
   it("keeps a retry deadline that changed after discovery read-only and quiet", async () => {
@@ -406,8 +531,10 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       expect(onClaim).not.toHaveBeenCalled();
       expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(lock === "retained" ? f.runId : null);
       expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
-        .toMatchObject({ phase: "retryable_failure", attempt: 3 });
-      expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+        .toMatchObject({ phase: gate === "newer-input" ? "terminal_failure" : "retryable_failure", attempt: 3 });
+      const actions = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      if (gate === "newer-input") expect(actions).toMatchObject([{ ownerType: "board", wakePolicy: null }]);
+      else expect(actions).toEqual([]);
     }
   });
 

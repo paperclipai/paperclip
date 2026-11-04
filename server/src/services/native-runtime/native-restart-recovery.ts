@@ -1,7 +1,5 @@
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
-import { readNativeSessionResumptionAgent } from "./native-session-resumption-admission.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -45,6 +43,8 @@ import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
+import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt,
+  SystemRecoveryFailure, type SystemRecoveryState } from "../system-recovery-state.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -641,19 +641,36 @@ export async function claimNativeRestartRecoveries(input: {
         && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && remoteWorkspace !== null;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
       const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
-      const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry;
-      const deferRemoteRetry = async (reason: string) => {
+      const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry ||
+        (failedRemoteRetry && ["done", "cancelled"].includes(issue.status));
+      const admission = { exhausted: null as { reason: string; policy: SystemRecoveryState } | null };
+      const deferRemoteRetry = async (reason: string, permanent = false) => {
+        if (input.liveRunExecutions?.has(row.run.id)) {
+          return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
+        }
         const existingDeadline = Math.max(row.coordinator.nextAttemptAt?.getTime() ?? 0,
           row.coordinator.leaseOwner ? row.coordinator.leaseExpiresAt?.getTime() ?? 0 : 0);
         if (existingDeadline > now.getTime()) {
           return { kind: "blocked", runId: row.run.id, reason, retryAt: new Date(existingDeadline),
             transitionUnchanged: true } as const;
         }
-        const retryAt = new Date(now.getTime() + 30_000);
+        const previousPolicy = readSystemRecovery(row.coordinator.failureDetail);
+        const policy = previousPolicy?.sourceRunId === row.run.id ? previousPolicy : createSystemRecovery(row.run.id);
+        const reserved = reserveSystemRecoveryAttempt(policy, now.getTime());
+        const failed = reserved ? failSystemRecovery(reserved, new SystemRecoveryFailure(
+          permanent ? "source_binding_invalid" : "allocation_ownership_ambiguous",
+          permanent ? "user_action_required" : "recheck_evidence"), { now: now.getTime(), evidenceFingerprint: reason })
+          : { ...policy, state: "exhausted" as const, nextAttemptAt: null };
+        if (failed.state === "exhausted") {
+          admission.exhausted = { reason, policy: failed };
+          return null;
+        }
+        const retryAt = new Date(failed.nextAttemptAt!);
         const previous = row.coordinator.recoveryHistory.at(-1);
         const transitionUnchanged = previous?.disposition === "blocked" && previous.reason === reason;
         await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id });
         const updated = await tx.update(nativeRunFinalizations).set({ nextAttemptAt: retryAt, updatedAt: now,
+          failureDetail: { ...row.coordinator.failureDetail, systemRecovery: failed },
           ...(!transitionUnchanged ? { recoveryHistory: appendBoundedRecoveryHistory({
             at: now.toISOString(), restartKind: input.restartKind, controllerBootId: controller.bootId,
             controllerGeneration: row.coordinator.controllerGeneration, disposition: "blocked", reason,
@@ -674,9 +691,10 @@ export async function claimNativeRestartRecoveries(input: {
         ? await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })
         : null;
       if (needsResumptionAdmission && !resumptionAgent) {
-        return deferRemoteRetry("native_retry_admission_ineligible");
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
       }
-      if (needsResumptionAdmission) {
+      if (failedRemoteRetry) {
         const source = alias(heartbeatRuns, "native_retry_source");
         const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
           .innerJoin(source, and(eq(source.companyId, row.run.companyId), eq(source.id, row.run.id)))
@@ -688,7 +706,10 @@ export async function claimNativeRestartRecoveries(input: {
             or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
           )).limit(1);
-        if (newer) return deferRemoteRetry("native_retry_source_superseded");
+        if (newer) {
+          const deferred = await deferRemoteRetry("native_retry_source_superseded", true);
+          if (deferred) return deferred;
+        }
       }
       if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry) {
         return {
@@ -997,14 +1018,22 @@ export async function claimNativeRestartRecoveries(input: {
       const ownershipChanged =
         row.issueAssigneeAgentId !== row.run.agentId ||
         ["done", "cancelled"].includes(row.issueStatus);
-      const claimKind = ownershipChanged || exhaustedRemoteRetry ? null : classification.claimKind;
-      const reason = ownershipChanged
-        ? "task_ownership_or_status_changed"
-        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason;
-
       if (needsResumptionAdmission && (!durableAuthority || ownershipChanged || classification.claimKind !== "reattach_remote_runner")) {
-        return deferRemoteRetry("native_retry_remote_authority_unverified");
+        if (!admission.exhausted) {
+          const deferred = await deferRemoteRetry("native_retry_remote_authority_unverified");
+          if (deferred) return deferred;
+        }
       }
+
+      const hold = admission.exhausted;
+      const preserveExecutionBinding = hold !== null;
+      const claimKind = hold || ownershipChanged || exhaustedRemoteRetry ? null : classification.claimKind;
+      const reason = hold?.reason ?? (ownershipChanged
+        ? "task_ownership_or_status_changed"
+        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason);
+      const nextAction = hold
+        ? "Automatic admission checks exhausted. The original executor stop and state remain unverified. The provider PID, checkpoint and task bindings are preserved; reconcile that execution before starting fresh work."
+        : "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session.";
 
       if (!claimKind) {
         const generation = row.coordinator.controllerGeneration;
@@ -1039,9 +1068,9 @@ export async function claimNativeRestartRecoveries(input: {
             failureCode: "native_restart_recovery_blocked",
             failureDetail: {
               ...row.coordinator.failureDetail,
+              ...(hold ? { systemRecovery: hold.policy } : {}),
               reason,
-              nextAction:
-                "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session.",
+              nextAction,
             },
             recoveryState: "blocked",
             recoveryRequestId: input.recoveryRequestId ?? null,
@@ -1055,11 +1084,13 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
-        await notifyExternalAgentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
-        await notifyNativeEnvironmentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
-        await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
-        await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
-        await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
+        if (!preserveExecutionBinding) {
+          await notifyExternalAgentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
+          await notifyNativeEnvironmentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
+          await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
+          await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
+          await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
+        }
         const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
@@ -1078,7 +1109,7 @@ export async function claimNativeRestartRecoveries(input: {
           terminalRunToReport = updatedRun;
         }
         await notifyNativeStatusReassessment(tx, { companyId: row.run.companyId, issueId: row.coordinator.issueId });
-        await tx
+        if (!preserveExecutionBinding) await tx
           .update(issues)
           .set({ executionRunId: null, updatedAt: now })
           .where(
@@ -1088,7 +1119,7 @@ export async function claimNativeRestartRecoveries(input: {
               eq(issues.executionRunId, row.run.id),
             ),
           );
-        await tx
+        if (!preserveExecutionBinding) await tx
           .update(issues)
           .set({ checkoutRunId: null, updatedAt: now })
           .where(
@@ -1099,8 +1130,8 @@ export async function claimNativeRestartRecoveries(input: {
             ),
           );
         if (
-          row.issueAssigneeAgentId === row.run.agentId &&
-          !["done", "cancelled"].includes(row.issueStatus)
+          preserveExecutionBinding || (row.issueAssigneeAgentId === row.run.agentId &&
+          !["done", "cancelled"].includes(row.issueStatus))
         )
           await issueRecoveryActionService(
             tx as unknown as Db,
@@ -1116,14 +1147,15 @@ export async function claimNativeRestartRecoveries(input: {
               runId: row.run.id,
               reason,
               providerAttempt: row.coordinator.attempt,
+              ...(hold ? { automaticAdmissionExhausted: true, executorStopEvidence: "unverified",
+                providerPid: row.run.processPid, checkpointPreserved: hasCheckpoint } : {}),
             },
-            nextAction:
-              "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session.",
+            nextAction,
             maxAttempts: 3,
             wakePolicy: null,
             supersedeOnIdentityChange: true,
           });
-        if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
+        if (updatedRun && !preserveExecutionBinding) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 
@@ -1231,14 +1263,7 @@ export async function claimNativeRestartRecoveries(input: {
         .where(eq(heartbeatRuns.id, row.run.id));
 
       if (releasedRemoteRetry && resumptionAgent) {
-        await notifyStatusCardIssueChange(tx, row.run.companyId);
-        await tx.update(issues).set({ executionRunId: row.run.id,
-          executionAgentNameKey: resumptionAgent.name.trim().toLowerCase() || null,
-          executionLockedAt: now, updatedAt: now,
-        }).where(and(eq(issues.id, issue.id), eq(issues.companyId, row.run.companyId), isNull(issues.executionRunId)));
-        await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: row.run.companyId, runId: row.run.id,
-          agentId: row.run.agentId, eventType: "native.recovery.execution_reclaimed", stream: "system", level: "info",
-          message: "Reclaimed the original task execution for native session recovery.", payload: { issueId: issue.id } });
+        await restoreNativeSessionExecution(tx as unknown as Db, { issue, run: row.run, agentName: resumptionAgent.name, now });
       }
 
       claimScope = { companyId: row.run.companyId, issueId: row.coordinator.issueId, controller, remote: Boolean(durableAuthority) };
