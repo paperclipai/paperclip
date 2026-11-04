@@ -21,7 +21,8 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
   reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
   clearReopenPendingConsumptionForUnconsumedReopen: vi.fn(async () => ({ cleared: true })),
   refreshReopenPendingConsumption: vi.fn(async () => ({ refreshed: true })),
@@ -29,6 +30,12 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "project:read",
+      action: input.action,
+      reason: "allow_test_read",
+      explanation: "The fixture actor can read the task.",
+    })),
   hasPermission: vi.fn(),
 }));
 
@@ -43,10 +50,17 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(async () => null),
 }));
+const mockRunnerGoalService = vi.hoisted(() => ({
+  projection: vi.fn(async () => null),
+  act: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerServiceMocks() {
+  vi.doMock("../services/fast-responses.js", () => ({
+    enqueueFastResponse: vi.fn(async () => undefined),
+  }));
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -81,6 +95,12 @@ function registerServiceMocks() {
 
   vi.doMock("../services/projects.js", () => ({
     projectService: () => mockProjectService,
+  }));
+
+  vi.doMock("../services/runner-goals.js", () => ({
+    runnerGoalService: () => mockRunnerGoalService,
+    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -194,7 +214,7 @@ async function assertNoBackgroundClearWithinRetryWindow() {
   expect(mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen).not.toHaveBeenCalled();
 }
 
-describe.sequential("closed isolated workspace issue routes", () => {
+describe("closed isolated workspace issue routes", () => {
   const routeModules = hoistModuleGraph(registerServiceMocks, async () => {
     const [{ issueRoutes }, { errorHandler }] = await Promise.all([
       vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -217,7 +237,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       };
       next();
     });
-    app.use("/api", issueRoutes({} as any, {} as any));
+    app.use("/api", issueRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, {} as any));
     app.use(errorHandler);
     return app;
   }
@@ -225,7 +245,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
-    mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(makeClosedWorkspace());
     mockExecutionWorkspaceService.refreshReopenPendingConsumption.mockResolvedValue({ refreshed: true });
     // The guard reopens a closed isolated workspace and lets the request
     // continue. The default is a successful reopen.
@@ -251,6 +271,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       workspaceId: closedWorkspaceId,
       issue: { id: issueId, companyId: "company-1", projectId: null },
       actor: expect.objectContaining({ actorType: "user" }),
+      authorizationActor: expect.objectContaining({ type: "board", source: "local_implicit" }),
     });
     // The closed-workspace dead end is gone: the comment is accepted.
     expect(res.status).toBe(201);
@@ -298,7 +319,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 503 and blocks the checkout when the rebuild fails", async () => {
+  it("returns 409 and blocks the checkout when the rebuild fails", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "rebuild_failed",
@@ -312,8 +333,27 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expectedStatuses: ["todo", "backlog", "blocked"],
       });
 
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(409);
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it.each(["comment", "update"])("returns a definite %s rejection when the saved commit cannot be restored", async (operation) => {
+    const message = "The saved workspace commit could not be restored. Check repository access and retry.";
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "rebuild_failed",
+      message,
+    });
+
+    const app = request(createApp());
+    const res = operation === "comment"
+      ? await app.post(`/api/issues/${issueId}/comments`).send({ body: "continue" })
+      : await app.patch(`/api/issues/${issueId}`).send({ comment: "continue" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(message);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("does not reopen the workspace when a checkout fails the run-id gate", async () => {

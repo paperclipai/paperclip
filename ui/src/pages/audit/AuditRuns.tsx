@@ -126,9 +126,20 @@ function RoutineScopedRuns({
   );
 }
 
-export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
+export function AuditRuns({
+  companyId,
+  routineId,
+  lockedAgentId,
+  hideHeader = false,
+}: {
+  companyId: string;
+  routineId?: string;
+  /** Pin the list to one agent and hide the agent filter (the agent page's Runs). */
+  lockedAgentId?: string;
+  hideHeader?: boolean;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const agentId = searchParams.get("agentId") ?? ALL;
+  const agentId = lockedAgentId ?? searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -200,16 +211,18 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">Runs</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Recent agent executions across the organization. Open a run to inspect its transcript,
-          output, and task context.
-        </p>
-      </div>
+      {hideHeader ? null : (
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Runs</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Recent agent executions across the organization. Open a run to inspect its transcript,
+            output, and task context.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
-        <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
+        {lockedAgentId ? null : <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>Agent</span>
           <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>
             <SelectTrigger className="w-48">
@@ -224,7 +237,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
               ))}
             </SelectContent>
           </Select>
-        </label>
+        </label>}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>Status</span>
           <Select value={status} onValueChange={(value) => updateFilter("runStatus", value)}>
@@ -241,7 +254,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             </SelectContent>
           </Select>
         </label>
-        {agentId !== ALL || status !== ALL ? (
+        {(!lockedAgentId && agentId !== ALL) || status !== ALL ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
             Clear filters
           </Button>

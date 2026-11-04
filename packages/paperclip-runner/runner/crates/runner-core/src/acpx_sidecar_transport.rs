@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
 };
+use crate::provider_failure::validated_provider_failure;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -78,11 +79,117 @@ pub struct AcpxSidecarEvent {
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
+    session_open_timeout: Duration,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
+    stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+}
+
+// A fresh Pi process verifies and copies its native closure before ACP admission.
+// Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
+    if agent == "pi" {
+        Duration::from_secs(60)
+    } else {
+        ordinary
+    }
+}
+
+// Pi's provider catalog is caller-selected. The authenticated controller binds
+// credential names (including custom models.json references); a Rust provider
+// roster would silently drop credentials before the sidecar can validate them.
+fn pi_credential_environment_keys(binding: Option<&str>) -> Result<Vec<String>, LocalRunnerError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Binding {
+        schema: String,
+        agent: String,
+        session_id: String,
+        names: Vec<String>,
+    }
+    let invalid = || LocalRunnerError::invalid("Pi credentials require a valid controller binding");
+    let Some(raw) = binding else {
+        return Ok(Vec::new());
+    };
+    if raw.len() > 4_096 {
+        return Err(invalid());
+    }
+    let value: Binding = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if value.schema != "paperclip.acpx_credential_binding.v1"
+        || value.agent != "pi"
+        || !is_stable_id(&value.session_id, SHORT_STABLE_ID_CHARS)
+        || value.names.len() > 128
+    {
+        return Err(invalid());
+    }
+    let mut seen = BTreeSet::new();
+    for name in &value.names {
+        let valid_name = name.len() <= 128
+            && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_');
+        // Match pi-provider-config.ts: prefixes such as LD_API_KEY are valid
+        // credentials; only the reserved process controls are rejected.
+        let protected_name = (name.starts_with("PAPERCLIP_") && name != "PAPERCLIP_PI_PROVIDERS")
+            || name.starts_with("NODE_")
+            || name.starts_with("NPM_")
+            || matches!(
+                name.as_str(),
+                "PATH"
+                    | "HOME"
+                    | "SHELL"
+                    | "TMPDIR"
+                    | "BASH_ENV"
+                    | "ENV"
+                    | "ZDOTDIR"
+                    | "LD_AUDIT"
+                    | "LD_LIBRARY_PATH"
+                    | "LD_PRELOAD"
+                    | "LD_DEBUG"
+                    | "LD_DEBUG_OUTPUT"
+                    | "LD_PROFILE"
+                    | "LD_PROFILE_OUTPUT"
+                    | "LD_TRACE_LOADED_OBJECTS"
+                    | "LD_ORIGIN_PATH"
+                    | "LD_BIND_NOW"
+                    | "LD_BIND_NOT"
+                    | "LD_DYNAMIC_WEAK"
+                    | "LD_HWCAP_MASK"
+                    | "LD_SHOW_AUXV"
+                    | "LD_USE_LOAD_BIAS"
+                    | "LD_VERBOSE"
+                    | "LD_WARN"
+                    | "LD_ASSUME_KERNEL"
+                    | "LD_PREFER_MAP_32BIT_EXEC"
+                    | "DYLD_INSERT_LIBRARIES"
+                    | "DYLD_LIBRARY_PATH"
+                    | "DYLD_FRAMEWORK_PATH"
+                    | "DYLD_FALLBACK_LIBRARY_PATH"
+                    | "DYLD_FALLBACK_FRAMEWORK_PATH"
+                    | "DYLD_VERSIONED_LIBRARY_PATH"
+                    | "DYLD_VERSIONED_FRAMEWORK_PATH"
+                    | "DYLD_ROOT_PATH"
+                    | "DYLD_IMAGE_SUFFIX"
+                    | "DYLD_SHARED_CACHE_DIR"
+                    | "GLIBC_TUNABLES"
+                    | "GCONV_PATH"
+                    | "LOCPATH"
+                    | "NLSPATH"
+                    | "AWS_ACCESS_KEY_ID"
+                    | "AWS_SECRET_ACCESS_KEY"
+                    | "AWS_SESSION_TOKEN"
+            );
+        if !valid_name || protected_name || !seen.insert(name) {
+            return Err(invalid());
+        }
+    }
+    // The sidecar still checks every name against Pi's pinned SDK/custom
+    // configuration and the exact session.open identity before provider launch.
+    Ok(value.names)
 }
 
 impl AcpxSidecarTransport {
@@ -95,15 +202,36 @@ impl AcpxSidecarTransport {
         agent: &str,
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
-            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "claude" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_AI_PROVIDER_KEY",
+            ],
+            "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
+            "pi" => &[],
+            "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "kimi" => &["KIMI_API_KEY"],
+            "antigravity" => &[
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
-                    "ACPX sidecar credentials require a qualified claude or codex agent",
+                    "ACPX sidecar credentials require a known agent profile",
                 ))
             }
         };
         let mut keys = vec![
+            "PAPERCLIP_AGENT_KEY_ID",
+            "PAPERCLIP_AGENT_PUBLIC_KEY",
+            "PAPERCLIP_AGENT_PRIVATE_KEY",
             "LANGUAGE",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
@@ -119,9 +247,113 @@ impl AcpxSidecarTransport {
             "RUST_BACKTRACE",
             "PAPERCLIP_NATIVE_MCP_NAME",
             "PAPERCLIP_NATIVE_MCP_URL",
+            // The qualified sidecar configures the runner-owned gateway. Keep
+            // its credential with the name/URL; unrelated secrets stay excluded.
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "PAPERCLIP_NATIVE_MCP_STDIO",
+            "PAPERCLIP_NATIVE_MCP_PROXY",
+            "PAPERCLIP_ACPX_BUILTIN_ROOT",
+            "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
+            "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
+        if matches!(agent, "pi" | "cursor" | "copilot" | "kimi" | "antigravity") {
+            // Credential values alone are not proof of an explicit task binding.
+            // The sidecar checks this controller-minted provider/session marker.
+            keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
+        }
+        if agent == "claude" {
+            keys.extend_from_slice(&[
+                // Launcher/controller-owned helper paths; credentials stay behind the broker.
+                "BASH_ENV",
+                "ZDOTDIR",
+                "GH_CONFIG_DIR",
+                "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_ENABLE_TELEMETRY",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                "ENABLE_ENHANCED_TELEMETRY_BETA",
+                "OTEL_LOGS_EXPORTER",
+                "OTEL_TRACES_EXPORTER",
+                "OTEL_METRICS_EXPORTER",
+                "OTEL_RESOURCE_ATTRIBUTES",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "OTEL_EXPORTER_OTLP_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+                "OTEL_LOG_USER_PROMPTS",
+                "OTEL_LOG_ASSISTANT_RESPONSES",
+                "OTEL_LOG_TOOL_DETAILS",
+                "OTEL_LOG_TOOL_CONTENT",
+                "OTEL_LOG_RAW_API_BODIES",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
+        }
+        if agent == "codex" {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            ]);
+        }
+        let pi_keys = if agent == "pi" {
+            pi_credential_environment_keys(
+                std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING")
+                    .ok()
+                    .as_deref(),
+            )?
+        } else {
+            Vec::new()
+        };
+        keys.extend(pi_keys.iter().map(String::as_str));
+        if std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() == Ok("preconfigured") {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_RUNNER_HOME_MODE",
+                "ACPX_CLAUDE_INCLUDE_USER_SETTINGS",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_CACHE_HOME",
+            ]);
+        }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
+        }
         keys.extend_from_slice(credential_keys);
-        Self::start_with_environment_keys(config, &keys)
+        // Pi owns a native distribution copy, including a pending refresh at
+        // suspension. Allow its bounded cleanup to settle before group KILL;
+        // the ordinary two-second grace can cut off deletion mid-tree.
+        config.validate()?;
+        let mut launch_config = config.clone();
+        if agent == "pi" {
+            launch_config.shutdown_grace = Duration::from_secs(30);
+        }
+        let mut transport = Self::start_with_environment_keys(&launch_config, &keys)?;
+        transport.session_open_timeout = session_open_timeout(agent, config.request_timeout);
+        Ok(transport)
     }
 
     fn start_with_environment_keys(
@@ -148,12 +380,22 @@ impl AcpxSidecarTransport {
         Ok(Self {
             process,
             request_timeout: config.request_timeout,
+            session_open_timeout: config.request_timeout,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
+            stderr_categories: BTreeSet::new(),
             poisoned: false,
         })
+    }
+
+    fn command_timeout(&self, command: GeneratedAcpxSidecarCommand) -> Duration {
+        if command == GeneratedAcpxSidecarCommand::SessionOpen {
+            self.session_open_timeout
+        } else {
+            self.request_timeout
+        }
     }
 
     pub fn process_id(&self) -> u32 {
@@ -251,7 +493,8 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let deadline = Instant::now() + self.request_timeout;
+        let timeout = self.command_timeout(command);
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -275,13 +518,15 @@ impl AcpxSidecarTransport {
                         ));
                     }
                     let error = response.error.expect("failed response has validated error");
+                    let provider_failure = error.provider_failure.clone();
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
-                            "ACPX sidecar command {} was rejected (retryable={})",
+                            "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
+                            response_error_classification(&error),
                         ),
-                    )));
+                    ).with_provider_failure(provider_failure)));
                 }
             }
         }
@@ -320,7 +565,7 @@ impl AcpxSidecarTransport {
             match self.process.recv_timeout(remaining) {
                 Ok(ProcessOutput::Stdout(line)) => return Ok(Some(line)),
                 Ok(ProcessOutput::Stderr(line)) => {
-                    self.stderr_tail.push(redact_diagnostic(&line));
+                    self.record_stderr(&line);
                 }
                 Ok(ProcessOutput::StdoutError(message)) => {
                     return Err(LocalRunnerError::invalid(format!(
@@ -409,7 +654,7 @@ impl AcpxSidecarTransport {
             };
             match output {
                 Some(ProcessOutput::Stderr(line)) => {
-                    self.stderr_tail.push(redact_diagnostic(&line));
+                    self.record_stderr(&line);
                 }
                 Some(ProcessOutput::StderrClosed) | None => break,
                 Some(ProcessOutput::Stdout(_))
@@ -421,11 +666,31 @@ impl AcpxSidecarTransport {
 
     fn diagnostic_suffix(&self) -> String {
         let diagnostics = self.stderr_tail.snapshot().lines.join("\n");
-        if diagnostics.is_empty() {
+        let categories = if self.stderr_categories.is_empty() {
             String::new()
         } else {
-            format!(" stderrTail={diagnostics:?}")
+            format!(
+                " stderrCategories={}",
+                self.stderr_categories
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        if diagnostics.is_empty() {
+            categories
+        } else {
+            format!("{categories} stderrTail={diagnostics:?}")
         }
+    }
+
+    fn record_stderr(&mut self, line: &str) {
+        // Only fixed categories cross this boundary. Raw errors, stack paths,
+        // identifiers, and credential-bearing strings remain fully redacted.
+        self.stderr_categories
+            .extend(stderr_diagnostic_categories(line));
+        self.stderr_tail.push(redact_diagnostic(line));
     }
 
     fn poison(&mut self) {
@@ -461,11 +726,13 @@ struct ResponseFrame {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResponseError {
     code: String,
     message: String,
     retryable: bool,
+    #[serde(default)]
+    provider_failure: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -595,9 +862,282 @@ fn redact_diagnostic(value: &str) -> String {
     }
 }
 
+fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
+    const CATEGORIES: &[(&str, &str)] = &[
+        ("TypeError", "javascript_type_error"),
+        ("ReferenceError", "javascript_reference_error"),
+        ("SyntaxError", "javascript_syntax_error"),
+        ("RangeError", "javascript_range_error"),
+        ("AssertionError", "javascript_assertion_error"),
+        ("UnhandledPromiseRejection", "unhandled_rejection"),
+        ("ERR_UNHANDLED_REJECTION", "unhandled_rejection"),
+        ("ERR_UNHANDLED_ERROR", "unhandled_event_error"),
+        ("ERR_INVALID_ARG_TYPE", "invalid_argument_type"),
+        ("ERR_INVALID_ARG_VALUE", "invalid_argument_value"),
+        ("ERR_STREAM_WRITE_AFTER_END", "stream_write_after_end"),
+        ("ERR_STREAM_DESTROYED", "stream_destroyed"),
+        ("ERR_IPC_CHANNEL_CLOSED", "ipc_channel_closed"),
+        ("ERR_SOCKET_CLOSED", "socket_closed"),
+        ("ERR_MODULE_NOT_FOUND", "module_not_found"),
+        ("MODULE_NOT_FOUND", "module_not_found"),
+        ("EPIPE", "broken_pipe"),
+        ("ECONNRESET", "connection_reset"),
+        ("EADDRINUSE", "address_in_use"),
+        ("ENOENT", "file_not_found"),
+        ("EACCES", "permission_denied"),
+        ("EPERM", "permission_denied"),
+        (
+            "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH",
+            "persisted_session_identity_mismatch",
+        ),
+        ("SESSION_RESUME_REQUIRED", "session_resume_required"),
+    ];
+    let mut categories: BTreeSet<&'static str> = value
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter_map(|token| {
+            CATEGORIES
+                .iter()
+                .find_map(|(known, category)| (token == *known).then_some(*category))
+        })
+        .collect();
+    if value.contains("triggerUncaughtException") && value.contains("fromPromise") {
+        categories.insert("unhandled_rejection");
+    }
+    if value.contains("ACPX provider spawned after ownership admission was sealed") {
+        categories.insert("provider_spawn_after_ownership_seal");
+    }
+    categories
+}
+
+// A typed ensure rejection names its provider-failure category, so a limit at
+// session start is distinguishable from other startup failures. Only the
+// schema-validated enum crosses here, never the cause's text.
+fn typed_provider_classification(error: &ResponseError) -> Option<&'static str> {
+    let failure = validated_provider_failure(error.provider_failure.clone())?;
+    Some(match failure.get("category")?.as_str()? {
+        "rate_limit" => "provider_rate_limit",
+        "quota_exhausted" => "provider_quota_exhausted",
+        "authentication" => "provider_authentication",
+        "permission" => "provider_permission",
+        "model_unavailable" => "provider_model_unavailable",
+        "invalid_request" => "provider_invalid_request",
+        "overloaded" => "provider_overloaded",
+        "timeout" => "provider_timeout",
+        _ => return None,
+    })
+}
+
+fn response_error_classification(error: &ResponseError) -> &'static str {
+    match error.code.as_str() {
+        "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
+        "GROK_EFFORT_MISMATCH" => return "grok_effort_mismatch",
+        "GROK_MODEL_MISMATCH" => return "grok_model_mismatch",
+        "GROK_SESSION_MISMATCH" => return "grok_session_mismatch",
+        "GROK_CONFIGURATION_CONFLICT" => return "grok_configuration_conflict",
+        "GROK_CONFIGURATION_DRIFT" => return "grok_configuration_drift",
+        "GROK_ADMISSION_PROTOCOL_VIOLATION" => return "grok_admission_protocol_violation",
+        "ACPX_ADMISSION_BINDING" => return "admission_binding",
+        "ACPX_ADMISSION_INSTALLATION" => return "admission_installation",
+        "ACPX_ADMISSION_SANDBOX" => return "admission_sandbox",
+        "ACPX_ADMISSION_CREDENTIAL" => return "admission_credential",
+        "ACPX_ADMISSION_CONFIGURATION" => return "admission_configuration",
+        "ACPX_ADMISSION_SKILLS" => return "admission_skills",
+        "ACPX_ADMISSION_COMMAND" => return "admission_command",
+        "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
+        "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
+        "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
+        "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
+        "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
+        "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
+        "AGENT_STARTUP_FAILED.UNVERIFIED_MODULE" => return "agent_startup_unverified_module",
+        "AGENT_STARTUP_FAILED.MODULE_NOT_FOUND" => return "agent_startup_module_not_found",
+        "AGENT_STARTUP_FAILED.PERMISSION_DENIED" => return "agent_startup_permission_denied",
+        "AGENT_STARTUP_FAILED.FILE_NOT_FOUND" => return "agent_startup_file_not_found",
+        "AGENT_STARTUP_FAILED.SYNTAX_ERROR" => return "agent_startup_syntax_error",
+        "AGENT_STARTUP_FAILED.INVALID_ARGUMENT" => return "agent_startup_invalid_argument",
+        "AGENT_STARTUP_FAILED.NO_STDERR" => return "agent_startup_no_stderr",
+        "AGENT_STARTUP_FAILED.SIGNAL" => return "agent_startup_signal",
+        "AGENT_STARTUP_FAILED.EXIT_NONZERO" => return "agent_startup_exit_nonzero",
+        "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
+        "AGENT_DISCONNECTED" => return "agent_disconnected",
+        "ACPX_TOOL_CALL_STALE" => return "provider_tool_call_retired",
+        "AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_INSTALLATION_INVALID" => return "agent_installation_invalid",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
+        "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
+        "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
+        "SESSION_RESUME_REQUIRED" => return "session_resume_required",
+        "SESSION_MODE_REPLAY_FAILED" => return "session_mode_replay_failed",
+        "SESSION_MODEL_REPLAY_FAILED" => return "session_model_replay_failed",
+        "SESSION_CONFIG_OPTION_REPLAY_FAILED" => return "session_config_option_replay_failed",
+        "CLAUDE_ACP_SESSION_CREATE_TIMEOUT" => return "claude_session_create_timeout",
+        "ACPX_SESSION_HANDSHAKE_TIMEOUT" => return "session_handshake_timeout",
+        "ACPX_SESSION_ENSURE_FAILED" => {
+            return typed_provider_classification(error).unwrap_or("session_ensure_failed")
+        }
+        "ACPX_SESSION_ENSURE_TYPE_ERROR" => return "session_ensure_type_error",
+        "ACPX_SESSION_ENSURE_NON_ERROR" => return "session_ensure_non_error",
+        "ACP_SESSION_INIT_FAILED" => return "acp_session_init_failed",
+        "NO_SESSION" => return "acpx_no_session",
+        "TIMEOUT" => return "acpx_timeout",
+        "PERMISSION_DENIED" => return "acpx_permission_denied",
+        "PERMISSION_PROMPT_UNAVAILABLE" => return "acpx_permission_prompt_unavailable",
+        "RUNTIME" => return "acpx_runtime_failure",
+        "USAGE" => return "acpx_usage_failure",
+        "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT" => {
+            return "runtime_admission_verification_timeout"
+        }
+        "ACPX_SIDECAR_STATUS_READ_TIMEOUT" => return "session_status_read_timeout",
+        "ACPX_PERSISTED_SESSION_MISSING" => return "persisted_session_missing",
+        "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH" => return "persisted_session_identity_mismatch",
+        "ACPX_MODEL_STATUS_UNAVAILABLE" => return "model_status_unavailable",
+        "ACPX_MODEL_SELECTION_UNAVAILABLE" => return "model_selection_unavailable",
+        "ACPX_EFFECTIVE_MODEL_MISMATCH" => return "effective_model_mismatch",
+        _ => {}
+    }
+    match error.message.as_str() {
+        "ACPX provider spawned after ownership admission was sealed" => {
+            "provider_spawn_after_ownership_seal"
+        }
+        "ACPX recovery identity conflicts with the immutable session configuration" => {
+            "recovery_configuration_mismatch"
+        }
+        "ACPX recovery identity does not match the persisted runtime record" => {
+            "recovery_identity_mismatch"
+        }
+        "ACPX provider lifetime lease is unavailable" => "provider_lifetime_unavailable",
+        "Managed Codex credential home already has an active lease" => "provider_lifetime_owned",
+        "ACPX session handshake exceeded its admission deadline" => "session_handshake_timeout",
+        "ACPX provider lifetime guardian exited before ownership transfer" => {
+            "provider_guardian_exit"
+        }
+        "ACPX provider lifetime guardian ownership timed out" => "provider_guardian_timeout",
+        "ACPX session handshake and runtime cleanup failed" => "session_handshake_cleanup_failed",
+        "ACPX runtime initialization and cleanup failed" => "runtime_initialization_cleanup_failed",
+        _ if error
+            .message
+            .starts_with("ACP agent exited before initialize completed") =>
+        {
+            "agent_startup_failed"
+        }
+        _ if error.message.starts_with("Failed to spawn agent command:") => "agent_spawn_failed",
+        _ if error
+            .message
+            .starts_with("ACP agent disconnected during request") =>
+        {
+            "agent_disconnected"
+        }
+        _ if error.message.starts_with("Authentication required") => "authentication_required",
+        _ => "unclassified",
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
+        assert!(pi_credential_environment_keys(None).unwrap().is_empty());
+        for name in [
+            "NODE_OPTIONS",
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "INVALID-NAME",
+        ] {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        for binding in [
+            json!({"schema":"other", "agent":"pi", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"cursor", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":["MY_PI_KEY", "MY_PI_KEY"]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[], "extra":true}),
+        ] {
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        assert!(pi_credential_environment_keys(Some(&"x".repeat(4_097))).is_err());
+    }
+
+    #[test]
+    fn pi_loader_and_shell_controls_match_the_controller_reservations() {
+        let names: Vec<String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test-fixtures/pi-acp/reserved-credential-names.json"
+        )))
+        .unwrap();
+        for name in names {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+    }
+
+    #[test]
+    fn pi_custom_credential_names_follow_the_controller_contract() {
+        let names = vec!["LD_API_KEY", "DYLD_API_KEY", "MY_PI_SERVICE_KEY"];
+        let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":names});
+        assert_eq!(
+            pi_credential_environment_keys(Some(&binding.to_string())).unwrap(),
+            names
+        );
+    }
+
+    #[test]
+    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+        let ordinary = Duration::from_secs(30);
+        assert_eq!(
+            session_open_timeout("pi", ordinary),
+            Duration::from_secs(60)
+        );
+        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+            assert_eq!(session_open_timeout(agent, ordinary), ordinary);
+        }
+    }
+
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn managed_claude_helpers_reach_the_sidecar_without_host_credentials() {
+        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_HELPER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_helpers_reach_the_sidecar_without_host_credentials"])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", "/managed")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "unbound-capability")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s|%s|%s|%s|%s|%s\\n' \"$BASH_ENV\" \"$ZDOTDIR\" \"$GH_CONFIG_DIR\" \"$PAPERCLIP_GITHUB_LAUNCHER_DIR\" \"$GH_TOKEN\" \"$PAPERCLIP_GITHUB_BROKER_TOKEN\"".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(100),
+        };
+        let mut transport = AcpxSidecarTransport::start_for_agent(&config, "claude").unwrap();
+        let line = transport
+            .receive_stdout_line(Duration::from_secs(2), "managed-helper test")
+            .unwrap()
+            .expect("sidecar did not report its environment");
+        assert_eq!(line, "/managed/.bashrc|/managed|/managed|/managed||");
+    }
 
     #[test]
     fn parse_frame_does_not_echo_untrusted_deserialization_details() {
@@ -639,5 +1179,219 @@ mod tests {
             assert!(message.contains(expected), "unexpected error: {message}");
             assert!(!message.contains("Q7Z9"), "error leaked input: {message}");
         }
+    }
+
+    #[test]
+    fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
+        for (code, expected) in [
+            ("ACPX_RUNTIME_PACKAGE_MISSING", "runtime_package_missing"),
+            ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
+            ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
+            ("COPILOT_AUTH_REQUIRED", "authentication_required"),
+            ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
+            ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
+            ("COPILOT_AUTH_REQUIRED_EXTRA", "unclassified"),
+            ("COPILOT_REQUEST_FAILED", "unclassified"),
+            ("UNKNOWN_CANDIDATE_FAILURE", "unclassified"),
+        ] {
+            let error = ResponseError {
+                code: code.to_owned(),
+                message:
+                    "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
+                        .to_owned(),
+                retryable: false,
+                provider_failure: None,
+            };
+            let classification = response_error_classification(&error);
+            assert_eq!(classification, expected);
+            assert!(!classification.contains("canary"));
+            assert!(!classification.contains("secret"));
+        }
+    }
+
+    #[test]
+    fn session_ensure_names_only_a_typed_provider_category() {
+        let ensure = |provider_failure: Option<Value>| ResponseError {
+            code: "ACPX_SESSION_ENSURE_FAILED".to_owned(),
+            message: "private-token-canary".to_owned(),
+            retryable: false,
+            provider_failure,
+        };
+        let cause = |category: &str| {
+            json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+                "category": category, "message": "private-token-canary", "retryability": "unknown" })
+        };
+        for (category, expected) in [
+            ("quota_exhausted", "provider_quota_exhausted"),
+            ("rate_limit", "provider_rate_limit"),
+            ("authentication", "provider_authentication"),
+            ("unknown", "session_ensure_failed"),
+        ] {
+            assert_eq!(
+                response_error_classification(&ensure(Some(cause(category)))),
+                expected
+            );
+        }
+        assert_eq!(
+            response_error_classification(&ensure(None)),
+            "session_ensure_failed"
+        );
+        // A cause outside the schema cannot select a classification.
+        let mut invented = cause("quota_exhausted");
+        invented["category"] = json!("private-token-canary");
+        assert_eq!(
+            response_error_classification(&ensure(Some(invented))),
+            "session_ensure_failed"
+        );
+        let mut extra = cause("quota_exhausted");
+        extra["headers"] = json!({ "authorization": "private-token-canary" });
+        assert_eq!(
+            response_error_classification(&ensure(Some(extra))),
+            "session_ensure_failed"
+        );
+        // Other closed codes keep their own classification.
+        let mut admission = ensure(Some(cause("quota_exhausted")));
+        admission.code = "ACPX_ADMISSION_CREDENTIAL".to_owned();
+        assert_eq!(
+            response_error_classification(&admission),
+            "admission_credential"
+        );
+    }
+
+    #[test]
+    fn classifies_only_allowlisted_internal_sidecar_failures() {
+        let error = |code: &str, message: &str| ResponseError {
+            code: code.to_owned(),
+            message: message.to_owned(),
+            retryable: false,
+            provider_failure: None,
+        };
+        for (code, expected) in [
+            ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
+            ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+            ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            (
+                "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+                "grok_effort_acknowledgement_missing",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error(code, "private-token-canary")),
+                expected
+            );
+        }
+        assert_eq!(
+            response_error_classification(&error(
+                "acpx_sidecar_command_failed",
+                "ACPX session handshake exceeded its admission deadline",
+            )),
+            "session_handshake_timeout"
+        );
+        assert_eq!(
+            response_error_classification(&error(
+                "ACPX_SESSION_HANDSHAKE_TIMEOUT",
+                "bounded provider admission failed",
+            )),
+            "session_handshake_timeout"
+        );
+        for (message, classification) in [
+            (
+                "ACPX recovery identity conflicts with the immutable session configuration",
+                "recovery_configuration_mismatch",
+            ),
+            (
+                "ACPX recovery identity does not match the persisted runtime record",
+                "recovery_identity_mismatch",
+            ),
+            (
+                "ACPX provider lifetime lease is unavailable",
+                "provider_lifetime_unavailable",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error("acpx_sidecar_command_failed", message)),
+                classification
+            );
+            assert_eq!(
+                response_error_classification(&error(
+                    "acpx_sidecar_command_failed",
+                    &format!("{message}: private-provider-detail")
+                )),
+                "unclassified"
+            );
+        }
+        assert_eq!(
+            response_error_classification(&error(
+                "acpx_sidecar_command_failed",
+                "Managed Codex credential home already has an active lease"
+            )),
+            "provider_lifetime_owned"
+        );
+        let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
+            (
+                "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
+                "runtime_admission_verification_timeout",
+            ),
+            ("ACPX_SESSION_ENSURE_FAILED", "session_ensure_failed"),
+            (
+                "ACPX_SESSION_ENSURE_TYPE_ERROR",
+                "session_ensure_type_error",
+            ),
+            ("ACPX_SESSION_ENSURE_NON_ERROR", "session_ensure_non_error"),
+            ("ACP_SESSION_INIT_FAILED", "acp_session_init_failed"),
+            ("NO_SESSION", "acpx_no_session"),
+            ("TIMEOUT", "acpx_timeout"),
+            ("PERMISSION_DENIED", "acpx_permission_denied"),
+            (
+                "PERMISSION_PROMPT_UNAVAILABLE",
+                "acpx_permission_prompt_unavailable",
+            ),
+            ("RUNTIME", "acpx_runtime_failure"),
+            ("USAGE", "acpx_usage_failure"),
+            (
+                "ACPX_SIDECAR_STATUS_READ_TIMEOUT",
+                "session_status_read_timeout",
+            ),
+            (
+                "ACPX_PERSISTED_SESSION_MISSING",
+                "persisted_session_missing",
+            ),
+            (
+                "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH",
+                "persisted_session_identity_mismatch",
+            ),
+            ("ACPX_MODEL_STATUS_UNAVAILABLE", "model_status_unavailable"),
+            (
+                "ACPX_MODEL_SELECTION_UNAVAILABLE",
+                "model_selection_unavailable",
+            ),
+            ("ACPX_EFFECTIVE_MODEL_MISMATCH", "effective_model_mismatch"),
+        ];
+        for (code, classification) in admission_failures {
+            assert_eq!(
+                response_error_classification(&error(code, "violet-circuit-4821")),
+                classification,
+            );
+        }
+        assert_eq!(
+            response_error_classification(&error("ACP_MODEL_UNSUPPORTED", "violet-circuit-4821",)),
+            "requested_model_unsupported"
+        );
+        assert_eq!(
+            response_error_classification(&error(
+                "acpx_sidecar_command_failed",
+                "ACP agent exited before initialize completed (exit=1, signal=null): violet-circuit-4821",
+            )),
+            "agent_startup_failed"
+        );
+        assert_eq!(
+            response_error_classification(&error("VIOLET_CIRCUIT", "violet-circuit-4821")),
+            "unclassified"
+        );
     }
 }

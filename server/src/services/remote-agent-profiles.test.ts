@@ -28,7 +28,7 @@ const AWS_CONFIGURATION = {
   contextBucket: "paperclip-runner-context",
   contextPrefix: "profiles/example",
   contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/example",
-  qualificationRevision: "aws-agentcore-harness-v1",
+  qualificationRevision: "aws-agentcore-harness-context-v2",
   defaultModel: "global.anthropic.claude-sonnet-4-6",
   eventExpiryDays: 90,
   defaultMaxEstimatedSessionCostUsd: 1,
@@ -44,7 +44,7 @@ function remoteInput(
     configuration: { ...AWS_CONFIGURATION },
     enabled: false,
     retentionAcknowledged: false,
-    qualification: { suite: "aws-agentcore-harness-v1" },
+    qualification: { suite: "aws-agentcore-harness-context-v2" },
     ...overrides,
   };
 }
@@ -362,7 +362,7 @@ describe("remote agent profile metadata validation", () => {
   });
 
   it("does not allow a qualified AgentCore profile key to be repointed", async () => {
-    const qualification = { suite: "aws-agentcore-harness-v1" };
+    const qualification = { suite: "aws-agentcore-harness-context-v2" };
     const existing = {
       id: "30000000-0000-4000-8000-000000000003",
       companyId: COMPANY_ID,
@@ -506,7 +506,7 @@ describe("remote agent profile metadata validation", () => {
       qualifiedRevision: existingManaged.qualifiedRevision,
     });
 
-    const awsQualification = { suite: "aws-agentcore-harness-v1" };
+    const awsQualification = { suite: "aws-agentcore-harness-context-v2" };
     const existingRemote = {
       id: "30000000-0000-4000-8000-000000000005",
       companyId: COMPANY_ID,
@@ -547,7 +547,7 @@ describe("remote agent profile metadata validation", () => {
   });
 
   it("rejects runtime use when stored identity drifts from the qualified revision", async () => {
-    const qualification = { suite: "aws-agentcore-harness-v1" };
+    const qualification = { suite: "aws-agentcore-harness-context-v2" };
     const qualifiedRevision = computeRemoteAgentProfileRevision({
       service: "aws_bedrock_agentcore_harness",
       configuration: AWS_CONFIGURATION,

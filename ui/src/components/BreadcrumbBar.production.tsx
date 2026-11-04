@@ -135,7 +135,7 @@ export function BreadcrumbBar() {
                     ) : (
                       <BreadcrumbLink asChild>
                         {crumb.leading || crumb.identifier ? (
-                          <Link to={crumb.href} className="flex items-center gap-1.5">
+                          <Link to={crumb.href} onClick={crumb.onClick} className="flex items-center gap-1.5">
                             {crumb.leading && (
                               <span className="flex shrink-0 items-center">{crumb.leading}</span>
                             )}
@@ -143,7 +143,7 @@ export function BreadcrumbBar() {
                             <span className="truncate">{crumb.label}</span>
                           </Link>
                         ) : (
-                          <Link to={crumb.href}>{crumb.label}</Link>
+                          <Link to={crumb.href} onClick={crumb.onClick}>{crumb.label}</Link>
                         )}
                       </BreadcrumbLink>
                     )}

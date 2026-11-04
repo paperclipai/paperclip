@@ -114,11 +114,34 @@ describe("matchesContentType", () => {
       expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(true);
     }
   });
+
+  it("allows common chat audio types by default", () => {
+    for (const contentType of [
+      "audio/mpeg",
+      "audio/mp4",
+      "audio/ogg",
+      "audio/wav",
+      "audio/webm",
+    ]) {
+      expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(
+        true,
+      );
+    }
+  });
 });
 
 describe("normalizeContentType", () => {
   it("lowercases and trims explicit types", () => {
     expect(normalizeContentType(" Application/Zip ")).toBe("application/zip");
+  });
+
+  it("normalizes provider Content-Type header parameters to the MIME essence", () => {
+    expect(normalizeContentType(" Text/Plain ; charset=utf-8 ")).toBe(
+      "text/plain",
+    );
+    expect(normalizeContentType("image/svg+xml; charset=utf-8")).toBe(
+      "image/svg+xml",
+    );
   });
 
   it("falls back to octet-stream when the type is missing", () => {

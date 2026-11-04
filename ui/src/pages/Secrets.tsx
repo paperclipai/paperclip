@@ -108,6 +108,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useCopyAction } from "../lib/use-copy-action";
 import { PageTabBar } from "../components/PageTabBar";
 import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
@@ -3916,6 +3917,19 @@ function AwsProviderVaultDiscoveryPanel({
   );
 }
 
+/**
+ * Copy the safe error payload out of a failure panel. People copy this to paste
+ * into a bug report, so the button has to confirm the clipboard took it.
+ */
+function CopyDetailsButton({ text }: { text: string }) {
+  const { copied, failed, copy } = useCopyAction();
+  return (
+    <Button type="button" variant="ghost" size="sm" onClick={() => void copy(text)}>
+      {copied ? "Copied" : failed ? "Copy failed" : "Copy"}
+    </Button>
+  );
+}
+
 function AwsProviderVaultDiscoveryError({
   form,
   error,
@@ -3940,10 +3954,6 @@ function AwsProviderVaultDiscoveryError({
     safeAlternative: details?.safeAlternative,
   };
   const detailsText = JSON.stringify(safeDetails, null, 2);
-
-  const copyDetails = () => {
-    void copyTextToClipboard(detailsText).catch(() => {});
-  };
 
   return (
     <div
@@ -3992,9 +4002,7 @@ function AwsProviderVaultDiscoveryError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button type="button" variant="ghost" size="sm" onClick={copyDetails}>
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
@@ -4087,14 +4095,7 @@ function SecretCreateError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void copyTextToClipboard(detailsText).catch(() => {})}
-              >
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}

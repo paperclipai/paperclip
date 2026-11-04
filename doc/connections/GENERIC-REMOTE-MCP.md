@@ -50,6 +50,43 @@ step through review, access and install. Reads are enabled for review;
 state-changing actions start off; newly discovered actions are quarantined until
 reviewed. That is the same treatment a curated connection gets.
 
+For **Just me**, the first probe of a new URL with no supplied credentials runs
+before a personal authorization exists. If the server requires OAuth, Paperclip
+creates the personal grant only after sign-in succeeds. If the server is public,
+Paperclip creates a personal grant with no credentials after the probe succeeds.
+That successful public probe saves the draft identity and its grant. A later
+catalog-refresh failure leaves them available for retry instead of undoing a
+grant that another setup attempt may already be using.
+Catalog and default-profile writes after that probe are atomic: a failure rolls
+back that step while retaining the established draft identity.
+Later health checks still require the user's authorization and return an
+actionable `422` error when it is missing.
+
+### Personal apps on shared agents
+
+Installing a personal app on an agent does not require every user who runs that
+agent to connect the app. Runs start without probing optional apps or warning
+about another user's missing credentials. The installed app's cached tools stay
+available even when its shared health check needs attention.
+
+Authorization happens when the agent calls an app tool. Paperclip uses the run's
+responsible user, never another user's personal grant. If that user has not
+connected the app, the tool returns `user_authorization_required` and adds an
+inline connection request. Unrelated work can continue without using the app.
+Disabled or uninstalled apps remain unavailable.
+
+Optional assigned apps do not emit run-start connection warnings, including
+unavailable shared apps. Their health state and reconnect controls remain in
+Apps. An unrelated run does not need to act on that state.
+
+### Slack app access
+
+If Slack reports that MCP access is disabled for the app, ask the Slack app
+owner to enable MCP access in the app's Slack settings, then refresh the
+connection. Signing in alone does not enable that app setting. Paperclip shows
+this as a setup error and keeps the connection available for retry. See
+[Slack's MCP app requirements](https://docs.slack.dev/ai/slack-mcp-server/#app-identity).
+
 ### Advanced authentication
 
 Collapsed by default. Open it when the server's docs are specific:
@@ -162,6 +199,59 @@ The discovered auth kind, issuer, and resource are persisted on the connection,
 so refresh, reconnect, revoke and diagnostics all use the generic path instead of
 falling back to `authKind: none` semantics.
 
+### Staying connected after access-token expiry
+
+For generic MCP connections, Paperclip adds `offline_access` to the selected
+tool scopes when the **authorization server** advertises it in
+`scopes_supported` and does not explicitly exclude the refresh-token grant.
+This works even when the MCP server's challenge or protected-resource metadata
+lists only tool scopes. Paperclip requests `prompt=consent`, stores the actual
+requested scopes for callback completion and reconnect, and refreshes access
+tokens using its existing encrypted-vault and rotating-token lease paths.
+Curated Apps continue to use their reviewed scope and authorization-parameter
+allowlists.
+
+The provider still decides whether to issue a refresh token. Existing grants
+without one require another sign-in; reconnect also discovers refresh support
+for older generic connections that already cached their OAuth endpoints.
+Transport failures and provider-revoked refresh tokens are separate errors.
+
+#### Local OAuth expiry simulation
+
+Run the standalone MCP/OAuth test server with no external credentials:
+
+```sh
+node scripts/mcp-fixtures/servers/oauth-refresh-fixture.mjs
+```
+
+It binds only to `127.0.0.1` and prints an MCP URL. Add that URL through
+**Apps → Connect an app → Connect your own MCP server** on a local/private
+Paperclip instance with a loopback HTTP callback URL, approve the test consent
+page, and use **read_status**.
+Access tokens last two minutes; later calls should refresh without another
+sign-in. Stop the fixture with Ctrl-C; all provider state is in memory.
+
+The fixture separates the MCP resource's `mcp:read` scope from the identity
+provider's `offline_access` scope. It issues refresh tokens only with offline
+consent and a registered refresh grant, enforces PKCE/client/resource binding,
+rejects expired access tokens, and rotates refresh tokens after every use.
+Diagnostics record only protocol events and scope names, never token values.
+
+Run the fixture controls and Paperclip integration regressions:
+
+```sh
+node --test scripts/mcp-fixtures/servers/oauth-refresh-fixture.test.mjs
+pnpm exec vitest run server/src/__tests__/generic-mcp-connection.test.ts
+```
+
+The integration tests use actual loopback HTTP and a disposable PostgreSQL
+database. They cover shared and personal sign-in, a successful gateway tool
+call, two expiry/refresh rotations without another sign-in, scope overrides,
+unsupported refresh, and reconnecting a legacy cached connection. Provider time
+and cached expiry timestamps are advanced explicitly, so no real-time wait is
+needed. The standalone controls prove that omitting offline scope or consent
+creates an access-only grant that loses MCP access after expiry.
+
 ## Curated definitions remain optional
 
 A curated definition matching a pasted endpoint is offered as a branded
@@ -177,9 +267,10 @@ through this page with either a key or browser sign-in.
 ## Verifying
 
 Deterministic coverage lives in
-`server/src/__tests__/generic-mcp-connection.test.ts`, which stands up an
-in-process MCP server plus authorization server. It needs no network and no
-vendor credentials, and every case connects by URL without naming a gallery app.
+`server/src/__tests__/generic-mcp-connection.test.ts` uses a simulated MCP/OAuth
+provider and a real loopback HTTP server for the personal public-URL regression.
+It needs no vendor credentials. Tests create an isolated PostgreSQL database
+and close their servers after use.
 A credentialed vendor smoke (for example live PostHog OAuth) may be recorded by
 QA but is not required for deterministic verification.
 

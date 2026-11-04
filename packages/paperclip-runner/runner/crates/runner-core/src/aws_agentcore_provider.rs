@@ -50,6 +50,7 @@ const MAX_CONTEXT_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEMORY_HISTORY_PAGES: usize = 1_000;
 const MAX_MEMORY_HISTORY_EVENTS: usize = 100_000;
 const MAX_INTERRUPT_DRAIN_EVENTS: usize = 256;
+const AGENTCORE_HARNESS_SKILLS_TOOL: &str = "skills";
 #[cfg(not(test))]
 const AGENTCORE_INTERRUPT_USAGE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -477,7 +478,7 @@ async fn upload_context_directory(
             .map_err(|error| {
                 format!(
                     "AgentCore context S3 upload failed: {}",
-                    redact_aws_error(&error.to_string())
+                    classify_aws_sdk_error(&error)
                 )
             })?;
     }
@@ -688,6 +689,7 @@ fn network_loop(
                 let skills = skills.clone();
                 let system_instructions = system_instructions.clone();
                 runtime.spawn(async move {
+                    let allowed_tools = invocation_allowed_tools(allowed_tools, !skills.is_empty());
                     // The qualified Harness version is the immutable model
                     // authority. Supplying a redundant invocation override
                     // changes AgentCore's authorization path and can require
@@ -735,11 +737,13 @@ fn network_loop(
                     };
                     let _ = reply.send(Ok(()));
                     let mut tool_blocks: BTreeMap<i32, (String, String, String)> = BTreeMap::new();
+                    let mut message_stopped = false;
                     loop {
                         match response.stream.recv().await {
                             Ok(Some(event)) => normalize_stream_event(
                                 event,
                                 &mut tool_blocks,
+                                &mut message_stopped,
                                 &events,
                                 &invocation_id,
                             ),
@@ -811,6 +815,7 @@ fn network_loop(
 fn normalize_stream_event(
     event: InvokeHarnessStreamOutput,
     tool_blocks: &mut BTreeMap<i32, (String, String, String)>,
+    message_stopped: &mut bool,
     events: &SyncSender<NetworkEvent>,
     invocation_id: &str,
 ) {
@@ -851,6 +856,18 @@ fn normalize_stream_event(
             if let Some((call_id, remote_name, input)) =
                 tool_blocks.remove(&value.content_block_index())
             {
+                // HarnessSkill contents are loaded on demand by AgentCore's
+                // built-in `skills` tool. Its trace is surfaced in the same
+                // ToolUse-shaped stream as client-owned inline functions, but
+                // AgentCore executes it inside the harness. Do not send it
+                // across PRP as a Paperclip semantic operation.
+                if remote_name == AGENTCORE_HARNESS_SKILLS_TOOL {
+                    let _ = events.send(NetworkEvent::new(
+                        invocation_id,
+                        NetworkEventKind::ReasoningProgress,
+                    ));
+                    return;
+                }
                 let parsed = if input.trim().is_empty() {
                     Ok(json!({}))
                 } else {
@@ -897,6 +914,7 @@ fn normalize_stream_event(
             ));
         }
         InvokeHarnessStreamOutput::MessageStop(value) => {
+            *message_stopped = true;
             let _ = events.send(NetworkEvent::new(
                 invocation_id,
                 NetworkEventKind::Stop(value.stop_reason().as_str().to_owned()),
@@ -904,13 +922,30 @@ fn normalize_stream_event(
         }
         InvokeHarnessStreamOutput::MessageStart(_) => {}
         _ => {
-            let _ = events.send(NetworkEvent::new(
-                invocation_id,
-                NetworkEventKind::Failure(
-                    "AgentCore SDK did not recognize an EventStream record".to_owned(),
-                ),
-            ));
+            // AgentCore may append forward-compatible bookkeeping records
+            // after the authoritative MessageStop. The pinned SDK exposes
+            // those records only as `Unknown`, without their union name or
+            // payload. Once MessageStop has sealed the model outcome, ignore
+            // such a trailing record; InvocationComplete still requires the
+            // known stop reason and usage metadata. Unknown records before
+            // MessageStop remain fatal because they could affect the turn.
+            normalize_unknown_stream_event(*message_stopped, events, invocation_id);
         }
+    }
+}
+
+fn normalize_unknown_stream_event(
+    message_stopped: bool,
+    events: &SyncSender<NetworkEvent>,
+    invocation_id: &str,
+) {
+    if !message_stopped {
+        let _ = events.send(NetworkEvent::new(
+            invocation_id,
+            NetworkEventKind::Failure(
+                "AgentCore SDK did not recognize an EventStream record".to_owned(),
+            ),
+        ));
     }
 }
 
@@ -1439,6 +1474,69 @@ impl AwsAgentCoreHarnessProvider {
             params: json!({ "turnId": turn_id, "turn": { "id": turn_id, "status": "interrupted" }, "stopReason": "interrupted" }),
         });
     }
+
+    fn invoke_tool_result_continuation(&mut self) -> Result<(), LocalRunnerError> {
+        if self.pending.is_empty() || self.delivered_results.len() != self.pending.len() {
+            return Err(LocalRunnerError::invalid(
+                "AgentCore tool-result continuation batch is incomplete",
+            ));
+        }
+
+        // AgentCore requires every toolUse from the assistant message and all
+        // matching user toolResults in one continuation. This also guarantees
+        // that parallel governed mutations cannot advance separate model turns.
+        let mut assistant_builder =
+            HarnessMessage::builder().role(HarnessConversationRole::Assistant);
+        let mut user_builder = HarnessMessage::builder().role(HarnessConversationRole::User);
+        for (call_id, pending) in &self.pending {
+            let delivered = self.delivered_results.get(call_id).ok_or_else(|| {
+                LocalRunnerError::invalid("AgentCore tool-result batch is incomplete")
+            })?;
+            let tool_use = HarnessToolUseBlock::builder()
+                .name(pending.remote_name.clone())
+                .tool_use_id(call_id.clone())
+                .input(json_to_document(&pending.input)?)
+                .r#type(HarnessToolUseType::ToolUse)
+                .build()
+                .map_err(|_| {
+                    LocalRunnerError::invalid("failed to build AgentCore tool-use continuation")
+                })?;
+            let tool_result = HarnessToolResultBlock::builder()
+                .tool_use_id(call_id.clone())
+                // Although the AgentCore data-plane model advertises JSON
+                // result blocks, the managed Harness runtime currently
+                // rejects them with `content_type=<json_> | unsupported type`.
+                // Preserve the complete structured result as compact JSON in
+                // the supported text variant.
+                .content(encode_tool_result_content(&delivered.result)?)
+                .status(if delivered.is_error {
+                    HarnessToolUseStatus::Error
+                } else {
+                    HarnessToolUseStatus::Success
+                })
+                .r#type(HarnessToolUseType::ToolUse)
+                .build()
+                .map_err(|_| {
+                    LocalRunnerError::invalid("failed to build AgentCore tool-result continuation")
+                })?;
+            assistant_builder = assistant_builder.content(HarnessContentBlock::ToolUse(tool_use));
+            user_builder = user_builder.content(HarnessContentBlock::ToolResult(tool_result));
+        }
+        let assistant = assistant_builder.build().map_err(|_| {
+            LocalRunnerError::invalid("failed to build AgentCore assistant continuation")
+        })?;
+        let user = user_builder.build().map_err(|_| {
+            LocalRunnerError::invalid("failed to build AgentCore user continuation")
+        })?;
+        // The durable runner records ToolResult before calling this method. A
+        // transport ambiguity therefore never repeats the Paperclip mutation;
+        // it fails closed with the last authoritative Memory cursor preserved
+        // for the control plane's reconciliation workflow.
+        self.invoke(vec![assistant, user])?;
+        self.pending.clear();
+        self.delivered_results.clear();
+        Ok(())
+    }
 }
 
 impl Provider for AwsAgentCoreHarnessProvider {
@@ -1709,11 +1807,12 @@ impl Provider for AwsAgentCoreHarnessProvider {
                 )))
             }
             NetworkEventKind::Stop(reason) => {
-                if self.pending_stop_reason.replace(reason).is_some() {
-                    return Err(LocalRunnerError::invalid(
-                        "AgentCore emitted more than one stop reason for an invocation",
-                    ));
-                }
+                // Harness-managed tools such as `skills` can produce several
+                // complete message boundaries inside one InvokeHarness
+                // stream (tool_use, tool_result, then the assistant's final
+                // stop). The final MessageStop before metadata is the
+                // authoritative outcome for the invocation.
+                self.pending_stop_reason = Some(reason);
                 Ok(None)
             }
             NetworkEventKind::InvocationComplete => {
@@ -1734,10 +1833,20 @@ impl Provider for AwsAgentCoreHarnessProvider {
                 }
                 match reason.as_str() {
                     "tool_use" | "tool_result" | "partial_turn" => {
-                        Ok(Some(ProviderEvent::Notification {
-                            method: "provider/waitingForToolResult".to_owned(),
-                            params: json!({ "turnId": self.current_turn_id, "runtimeSessionId": self.session_id }),
-                        }))
+                        if self.pending.is_empty() {
+                            return Err(LocalRunnerError::invalid(
+                                "AgentCore stopped for a tool without a pending inline function",
+                            ));
+                        }
+                        if self.delivered_results.len() == self.pending.len() {
+                            self.invoke_tool_result_continuation()?;
+                            Ok(None)
+                        } else {
+                            Ok(Some(ProviderEvent::Notification {
+                                method: "provider/waitingForToolResult".to_owned(),
+                                params: json!({ "turnId": self.current_turn_id, "runtimeSessionId": self.session_id }),
+                            }))
+                        }
                     }
                     "end_turn" | "stop_sequence" | "interrupted" => {
                         let turn_id = self.current_turn_id.take();
@@ -1783,6 +1892,14 @@ impl Provider for AwsAgentCoreHarnessProvider {
             }
             NetworkEventKind::Failure(detail) => {
                 self.active_invocation_id = None;
+                self.pending_stop_reason = None;
+                // A transport failure is terminal for the current invocation.
+                // Results can race the failure across the control-plane and
+                // provider channels, so discard both sides of the pending
+                // batch. A late result must fail validation instead of
+                // starting a continuation after the failed invocation.
+                self.pending.clear();
+                self.delivered_results.clear();
                 Err(LocalRunnerError::invalid(format!(
                     "AgentCore transport failed: {detail}"
                 )))
@@ -1817,60 +1934,15 @@ impl Provider for AwsAgentCoreHarnessProvider {
             return Ok(());
         }
 
-        // AgentCore requires every toolUse from the assistant message and all
-        // matching user toolResults in one continuation. This also guarantees
-        // that parallel governed mutations cannot advance separate model turns.
-        let mut assistant_builder =
-            HarnessMessage::builder().role(HarnessConversationRole::Assistant);
-        let mut user_builder = HarnessMessage::builder().role(HarnessConversationRole::User);
-        for (call_id, pending) in &self.pending {
-            let delivered = self.delivered_results.get(call_id).ok_or_else(|| {
-                LocalRunnerError::invalid("AgentCore tool-result batch is incomplete")
-            })?;
-            let tool_use = HarnessToolUseBlock::builder()
-                .name(pending.remote_name.clone())
-                .tool_use_id(call_id.clone())
-                .input(json_to_document(&pending.input)?)
-                .r#type(HarnessToolUseType::ToolUse)
-                .build()
-                .map_err(|_| {
-                    LocalRunnerError::invalid("failed to build AgentCore tool-use continuation")
-                })?;
-            let tool_result = HarnessToolResultBlock::builder()
-                .tool_use_id(call_id.clone())
-                // Although the AgentCore data-plane model advertises JSON
-                // result blocks, the managed Harness runtime currently
-                // rejects them with `content_type=<json_> | unsupported type`.
-                // Preserve the complete structured result as compact JSON in
-                // the supported text variant.
-                .content(encode_tool_result_content(&delivered.result)?)
-                .status(if delivered.is_error {
-                    HarnessToolUseStatus::Error
-                } else {
-                    HarnessToolUseStatus::Success
-                })
-                .r#type(HarnessToolUseType::ToolUse)
-                .build()
-                .map_err(|_| {
-                    LocalRunnerError::invalid("failed to build AgentCore tool-result continuation")
-                })?;
-            assistant_builder = assistant_builder.content(HarnessContentBlock::ToolUse(tool_use));
-            user_builder = user_builder.content(HarnessContentBlock::ToolResult(tool_result));
+        // A ToolUse block arrives before the same EventStream's MessageStop
+        // and usage metadata. The control plane can return its result during
+        // that interval; retain it durably and let InvocationComplete start
+        // the continuation after the first invocation is fully sealed.
+        if self.active_invocation_id.is_some() {
+            return Ok(());
         }
-        let assistant = assistant_builder.build().map_err(|_| {
-            LocalRunnerError::invalid("failed to build AgentCore assistant continuation")
-        })?;
-        let user = user_builder.build().map_err(|_| {
-            LocalRunnerError::invalid("failed to build AgentCore user continuation")
-        })?;
-        // The durable runner records ToolResult before calling this method. A
-        // transport ambiguity therefore never repeats the Paperclip mutation;
-        // it fails closed with the last authoritative Memory cursor preserved
-        // for the control plane's reconciliation workflow.
-        self.invoke(vec![assistant, user])?;
-        self.pending.clear();
-        self.delivered_results.clear();
-        Ok(())
+
+        self.invoke_tool_result_continuation()
     }
 
     fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
@@ -2004,6 +2076,20 @@ fn encode_tools(
         encoded.push(harness_tool);
     }
     Ok((encoded, allowed, reverse, schemas))
+}
+
+fn invocation_allowed_tools(mut allowed: Vec<String>, has_skills: bool) -> Vec<String> {
+    if has_skills
+        && !allowed
+            .iter()
+            .any(|tool| tool == AGENTCORE_HARNESS_SKILLS_TOOL)
+    {
+        // HarnessSkill progressive disclosure is performed by AgentCore's
+        // built-in `skills` tool. It must be admitted alongside the narrowly
+        // scoped Paperclip inline functions whenever skills are attached.
+        allowed.push(AGENTCORE_HARNESS_SKILLS_TOOL.to_owned());
+    }
+    allowed
 }
 
 fn remote_tool_name(operation_id: &str) -> String {
@@ -2188,7 +2274,8 @@ mod tests {
     use super::*;
     use aws_sdk_bedrockagentcore::types::{
         HarnessContentBlockDeltaEvent, HarnessContentBlockStartEvent, HarnessContentBlockStopEvent,
-        HarnessToolUseBlockDelta, HarnessToolUseBlockStart,
+        HarnessMessageStopEvent, HarnessStopReason, HarnessToolUseBlockDelta,
+        HarnessToolUseBlockStart,
     };
     use std::sync::{Arc, Mutex};
 
@@ -2211,7 +2298,7 @@ mod tests {
             context_bucket: "paperclip-context-test".to_owned(),
             context_prefix: "companies/company-test/profiles/profile-test".to_owned(),
             context_kms_key_arn: "arn:aws:kms:us-east-1:123456789012:key/test".to_owned(),
-            qualification_revision: "aws-agentcore-harness-v1".to_owned(),
+            qualification_revision: "aws-agentcore-harness-context-v2".to_owned(),
             event_expiry_days: 90,
             max_estimated_session_cost_usd: 1.0,
             max_iterations: 8,
@@ -2466,6 +2553,167 @@ mod tests {
             terminal,
             ProviderEvent::Notification { ref method, .. } if method == "turn/completed"
         ));
+    }
+
+    #[test]
+    fn harness_managed_message_stops_resolve_to_the_final_stop_reason() {
+        let mut provider = provider_with_events(
+            vec![
+                invocation_event(NetworkEventKind::Stop("tool_use".to_owned())),
+                invocation_event(NetworkEventKind::Stop("tool_result".to_owned())),
+                invocation_event(NetworkEventKind::Stop("end_turn".to_owned())),
+                invocation_event(NetworkEventKind::Usage {
+                    input_tokens: 840,
+                    output_tokens: 62,
+                    cache_read_input_tokens: 0,
+                    cache_write_input_tokens: 0,
+                    latency_ms: 2_646,
+                }),
+                invocation_event(NetworkEventKind::InvocationComplete),
+            ],
+            restored_usage_snapshot(None).unwrap(),
+        );
+        assert!(provider.poll().unwrap().is_none());
+        assert!(provider.poll().unwrap().is_none());
+        assert!(provider.poll().unwrap().is_none());
+        assert!(matches!(
+            provider.poll().unwrap().unwrap(),
+            ProviderEvent::Notification { ref method, .. }
+                if method == "thread/tokenUsage/updated"
+        ));
+        match provider.poll().unwrap().unwrap() {
+            ProviderEvent::Notification { method, params } => {
+                assert_eq!(method, "turn/completed");
+                assert_eq!(params["stopReason"], "end_turn");
+            }
+            other => panic!("unexpected terminal event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn early_tool_result_waits_for_invocation_metadata_before_continuing() {
+        let (command_tx, command_rx) = mpsc::sync_channel(2);
+        let (event_tx, event_rx) = mpsc::sync_channel(4);
+        let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+        let join = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                match command {
+                    NetworkCommand::Invoke {
+                        messages, reply, ..
+                    } => {
+                        captured_tx.send(messages.len()).unwrap();
+                        reply.send(Ok(())).unwrap();
+                    }
+                    NetworkCommand::Shutdown => break,
+                    NetworkCommand::StopRuntime { reply, .. } => {
+                        reply.send(Ok(())).unwrap();
+                    }
+                    NetworkCommand::DeleteMemory { reply } => {
+                        reply.send(Ok(())).unwrap();
+                    }
+                }
+            }
+        });
+        let mut provider = provider_with_worker(
+            NetworkWorker {
+                commands: command_tx,
+                events: event_rx,
+                join: Some(join),
+            },
+            restored_usage_snapshot(None).unwrap(),
+        );
+        provider.pending.insert(
+            "tool-use-1".to_owned(),
+            RemoteToolUse {
+                remote_name: "pc_get_task_context_abc123".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                input: json!({}),
+            },
+        );
+        provider
+            .deliver_tool_result(&ToolResult {
+                call_id: "tool-use-1".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        assert!(captured_rx.try_recv().is_err());
+        assert_eq!(provider.delivered_results.len(), 1);
+
+        for kind in [
+            NetworkEventKind::Stop("tool_use".to_owned()),
+            NetworkEventKind::Usage {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                latency_ms: 25,
+            },
+            NetworkEventKind::InvocationComplete,
+        ] {
+            event_tx.send(invocation_event(kind)).unwrap();
+        }
+        assert!(provider.poll().unwrap().is_none());
+        assert!(matches!(
+            provider.poll().unwrap().unwrap(),
+            ProviderEvent::Notification { ref method, .. }
+                if method == "thread/tokenUsage/updated"
+        ));
+        assert!(provider.poll().unwrap().is_none());
+        assert_eq!(captured_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+        assert_eq!(provider.invocation_counter, 2);
+        assert!(provider.active_invocation_id.is_some());
+        assert!(provider.pending.is_empty());
+        assert!(provider.delivered_results.is_empty());
+    }
+
+    #[test]
+    fn transport_failure_discards_pending_tool_state_and_rejects_late_result() {
+        let mut provider = provider_with_events(
+            vec![invocation_event(NetworkEventKind::Failure(
+                "connection reset".to_owned(),
+            ))],
+            restored_usage_snapshot(None).unwrap(),
+        );
+        provider.pending.insert(
+            "tool-use-1".to_owned(),
+            RemoteToolUse {
+                remote_name: "pc_get_task_context_abc123".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                input: json!({}),
+            },
+        );
+        provider.delivered_results.insert(
+            "tool-use-1".to_owned(),
+            ToolResult {
+                call_id: "tool-use-1".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            },
+        );
+        provider.pending_stop_reason = Some("tool_use".to_owned());
+
+        let error = provider.poll().unwrap_err();
+        assert!(error.to_string().contains("AgentCore transport failed"));
+        assert!(provider.active_invocation_id.is_none());
+        assert!(provider.pending_stop_reason.is_none());
+        assert!(provider.pending.is_empty());
+        assert!(provider.delivered_results.is_empty());
+
+        let late_result_error = provider
+            .deliver_tool_result(&ToolResult {
+                call_id: "tool-use-1".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap_err();
+        assert!(late_result_error
+            .to_string()
+            .contains("does not match a pending tool use"));
+        assert_eq!(provider.invocation_counter, 1);
     }
 
     #[test]
@@ -3107,6 +3355,20 @@ mod tests {
     }
 
     #[test]
+    fn harness_skills_tool_is_allowed_only_when_skills_are_attached() {
+        let inline = vec!["@*/pc_get_task_context_abc123".to_owned()];
+        assert_eq!(invocation_allowed_tools(inline.clone(), false), inline);
+        assert_eq!(
+            invocation_allowed_tools(inline.clone(), true),
+            vec![inline[0].clone(), AGENTCORE_HARNESS_SKILLS_TOOL.to_owned()]
+        );
+        assert_eq!(
+            invocation_allowed_tools(vec![AGENTCORE_HARNESS_SKILLS_TOOL.to_owned()], true),
+            vec![AGENTCORE_HARNESS_SKILLS_TOOL.to_owned()]
+        );
+    }
+
+    #[test]
     fn rejects_more_than_sixty_four_tools() {
         let tool = AuthorizedTool {
             operation_id: "op".to_owned(),
@@ -3178,6 +3440,7 @@ mod tests {
     fn eventstream_text_delta_is_normalized_without_provider_objects() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let event = HarnessContentBlockDeltaEvent::builder()
             .content_block_index(0)
             .delta(HarnessContentBlockDelta::Text("hello".to_owned()))
@@ -3186,6 +3449,7 @@ mod tests {
         normalize_stream_event(
             InvokeHarnessStreamOutput::ContentBlockDelta(event),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3205,6 +3469,7 @@ mod tests {
     fn eventstream_tool_json_is_buffered_until_the_block_is_complete() {
         let (sender, receiver) = mpsc::sync_channel(8);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let start = HarnessToolUseBlockStart::builder()
             .tool_use_id("tool-use-1")
             .name("pc_get_task_abc123")
@@ -3220,6 +3485,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3238,6 +3504,7 @@ mod tests {
                         .unwrap(),
                 ),
                 &mut blocks,
+                &mut message_stopped,
                 &sender,
                 "invocation-1",
             );
@@ -3251,6 +3518,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3274,9 +3542,56 @@ mod tests {
     }
 
     #[test]
+    fn eventstream_harness_skills_trace_is_not_forwarded_as_an_inline_function() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
+        let start = HarnessToolUseBlockStart::builder()
+            .tool_use_id("harness-skill-load-1")
+            .name(AGENTCORE_HARNESS_SKILLS_TOOL)
+            .r#type(HarnessToolUseType::ToolUse)
+            .build()
+            .unwrap();
+        normalize_stream_event(
+            InvokeHarnessStreamOutput::ContentBlockStart(
+                HarnessContentBlockStartEvent::builder()
+                    .content_block_index(3)
+                    .start(HarnessContentBlockStart::ToolUse(start))
+                    .build()
+                    .unwrap(),
+            ),
+            &mut blocks,
+            &mut message_stopped,
+            &sender,
+            "invocation-1",
+        );
+        normalize_stream_event(
+            InvokeHarnessStreamOutput::ContentBlockStop(
+                HarnessContentBlockStopEvent::builder()
+                    .content_block_index(3)
+                    .build()
+                    .unwrap(),
+            ),
+            &mut blocks,
+            &mut message_stopped,
+            &sender,
+            "invocation-1",
+        );
+        match receiver.try_recv().unwrap() {
+            NetworkEvent {
+                invocation_id,
+                kind: NetworkEventKind::ReasoningProgress,
+            } => assert_eq!(invocation_id, "invocation-1"),
+            other => panic!("unexpected normalized event: {other:?}"),
+        }
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn eventstream_empty_tool_input_is_normalized_to_an_empty_object() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let start = HarnessToolUseBlockStart::builder()
             .tool_use_id("tool-use-empty")
             .name("pc_get_task_context_abc123")
@@ -3292,6 +3607,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3309,6 +3625,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3320,6 +3637,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3340,6 +3658,47 @@ mod tests {
             }
             other => panic!("unexpected normalized event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_eventstream_record_before_message_stop_fails_closed() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        normalize_unknown_stream_event(false, &sender, "invocation-1");
+        match receiver.try_recv().unwrap() {
+            NetworkEvent {
+                kind: NetworkEventKind::Failure(detail),
+                ..
+            } => assert_eq!(
+                detail,
+                "AgentCore SDK did not recognize an EventStream record"
+            ),
+            other => panic!("unexpected normalized event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_unknown_eventstream_record_cannot_overturn_message_stop() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
+        normalize_stream_event(
+            InvokeHarnessStreamOutput::MessageStop(
+                HarnessMessageStopEvent::builder()
+                    .stop_reason(HarnessStopReason::EndTurn)
+                    .build()
+                    .unwrap(),
+            ),
+            &mut blocks,
+            &mut message_stopped,
+            &sender,
+            "invocation-1",
+        );
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            NetworkEventKind::Stop(reason) if reason == "end_turn"
+        ));
+        normalize_unknown_stream_event(message_stopped, &sender, "invocation-1");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

@@ -20,6 +20,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { routineOverviewCopyText } from "../lib/routine-description-copy";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
@@ -39,6 +40,7 @@ import {
   RoutineSectionPicker,
 } from "../components/RoutineSubSidebar";
 import { RoutineSaveBar } from "../components/RoutineSaveBar";
+import { RoutineSectionHeading } from "../components/RoutineSectionHeading";
 import {
   EDITABLE_SECTIONS,
   ROUTINE_SECTION_KEYS,
@@ -627,6 +629,7 @@ export function RoutineDetail() {
 
   const onHistoryRestoreSecretMaterials = useCallback((response: RestoreRoutineRevisionResponse) => {
     if (response.secretMaterials.length > 0) {
+      navigateToSection("triggers");
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
@@ -638,7 +641,7 @@ export function RoutineDetail() {
         })),
       });
     }
-  }, []);
+  }, [navigateToSection]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -878,9 +881,16 @@ export function RoutineDetail() {
               aria-labelledby="routine-section-title"
               className={isEditableSection ? "mx-auto w-full max-w-3xl" : "w-full"}
             >
-              <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
-                {SECTION_TITLES[section]}
-              </h2>
+              <RoutineSectionHeading
+                title={SECTION_TITLES[section]}
+                copyText={section === "overview"
+                  ? routineOverviewCopyText({
+                      editing: true,
+                      draft: editDraft.description,
+                      saved: routine.description,
+                    })
+                  : null}
+              />
 
               {section === "overview" && <OverviewSection />}
               {section === "triggers" && <TriggersSection />}

@@ -9,6 +9,7 @@ import {
   clearCodexAuthCacheEntry,
   ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
+  isCodexAuthCachePath,
   resolveCodexAuthCacheDir,
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
@@ -83,6 +84,25 @@ describe("codex auth cache store", () => {
       expect(cacheDir).toBe(
         path.resolve(home, "instances", "default", "companies", "company-a", "codex-auth-cache"),
       );
+    });
+
+    it("isCodexAuthCachePath recognizes store entries for any company and rejects everything else", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const cacheDir = resolveCodexAuthCacheDir(env, "company-a");
+      expect(isCodexAuthCachePath(env, cacheDir)).toBe(true);
+      expect(isCodexAuthCachePath(env, path.join(cacheDir, "acct-1"))).toBe(true);
+      expect(isCodexAuthCachePath(env, resolveCodexAuthCacheDir(env, "company-b"))).toBe(true);
+      // The company Codex home and a per-agent home are managed homes, not
+      // store entries — the seeding pass owns them.
+      expect(isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "codex-home"))).toBe(false);
+      expect(
+        isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "agents", "agent-1", "codex-home")),
+      ).toBe(false);
+      // A sibling directory whose name merely STARTS with the store name
+      // stays out, as does anything outside the instance tree.
+      expect(isCodexAuthCachePath(env, path.join(home, "instances", "default", "companies", "company-a", "codex-auth-cache-extra"))).toBe(false);
+      expect(isCodexAuthCachePath(env, "/tmp/codex-auth-cache/acct-1")).toBe(false);
     });
 
     it("resolveCodexAuthCacheEntryPath keys the entry by a sanitized account_id and ends with auth.json", async () => {
@@ -443,13 +463,15 @@ describe("codex auth cache store", () => {
         releaseFirstCaller = resolve;
       });
 
+      const entered = deferredSignal();
       const firstCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
         events.push("first-enter");
+        entered.resolve();
         await firstCallerGate;
         events.push("first-exit");
         return "first";
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await entered.promise;
       const secondCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
         events.push("second-enter");
         events.push("second-exit");
@@ -477,12 +499,14 @@ describe("codex auth cache store", () => {
         releaseCompanyA = resolve;
       });
 
+      const entered = deferredSignal();
       const companyACall = withAccountHomeSecretMutationLock(env, "company-a", async () => {
         events.push("a-enter");
+        entered.resolve();
         await companyAGate;
         events.push("a-exit");
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await entered.promise;
       const companyBCall = withAccountHomeSecretMutationLock(env, "company-b", async () => {
         events.push("b-enter");
         events.push("b-exit");
@@ -516,6 +540,28 @@ describe("codex auth cache store", () => {
 
       expect(events).toEqual(["promotion-enter", "mutation-enter", "mutation-exit", "promotion-exit"]);
     });
+    it("allows awaited nested writes but expires inherited ownership after release", async () => {
+      const env = envFor(await makeInstanceRoot());
+      const detachedGate = deferredSignal();
+      let detached!: Promise<void>;
+      let enteredDetached = false;
+      await withAccountHomeSecretMutationLock(env, "nested", async () => {
+        await expect(withAccountHomeSecretMutationLock(env, "nested", async () => "nested write")).resolves.toBe("nested write");
+        detached = detachedGate.promise.then(() => withAccountHomeSecretMutationLock(env, "nested", async () => { enteredDetached = true; }));
+      });
+      const holding = deferredSignal();
+      const release = deferredSignal();
+      const other = withAccountHomeSecretMutationLock(env, "nested", async () => { holding.resolve(); await release.promise; });
+      await holding.promise;
+      detachedGate.resolve();
+      try {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(enteredDetached).toBe(false);
+      } finally { release.resolve(); }
+      await Promise.all([other, detached]);
+      expect(enteredDetached).toBe(true);
+    });
+
   });
 
   describe("Phase 8: account-home directory validity before a secret write commits", () => {
@@ -561,3 +607,9 @@ describe("codex auth cache store", () => {
     });
   });
 });
+
+function deferredSignal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}

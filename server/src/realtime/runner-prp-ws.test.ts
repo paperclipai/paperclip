@@ -1,10 +1,14 @@
-import { createServer } from "node:http";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer as createUnboundServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
-import type { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
+import { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  queueLiveRunnerPrpCommand,
   queueRunnerPrpRuntimeRequestResolution,
   registerRunnerPrpAuthority,
   RunnerPrpRuntimeRequestResolutionError,
@@ -12,12 +16,21 @@ import {
   setupRunnerPrpWebSocketServer,
 } from "./runner-prp-ws.js";
 
+// Routing-only fixtures expose a bound address; HTTP server tests exercise the
+// real listen/close and DNS boundaries without replacing this router's logic.
+function createBoundServer(port: number) {
+  const server = createUnboundServer();
+  vi.spyOn(server, "listening", "get").mockReturnValue(true);
+  vi.spyOn(server, "address").mockReturnValue({ address: "127.0.0.1", family: "IPv4", port });
+  setupRunnerPrpWebSocketServer(server);
+  return server;
+}
+
 describe("runner PRP websocket route", () => {
   afterEach(() => runnerPrpWebSocketInternals.resetForTests());
 
   it("routes only the registered run and releases it by generation", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3210" });
+    const server = createBoundServer(3210);
     const handleUpgrade = vi.fn();
     const runId = "00000000-0000-4000-8000-000000000777";
     const registration = await registerRunnerPrpAuthority({
@@ -64,8 +77,7 @@ describe("runner PRP websocket route", () => {
       "404 Not Found",
     ],
   ])("fails closed for %s", (path, expectedStatus) => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3211" });
+    const server = createBoundServer(3211);
     const socket = new PassThrough();
     const writes: Buffer[] = [];
     socket.on("data", (chunk) => writes.push(Buffer.from(chunk)));
@@ -75,8 +87,7 @@ describe("runner PRP websocket route", () => {
   });
 
   it("does not replace an active registration", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3212" });
+    const server = createBoundServer(3212);
     const runId = "00000000-0000-4000-8000-000000000779";
     const authority = {
       handleUpgrade: vi.fn(),
@@ -93,15 +104,84 @@ describe("runner PRP websocket route", () => {
     server.close();
   });
 
+  it("routes live commands only to the newest generation", async () => {
+    const server = createBoundServer(3214);
+    const oldRunId = "00000000-0000-4000-8000-000000000781";
+    const newRunId = "00000000-0000-4000-8000-000000000782";
+    const oldQueueCommand = vi.fn(() => ({
+      commandId: "old-command",
+      controllerSeq: 1,
+    }));
+    const newQueueCommand = vi.fn(() => ({
+      commandId: "new-command",
+      controllerSeq: 2,
+    }));
+    const oldRegistration = await registerRunnerPrpAuthority({
+      companyId: "company-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: oldRunId,
+      authority: {
+        queueCommand: oldQueueCommand,
+        commandOutcome: vi.fn(() => ({ status: "completed", result: null })),
+      } as unknown as DurablePrpControlPlane,
+    });
+    const newRegistration = await registerRunnerPrpAuthority({
+      companyId: "company-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: newRunId,
+      authority: {
+        queueCommand: newQueueCommand,
+        commandOutcome: vi.fn(() => ({ status: "completed", result: null })),
+      } as unknown as DurablePrpControlPlane,
+    });
+
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toMatchObject({ runId: newRunId, commandId: "new-command" });
+    expect(oldQueueCommand).not.toHaveBeenCalled();
+    expect(newQueueCommand).toHaveBeenCalledOnce();
+
+    await oldRegistration.release();
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toMatchObject({ runId: newRunId, commandId: "new-command" });
+    expect(newQueueCommand).toHaveBeenCalledTimes(2);
+
+    await newRegistration.release();
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toBeNull();
+    server.close();
+  });
+
   it("queues one company-bound, idempotent runtime request resolution", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    const server = createBoundServer(3213);
     const queueCommand = vi.fn(() => ({ commandId: "command-resolution-1" }));
     const runId = "00000000-0000-4000-8000-000000000780";
     const registration = await registerRunnerPrpAuthority({
       companyId: "company-1",
       runId,
-      authority: { queueCommand } as unknown as DurablePrpControlPlane,
+      authority: {
+        queueCommand,
+        store: { state: { identity: { runId } } },
+      } as unknown as DurablePrpControlPlane,
     });
     const input = {
       companyId: "company-1",
@@ -169,6 +249,16 @@ describe("runner PRP websocket route", () => {
         },
       }),
     ).toThrowError("native_runtime_request_resolver_denied");
+    for (const pendingRequest of [
+      { ...input.pendingRequest, companyId: "company-2" },
+      { ...input.pendingRequest, runId: "00000000-0000-4000-8000-000000000783" },
+    ]) {
+      expect(() => queueRunnerPrpRuntimeRequestResolution({
+        ...input,
+        pendingRequest,
+      })).toThrowError("runner_prp_authority_not_active");
+    }
+    expect(queueCommand).toHaveBeenCalledTimes(1);
 
     await registration.release();
     expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
@@ -176,4 +266,120 @@ describe("runner PRP websocket route", () => {
     );
     server.close();
   });
+
+  it.each([false, true])(
+    "rejects a retained old route after real authority rotation (cached=%s)",
+    async (cached) => {
+      const directory = mkdtempSync(join(tmpdir(), "runner-route-rotation-"));
+      const server = createBoundServer(3214);
+      const identity = {
+        runnerInstanceId: "runner-route-test",
+        environmentLeaseId: "environment-route-test",
+        normalizedSessionId: "session-route-test",
+        runId: "00000000-0000-4000-8000-000000000781",
+        turnId: "turn-route-old",
+        itemId: "item-route-old",
+      };
+      const nextIdentity = {
+        ...identity,
+        runId: "00000000-0000-4000-8000-000000000782",
+        turnId: "turn-route-new",
+        itemId: "item-route-new",
+      };
+      try {
+        const authority = new DurablePrpControlPlane({
+          stateDirectory: directory,
+          identity,
+          expectedRunnerVersion: "0.3.0",
+          expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+        });
+        const oldRoute = await registerRunnerPrpAuthority({
+          companyId: "company-1",
+          runId: identity.runId,
+          authority,
+        });
+        // Warm attach registers the next route before rotating the same core.
+        const nextRoute = await registerRunnerPrpAuthority({
+          companyId: "company-1",
+          runId: nextIdentity.runId,
+          authority,
+        });
+        const input = {
+          companyId: "company-1",
+          runId: identity.runId,
+          pendingRequest: {
+            companyId: "company-1",
+            runId: identity.runId,
+            requestId: "request-old",
+            requestKind: "command_approval" as const,
+            turnId: "provider-turn-old",
+            resolverPolicy: "instance_admin" as const,
+          },
+          actor: {
+            type: "user" as const,
+            userId: "instance-admin",
+            isInstanceAdmin: true,
+          },
+          resolution: { action: "accept" as const },
+        };
+        const nextInput = {
+          ...input,
+          runId: nextIdentity.runId,
+          pendingRequest: {
+            ...input.pendingRequest,
+            runId: nextIdentity.runId,
+            requestId: "request-new",
+            turnId: "provider-turn-new",
+          },
+        };
+        // Registering the future URL cannot dispatch into the old authority.
+        expect(() =>
+          queueRunnerPrpRuntimeRequestResolution(nextInput),
+        ).toThrowError(
+          "runner_prp_authority_not_active",
+        );
+        expect(authority.store.state.commands).toEqual([]);
+        if (cached) {
+          const queued = queueRunnerPrpRuntimeRequestResolution(input);
+          const command = authority.store.state.commands.find(
+            (candidate) => candidate.commandId === queued.commandId,
+          )!;
+          // Represent a completed old response before the warm attachment.
+          command.status = "completed";
+          command.result = { status: "completed" };
+        }
+        authority.rotateRunIdentity(nextIdentity);
+        expect(authority.store.state.identity).toEqual(nextIdentity);
+        expect(authority.store.state.commands).toEqual([]);
+        const statePath = join(directory, "control-plane-state.json");
+        const before = readFileSync(statePath, "utf8");
+
+        expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
+          "runner_prp_authority_not_active",
+        );
+        expect(authority.store.state.commands).toEqual([]);
+        expect(readFileSync(statePath, "utf8")).toBe(before);
+
+        const next = queueRunnerPrpRuntimeRequestResolution(nextInput);
+        expect(queueRunnerPrpRuntimeRequestResolution(nextInput)).toEqual(next);
+        expect(authority.store.state.commands).toHaveLength(1);
+        expect(authority.store.state.commands[0]).toMatchObject({
+          commandId: next.commandId,
+          type: "request.resolve",
+          payload: { requestId: "request-new", turnId: "provider-turn-new" },
+        });
+        await oldRoute.release();
+        expect(
+          runnerPrpWebSocketInternals.activeRegistration({
+            companyId: "company-1",
+            runId: nextIdentity.runId,
+          }),
+        ).toBe(true);
+        await nextRoute.release();
+      } finally {
+        server.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -25,7 +25,7 @@ export const blockTaskAction = {
   },
   "documentation": {
     "title": "Block active task",
-    "description": "Block the active mock task with a durable reason and optional first-class dependencies.",
+    "description": "Block the active task with a durable reason and optional first-class dependencies.",
     "note": null
   },
   "examples": {
@@ -66,7 +66,7 @@ export const blockTaskAction = {
       "operationId": "block_task",
       "version": 1,
       "title": "Block active task",
-      "description": "Block the active mock task with a durable reason and optional first-class dependencies.",
+      "description": "Block the active task with a durable reason and optional first-class dependencies.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -90,7 +90,7 @@ export const blockTaskAction = {
           },
           "blockedByTaskIds": {
             "type": "array",
-            "description": "Internal mock task ids that block this task.",
+            "description": "Internal task ids that block this task.",
             "items": {
               "type": "string",
               "minLength": 1
@@ -110,7 +110,7 @@ export const blockTaskAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -126,7 +126,7 @@ export const blockTaskAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

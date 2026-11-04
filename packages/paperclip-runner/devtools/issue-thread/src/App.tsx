@@ -12,6 +12,7 @@ import type { CapabilityDevtoolsSnapshot } from "../../../src/devtools";
 import { capabilityDenialCount } from "../../../src/issue-thread/types";
 import { Composer } from "./Composer";
 import { EvidencePanel } from "./EvidencePanel";
+import type { CapabilityDevtoolsTab } from "./DevtoolsInspector";
 import { Icon } from "./Icons";
 import { IssueHeader } from "./IssueHeader";
 import { applyFakeInteractionResponse } from "./fake-store";
@@ -56,7 +57,7 @@ const MODEL_PRESETS = {
   opencode: ["openrouter/deepseek/deepseek-v4-flash-0731"],
   acpx: ["openrouter/deepseek/deepseek-v4-flash-0731", "claude-sonnet-5", "gpt-5.6-sol"],
 } as const;
-const ACPX_AGENT_MODELS = {
+const ACPX_DEFAULT_MODELS = {
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
@@ -78,6 +79,7 @@ interface EmbeddedEvalCheck {
 }
 
 interface EmbeddedEvalReport {
+  publication?: { schema: string; notice: string };
   attemptId: string;
   caseId: string;
   disposition: string;
@@ -101,23 +103,24 @@ interface EmbeddedEvalReport {
     runnerBuild: string;
     startedAt: string;
     finishedAt: string;
-    durationMs: number;
-    initialRevision: number;
-    finalRevision: number;
+    durationMs: number | null;
+    initialRevision: number | null;
+    finalRevision: number | null;
+    finalStateSummary?: string;
     usage: {
       agentTurns: number;
       providerRequests: number | null;
-      inputTokens: number;
-      outputTokens: number;
-      cachedInputTokens: number;
-      reasoningTokens: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      reasoningTokens?: number;
       providerReportedCostNanodollars?: number;
-      estimatedCostNanodollars: number;
+      estimatedCostNanodollars?: number;
       pricingVersion: string;
     } | null;
   };
   view: CapabilityIssueThreadSnapshot;
-  devtools: CapabilityDevtoolsSnapshot;
+  devtools: CapabilityDevtoolsSnapshot | null;
   navigation: { suiteHref: string; previous: { label: string; href: string } | null; next: { label: string; href: string } | null };
 }
 
@@ -332,6 +335,7 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(() => embeddedEval !== null ||
     readStoredFlag(route.surface === "chat" ? CHAT_PANEL_OPEN_KEY : PANEL_OPEN_KEY, false));
   const [panelWidth, setPanelWidth] = useState(() => readStoredNumber(PANEL_WIDTH_KEY, 384));
+  const [devtoolsTab, setDevtoolsTab] = useState<CapabilityDevtoolsTab>(embeddedEval !== null ? "eval" : "evidence");
   const [segment, setSegment] = useState<"thread" | "evidence">(route.segment);
   const [openSections, setOpenSections] = useState<CapabilityEvidenceSectionId[]>(["tools"]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | "all">("all");
@@ -491,7 +495,7 @@ export function App() {
         await document.fonts.ready;
       }
       if (cancelled) return;
-      if (scroller !== null) scroller.scrollTop = scroller.scrollHeight;
+      if (scroller !== null) scroller.scrollTop = embeddedEval === null ? scroller.scrollHeight : 0;
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (!cancelled) setSettled(true);
     })();
@@ -501,14 +505,14 @@ export function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    if (!panelOpen || snapshot === null || route.mode !== "live") return;
+    if (embeddedEval !== null || !panelOpen || snapshot === null || route.mode !== "live") return;
     if (historicSessionId !== null) return;
     let cancelled = false;
     void capabilityLiveClient.devtools(snapshot.sessionId)
       .then((next) => { if (!cancelled) setDevtools(next); })
       .catch((cause) => { if (!cancelled) setActionError(describe(cause)); });
     return () => { cancelled = true; };
-  }, [historicSessionId, panelOpen, route.mode, snapshot?.renderedAt, snapshot?.sessionId]);
+  }, [embeddedEval, historicSessionId, panelOpen, route.mode, snapshot?.renderedAt, snapshot?.sessionId]);
 
   useEffect(() => {
     if (!chat || snapshot === null || historicSessionId !== null) return;
@@ -571,6 +575,7 @@ export function App() {
   const openEvidence = useCallback(
     (section: CapabilityEvidenceSectionId, recordId: string) => {
       setPanelOpen(true);
+      setDevtoolsTab("evidence");
       setSegment("evidence");
       setSelectedTurnId("all");
       setOpenSections((current) => (current.includes(section) ? current : [...current, section]));
@@ -770,13 +775,6 @@ export function App() {
     if (harness.provider === "opencode" && !model.includes("/")) {
       setActionError("OpenCode models must use provider/model form.");
       return;
-    }
-    if (harness.provider === "acpx") {
-      const agent = harness.acpxAgent ?? "codex";
-      if (model !== ACPX_AGENT_MODELS[agent]) {
-        setActionError(`The qualified ACPX ${agent} profile requires exact model ${ACPX_AGENT_MODELS[agent]}.`);
-        return;
-      }
     }
     const configuration = { ...harness, model };
     persistHarnessConfiguration(configuration);
@@ -984,7 +982,7 @@ export function App() {
                         setHarness((current) => ({
                           ...current,
                           acpxAgent,
-                          model: ACPX_AGENT_MODELS[acpxAgent],
+                          model: ACPX_DEFAULT_MODELS[acpxAgent],
                         }));
                       }}
                     >
@@ -1164,7 +1162,7 @@ export function App() {
                   setHarness((current) => ({
                     ...current,
                     acpxAgent,
-                    model: ACPX_AGENT_MODELS[acpxAgent],
+                    model: ACPX_DEFAULT_MODELS[acpxAgent],
                   }));
                 }}
               >
@@ -1363,7 +1361,7 @@ export function App() {
             >
               <div className="pit-thread">
                 {embeddedEval !== null ? (
-                  <div className="pit-eval-boundary" data-phase="execution"><strong>Eval execution</strong></div>
+                  <div className="pit-eval-boundary" data-phase="execution"><strong>Eval execution</strong>{embeddedEval.publication ? <span>{embeddedEval.publication.notice}</span> : null}</div>
                 ) : null}
                 {snapshot.turns.length === 0 ? (
                   <section className="pit-empty-thread" data-testid="clean-room-empty">
@@ -1404,7 +1402,7 @@ export function App() {
                 {embeddedEval !== null ? (
                   <div className="pit-eval-boundary" data-phase="post-run">
                     <strong>Post-run state</strong>
-                    <span>Final mock control-plane revision {embeddedEval.run.finalRevision}</span>
+                    <span>{embeddedEval.publication ? "Company-state details withheld from public replay" : embeddedEval.run.finalStateSummary ?? `Final mock control-plane revision ${embeddedEval.run.finalRevision}`}</span>
                     <EvalAssertions assertions={embeddedEval.checks.filter((check) => check.anchor.kind === "run")} />
                   </div>
                 ) : null}
@@ -1425,7 +1423,7 @@ export function App() {
             ) : null}
           </div>
 
-          <Composer
+          {embeddedEval === null ? <Composer
             model={snapshot.composer}
             sessionId={snapshot.sessionId}
             onSend={send}
@@ -1439,7 +1437,7 @@ export function App() {
                 .getElementById(`interaction-${interactionId}`)
                 ?.scrollIntoView({ block: "center" });
             }}
-          />
+          /> : null}
         </main>
 
         {showPanel && layout === "side" ? (
@@ -1496,6 +1494,8 @@ export function App() {
         {showPanel ? (
           <EvidencePanel
             snapshot={snapshot}
+            devtoolsTab={devtoolsTab}
+            onDevtoolsTabChange={setDevtoolsTab}
             evalReport={embeddedEval}
             {...(embeddedEval !== null || (route.mode === "live" && historicSessionId === null) ? { devtools } : {})}
             onForkRevision={(revision) => {

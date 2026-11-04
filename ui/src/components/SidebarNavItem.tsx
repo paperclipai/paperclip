@@ -6,6 +6,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { TruncatedText } from "./TruncatedText";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -128,8 +129,8 @@ export function SidebarNavItem({
           // (agents/projects) reserve extra right padding via className.
           "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
           (active ?? isActive)
-            ? "bg-background text-foreground"
-            : "text-foreground/80 hover:bg-background hover:text-foreground",
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
           className,
         )
       }
@@ -167,7 +168,7 @@ export function SidebarNavItem({
           )}
         </span>
       ) : null}
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</TruncatedText>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -182,7 +183,7 @@ export function SidebarNavItem({
         </Badge>
       )}
       {!rail && (hasLive || liveAccessory) && (
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
           {liveAccessory}
           {hasLive && (
             <>
@@ -197,6 +198,7 @@ export function SidebarNavItem({
       )}
       {!rail && hasBadge && (
         <Badge variant="ghost"
+          aria-label={badgeLabel ? `${badge} ${badgeLabel}` : undefined}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"

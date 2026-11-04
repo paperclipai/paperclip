@@ -1,4 +1,5 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const ISSUE_SUMMARIES_MAX_IDS = 5;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -197,6 +198,12 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Read-only task presentation. Monitoring never grants execution authority. */
+export const ISSUE_DISPLAY_STATUSES = [
+  "backlog", "todo", "in_progress", "monitoring", "in_review", "done", "blocked", "cancelled",
+] as const;
+export type IssueDisplayStatus = (typeof ISSUE_DISPLAY_STATUSES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -358,11 +365,13 @@ export const ISSUE_ORIGIN_KINDS = [
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
+  // Historical origin only; automatic productivity reviews have been retired.
   "issue_productivity_review",
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  "chat_channel",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -434,11 +443,9 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
-export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+  "pipeline-case-body",
 ] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
@@ -496,6 +503,7 @@ export const EXTERNAL_OBJECT_LIVENESS_STATES = [
   "fresh",
   "stale",
   "auth_required",
+  "rate_limited",
   "unreachable",
 ] as const;
 export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
@@ -646,7 +654,7 @@ export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[num
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
-export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
+export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "app_webhook", "hmac_sha256", "github_hmac", "fireflies_hmac", "none"] as const;
 export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
 export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select", "date"] as const;
@@ -668,7 +676,7 @@ export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
 // reason for platform-managed pauses (plugins, built-ins).
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -730,7 +738,7 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
-export const SECRET_SCOPES = ["company", "user"] as const;
+export const SECRET_SCOPES = ["company", "user", "instance"] as const;
 export type SecretScope = (typeof SECRET_SCOPES)[number];
 
 export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
@@ -831,7 +839,7 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+export const COST_STATUSES = ["reported", "estimated", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
@@ -943,6 +951,8 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.activity",
+  "agent.session.goal.changed",
   "agent.status",
   "activity.logged",
   "external_object.updated",
@@ -999,6 +1009,7 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",
@@ -1009,6 +1020,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_profiles",
   "tools:view_audit",
   "audit:view_agent_actions",
+  "commentary:view",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",
@@ -1017,12 +1029,11 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
-  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
 
 export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
@@ -1317,11 +1328,15 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 export const PLUGIN_CAPABILITIES = [
+  "ai.connections.route",
   // Data Read
   "companies.read",
   "projects.read",
+  "projects.instance-secrets",
+  "projects.git-credentials",
   "project.workspaces.read",
   "execution.workspaces.read",
+  "workspaces.manage",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -1336,6 +1351,7 @@ export const PLUGIN_CAPABILITIES = [
   "approvals.read",
   "issue.documents.read",
   "agents.read",
+  "agents.lifecycle.manage",
   "goals.read",
   "goals.create",
   "goals.update",
@@ -1479,6 +1495,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",
+  "appShellOverlay",
+  "organizationSwitcher",
   "toolbarButton",
   "contextMenuItem",
   "commentAnnotation",
@@ -1489,6 +1507,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
 export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const HEARTBEAT_RUN_LIST_DEFAULT_LIMIT = 200;
+export const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
 export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
 export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
 

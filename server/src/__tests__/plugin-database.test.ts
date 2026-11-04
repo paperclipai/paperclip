@@ -190,7 +190,7 @@ describe("buildPluginWorkerEnv", () => {
 
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
-      manifest: { capabilities: ["ui.slots.register"] },
+      manifest: { capabilities: ["ui.sidebar.register"] },
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
@@ -200,6 +200,54 @@ describe("buildPluginWorkerEnv", () => {
     expect(env).toEqual({
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/createos", packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-createos", packageName: "@paperclipai/plugin-createos", driverKey: "createos", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-createos", driverKey: "createos", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-createos", driverKey: "daytona", allowed: false },
+  ])("confines the CreateOS fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { CREATEOS_API_KEY: "createos-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { CREATEOS_API_KEY: "createos-token" } : {}),
+    });
+  });
+
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-boxd", packageName: "@paperclipai/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-boxd", driverKey: "boxd", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-boxd", driverKey: "daytona", allowed: false },
+  ])("confines the boxd fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { BOXD_API_KEY: "boxd-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { BOXD_API_KEY: "boxd-token" } : {}),
     });
   });
 

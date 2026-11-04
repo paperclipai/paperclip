@@ -1,4 +1,8 @@
+import { RunnerdMuseDriver, type RunnerdMuseDriverOptions } from "../drivers/muse/runnerd-muse-driver.js";
+import { RunnerdDotDriver, type RunnerdDotDriverOptions } from "../drivers/dot/runnerd-dot-driver.js";
+import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
   PersistedNativeSession,
@@ -19,8 +23,18 @@ export interface NativeBackendFactoryOptions extends Omit<
   CodexNativeSessionBackendOptions,
   "transportFactory"
 > {
+  museRunnerOptions?: Omit<RunnerdMuseDriverOptions, "execution" | "dynamicTools" | "dynamicToolHandler" | "completionFeedback" | "onSpawn">;
+  dotRunnerOptions?: Omit<RunnerdDotDriverOptions, "execution" | "dynamicTools" | "dynamicToolHandler" | "completionFeedback" | "onSpawn">;
   codexTransportFactory?: (context?: {
+    baseInstructions?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
@@ -40,13 +54,29 @@ export function createNativeSessionBackend(
   input: NativeExecutionInput,
   options: NativeBackendFactoryOptions = {},
 ): NativeSessionBackend {
+  if (input.schema === "paperclip.native-execution-input.v8") {
+    if (!options.museRunnerOptions) throw new Error("Muse requires an admitted broker port and Rust Runner authority");
+    return new HarnessDriverBackend(new RunnerdMuseDriver({ ...options.museRunnerOptions, execution: input,
+      dynamicTools: options.dynamicTools, dynamicToolHandler: options.dynamicToolHandler,
+      completionFeedback: options.completionFeedback, onSpawn: options.onSpawn }));
+  }
+  if (input.schema === "paperclip.native-execution-input.v6") {
+    if (!options.dotRunnerOptions) throw new Error("External bots require an admitted broker port and Rust Runner authority");
+    return new HarnessDriverBackend(new RunnerdDotDriver({ ...options.dotRunnerOptions, execution: input,
+      dynamicTools: options.dynamicTools, dynamicToolHandler: options.dynamicToolHandler,
+      completionFeedback: options.completionFeedback, onSpawn: options.onSpawn }));
+  }
   if (options.codexTransportFactory) {
     return createRunnerdNativeSessionBackend(input, {
+      retainedSystemInstructions: options.retainedSystemInstructions,
+      completionFeedback: options.completionFeedback,
       runnerInstanceId: options.runnerInstanceId,
       onSpawn: options.onSpawn,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
       environment: options.environment,
+      observability: options.observability,
+      workingDirectoryAuthority: options.workingDirectoryAuthority,
       transportFactory: options.codexTransportFactory,
     });
   }
@@ -57,6 +87,7 @@ export function createNativeSessionBackend(
       );
     }
     return createOpenCodeNativeSessionBackend(input, {
+      completionFeedback: options.completionFeedback,
       runtimeDirectory: options.opencodeRuntimeDirectory,
       environment: options.opencodeEnvironment,
       command: options.opencodeCommand,
@@ -67,11 +98,6 @@ export function createNativeSessionBackend(
     });
   }
   if (input.provider.kind === "acpx") {
-    if (input.provider.agent === "pi") {
-      throw new Error(
-        "Native ACPX backend for pi is unavailable until descriptor-confined verified launch is implemented",
-      );
-    }
     if (!options.acpxRuntimeDirectory?.trim()) {
       throw new Error("ACPX backend requires an instance runtime directory");
     }
@@ -86,6 +112,7 @@ export function createNativeSessionBackend(
         : {}),
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.acpxDynamicToolHandler,
+      completionFeedback: options.completionFeedback,
     });
   }
   if (input.provider.kind !== "codex") {
@@ -95,11 +122,14 @@ export function createNativeSessionBackend(
   }
 
   return createCodexNativeSessionBackend(input, {
+    completionFeedback: options.completionFeedback,
     runnerInstanceId: options.runnerInstanceId,
     onSpawn: options.onSpawn,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
     environment: options.environment,
+      observability: options.observability,
+    workingDirectoryAuthority: options.workingDirectoryAuthority,
     transportFactory: options.codexTransportFactory,
   });
 }

@@ -2,7 +2,8 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExecutionProjection } from "@paperclipai/shared";
 import type { TranscriptEntry } from "../../adapters";
 import { TaskChatLiveRunPill, toolCountSummaryFromEntries } from "./TaskChatLiveRunPill";
 
@@ -50,6 +51,7 @@ describe("TaskChatLiveRunPill", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.useRealTimers();
   });
 
   it("shimmers 'Working' with elapsed + tool summary while streaming", () => {
@@ -70,6 +72,34 @@ describe("TaskChatLiveRunPill", () => {
     expect(pill?.textContent).toContain("for 1 minute");
     expect(pill?.textContent).toContain("called 3 tools");
   });
+
+  it.each(["reconnecting", "retry_scheduled"] as const)(
+    "keeps Working animated and the timer advancing with a %s projection",
+    (phase) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-11T12:00:00Z"));
+      const startedAtMs = Date.now() - 6_000;
+      const execution = { phase } as ExecutionProjection;
+      const render = (status: string) => act(() => root.render(
+        <TaskChatLiveRunPill status={status} execution={execution}
+          startedAtMs={startedAtMs} finishedAtMs={startedAtMs + 8_000}
+          toolSummary="called 2 tools" />,
+      ));
+      render("running");
+      expect(container.querySelector(".shimmer-text")?.textContent).toBe("Working");
+      expect(container.querySelector(".animate-spin")).not.toBeNull();
+      expect(container.textContent).toContain("for 6 seconds");
+      expect(container.textContent).toContain("called 2 tools");
+      act(() => vi.advanceTimersByTime(2_000));
+      expect(container.textContent).toContain("for 8 seconds");
+      render("succeeded");
+      expect(container.textContent).toContain("Worked");
+      expect(container.querySelector(".animate-spin")).toBeNull();
+      render("failed");
+      expect(container.textContent).toContain("Stopped");
+      expect(container.textContent).not.toContain("Reconnecting");
+    },
+  );
 
   it("settles to a static 'Worked' summary once the run is terminal", () => {
     const startedAtMs = 1_000;

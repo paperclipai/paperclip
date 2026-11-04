@@ -7,7 +7,11 @@ import {
   readSubscriptionAccountId,
   writeCodexAuthCacheEntry,
 } from "./codex-auth-cache.js";
-import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
+import {
+  IMPLAUSIBLE_LAST_REFRESH_EXIT,
+  USE_SOURCE_EXIT,
+  decideCodexAuthMerge,
+} from "./codex-auth-merge-decision.js";
 
 // The outbound copy-back reuses the exact same direction-agnostic decision
 // predicate the inbound restore runs, through the shared `decideCodexAuthMerge`
@@ -120,6 +124,17 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
             "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
           );
           return "copied";
+        }
+
+        // Make a clock-bound rejection visible. A host with a wrong clock would
+        // otherwise discard an honest refresh with no signal. Log only the exit
+        // code and this caller's own label — never a timestamp read from either
+        // file, and never credential bytes.
+        if (decision === IMPLAUSIBLE_LAST_REFRESH_EXIT) {
+          await log(
+            `[paperclip] Codex auth copy-back: WARNING host credential kept (decision exit ${IMPLAUSIBLE_LAST_REFRESH_EXIT}, codex auth copy-back) — the sandbox copy's last_refresh sat further ahead of the host clock than the plausible skew allowance. Check the host clock if this is unexpected.`,
+          );
+          return "kept-host";
         }
 
         await log(

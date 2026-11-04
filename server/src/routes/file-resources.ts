@@ -14,7 +14,9 @@ import {
   type WorkspaceFileListResponse,
 } from "@paperclipai/shared";
 import { badRequest, HttpError, notFound, unprocessable } from "../errors.js";
-import { workspaceFileResourceService } from "../services/index.js";
+import { workspaceFileResourceService } from "../services/workspace-file-resources.js";
+import type { PreparedWorkspaceFileDownload } from "../services/workspace-file-resources.js";
+import type { RemoteWorkspaceFiles } from "../services/remote-workspace-files.js";
 import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import {
@@ -56,7 +58,7 @@ export type WorkspaceFileResourceService = {
     issueId: string,
     input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
     opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> },
-  ): Promise<{ resource: ResolvedWorkspaceResource; realPath: string }>;
+  ): Promise<PreparedWorkspaceFileDownload>;
 };
 
 type FileResourceLimiter = {
@@ -353,9 +355,10 @@ export function fileResourceRoutes(db: Db, opts: {
   limiter?: FileResourceLimiter;
   listLimiter?: FileResourceLimiter;
   availabilityLimiter?: FileResourceLimiter;
+  remoteFiles?: RemoteWorkspaceFiles;
 } = {}) {
   const router = Router();
-  const svc = opts.service ?? workspaceFileResourceService(db);
+  const serviceFor = (req: Request) => opts.service ?? workspaceFileResourceService(db, req.actor, { remoteFiles: opts.remoteFiles });
   const limiter = opts.limiter ?? createFileResourceLimiter();
   const listLimiter = opts.listLimiter ?? createFileResourceListLimiter();
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
@@ -468,7 +471,7 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
 
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     if (!hasCompanyAccess(req, issue.companyId)) {
       const error = notFound("Issue not found");
@@ -501,7 +504,7 @@ export function fileResourceRoutes(db: Db, opts: {
     let release: (() => void) | null = null;
     try {
       release = availabilityLimiter.acquire(limiterKey(issue.companyId, actor.actorId, req.params.issueId));
-      const result = await svc.availability(req.params.issueId, body, { issue });
+      const result = await serviceFor(req).availability(req.params.issueId, body, { issue });
       await logAvailabilityAttempt({
         companyId: issue.companyId,
         actor,
@@ -544,7 +547,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -595,7 +598,7 @@ export function fileResourceRoutes(db: Db, opts: {
 
     const requestAbort = requestAbortController(req, res);
     try {
-      const result = await svc.list(req.params.issueId, query, {
+      const result = await serviceFor(req).list(req.params.issueId, query, {
         issue,
         scanContext: {
           signal: requestAbort.signal,
@@ -677,7 +680,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -730,7 +733,7 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
     try {
-      const result = await svc.resolve(req.params.issueId, query, { issue });
+      const result = await serviceFor(req).resolve(req.params.issueId, query, { issue });
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -789,7 +792,7 @@ export function fileResourceRoutes(db: Db, opts: {
       }
       throw error;
     }
-    const issue = await svc.getIssue(req.params.issueId);
+    const issue = await serviceFor(req).getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
       if (!hasCompanyAccess(req, issue.companyId)) {
@@ -842,7 +845,7 @@ export function fileResourceRoutes(db: Db, opts: {
       if (parseBooleanQuery(req.query.download)) {
         let result: Awaited<ReturnType<WorkspaceFileResourceService["prepareDownload"]>> | null = null;
         try {
-          result = await svc.prepareDownload(req.params.issueId, query, { issue });
+          result = await serviceFor(req).prepareDownload(req.params.issueId, query, { issue });
         } catch (error) {
           await logDeniedAttempt({
             companyId: issue.companyId,
@@ -857,42 +860,45 @@ export function fileResourceRoutes(db: Db, opts: {
           throw error;
         }
 
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          action: "issue.file_resource_download",
-          entityType: "issue",
-          entityId: req.params.issueId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          details: activityDetails({
-            outcome: "success",
-            workspaceKind: result.resource.workspaceKind,
-            workspaceId: result.resource.workspaceId,
-            projectId: result.resource.projectId ?? null,
-            projectName: result.resource.projectName ?? null,
-            displayPath: result.resource.displayPath,
-            byteSize: result.resource.byteSize ?? null,
-            contentType: result.resource.contentType ?? null,
-          }),
-        });
+        try {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            action: "issue.file_resource_download",
+            entityType: "issue",
+            entityId: req.params.issueId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            details: activityDetails({
+              outcome: "success",
+              workspaceKind: result.resource.workspaceKind,
+              workspaceId: result.resource.workspaceId,
+              projectId: result.resource.projectId ?? null,
+              projectName: result.resource.projectName ?? null,
+              displayPath: result.resource.displayPath,
+              byteSize: result.resource.byteSize ?? null,
+              contentType: result.resource.contentType ?? null,
+            }),
+          });
 
-        res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
-        if (result.resource.byteSize != null) {
-          res.setHeader("Content-Length", String(result.resource.byteSize));
-        }
-        res.setHeader("Cache-Control", "private, max-age=60");
-        res.setHeader("X-Content-Type-Options", "nosniff");
-        res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
-        await pipeline(createReadStream(result.realPath), res);
+          res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
+          if (result.resource.byteSize != null) {
+            res.setHeader("Content-Length", String(result.resource.byteSize));
+          }
+          res.setHeader("Cache-Control", "private, max-age=60");
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
+          if ("stream" in result) await pipeline(result.stream, res);
+          else await pipeline(createReadStream(result.realPath), res);
+        } finally { if ("stream" in result) await result.cleanup(); }
         return;
       }
 
       let result: WorkspaceFileContent | null = null;
       try {
-        result = await svc.readContent(req.params.issueId, query, { issue });
+        result = await serviceFor(req).readContent(req.params.issueId, query, { issue });
       } catch (error) {
         await logDeniedAttempt({
           companyId: issue.companyId,

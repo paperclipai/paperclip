@@ -1,14 +1,19 @@
 # Replace @cryppadotta if a different maintainer or team should own release infrastructure.
 
 .github/** @cryppadotta @devinfoley @nickyleach @forgottendev
+scripts/ci-profile/** @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release*.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release-*.mjs @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/create-github-release.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/rollback-latest.sh @cryppadotta @devinfoley @nickyleach @forgottendev
-doc/RELEASING.md @cryppadotta @devinfoley @nickyleach @forgottendev
+doc/RELEASING.md @cryppadotta @devinfoley @nickyleach @forgottendev @tonio-alucema @scotttong
 doc/PUBLISHING.md @cryppadotta @devinfoley @nickyleach @forgottendev
 doc/RELEASE-AUTOMATION-SETUP.md @cryppadotta @devinfoley @nickyleach @forgottendev
 skills/** @cryppadotta @devinfoley @nickyleach @forgottendev
+
+# Review configuration and repository rules
+/.greptile/ @cryppadotta @devinfoley @nickyleach @forgottendev
+/rules/ @cryppadotta @devinfoley @nickyleach @forgottendev
 
 # Package files — dependency changes require review
 # package.json matches recursively at all depths (covers root + all workspaces)
@@ -16,3 +21,5 @@ package.json @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-lock.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-workspace.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
 .npmrc @cryppadotta @devinfoley @nickyleach @forgottendev
+
+/packages/paperclip-runner/src/contracts/runtime-context-prompts.ts @cryppadotta @devinfoley @nickyleach @forgottendev

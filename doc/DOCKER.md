@@ -18,11 +18,64 @@ Build arguments:
 |-----|---------|---------|
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
+| `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
+| `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
+| `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+
+Changing the build version or commit preserves the CLI-install cache. The
+tool layer refreshes when its weekly epoch, base image, installation command,
+or earlier build inputs change. Local builds can set a new epoch explicitly
+to refresh tools without clearing the entire build cache.
 
 ```sh
 docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
+
+The image starts the server from a runtime bundle, `server/dist-runtime/index.mjs`,
+with plain `node`. The build creates it from the server's `tsc` output with
+`pnpm --filter @paperclipai/server build:runtime` (`server/scripts/bundle-runtime.mjs`),
+compiling in the workspace packages that otherwise load as TypeScript source.
+This avoids transpiling them through the tsx loader on every boot. To check a
+build boots, run `scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs`;
+PR CI runs the same check after `pnpm build`.
+
+## Standard images and downstream composition
+
+The Docker workflow publishes the standard `production` target for Linux AMD64
+and ARM64. Canonical master pushes also publish
+`ghcr.io/paperclipai/paperclip:sha-<FULL_SHA>` and a GitHub/Sigstore attestation
+for its immutable multi-platform digest. Downstream services can compose their
+own images from this public base without rebuilding Core.
+
+Stamped standard images include the build-owned remote provider pack at
+`/opt/paperclip-runner/provider-pack` and set
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` to that directory. Downstream
+compositions and the explicit `cloud` target inherit both. The pack is required
+on the controller for remote OpenCode and ACPX runs, even when the sandbox has
+preinstalled providers; setting the environment variable alone cannot repair an
+image that omits the pack. Rebuild and redeploy from a standard image containing
+the pack if runs fail with `runner_remote_provider_artifact_incompatible`.
+
+Local Docker builds must supply a full `PAPERCLIP_BUILD_COMMIT` to include a
+qualified pack. Unstamped builds remain usable for local adapters and skip pack
+generation. The pack stays root-owned and readable by remapped runtime UIDs.
+
+The legacy recurring public `-cloud` publisher is retired. Master pushes,
+release tags, and manual `Docker` dispatches no longer build that variant.
+Existing `-cloud` tags and digests remain in the registry for rollback; their
+release-channel aliases no longer advance. This change deletes no images,
+cache tags, or migrator artifacts.
+
+The `cloud` Dockerfile target remains available for explicit
+[preview builds](preview-release-artifacts.md). Those requests still publish a
+full-SHA `-cloud` tag when needed. They do not advance a release channel or
+replace downstream private composition.
+
+A published image alone does not prove source tests or migration compatibility.
+Downstream deployment tooling must verify [source proof](cloud-build-readiness.md),
+the standard image attestation, the exact-source migrator, and its own composed
+image before rollout. Resolve immutable digests instead of deploying mutable tags.
 
 ## One-liner (build + run)
 
@@ -51,14 +104,27 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Docker Compose
 
+### Persistent signing secrets
+
+Before the first launch, generate two independent values with `openssl rand -hex 32`
+and save them in `docker/.env`. Keep any existing deployment's values unchanged:
+
+```dotenv
+BETTER_AUTH_SECRET=<session-signing-secret>
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=<tool-action-signing-secret>
+```
+
+Restrict this file to its owner (`chmod 600 docker/.env`) and keep it out of version
+control. Compose reads it for both commands below. Reuse the values on every
+restart. Rotate the tool-action secret only after outstanding approvals are
+resolved, because pending signatures use the previous value.
+
 ### Quickstart (embedded SQLite)
 
 Single container, no external database. Data persists via a bind mount.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.quickstart.yml up --build
+docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
@@ -84,11 +150,17 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+Both Compose files pass `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to the server.
+When configured, keep it independent from `BETTER_AUTH_SECRET`. When unset,
+the server derives a separate signing key from its persisted secrets master key.
+Keep that key with database backups, and share the signing key or master key
+across processes serving the same instance. Approvals fail closed if valid key
+material cannot be loaded; rotating it can invalidate approvals and retry matching.
 
 ### Untrusted PR review
 
@@ -167,24 +239,25 @@ The image pre-installs:
 
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
+- `python3` (used to run local subscription sign-in in a pseudo-terminal)
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+Start the container, then open **Apps → Connections** to connect a Claude or
+Codex subscription in your browser. You can also enter a provider API key there.
+You do not run a shell command or configure a CLI home.
 
 ```sh
 docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
-  -e OPENAI_API_KEY=... \
-  -e ANTHROPIC_API_KEY=... \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
   paperclip-local
 ```
 
 Notes:
 
-- Without API keys, the app still runs normally.
-- Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
+- The image provides the CLI and Python prerequisites for local subscription sign-in.
+- Adapter environment checks in Paperclip surface missing authentication or CLI prerequisites.
 
 ## Podman Quadlet (systemd)
 
@@ -294,4 +367,54 @@ Notes:
 ## General Notes
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
+- Before it drops privileges, the entrypoint makes sure `PAPERCLIP_HOME` is owned by the `node` user. Each boot checks only the home directory and its first three levels. The first boot (and any boot after a UID/GID change) also checks the full tree, and then writes `PAPERCLIP_HOME/.paperclip-ownership-verified`. While that marker is current, later boots skip the full-tree walk, which can take minutes on homes with many files. A mismatch triggers a recursive `chown`. If files deep in the tree get the wrong owner (for example, after a restore as root), delete the marker and restart to force a full check. If a check fails (for example, with an I/O error), the entrypoint does not write the marker, so the next boot checks again.
+- The entrypoint writes timestamped lines when it starts, around the full ownership check or any repair (with the duration), and just before it starts the server, so you can measure the pre-start time from the container log.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+
+## Native Runner build cache
+
+The image compiles the native Runner in `runner-build`, before copying the
+application source. A pinned `cargo-chef` generates a dependency recipe in
+`runner-plan`. The separate `runner-deps` stage compiles that recipe with the
+package-owned Rust compiler. Both the dependency build and the real binary use
+the release profile and locked Cargo dependencies. The recipe stage never
+modifies source in the checkout.
+
+Changes to Rust source or embedded protocol inputs rebuild the real binary but
+can reuse compiled dependencies when the recipe is unchanged. Dependency
+manifests, the Cargo lockfile, target metadata, or compiler changes invalidate
+the relevant cache. Ordinary server or UI changes can reuse the entire native
+build through the existing registry cache (`mode=max`). Each platform gets its
+own native build; no cross-architecture binary is reused. No additional GitHub
+Actions cache is created. A cold build also installs the recipe generator and
+compiles dependencies, so the savings apply after those layers are available.
+
+Cloud builds import one registry cache: the first available full-SHA cache in
+the current commit's ten-entry first-parent ancestry, with the legacy cache
+as a final fallback. Each build still exports its own SHA cache with
+`mode=max`. In fresh-builder checks, importing several historical manifests
+missed native layers that a single matching manifest reused. The selector
+inspects metadata after Docker login, stops at the first available cache, and
+permits a cold build if no cache can be read.
+
+The application build inherits that stage and still runs the normal server
+build, including Cargo, binary staging, and generated-contract checks. Rust
+input file times are normalized in both stages so fresh checkouts do not force
+Cargo to rebuild unchanged source. Changes made by build scripts still reach
+Cargo's normal validation. The final application copy excludes Cargo's target
+directory as before. Cache misses only cost compilation time.
+
+Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
+inputs also build the isolated `runner-build` target in `Docker Runner check`.
+The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
+copy of tracked source and the actual Docker ignore rules. It compiles a baseline
+and exports a local cache, removes that builder, changes a Rust metadata constant,
+and rebuilds on a fresh builder using only the exported cache. It requires a
+cached dependency build, an unchanged dependency recipe, and changed metadata
+from the real binary. It also verifies that a dependency declaration change
+alters the recipe. The probe exports small metadata results instead of importing
+a large test image into the Docker daemon. Temporary builders and cache files
+are removed afterward. It catches missing embedded inputs before the post-merge
+build. It uses a GitHub-hosted runner with read-only repository access and never
+publishes images or registry caches. Allow up to 20 minutes for its cold build and
+source rebuild.

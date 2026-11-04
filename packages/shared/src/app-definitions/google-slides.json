@@ -52,7 +52,6 @@
       "defaults": {
         "serverUrl": "https://slidesmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/presentations.readonly"
         ]
       },
@@ -86,7 +85,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/presentations.readonly"
         ],
         "oauthAuthorizationParams": {
@@ -127,8 +125,6 @@
       "defaults": {
         "serverUrl": "https://slidesmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/presentations"
         ]
       },
@@ -163,8 +159,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/presentations"
         ],
         "oauthAuthorizationParams": {

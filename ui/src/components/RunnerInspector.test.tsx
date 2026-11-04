@@ -154,6 +154,14 @@ describe("RunnerInspector", () => {
     expect(container.textContent).toContain(
       "Raw provider capture was off for this run.",
     );
+    flushSync(() =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Overview")
+        ?.click(),
+    );
+    await flush();
+    expect(container.textContent).toContain("Raw capture off");
+    expect(container.textContent).not.toContain("Expired");
     const rerunButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Re-run with provider trace"),
     );

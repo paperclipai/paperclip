@@ -106,6 +106,7 @@ describe("exe.dev sandbox provider plugin", () => {
         integrations: ["github"],
         tags: ["prod", "sandbox"],
         setupScript: null,
+        sourceVm: null,
         prompt: null,
         timeoutMs: 450000,
         reuseLease: true,
@@ -317,6 +318,57 @@ describe("exe.dev sandbox provider plugin", () => {
         reuseLease: false,
       },
     });
+  });
+
+  it("copies the source VM with exe.dev cp instead of creating a new VM", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        vm_name: "paperclip-env1-run1",
+        ssh_dest: "paperclip-env1-run1.exe.xyz",
+        status: "running",
+      }), { status: 200 }),
+    );
+    queueSpawnResult({ stdout: "/home/exedev\nbash\n" });
+    queueSpawnResult({});
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "exe-dev",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: {
+        apiKey: "api-key",
+        sourceVm: " golden-vm ",
+        image: "ubuntu:22.04",
+        env: { FOO: "bar" },
+        cpu: 4,
+        memory: "8GB",
+        disk: "40GB",
+      },
+    });
+
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body ?? "")).toBe(
+      "cp 'golden-vm' 'paperclip-env1-run1' --json --cpu='4' --memory='8GB' --disk='40GB'",
+    );
+    expect(lease).toMatchObject({ providerLeaseId: "paperclip-env1-run1" });
+  });
+
+  it("rejects VM creation settings that exe.dev cp cannot apply when sourceVm is set", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "exe-dev",
+      config: {
+        apiKey: "api-key",
+        sourceVm: "golden-vm",
+        image: "ubuntu:22.04",
+        env: { FOO: "bar" },
+        setupScript: "echo hi",
+      },
+    });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.errors).toContain(
+      "sourceVm copies an existing VM with `exe.dev cp`, which cannot apply image, env, setupScript. Clear these settings or clear sourceVm.",
+    );
   });
 
   it("uses a pasted sshPrivateKey when connecting to the VM", async () => {
@@ -858,6 +910,12 @@ describe("exe-dev manifest form defaults", () => {
     expect(properties.cpu?.default).toBe(4);
     expect(properties.memory?.default).toBe("4GB");
     expect(properties.disk?.default).toBe("20GB");
+  });
+
+  it("explains the cp token permission on the Source VM field", () => {
+    const sourceVm = properties.sourceVm as { title?: string; description?: string } | undefined;
+    expect(sourceVm?.title).toBe("Source VM");
+    expect(sourceVm?.description).toMatch(/token must allow `cp`.*403/);
   });
 
   it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {

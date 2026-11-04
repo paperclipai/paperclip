@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -13,6 +14,7 @@ import {
   flattenSelfTalk,
   isNestableLiveChild,
   ISSUE_BRIEF_ITEM_ID,
+  omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerActivityItems,
   paperclipRunnerFinalResponse,
   paperclipRunnerHistoryItems,
@@ -22,6 +24,8 @@ import {
   splitTranscriptAtAnchors,
   toolDisplayName,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
   type ThreadBackboneEntry,
 } from "./transcript-adapter";
@@ -30,9 +34,253 @@ import type {
   TaskChatPlanDocumentItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
+import { latestPendingRuntimeRequest } from "./task-chat-model";
 import { providerActivityPresentation } from "./task-chat-activity-presentation";
+import { nativeRunEventsToTranscript } from "../transcript/native-run-events";
 
 const TS = "2026-07-31T12:00:00.000Z";
+
+describe("runtime requests across steering sections", () => {
+  it("selects the newer request when an older pending permission crosses steering", () => {
+    const older: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "older-permission",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Earlier write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const newer: TranscriptEntry = { ...older, ts: "2026-07-31T12:00:02.000Z", requestId: "newer-permission", prompt: "Later write" };
+    const options = { runId: "run-steering", running: true };
+    const context = runtimeRequestSegmentContext([older, newer], options);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([newer], options), [newer], context, true);
+    expect(tail.map(item => item.id)).toEqual(["run-steering:runtime-request:older-permission", "run-steering:runtime-request:newer-permission"]);
+    expect(latestPendingRuntimeRequest(tail)?.requestId).toBe("newer-permission");
+  });
+
+  it.each(["pending", "resolved", "cancelled"] as const)("keeps one %s permission under whole-run authority", status => {
+    const request: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "permission-1",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const after: TranscriptEntry[] = [{ kind: "assistant", ts: "2026-07-31T12:00:01.000Z", text: "Continued.", channel: "progress" }];
+    if (status === "resolved") after.push({ ...request, ts: "2026-07-31T12:00:02.000Z", status, resolvedAction: "decline" });
+    const entries = [request, ...after];
+    const options = { runId: "run-steering", running: status !== "cancelled" };
+    const context = runtimeRequestSegmentContext(entries, options);
+    const history = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([request], { ...options, running: false }), [request], context);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(after, options), after, context, options.running);
+    const cards = [...history, ...tail].filter(item => item.kind === "protocol" && item.surface === "runtime_request");
+    expect(cards).toEqual([expect.objectContaining({ requestId: "permission-1", turnId: "provider-turn", status })]);
+    expect(history.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 0 : 1);
+    expect(tail.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 1 : 0);
+  });
+});
+
+describe("accepted native response-wake answers", () => {
+  const runId = "native-response-wake";
+  const summary =
+    "**Before release**\n- Test and rehearse rollback.\n\n**During release**\n- Deploy incrementally and watch errors.\n\n**After release**\n- Verify workflows and record follow-ups.";
+  function fixture(mode = "accepted") {
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary,
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      attentionRequests:
+        mode === "attention" ? [{ kind: "ask_user_questions" }] : [],
+      continuation: {
+        kind: mode === "question" ? "interaction" : "response_wake",
+        idempotencyKey: mode === "blank_key" ? " " : "next-exact-input",
+      },
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date(TS),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `response-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" ||
+              eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: TS,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const accepted = event(3, "run.result.accepted", { result });
+    if (mode === "mismatched_run")
+      accepted.payload.prpEvent.runId = "other-run";
+    if (mode === "forged_kind")
+      accepted.payload.prpEvent.eventType = "item.completed";
+    if (mode === "missing_source") accepted.payload.prpEvent.sourceEventId = "";
+    const events = [
+      event(1, "item.completed", {
+        kind: "agentMessage",
+        channel: "progress",
+        item: {
+          id: "preamble",
+          type: "agentMessage",
+          channel: "progress",
+          text: "I’m providing the requested checklist and leaving the task open.",
+        },
+      }),
+      event(2, "run.result.proposed", result),
+      ...(mode === "proposed" ? [] : [accepted]),
+      ...(mode === "nonterminal"
+        ? []
+        : [
+            event(4, "run.terminal", {
+              schema: "paperclip.prp.terminal.v1",
+              turnTerminalState: "completed",
+              runTerminalState:
+                mode === "failed_terminal" ? "failed" : "succeeded",
+              reportedWorkDisposition: "yielded",
+            }),
+          ]),
+      ...(mode === "provider_final"
+        ? [
+            event(5, "item.completed", {
+              kind: "agentMessage",
+              channel: "final",
+              item: {
+                id: "other-final",
+                type: "agentMessage",
+                channel: "final",
+                text: "Provider commentary is not the accepted checklist.",
+              },
+            }),
+          ]
+        : []),
+    ];
+    const entries = nativeRunEventsToTranscript(events);
+    return transcriptToTaskChatItems(entries, { runId, running: false });
+  }
+
+  it.each(["accepted", "provider_final"])(
+    "renders the exact accepted response-wake summary instead of commentary: %s",
+    (mode) => {
+      expect(
+        paperclipRunnerFinalResponse(fixture(mode), { runId }),
+      ).toMatchObject({
+        text: summary,
+        channel: "final",
+      });
+    },
+  );
+
+  it.each([
+    "proposed",
+    "mismatched_run",
+    "forged_kind",
+    "missing_source",
+    "question",
+    "attention",
+    "blank_key",
+    "nonterminal",
+    "failed_terminal",
+  ])("keeps %s evidence out of the response-wake final exception", (mode) => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(mode), { runId }),
+    ).toBeUndefined();
+  });
+
+  it("does not grant the exception to another run or a live fallback", () => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId: "other-run" }),
+    ).toBeUndefined();
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId, allowFallback: false }),
+    ).toBeUndefined();
+  });
+});
+
+describe("completion tool feed visibility", () => {
+  it("keeps the full bounded notice text available when expanded", () => {
+    const summary = `${"Configuration context. ".repeat(30)}Use the project settings to fix this.`;
+    const [notice] = transcriptToTaskChatItems([{
+      kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+      status: "informational", title: "Provider notice", summary,
+      payload: { noticeId: "long-notice", summary, userActionable: true },
+    }], { runId: "notice", running: false });
+    expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
+      notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
+  });
+
+  it("keeps completion events inspectable but hides both tool representations from live and settled feed activity", () => {
+    for (const running of [true, false]) {
+      const entries: TranscriptEntry[] = [
+        { kind: "tool_call", ts: TS, toolUseId: "legacy-finish", name: "paperclip_finish", input: {} },
+        ...["paperclip_finish", "search_tasks"].map((name) => ({
+          kind: "provider_activity" as const, ts: TS, family: "tool_execution" as const,
+          eventType: running ? "tool.execution.started" : "tool.execution.completed",
+          status: running ? "running" as const : "completed" as const,
+          title: "Tool execution", summary: name,
+          payload: { executionId: name, name, transport: "dynamic" },
+        })),
+        { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+          status: "informational", title: "Provider notice", summary: "Repository is not trusted",
+          payload: { noticeId: "notice", summary: "Repository is not trusted", userActionable: true } },
+      ];
+      const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
+      expect(parsed).toHaveLength(4);
+      const activity = paperclipRunnerActivityItems(parsed);
+      expect(activity).toHaveLength(2);
+      expect(JSON.stringify(activity)).not.toContain("paperclip_finish");
+      expect(JSON.stringify(activity)).toContain("search_tasks");
+      expect(JSON.stringify(activity)).toContain("Repository is not trusted");
+      expect(paperclipRunnerTimelineItems(parsed)).toEqual(activity);
+    }
+  });
+});
+
+describe("omitProgressRepeatedByResponseAcrossSegments", () => {
+  const progress = (id: string, text: string): TaskChatItem => ({
+    id,
+    kind: "message",
+    author: "agent",
+    text,
+    channel: "progress",
+    interstitial: true,
+  });
+
+  it("removes only the final matching progress item across a steered run", () => {
+    const first = progress("first", "Repeated answer");
+    const second = progress("second", "Repeated answer");
+    const segments = [[first], [second]];
+
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Repeated answer"),
+    ).toEqual([[first], []]);
+  });
+
+  it("preserves segment identity when there is no durable-response match", () => {
+    const segments = [[progress("first", "Progress only")]];
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Final answer"),
+    ).toBe(segments);
+  });
+});
 
 function toolCall(name: string, input?: unknown): TranscriptEntry {
   return {
@@ -610,19 +858,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
         description: "Canonical event details",
       },
     ]);
-    expect(
-      notice?.kind === "protocol" && notice.surface === "provider_activity"
-        ? notice.details
-        : [],
-    ).toEqual(
-      expect.arrayContaining([
-        { label: "Severity", value: "warning", mono: false },
-        { label: "Category", value: "config", mono: false },
-        { label: "Scope", value: "environment", mono: false },
-        { label: "Recoverable", value: "Yes", mono: false },
-        { label: "User Actionable", value: "No", mono: false },
-      ]),
-    );
+    expect(notice).toBeUndefined();
   });
 
   it("retains every canonical provider family for live and settled rendering", () => {
@@ -650,7 +886,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       status: index % 2 === 0 ? "running" : "completed",
       title: family,
       summary: `Visible ${family}`,
-      payload: { [`${family}Id`]: `${family}-1` },
+      payload: { [`${family}Id`]: `${family}-1`, ...(family === "provider_notice" ? { userActionable: true } : {}) },
     }));
     const items = transcriptToTaskChatItems(entries, {
       ...opts,
@@ -876,21 +1112,20 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("keeps a pending request composer-only while preserving its group boundary", () => {
+  it("keeps a pending request in the feed while preserving its group boundary", () => {
     const rows = buildTurnTimelineRows(
       [tool("before"), request("pending", "pending"), tool("after")],
       true,
     );
 
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.kind === "activity_phase")).toBe(true);
+    expect(rows).toHaveLength(3);
     expect(
       rows.map((row) =>
-        row.kind === "activity_phase" ? row.items[0]?.id : null,
+        row.kind === "activity_phase" ? row.items[0]?.id : row.id,
       ),
-    ).toEqual(["before", "after"]);
+    ).toEqual(["before", "pending:pending", "after"]);
     expect(rows[0]).toMatchObject({ kind: "activity_phase", active: false });
-    expect(rows[1]).toMatchObject({ kind: "activity_phase", active: true });
+    expect(rows[2]).toMatchObject({ kind: "activity_phase", active: true });
   });
 
   it("retains progress-only phases and uses the same row order for settled assembly", () => {
@@ -1033,6 +1268,29 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     expect(
       embedded.find((item) => item.kind === "plan_document"),
     ).toMatchObject({ placement: "write_boundary" });
+  });
+
+  it("embeds a saved Plan from a body-free conversation write receipt", () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    const boundary: HeartbeatRunEvent = {
+      id: 1, companyId: "company", runId, agentId: "agent", seq: 1,
+      eventType: "item.completed", stream: "system", level: "info", color: null, message: null,
+      createdAt: new Date(TS),
+      payload: { prpEvent: {
+        schema: "paperclip.prp.event.v1", sourceEventId: "write-boundary", sourceInstanceId: "runner-1",
+        sourceKind: "runner", sourceSeq: 1, runId, normalizedSessionId: "session-1", eventType: "item.completed",
+        schemaVersion: 1, priority: 1, emittedAt: TS,
+        payload: { kind: "tool_result", item: { id: "write-plan", tool_use_id: "write-plan", type: "tool_result",
+          name: "write_document", input: { key: "plan" }, result: { disposition: "applied", document: { key: "plan" } } } },
+      } },
+    };
+    const parsed = transcriptToTaskChatItems(nativeRunEventsToTranscript([boundary]), { runId, running: false });
+    const embedded = embedPlanDocumentAtWriteBoundary(parsed, {
+      id: "saved-plan", kind: "plan_document", document: {} as TaskChatPlanDocumentItem["document"],
+    });
+    expect(embedded.find(item => item.kind === "plan_document")).toMatchObject({ placement: "write_boundary" });
+    expect(embedded.at(-1)?.id).toBe("saved-plan");
+    expect(parsed.some(item => item.kind === "tool" && item.rawName === "write_document" && item.status === "completed")).toBe(true);
   });
 
   it("retains a saved plan as an explicit fallback when its write boundary is unavailable", () => {
@@ -1467,14 +1725,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       if (m.kind !== "message") continue;
       expect(m.interstitial).toBe(true);
     }
-  });
-
-  it("marks only the message still open at the tail as streaming", () => {
-    const items = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: true,
-    });
-    const messages = items.filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     // The first message was closed by the tool call — finished self-talk.
@@ -1503,13 +1753,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       expect(m.interstitial).toBe(true);
       expect(m.streaming).toBe(false);
     }
-  });
-
-  it("stamps atMs from the first streamed chunk", () => {
-    const messages = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: false,
-    }).filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     expect(messages[0].atMs).toBe(Date.parse(TS));

@@ -27,7 +27,7 @@ export const getTaskHistoryAction = {
   },
   "documentation": {
     "title": "Get active task history",
-    "description": "Read bounded comments on the active mock task.",
+    "description": "Read bounded comments on the active task.",
     "note": null
   },
   "examples": {
@@ -48,7 +48,7 @@ export const getTaskHistoryAction = {
       "operationId": "get_task_history",
       "version": 1,
       "title": "Get active task history",
-      "description": "Read bounded comments on the active mock task.",
+      "description": "Read bounded comments on the active task.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [

@@ -1,9 +1,9 @@
 export type PaperclipRunnerProvider =
-  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse" | "cursor_cloud";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
-export type AcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type AcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export type PaperclipRunnerPermissionMode =
   CodexPermissionMode | OpenCodePermissionMode | AcpxPermissionMode;
@@ -12,6 +12,8 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
+  acpx: "claude-opus-5-5",
+  opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
 export interface PaperclipRunnerPermissionOption<
@@ -66,7 +68,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "ask",
+    defaultMode: "allow",
     description:
       "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
@@ -101,10 +103,14 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     description:
       "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
   },
+  grok_bot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Grok Bot uses first-party Paperclip tools and retains its native apps. Grok manages its model; spending, live steering, provider transcript streaming and remote interruption are unavailable." },
+  muse: { configurable: false, defaultMode: "provider-managed", options: [], description: "Muse uses the admitted Paperclip tool catalog and its own approved tools. Provider usage is unavailable and remote stop is best effort." },
+  openai_dot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Dot uses the admitted Paperclip tool catalog. OpenAI manages its model and other tools; provider usage and global interruption are unavailable." },
+  cursor_cloud: { configurable: false, defaultMode: "provider-managed", options: [], description: "Cursor manages commands and files in its cloud environment. Assigned Paperclip tools retain company permissions. Provider command approvals and verified model identity are unavailable." },
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-reads",
+    defaultMode: "approve-all",
     description:
       "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [
@@ -114,10 +120,16 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         description: "Approve ACPX operations without approval pauses.",
       },
       {
-        value: "approve-reads",
-        label: "Conservative (fail closed)",
+        value: "approve-paperclip",
+        label: "Automatic Paperclip actions",
         description:
-          "Delegate ACPX permission requests and fail closed until a verified interactive approval bridge is available.",
+          "Automatically run assigned Paperclip planning and task tools, including reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
+      },
+      {
+        value: "approve-reads",
+        label: "Allow Paperclip reads",
+        description:
+          "Automatically allow assigned Paperclip read tools. Other operations request a supported permission decision. Company permissions and execution boundaries still apply.",
       },
       {
         value: "deny-all",
@@ -139,7 +151,7 @@ export function isPaperclipRunnerProvider(
     value === "opencode" ||
     value === "claude_managed" ||
     value === "aws_agentcore" ||
-    value === "acpx"
+    value === "acpx" || value === "openai_dot" || value === "grok_bot" || value === "muse" || value === "cursor_cloud"
   );
 }
 
@@ -152,6 +164,21 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? (value as PaperclipRunnerPermissionMode)
     : capability.defaultMode;
+}
+
+/** Native session behavior is independent of tool permission policy. */
+export function resolvePaperclipRunnerCursorMode(
+  provider: unknown,
+  agent: unknown,
+  value: unknown,
+): "agent" | "plan" | "ask" | undefined {
+  if (provider !== "acpx" || agent !== "cursor") {
+    if (value !== undefined) throw new Error("acpxSessionMode is supported only for Cursor");
+    return undefined;
+  }
+  if (value === undefined) return "agent";
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("Cursor session mode must be agent, plan, or ask");
 }
 
 export function resolvePaperclipRunnerModel(
@@ -170,4 +197,78 @@ export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {
     value <= PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS
     ? value
     : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
+}
+
+/** Defaults for converting a local adapter; the operator may override the provider. */
+export function paperclipRunnerTransitionConfig(
+  previousAdapterType: string,
+  previousModel: unknown,
+  providerOverride?: unknown,
+): Record<string, unknown> {
+  if (previousAdapterType === "cursor_cloud" && (providerOverride === undefined || providerOverride === "cursor_cloud")) {
+    return { provider: "cursor_cloud", model: typeof previousModel === "string" ? previousModel.trim() : "", lifecycleMode: "per_turn" };
+  }
+  const previousProvider =
+    (["claude_local", "pi_local", "grok_local"].includes(previousAdapterType))
+      ? "acpx"
+      : previousAdapterType === "opencode_local"
+        ? "opencode"
+        : "codex";
+  const provider =
+    providerOverride === "codex" ||
+    providerOverride === "opencode" ||
+    providerOverride === "acpx"
+      ? providerOverride
+      : previousProvider;
+  return {
+    provider,
+    model: provider === "acpx" && previousAdapterType === "grok_local"
+      ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
+      : provider === "acpx" && previousAdapterType === "pi_local"
+      ? typeof previousModel === "string" ? previousModel.trim() : ""
+      : resolvePaperclipRunnerModel(
+      provider,
+      provider === previousProvider ? previousModel : undefined,
+    ),
+    ...(provider === "acpx" ? { acpxAgent: previousAdapterType === "grok_local" ? "grok" : previousAdapterType === "pi_local" ? "pi" : "claude" } : {}),
+    [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
+      PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
+    lifecycleMode: "per_turn",
+  };
+}
+
+/** Old ACPX Codex agent settings use native Codex on their next configuration write. */
+export function normalizeLegacyRunnerProvider(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (config.provider !== "acpx" || config.acpxAgent !== "codex") return config;
+  const {
+    acpxAgent: _agent,
+    acpxPermissionMode: _permission,
+    ...rest
+  } = config;
+  return { ...rest, provider: "codex", codexPermissionMode: "never" };
+}
+
+/** Qualification is a release property, never an operator-configurable bypass. */
+export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
+  { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: true, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "pi", label: "Pi", qualified: true, credentialEnvironment: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"] },
+  { value: "kimi", label: "Kimi Code", qualified: true, credentialEnvironment: ["KIMI_API_KEY"] },
+  { value: "antigravity", label: "Google Antigravity", qualified: false, credentialEnvironment: ["GEMINI_API_KEY"] },
+] as const);
+
+/** Exact Pi native thinking levels; aliases that silently clamp are not configuration. */
+export type PaperclipRunnerPiThinkingLevel = "off" | "low" | "high" | "max";
+export function resolvePaperclipRunnerPiThinkingLevel(provider: unknown, agent: unknown, value: unknown): PaperclipRunnerPiThinkingLevel | undefined {
+  if (provider !== "acpx" || agent !== "pi") {
+    if (value !== undefined) throw new Error("piThinkingLevel is supported only for Pi");
+    return undefined;
+  }
+  if (value === undefined) return "low";
+  if (value === "off" || value === "low" || value === "high" || value === "max") return value;
+  throw new Error("Pi thinking level must be off, low, high, or max");
 }

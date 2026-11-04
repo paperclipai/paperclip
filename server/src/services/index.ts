@@ -42,6 +42,7 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
@@ -97,7 +98,6 @@ export {
   VercelConnectClientError,
   type VercelConnectClient,
 } from "./vercel-connect.js";
-export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -106,9 +106,13 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
-  productivityReviewService,
-  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-} from "./productivity-review.js";
+  runnerGoalService,
+  applyRunnerGoalPrpEvent,
+  blockRunnerGoalRecovery,
+  failRunnerGoalAction,
+  RunnerGoalActionError,
+  RunnerGoalConflictError,
+} from "./runner-goals.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
@@ -213,3 +217,5 @@ export {
   type RemoteAgentProfileInput,
   type RemoteAgentService,
 } from "./remote-agent-profiles.js";
+
+export { decisionModelService, defineDecisionFeature } from "./decision-models.js";

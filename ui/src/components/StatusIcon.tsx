@@ -13,9 +13,14 @@ function statusLabel(status: string): string {
 
 interface StatusIconProps {
   status: string;
+  /** Server-derived presentation; mutations still use the canonical status. */
+  displayStatus?: string | null;
+  externalConversationState?: "active" | "waiting" | null;
   blockerAttention?: IssueBlockerAttention | null;
   onChange?: (status: string) => void;
   className?: string;
+  /** Optional layout wrapper around the glyph. Does not change glyph dimensions. */
+  glyphContainerClassName?: string;
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
@@ -63,6 +68,12 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   return "Blocked";
 }
 
+/** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
+export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
+  return status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
+}
+
 /**
  * Task/issue status indicator — renders the unified, color-blind-safe
  * {@link StatusGlyph} (one distinct shape per status). With `onChange` it also
@@ -75,13 +86,14 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
-  const glyphStatus = isCoveredBlocked ? "in_queue" : status;
+  const ariaLabel = getStatusIconLabel(status, externalConversationState, blockerAttention, presentationStatus);
+  const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
 
-  const glyph = (
+  const glyphIcon = (
     <StatusGlyph
       status={glyphStatus}
       size={size}
@@ -89,12 +101,17 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       title={ariaLabel}
     />
   );
+  const glyph = glyphContainerClassName ? (
+    <span className={glyphContainerClassName} data-status-glyph-container="true">
+      {glyphIcon}
+    </span>
+  ) : glyphIcon;
 
   if (!onChange) {
     return showLabel ? (
       <span className="inline-flex items-center gap-1.5">
         {glyph}
-        <span className="text-sm">{statusLabel(status)}</span>
+        <span className="text-sm">{statusLabel(displayStatus)}</span>
       </span>
     ) : (
       glyph
@@ -108,7 +125,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
     >
       {glyph}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{statusLabel(displayStatus)}</span>
     </button>
   ) : (
     <button

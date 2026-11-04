@@ -18,12 +18,7 @@ export type ProviderTraceDisposition =
   "mapped" | "generic" | "ignored" | "rejected" | "operator_only";
 
 export type ProviderTraceFieldMappingAction =
-  | "copied"
-  | "renamed"
-  | "normalized"
-  | "derived"
-  | "dropped"
-  | "redacted";
+  "copied" | "renamed" | "normalized" | "derived" | "dropped" | "redacted";
 
 export interface ProviderTraceFieldMapping {
   inputPath?: string;
@@ -159,13 +154,38 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  /** Persisted native driver identity; older servers may omit this field. */
+  driverKind?: string | null;
+  execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;
   agentId: string;
+  scopeKind: "company" | "issue";
+  issueId: string | null;
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
   responsibleUserId: string | null;
+  activeIdentityContextId?: string | null;
+  identityHistory?: Array<{
+    id: string;
+    revision: number;
+    responsibleUserId: string | null;
+    messageId: string | null;
+    parentContextId: string | null;
+    cause: string;
+    status: string;
+    acceptedAt: Date | string | null;
+    github: {
+      status: "available" | "absent" | "unavailable";
+      login?: string;
+      source?: "personal" | "dedicated";
+      reason?: string;
+      connectionId?: string;
+      grantId?: string;
+      authenticationMode?: "managed" | "host" | "anonymous";
+    } | null;
+  }>;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
@@ -206,6 +226,10 @@ export interface HeartbeatRun {
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Metadata-only company-list row for a run bound to an unreadable private issue. */
+  redacted?: boolean;
+  durationMs?: number | null;
+  costUsd?: number | null;
   outputSilence?: HeartbeatRunOutputSilence;
   /**
    * Ephemeral, process-local current status message for an active run. Resolved
@@ -263,6 +287,15 @@ export interface AgentWakeupSkipped {
 }
 
 export type AgentWakeupResponse = HeartbeatRun | AgentWakeupSkipped;
+
+/** A durable chat retry can be accepted before a scheduler run exists. */
+export interface ChatFailedRunRetryResponse {
+  actionId: string;
+  issueId: string;
+  runId: string | null;
+  status:
+    "queued" | "deferred" | "running" | "succeeded" | "failed" | "cancelled";
+}
 
 export interface HeartbeatRunEvent {
   id: number;

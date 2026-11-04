@@ -14,6 +14,7 @@ import {
   type MarkdownEditorRef,
   type MentionOption,
   placeCaretAfterMentionAnchor,
+  placeCaretAtEditableEnd,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
@@ -25,6 +26,8 @@ const mdxEditorMockState = vi.hoisted(() => ({
   throwOnRender: false,
   /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
   emitMountChange: null as string | null,
+  /** Markdown the mock emits once mounted with MDXEditor's `initialMarkdownNormalize` flag set. */
+  emitMountNormalizedMarkdown: null as string | null,
   /** Milliseconds the mock waits before painting its content, to model a slow import. */
   populateDelayMs: 0,
   markdownValues: [] as string[],
@@ -71,7 +74,7 @@ vi.mock("@mdxeditor/editor", async () => {
     }: {
       markdown: string;
       placeholder?: string;
-      onChange?: (value: string) => void;
+      onChange?: (value: string, initialMarkdownNormalize?: boolean) => void;
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
       className?: string;
@@ -149,6 +152,10 @@ vi.mock("@mdxeditor/editor", async () => {
         if (mdxEditorMockState.emitMountChange !== null) {
           onChange?.(mdxEditorMockState.emitMountChange);
         }
+        if (mdxEditorMockState.emitMountNormalizedMarkdown !== null) {
+          setContent(mdxEditorMockState.emitMountNormalizedMarkdown);
+          onChange?.(mdxEditorMockState.emitMountNormalizedMarkdown, true);
+        }
       }, 0);
       return () => {
         window.clearTimeout(timer);
@@ -163,6 +170,17 @@ vi.mock("@mdxeditor/editor", async () => {
         className={className}
         contentEditable
         suppressContentEditableWarning
+        onKeyDown={(event) => {
+          if (event.key === "Delete" || event.key === "Backspace") {
+            setContent("");
+            onChange?.("");
+          }
+        }}
+        onInput={(event) => {
+          const next = event.currentTarget.textContent ?? "";
+          setContent(next);
+          onChange?.(next);
+        }}
       >
         {/* The real editor paints resolved text, never the escapes that carried it in. */}
         {content.replace(/\\</g, "<") || placeholder || ""}
@@ -314,6 +332,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountNormalizedMarkdown = null;
     mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.insertedMarkdownValues = [];
@@ -373,6 +392,43 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("allows a user to clear loaded text as the first editor change", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["Delete", "Backspace"])("allows first-change clearing when Lexical handles %s without an input event", async (key) => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+    await act(async () => root.unmount());
   });
 
   it("does not recreate the mention decoration observer when the external value changes", async () => {
@@ -646,6 +702,31 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("does not report MDXEditor's initial markdown normalization as a change", async () => {
+    // MDXEditor rewrites `-` bullets to `*` on load and flags it as normalization.
+    mdxEditorMockState.emitMountNormalizedMarkdown = "* first\n* second";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={"- first\n- second"} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    // The editor keeps its normalized document; nothing pushes the original back.
+    expect(container.textContent).toContain("* first");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("returns editor output to the parent with the transport escaping removed", async () => {
     const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
     // What the real exporter emits for this document: `<` re-escaped, `<=` bare.
@@ -863,6 +944,94 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("handles Markdown paste once before the inner editor receives it", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="" onChange={() => {}} />);
+    });
+    await flush();
+    const editable = container.querySelector('[data-testid="mdx-editor"]')!;
+    const innerPaste = vi.fn();
+    editable.addEventListener("paste", innerPaste);
+    const pasted = '```json\n{"content":"nonce\\n"}\n```';
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => pasted },
+    });
+    await act(async () => { editable.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([pasted]);
+    expect(innerPaste).not.toHaveBeenCalled();
+
+    const dashed = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(dashed, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "- a single dashed line" },
+    });
+    await act(async () => { editable.dispatchEvent(dashed); });
+    expect(dashed.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      pasted,
+      "- a single dashed line",
+    ]);
+
+    const plain = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(plain, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "ordinary text" },
+    });
+    await act(async () => { editable.dispatchEvent(plain); });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(innerPaste).toHaveBeenCalledOnce();
+    await act(async () => { root.unmount(); });
+  });
+
+  it("leaves a markdown paste inside a nested code block", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="```txt\n\n```" onChange={() => {}} />);
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement;
+    const code = document.createElement("div");
+    code.className = "cm-content";
+    code.setAttribute("contenteditable", "true");
+    const text = document.createTextNode("");
+    code.appendChild(text);
+    editable.appendChild(code);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    code.focus();
+
+    const pasted = "- keep this line in the code block\n- and this one";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+    const innerPaste = vi.fn();
+    code.addEventListener("paste", innerPaste);
+
+    await act(async () => {
+      code.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+    expect(innerPaste).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("escapes angle brackets in pasted markdown", async () => {
     const root = createRoot(container);
 
@@ -1006,6 +1175,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 100,
       left: 250,
+      maxWidth: 542,
     });
   });
 
@@ -1018,6 +1188,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 340,
       left: 154,
+      maxWidth: 182,
     });
   });
 
@@ -1030,6 +1201,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 12,
       left: 92,
+      maxWidth: 180,
     });
   });
 
@@ -1042,6 +1214,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 372,
       left: 210,
+      maxWidth: 582,
     });
   });
 
@@ -1055,6 +1228,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 160,
       left: 130,
+      maxWidth: 182,
     });
   });
 
@@ -1187,6 +1361,21 @@ describe("MarkdownEditor", () => {
 
     const selection = window.getSelection();
     expect(selection?.anchorNode).toBe(trailingSpace);
+    expect(selection?.anchorOffset).toBe(1);
+
+    editable.remove();
+  });
+
+  it("places the caret after a plain action command", () => {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    editable.textContent = "/goal\u00a0";
+    document.body.appendChild(editable);
+
+    expect(placeCaretAtEditableEnd(editable)).toBe(true);
+
+    const selection = window.getSelection();
+    expect(selection?.anchorNode).toBe(editable);
     expect(selection?.anchorOffset).toBe(1);
 
     editable.remove();

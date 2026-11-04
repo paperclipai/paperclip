@@ -1,4 +1,5 @@
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
@@ -110,6 +111,33 @@ export function resolveCodexAuthCacheDir(
     env,
   });
   return path.resolve(instanceRoot, "companies", safeCompanyId, CACHE_DIR_NAME);
+}
+
+/**
+ * True when `homePath` sits inside the per-identity credential store of ANY
+ * company: `<instanceRoot>/companies/<id>/codex-auth-cache/…` (or is a store
+ * root itself). These directories are identity-anchored slots owned by the
+ * device-login promotion, the vend, and the copy-back, each under its own
+ * lock. The managed-home seeding pass consults this to refuse to symlink,
+ * heal, or overwrite an entry's `auth.json`: an agent may bind `CODEX_HOME`
+ * to an entry (through the login's account-home secret), and seeding it like
+ * an ordinary managed home would silently swap the bound account's durable
+ * credential for the host login.
+ */
+export function isCodexAuthCachePath(
+  env: NodeJS.ProcessEnv,
+  homePath: string,
+): boolean {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const companiesRoot = path.resolve(instanceRoot, "companies");
+  const resolved = path.resolve(homePath);
+  if (!resolved.startsWith(companiesRoot + path.sep)) return false;
+  const segments = resolved.slice(companiesRoot.length + 1).split(path.sep);
+  return segments.length >= 2 && segments[1] === CACHE_DIR_NAME;
 }
 
 /**
@@ -307,6 +335,11 @@ export async function withCodexAccountHomePromotionLock<T>(
  * create) can still call into a secrets-service write that takes this lock
  * without deadlocking on itself.
  */
+// An outer credential transaction acquires this lock before database row locks.
+// Nested secret-service writes must share that ownership, not acquire it again.
+// Expire ownership on return so detached work cannot inherit a released lock.
+const secretMutationOwnership = new AsyncLocalStorage<Map<string, { active: boolean }>>();
+
 export async function withAccountHomeSecretMutationLock<T>(
   env: NodeJS.ProcessEnv = process.env,
   companyId: string,
@@ -314,7 +347,16 @@ export async function withAccountHomeSecretMutationLock<T>(
 ): Promise<T> {
   const lockDir = resolveCodexAuthCacheNamedLockDir(env, companyId, "codex-account-home-secret-mutation-lock");
   await ensurePrivateDir(lockDir);
-  return withDirectoryMergeLock(lockDir, fn, env);
+  const key = await realpath(lockDir);
+  const inherited = secretMutationOwnership.getStore();
+  if (inherited?.get(key)?.active) return fn();
+  return withDirectoryMergeLock(lockDir, async () => {
+    const ownership = { active: true };
+    const scope = new Map(inherited);
+    scope.set(key, ownership);
+    try { return await secretMutationOwnership.run(scope, fn); }
+    finally { ownership.active = false; }
+  }, env);
 }
 
 /**

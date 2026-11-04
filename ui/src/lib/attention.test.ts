@@ -185,6 +185,9 @@ describe("attentionIsNewToday", () => {
 });
 
 describe("sourceMeta + severityStyle", () => {
+  it("uses a generic task label for persisted legacy productivity decisions", () => {
+    expect(sourceMeta("productivity_review").label).toBe("Task");
+  });
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
@@ -538,6 +541,21 @@ describe("filterAttentionItems", () => {
   it("returns everything when no filters are active", () => {
     expect(filterAttentionItems(items, defaultAttentionFilterState)).toHaveLength(2);
     expect(countActiveAttentionFilters(defaultAttentionFilterState)).toBe(0);
+  });
+
+  it("searches visible decision context case-insensitively and combines it with filters", () => {
+    const decision = buildItem({
+      subject: { ...approval.subject, title: "Review connector recovery", identifier: "DES-3" },
+      whyNow: "Verification complete", originAgentName: "Connector engineer",
+      project: approval.project, workspace: { id: "ws", name: "Sandbox" },
+      detail: { kind: "generic", summaryExcerpt: "Reconnect safely", images: [] },
+    });
+    for (const query of ["  REVIEW   connector ", "des-3", "verification", "engineer", "ALPHA", "sandbox", "reconnect"]) {
+      expect(filterAttentionItems([decision, join], defaultAttentionFilterState, query)).toEqual([decision]);
+    }
+    expect(filterAttentionItems([decision], defaultAttentionFilterState, "review nonexistent")).toEqual([]);
+    expect(filterAttentionItems([decision], { ...defaultAttentionFilterState, severities: ["low"] }, "connector")).toEqual([]);
+    expect(filterAttentionItems(items, defaultAttentionFilterState, "   ")).toBe(items);
   });
 
   it("filters by source kind", () => {

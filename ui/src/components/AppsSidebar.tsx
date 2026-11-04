@@ -1,3 +1,6 @@
+import { useLocation } from "@/lib/router";
+import { ChatDetailSidebar } from "./chat/ChatDetailSidebar";
+import { ChatSetupSidebar } from "./chat/ChatSetupNavigation";
 import { Store, ShieldQuestion } from "lucide-react";
 import { DEVELOPER_TABS, advancedTabHref, isExperimentalToolTab } from "@/pages/tools/tool-tabs";
 import { useSmokeLabEnabled } from "@/hooks/useSmokeLabEnabled";
@@ -13,6 +16,7 @@ import { contextualSidebarStyles } from "./contextual-sidebar-styles";
  * developer surfaces remain hidden unless one is explicitly enabled.
  */
 export function AppsSidebar() {
+  const { pathname } = useLocation();
   const reviewCount = useReviewCount();
   const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
   const developerTabs = DEVELOPER_TABS.filter((tab) => {
@@ -22,15 +26,19 @@ export function AppsSidebar() {
     return !isExperimentalToolTab(tab.key) || smokeLabEnabled;
   });
 
+  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar />;
+  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/);
+  if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} />;
+
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
       <nav
-        aria-label="Apps"
+        aria-label="Connectors"
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-          <SidebarNavItem to="/apps" label="Connectors" icon={Store} end />
+          <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
           <SidebarNavItem
             to="/apps/review"
             label="Review"

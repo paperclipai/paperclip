@@ -29,7 +29,7 @@ export const getApprovalContextAction = {
   },
   "documentation": {
     "title": "Get approval context",
-    "description": "Read one approval, its comments, and linked mock tasks.",
+    "description": "Read one approval, its comments, and linked tasks.",
     "note": "Live-only approval-plus-linked-tasks read; no scenario counterpart."
   },
   "examples": {
@@ -52,7 +52,7 @@ export const getApprovalContextAction = {
       "operationId": "get_approval_context",
       "version": 1,
       "title": "Get approval context",
-      "description": "Read one approval, its comments, and linked mock tasks.",
+      "description": "Read one approval, its comments, and linked tasks.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:read"
@@ -68,7 +68,7 @@ export const getApprovalContextAction = {
         "properties": {
           "approvalId": {
             "type": "string",
-            "description": "Mock approval id.",
+            "description": "Approval id.",
             "minLength": 1,
             "maxLength": 200
           }

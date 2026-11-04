@@ -415,6 +415,9 @@ describe("grok device-login credential promotion", () => {
     const authPath = companyHomeAuthPath(env, COMPANY_A);
     const written = JSON.parse(await readFile(authPath, "utf8"));
     expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-fresher`);
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    const entries = await readdir(companyHome);
+    expect(entries).toEqual(["auth.json"]);
   });
 
   it("keeps the home when the login expiry ties the existing same-identity credential", async () => {
@@ -446,34 +449,6 @@ describe("grok device-login credential promotion", () => {
     expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-first`);
   });
 
-  it("leaves no staged temporary file in the company home after a kept (not-fresher) outcome", async () => {
-    const home = await makeInstanceRoot();
-    const env = envFor(home);
-    await promoteGrokDeviceLoginCredential({
-      authBytes: grokAuth({ uuid: UUID_A, marker: "fresher", expiresAt: "2026-06-01T00:00:00Z" }),
-      companyId: COMPANY_A,
-      userInitiated: true,
-      checkReadiness: ready,
-      isSoleActiveOwner: soleOwner,
-      env,
-      log: noopLog,
-    });
-
-    const outcome = await promoteGrokDeviceLoginCredential({
-      authBytes: grokAuth({ uuid: UUID_A, marker: "staler", expiresAt: "2026-01-01T00:00:00Z" }),
-      companyId: COMPANY_A,
-      userInitiated: true,
-      checkReadiness: ready,
-      isSoleActiveOwner: soleOwner,
-      env,
-      log: noopLog,
-    });
-    expect(outcome).toBe("kept");
-
-    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
-    const entries = await readdir(companyHome);
-    expect(entries).toEqual(["auth.json"]);
-  });
 
   it("redacts the credential bytes on a kept (not-fresher) outcome the same way as a promoted outcome", async () => {
     const home = await makeInstanceRoot();

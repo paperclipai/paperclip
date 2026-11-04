@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
+import { paperclipRunnerFinalResponse, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -72,7 +73,206 @@ function runResult(summary: string): Record<string, unknown> {
   };
 }
 
+describe("provider notice presentation", () => {
+  it("omits unrelated information from saved chat without removing warnings or responses", () => {
+    const legacyNotice = {
+      schema: "paperclip.provider.notice.v1",
+      noticeId: "codex-warning",
+      severity: "warning",
+      category: "warning",
+      summary: "ignored unrelated provider information",
+      userActionable: true,
+    };
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", legacyNotice),
+      event(2, "harness.diagnostic", { code: "codex_unrelated_information" }),
+      event(3, "provider.notice.recorded", { ...legacyNotice, summary: "Repository is not trusted" }),
+      event(4, "provider.notice.recorded", { ...legacyNotice, severity: "error" }),
+      event(5, "provider.notice.recorded", { ...legacyNotice, category: "configWarning" }),
+      event(6, "item.completed", { kind: "agentMessage", channel: "final", text: "Here is the answer." }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", summary: "Repository is not trusted" },
+      { kind: "provider_activity", status: "failed", summary: legacyNotice.summary },
+      { kind: "provider_activity", summary: legacyNotice.summary },
+      { kind: "assistant", text: "Here is the answer." },
+    ]);
+  });
+
+  it("preserves notice text as a notice rather than a synthetic tool call", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "warning-1",
+        severity: "warning", category: "configWarning", summary: "Repository is not trusted",
+      }),
+      event(2, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "error-1",
+        severity: "error", message: "Provider connection failed",
+      }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", family: "provider_notice", status: "informational", summary: "Repository is not trusted" },
+      { kind: "provider_activity", family: "provider_notice", status: "failed", summary: "Provider connection failed" },
+    ]);
+    expect(entries.some((entry) => entry.kind === "tool_call")).toBe(false);
+  });
+});
+
 describe("nativeRunEventsToTranscript", () => {
+  describe("accepted response-wake authority", () => {
+    function fixture() {
+      const result = {
+        ...runResult("The complete answer; the task remains open."),
+        reportedWorkDisposition: "yielded",
+        continuation: {
+          kind: "response_wake",
+          summary: "Wait for the next exact input.",
+          idempotencyKey: "next-input",
+        },
+      };
+      const accepted = event(2, "run.result.accepted", { result });
+      const terminal = event(3, "run.terminal", {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "yielded",
+      });
+      const acceptedEnvelope = accepted.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      const terminalEnvelope = terminal.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      for (const envelope of [acceptedEnvelope, terminalEnvelope]) {
+        envelope.sourceKind = "control_plane";
+        envelope.sourceInstanceId = "control-1";
+        envelope.turnId = "turn-1";
+      }
+      return { result, accepted, terminal, acceptedEnvelope, terminalEnvelope };
+    }
+
+    it("derives a closed marker only from a same-run accepted result and terminal", () => {
+      const { accepted, terminal } = fixture();
+      const entries = nativeRunEventsToTranscript([
+        accepted,
+        terminal,
+        structuredClone(accepted),
+      ]);
+      expect(
+        entries.find((entry) => entry.kind === "run_result"),
+      ).toMatchObject({
+        summary: "The complete answer; the task remains open.",
+        acceptedResponseWake: { runId: RUN_ID, sourceEventId: "event-2" },
+      });
+      expect(
+        entries.filter((entry) => entry.kind === "run_result"),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      "provider_acceptance",
+      "provider_terminal",
+      "proposal",
+      "forged_marker",
+      "missing_attention",
+      "attention",
+      "other_continuation",
+      "blank_key",
+      "blank_summary",
+      "missing_source",
+      "wrong_run",
+      "wrong_event_type",
+      "wrong_schema",
+      "terminal_other_run",
+      "terminal_other_owner",
+      "terminal_other_session",
+      "terminal_other_turn",
+      "terminal_earlier",
+      "terminal_failed",
+      "terminal_interrupted",
+      "terminal_other_disposition",
+      "missing_terminal",
+      "conflicting_acceptance",
+      "pending_question",
+      "pending_approval",
+    ])("does not derive response-wake authority from %s", (mode) => {
+      const { result, accepted, terminal, acceptedEnvelope, terminalEnvelope } =
+        fixture();
+      const mutableResult = result as Record<string, unknown>;
+      const terminalPayload = terminalEnvelope.payload as Record<
+        string,
+        unknown
+      >;
+      const events = [accepted, terminal];
+      if (mode === "provider_acceptance")
+        acceptedEnvelope.sourceKind = "runner";
+      if (mode === "provider_terminal") terminalEnvelope.sourceKind = "runner";
+        if (mode === "proposal") {
+          accepted.eventType = "run.result.proposed";
+          acceptedEnvelope.eventType = accepted.eventType;
+          acceptedEnvelope.payload = result;
+        }
+        if (mode === "forged_marker") {
+          result.continuation.kind = "monitor";
+          mutableResult.acceptedResponseWake = {
+          runId: RUN_ID,
+          sourceEventId: "event-2",
+        };
+      }
+      if (mode === "missing_attention") delete mutableResult.attentionRequests;
+      if (mode === "attention")
+        mutableResult.attentionRequests = [{ kind: "ask_user_questions" }];
+      if (mode === "other_continuation")
+        result.continuation.kind = "same_agent";
+      if (mode === "blank_key") result.continuation.idempotencyKey = " ";
+      if (mode === "blank_summary") mutableResult.summary = " ";
+      if (mode === "missing_source") acceptedEnvelope.sourceEventId = " ";
+      if (mode === "wrong_run") acceptedEnvelope.runId = "other-run";
+      if (mode === "wrong_event_type")
+        acceptedEnvelope.eventType = "item.completed";
+      if (mode === "wrong_schema") acceptedEnvelope.schema = "provider.result";
+      if (mode === "terminal_other_run")
+        terminal.runId = terminalEnvelope.runId = "other-run";
+      if (mode === "terminal_other_owner")
+        terminalEnvelope.sourceInstanceId = "other-owner";
+      if (mode === "terminal_other_session")
+        terminalEnvelope.normalizedSessionId = "other-session";
+      if (mode === "terminal_other_turn")
+        terminalEnvelope.turnId = "other-turn";
+      if (mode === "terminal_earlier") terminal.seq = 1;
+      if (mode === "terminal_failed")
+        terminalPayload.runTerminalState = "failed";
+      if (mode === "terminal_interrupted")
+        terminalPayload.turnTerminalState = "interrupted";
+      if (mode === "terminal_other_disposition")
+        terminalPayload.reportedWorkDisposition = "done";
+      if (mode === "missing_terminal") events.pop();
+      if (mode === "conflicting_acceptance") {
+        const other = structuredClone(accepted);
+        other.seq = 4;
+        (other.payload!.prpEvent as Record<string, unknown>).sourceEventId =
+          "other-accepted-result";
+        events.push(other);
+      }
+      if (mode === "pending_question" || mode === "pending_approval")
+        events.push(
+          event(4, "runtime_request.created", {
+            requestId: "pending-request",
+            requestKind:
+              mode === "pending_question" ? "user_input" : "command_approval",
+            status: "pending",
+          }),
+        );
+      expect(
+        nativeRunEventsToTranscript(events).find(
+          (entry) => entry.kind === "run_result",
+        )?.acceptedResponseWake,
+      ).toBeUndefined();
+    });
+  });
+
   it("projects the cross-language duplicate-delivery fixture exactly once", () => {
     const fixture = JSON.parse(readFileSync(
       new URL(
@@ -106,6 +306,16 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
     expect(transcript.filter((entry) => entry.kind === "run_result")).toHaveLength(1);
     expect(transcript.filter((entry) => entry.kind === "run_terminal")).toHaveLength(1);
+  });
+
+  it("preserves buffered output tails when a native turn ends", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "item.delta", { itemId: "reasoning-1", kind: "reasoning", text: "Thinking" }),
+      event(2, "turn.completed", { status: "completed", outputTails: [
+        { itemId: "reasoning-1", payload: { kind: "reasoning", text: "-" } },
+      ] }),
+    ]);
+    expect(transcript.filter(entry => entry.kind === "thinking").map(entry => "text" in entry ? entry.text : "").join("")).toBe("Thinking-");
   });
 
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
@@ -175,6 +385,188 @@ describe("nativeRunEventsToTranscript", () => {
         cachedTokens: 2,
         costUsd: 0.01,
       }),
+    ]);
+  });
+
+  it("coalesces sparse Codex tool lifecycle events at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "running",
+        output: null,
+      }),
+      itemEvent(2, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan" },
+      }),
+      itemEvent(3, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "exec-write-plan",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(4, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "exec-write-plan",
+          tool_use_id: "exec-write-plan",
+          result: {
+            commandKind: "write_document",
+            revisionId: "revision-1",
+          },
+        },
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "completed",
+        output: null,
+      }),
+      itemEvent(6, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan", status: "completed" },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "exec-write-plan",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "exec-write-plan",
+        toolName: "write_document",
+        content: JSON.stringify({
+          commandKind: "write_document",
+          revisionId: "revision-1",
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("projects ACPX item-only tool lifecycles at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "2",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(2, "item.completed", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "2",
+          tool_use_id: "2",
+          result: {
+            disposition: "applied",
+            document: {
+              key: "plan",
+              latestRevisionId: "revision-1",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "2",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "2",
+        toolName: "write_document",
+        content: JSON.stringify({
+          disposition: "applied",
+          document: {
+            key: "plan",
+            latestRevisionId: "revision-1",
+          },
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("keeps retained stopped output as progress without fabricating a final response", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/stopped-native-progress.json", import.meta.url),
+      "utf8",
+    )) as { run: { id: string; status: string }; events: HeartbeatRunEvent[] };
+    const entries = nativeRunEventsToTranscript(fixture.events);
+    const parsed = transcriptToTaskChatItems(entries, { runId: fixture.run.id, running: false });
+
+    expect(fixture.run.status).toBe("cancelled");
+    expect(paperclipRunnerFinalResponse(parsed, { allowFallback: true })).toBeUndefined();
+    expect(parsed.filter((item) => item.kind === "message")).toEqual([
+      expect.objectContaining({
+        channel: "progress",
+        interstitial: true,
+        text: "I'll use the native Write tool once for the exact path, leaving the permission request pending.",
+      }),
+    ]);
+    const children = settledRunChildren(parsed);
+    expect(children.filter((item) => item.kind === "activity_phase" && item.interstitial)).toHaveLength(1);
+    expect(children.filter((item) => item.kind === "protocol" && item.surface === "runtime_request")).toEqual([
+      expect.objectContaining({ status: "cancelled" }),
+    ]);
+  });
+
+  it.each([
+    ["final", "progress", "final"],
+    ["progress", "final", "progress"],
+    ["unknown", "final", "unknown"],
+    ["unknown", "invalid", "unknown"],
+    ["unknown", null, "unknown"],
+    [undefined, "progress", "progress"],
+  ] as const)("preserves outer channel %s with nested channel %s", (outer, nested, expected) => {
+    expect(nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "message-1", {
+        kind: "agentMessage",
+        ...(outer === undefined ? {} : { channel: outer }),
+        text: "Provider message.",
+        update: { channel: nested },
+      }),
+    ])).toEqual([
+      expect.objectContaining({ kind: "assistant", channel: expected }),
     ]);
   });
 
@@ -353,18 +745,13 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("uses the structured run summary when no agent message was emitted", () => {
+  it("retains a report without manufacturing a provider final message", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
         kind: "run_result",
         summary: "Recovered final reply.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "Recovered final reply.",
-        channel: "final",
       }),
     ]);
   });
@@ -434,11 +821,6 @@ describe("nativeRunEventsToTranscript", () => {
       expect.objectContaining({
         kind: "run_result",
         summary: "The implementation is ready.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "The implementation is ready.",
-        channel: "final",
       }),
     ]);
   });

@@ -1,3 +1,4 @@
+import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
   CODEX_INVALID_REQUEST,
@@ -42,8 +43,160 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { RUNNERD_CANONICAL_ITEM } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it.each([
+    ["monitor", false], ["monitor", true], ["same_agent", false], ["same_agent", true], ["same_agent", "explicit"],
+  ] as const)("uses saved %s continuation with nullable input=%s", async (kind, nullable) => {
+    const transport = new FakeCodexTransport();
+    const continuation = { kind, summary: "Continue from saved task state", idempotencyKey: "saved:task:receipt" };
+    const dynamicToolHandler = vi.fn().mockResolvedValue({ run: { id: "monitor-default" },
+      activeTask: { executionRunId: "monitor-default" }, completionContinuation: continuation });
+    const feedback = vi.fn().mockResolvedValue("Monitor wait accepted.");
+    const session = await makeDriver([transport], { dynamicToolHandler, completionFeedback: feedback }).openSession({
+      runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: WORKSPACE,
+    });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Check the published PR later." } });
+      const report = { ...structuredClone(result), reportedWorkDisposition: "yielded", ...(nullable === "explicit" ? { continuation } : nullable ? { continuation: null } : {}) };
+      const response = await transport.invoke({ id: "finish-monitor", method: "item/tool/call", params: {
+        threadId: "thread-1", turnId: "turn-1", callId: "finish-monitor", tool: "paperclip_finish", arguments: report,
+      } });
+      expect(response).toMatchObject({ success: true });
+      expect(dynamicToolHandler).toHaveBeenCalledExactlyOnceWith({ tool: "get_task_context", callId: "finish-monitor:continuation",
+        threadId: "thread-1", turnId: "turn-1", arguments: {} });
+      expect(feedback).toHaveBeenCalledExactlyOnceWith({ ...report, continuation });
+      expect((await session.snapshot()).semanticResult?.result).toEqual({ ...report, continuation });
+    } finally { await session.close(); }
+  });
+
+  it.each([
+    { run: { id: "foreign" }, activeTask: { executionRunId: "saved-default" } },
+    { run: { id: "saved-default" }, activeTask: { executionRunId: "foreign" } },
+    { run: { id: "saved-default" }, activeTask: {} },
+  ])("rejects saved continuation without current run ownership %j", async context => {
+    const transport = new FakeCodexTransport();
+    const dynamicToolHandler = vi.fn().mockResolvedValue({ ...context,
+      completionContinuation: { kind: "same_agent", summary: "Continue checkout", idempotencyKey: "repository:receipt" } });
+    const feedback = vi.fn();
+    const session = await makeDriver([transport], { dynamicToolHandler, completionFeedback: feedback }).openSession({
+      runId: "saved-default", normalizedSessionId: "saved-default", workingDirectory: WORKSPACE,
+    });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Continue the repository work." } });
+      const response = await transport.invoke({ id: "finish-saved", method: "item/tool/call", params: {
+        threadId: "thread-1", turnId: "turn-1", callId: "finish-saved", tool: "paperclip_finish",
+        arguments: { ...structuredClone(result), reportedWorkDisposition: "yielded" },
+      } });
+      expect(response).toMatchObject({ success: false });
+      expect(feedback).not.toHaveBeenCalled();
+      expect((await session.snapshot()).semanticResult).toBeNull();
+    } finally { await session.close(); }
+  });
+
+  it("returns current approval feedback and permits correcting a rejected completion report", async () => {
+    const transport = new FakeCodexTransport();
+    const feedback = vi.fn()
+      .mockRejectedValueOnce(new Error("Name the reviewer decision or finish the remaining work."))
+      .mockResolvedValue("Task remains in review. Accept [Publish](/approvals/approval-1) before completion.");
+    const session = await makeDriver([transport], { completionFeedback: feedback }).openSession({
+      runId: "run-feedback", normalizedSessionId: "feedback-session", workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Finish" } });
+    const call = (callId: string) => transport.invoke({ id: callId, method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId, tool: "paperclip_finish", arguments: result } });
+    expect(await call("first")).toMatchObject({ success: false });
+    expect((await session.snapshot()).semanticResult).toBeNull();
+    expect(await call("corrected")).toMatchObject({ success: true,
+      contentItems: [{ type: "inputText", text: expect.stringContaining("/approvals/approval-1") }] });
+    expect((await session.snapshot()).semanticResult?.result).toEqual(result);
+    await session.close();
+  });
+
+  it("accepts an explicit response-wake yield through paperclip_finish", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-response-wake",
+      normalizedSessionId: "normalized-response-wake",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Reply, then wait." } });
+    const yielded = {
+      ...structuredClone(result),
+      reportedWorkDisposition: "yielded" as const,
+      completionClaim: {
+        ...structuredClone(result.completionClaim),
+        objectiveSatisfied: false,
+        criteria: result.completionClaim.criteria.map((criterion) => ({
+          ...criterion,
+          status: "unknown" as const,
+          evidenceRefs: [],
+        })),
+        remainingWork: [{
+          description: "Wait for the next external response.",
+          blocksCompletion: true,
+        }],
+      },
+      continuation: {
+        kind: "response_wake" as const,
+        summary: "Resume after the next external response.",
+        idempotencyKey: "response-wake-1",
+      },
+    };
+    expect(await transport.invoke({
+      id: "response-wake",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "response-wake",
+        tool: "paperclip_finish",
+        arguments: yielded,
+      },
+    })).toMatchObject({ success: true });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find((event) => event.eventType === "run.result.proposed")?.payload)
+      .toMatchObject({ reportedWorkDisposition: "yielded", continuation: { kind: "response_wake" } });
+    expect((await session.snapshot()).semanticResult?.result).toMatchObject({
+      reportedWorkDisposition: "yielded",
+      continuation: { kind: "response_wake" },
+    });
+    expect(events.some((event) => event.eventType === "turn.completed")).toBe(true);
+
+    const otherTransport = new FakeCodexTransport();
+    const otherSession = await makeDriver([otherTransport]).openSession({
+      runId: "run-same-agent-yield",
+      normalizedSessionId: "normalized-same-agent-yield",
+      workingDirectory: WORKSPACE,
+    });
+    await otherSession.startTurn({ message: { role: "user", text: "Continue." } });
+    expect(await otherTransport.invoke({
+      id: "same-agent-yield",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "same-agent-yield",
+        tool: "paperclip_finish",
+        arguments: {
+          ...yielded,
+          continuation: {
+            kind: "same_agent",
+            summary: "Continue immediately.",
+            idempotencyKey: "same-agent-1",
+          },
+        },
+      },
+    })).toMatchObject({ success: false });
+    await otherSession.close();
+  });
+
   it("makes duplicate semantic completion idempotent and rejects changed payloads", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -79,9 +232,7 @@ describe("Codex app-server Codex driver", () => {
     });
     expect(resultMapping?.emittedEventIds).toHaveLength(2);
     expect(resultMapping?.emittedEventIds).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining(":run-result:"),
-      ]),
+      expect.arrayContaining([expect.stringContaining(":run-result:")]),
     );
     expect(
       await transport.invoke({
@@ -129,12 +280,17 @@ describe("Codex app-server Codex driver", () => {
       workingDirectory: WORKSPACE,
     });
     await session.startTurn({ message: { role: "user", text: "Complete." } });
-    const toolShaped = structuredClone(result) as unknown as Record<string, unknown>;
-    toolShaped.verification = [{
-      commandOrCheck: "read hello.txt",
-      status: "passed",
-      result: "hello",
-    }];
+    const toolShaped = structuredClone(result) as unknown as Record<
+      string,
+      unknown
+    >;
+    toolShaped.verification = [
+      {
+        commandOrCheck: "read hello.txt",
+        status: "passed",
+        result: "hello",
+      },
+    ];
     delete toolShaped.attentionRequests;
     expect(
       await transport.invoke({
@@ -155,11 +311,13 @@ describe("Codex app-server Codex driver", () => {
       itemId: "tool-result",
       result: {
         ...result,
-        verification: [{
-          commandOrCheck: "read hello.txt",
-          status: "passed",
-          detail: "hello",
-        }],
+        verification: [
+          {
+            commandOrCheck: "read hello.txt",
+            status: "passed",
+            detail: "hello",
+          },
+        ],
       },
     });
     transport.push("turn/completed", {
@@ -280,6 +438,61 @@ describe("Codex app-server Codex driver", () => {
       code: "conflicting_semantic_result",
       recoverable: false,
     });
+    expect((await session.snapshot()).semanticResult?.result).toEqual(result);
+  });
+
+  it("does not infer another result from runnerd's canonical activity item", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-runnerd-authoritative-result",
+      normalizedSessionId: "normalized-runnerd-authoritative-result",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(
+      await transport.invoke({
+        id: "tool-result",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          callId: "tool-result",
+          tool: "paperclip_finish",
+          arguments: result,
+        },
+      }),
+    ).toMatchObject({ success: true });
+    const changed = structuredClone(result);
+    changed.summary = "Schema-shaped post-tool assistant activity.";
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        [RUNNERD_CANONICAL_ITEM]: true,
+        id: "runnerd-message-result",
+        type: "agentMessage",
+        text: JSON.stringify(changed),
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(
+      events.filter((event) => event.eventType === "run.result.proposed"),
+    ).toHaveLength(1);
+    expect(events.some((event) => event.eventType === "session.failed")).toBe(
+      false,
+    );
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.itemId === "runnerd-message-result",
+      )?.payload,
+    ).toMatchObject({ text: JSON.stringify(changed) });
     expect((await session.snapshot()).semanticResult?.result).toEqual(result);
   });
 
@@ -698,6 +911,160 @@ describe("Codex app-server Codex driver", () => {
       events.find((event) => event.eventType === "run.result.proposed")
         ?.payload,
     ).toMatchObject({ reportedWorkDisposition: "blocked" });
+  });
+  it("exposes and dispatches only explicit chat tools across fresh and resumed direct chat", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const registerDeliverable = {
+      name: "register_deliverable",
+      description: "Prepare one requested file.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readCurrentWakeComments = {
+      name: "read_current_wake_comments",
+      description: "Read only comments bound into the current wake.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const requestHumanInput = {
+      name: "request_human_input",
+      description: "Ask one structured question through Paperclip.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const listChatAttachments = {
+      name: "list_chat_attachments",
+      description: "List same-conversation attachment metadata.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const reuseChatAttachment = {
+      name: "reuse_chat_attachment",
+      description: "Prepare one same-conversation attachment again.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const readChatAttachment = {
+      name: "read_chat_attachment",
+      description: "Read one same-conversation file without resending it.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    const handler = vi.fn(async (call) => ({
+      interaction: { id: "interaction-direct-question", status: "pending" },
+      callId: call.callId,
+    }));
+    const driver = makeDriver([first, second], {
+      conversationMode: "direct",
+      dynamicTools: [
+        registerDeliverable,
+        readCurrentWakeComments,
+        requestHumanInput,
+        listChatAttachments,
+        reuseChatAttachment,
+        readChatAttachment,
+        {
+          name: "report_progress",
+          description: "Must remain unavailable in direct chat.",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      dynamicToolHandler: handler,
+    });
+    const original = await driver.openSession({
+      runId: "run-direct-file",
+      normalizedSessionId: "normalized-direct-file",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({
+      message: { role: "user", text: "Please return one file." },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    expect(
+      first.calls.find((call) => call.method === "thread/start")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+
+    const freshQuestion = await first.invoke({
+      id: "rpc-direct-question-fresh",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-fresh",
+        tool: "request_human_input",
+        arguments: { interactionKind: "questions" },
+      },
+    });
+    expect(freshQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-fresh",
+        arguments: { interactionKind: "questions" },
+      }),
+    );
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    expect(
+      second.calls.find((call) => call.method === "thread/resume")?.params
+        .dynamicTools,
+    ).toEqual([
+      registerDeliverable,
+      readCurrentWakeComments,
+      requestHumanInput,
+      listChatAttachments,
+      reuseChatAttachment,
+      readChatAttachment,
+    ]);
+    const resumedQuestion = await second.invoke({
+      id: "rpc-direct-question-resumed",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-direct-question-resumed",
+        tool: "request_human_input",
+        arguments: { interactionKind: "confirmation" },
+      },
+    });
+    expect(resumedQuestion).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "request_human_input",
+        callId: "call-direct-question-resumed",
+        arguments: { interactionKind: "confirmation" },
+      }),
+    );
+    await recovery?.session?.close({ reason: "test complete" });
+  });
+
+  it.each(["unknown", "validation"])("preserves the dynamic tool outcome boundary (%s)", async (outcome) => {
+    const transport = new FakeCodexTransport();
+    const error = outcome === "unknown"
+      ? new SemanticToolOutcomeUnknownError("write may have committed")
+      : new Error("invalid instruction input");
+    const handler = vi.fn(async () => { throw error; });
+    const session = await makeDriver([transport], {
+      dynamicTools: [{ name: "update_agent_instructions", description: "Write instructions.", inputSchema: { type: "object" } }],
+      dynamicToolHandler: handler,
+    }).openSession({ runId: "run-uncertain-write", normalizedSessionId: "session-uncertain-write", workingDirectory: WORKSPACE });
+    await session.startTurn({ message: { role: "user", text: "Update instructions." } });
+    const response = transport.invoke({ id: "rpc-write", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "uncertain-write", tool: "update_agent_instructions", arguments: {},
+    } });
+    if (outcome === "unknown") await expect(response).rejects.toBe(error);
+    else await expect(response).resolves.toMatchObject({ success: false });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const completions = events.filter((event) => event.eventType === "item.completed" && event.itemId === "uncertain-write");
+    expect(completions).toHaveLength(outcome === "unknown" ? 0 : 1);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
 });

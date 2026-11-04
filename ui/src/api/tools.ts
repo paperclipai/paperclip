@@ -1,11 +1,9 @@
-import type {
-  ComposioConnectLinkResponse,
-  ComposioDisconnectResponse,
-  ComposioServiceStatusResponse,
-  ComposioServicesResponse,
-} from "@/pages/apps/composio-services";
+import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
+import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
+  ConfigureRailwaySsh,
+  RailwaySshSetup,
   ToolConnection,
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
@@ -36,6 +34,7 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileConfiguration,
   ToolProfileNewToolReviewDecision,
   ToolProfileNewToolsReview,
   ToolProfileNewToolsReviewResult,
@@ -44,6 +43,7 @@ import type {
   ReorderToolPolicies,
   AppDefinition,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
@@ -68,7 +68,7 @@ import type {
   ToolConnectionCreateCapabilities,
   ToolAppMetadataPreflightResult,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, detachInflightGet, type RequestOptions } from "./client";
 
 /**
  * Tools & Access API client (Phase 6, PAP-10389).
@@ -89,6 +89,8 @@ export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = {
   apps: AppDefinition[];
+  /** Server-authoritative OAuth callback URI, omitted when this deployment has no supported browser origin. */
+  oauthCallbackUrl?: string;
   capabilities: ToolConnectionCreateCapabilities;
   credentialSources: {
     vercelConnect: {
@@ -106,7 +108,7 @@ export type CloudConnectorEnrollmentStatus = {
   status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified";
   brokerBaseUrl: string;
   instanceId: string | null;
-  environment: "development" | "staging" | "production";
+  environment: "development" | "test" | "staging" | "production";
   origins: string[];
   verificationUrl?: string;
   expiresAt?: string;
@@ -160,6 +162,7 @@ export interface CreateToolConnectionInput {
 }
 
 export interface UpdateToolConnectionInput {
+  agentInstructions?: import("@paperclipai/shared").ConnectionAgentInstructions | null;
   name?: string;
   status?: ToolConnection["status"];
   config?: Record<string, unknown>;
@@ -306,7 +309,9 @@ export const toolsApi = {
     connectionId: string,
     input: {
       asCurrentUser?: boolean;
+      asAgentId?: string;
       interactionId?: string;
+      workspaceServices?: import("@paperclipai/shared").GoogleWorkspaceServiceSelection;
     } = {},
   ) =>
     api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, input),
@@ -323,12 +328,15 @@ export const toolsApi = {
     enabledCatalogEntryIds: string[];
     askFirstCatalogEntryIds: string[];
     reviewedCatalogEntryIds?: string[];
+    agentInstructions?: import("@paperclipai/shared").ConnectionAgentInstructions | null;
     access: "all_agents" | { agentIds: string[] };
   }) =>
     api.post<FinishToolAppResult>(
       `/companies/${companyId}/tools/apps/${connectionId}/finish`,
       input,
     ),
+  getConnectionReviewCounts: (connectionId: string) =>
+    api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
   listApplications: (companyId: string) =>
@@ -363,8 +371,8 @@ export const toolsApi = {
   // --- Identity grants (PAP-17835): who a connection acts as. The response
   // carries server-computed capabilities and the audience member directory, so
   // the UI never rebuilds the permission matrix from `membershipRole`.
-  listConnectionGrants: (connectionId: string) =>
-    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`),
+  listConnectionGrants: (connectionId: string, options?: RequestOptions) =>
+    api.get<ConnectionGrantsResponse>(`/tool-connections/${connectionId}/grants`, { timeoutMs: 15_000, ...options }),
   createConnectionGrantDelegation: (connectionId: string, grantId: string, agentId: string) =>
     api.post<ConnectionGrantDelegation>(
       `/tool-connections/${connectionId}/grants/${grantId}/delegations`,
@@ -396,7 +404,7 @@ export const toolsApi = {
     connectionId: string,
     input: { subjectUserId: string; scopes?: string[]; returnTo?: string },
   ) =>
-    api.post<{ url: string }>(
+    api.post<{ url: string; handoff?: ToolOAuthStartResult["handoff"] }>(
       `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
       input,
     ),
@@ -404,11 +412,13 @@ export const toolsApi = {
     api.post<ToolConnection>(`/companies/${companyId}/tools/connections`, input),
   updateConnection: (connectionId: string, input: UpdateToolConnectionInput) =>
     api.patch<ToolConnection>(`/tool-connections/${connectionId}`, input),
+  configureRailwaySsh: (connectionId: string, input: ConfigureRailwaySsh) =>
+    api.post<RailwaySshSetup | null>(`/tool-connections/${connectionId}/railway/ssh`, input),
   // Removal is a credential-revoking teardown (PAP-17119), so the response
   // carries the cleanup receipt alongside the archived connection.
-  archiveConnection: (connectionId: string, options: { confirmComposioChildren?: boolean } = {}) =>
+  archiveConnection: (connectionId: string) =>
     api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary }>(
-      `/tool-connections/${connectionId}${options.confirmComposioChildren ? "?confirmComposioChildren=true" : ""}`,
+      `/tool-connections/${connectionId}`,
     ),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
@@ -432,6 +442,23 @@ export const toolsApi = {
     api.get<ToolConnectionTestAgentAccessResponse>(
       `/tool-connections/${connectionId}/test-agents/${agentId}/access`,
     ),
+  setupComposioApp: (connectionId: string, toolkit: string, input: ComposioAppSetupInput) =>
+    api.post<ComposioAppSetupResult>(`/tool-connections/${connectionId}/composio/apps/${encodeURIComponent(toolkit)}/setup`, input),
+  listAggregatorApps: (connectionId: string) => {
+    const path = `/tool-connections/${connectionId}/aggregator/apps`;
+    // React Query already deduplicates within a viewing-user key. Path-only
+    // request coalescing could hand a previous user's in-flight response to a new account.
+    detachInflightGet(path);
+    return api.get<AggregatorAppsResponse>(path, { cache: "no-store" });
+  },
+  syncAggregatorApps: (connectionId: string, force = false) => api.post<AggregatorAppsResponse>(`/tool-connections/${connectionId}/aggregator/apps/sync`, { force }),
+  refreshAggregatorApps: (connectionId: string, toolkits: string[] = []) => api.post<AggregatorAppsResponse>(`/tool-connections/${connectionId}/aggregator/apps/refresh`, { toolkits }),
+  configureArcadeDiscovery: (connectionId: string, input: ArcadeDiscoverySetupInput) => api.put<AggregatorAppsResponse>(`/tool-connections/${connectionId}/aggregator/discovery`, input),
+  listComposioApps: (connectionId: string) => api.get<ComposioAppsResponse>(`/tool-connections/${connectionId}/composio/apps`),
+  syncComposioApps: (connectionId: string, force = false) => api.post<ComposioAppsResponse>(`/tool-connections/${connectionId}/composio/apps/sync`, { force }),
+  refreshComposioApps: (connectionId: string, toolkits: string[]) => api.post<ComposioAppsResponse>(`/tool-connections/${connectionId}/composio/apps/refresh`, { toolkits }),
+  manageComposioAppAccount: (connectionId: string, toolkit: string, input: ComposioAppAccountInput) =>
+    api.post<ComposioAppSetupResult & { apps: ComposioAppSnapshot[] }>(`/tool-connections/${connectionId}/composio/apps/${encodeURIComponent(toolkit)}/accounts`, input),
   runTestCall: (
     connectionId: string,
     input: { agentId: string; toolName: string; parameters?: Record<string, unknown> },
@@ -443,24 +470,6 @@ export const toolsApi = {
   getTestCallStatus: (connectionId: string, actionRequestId: string) =>
     api.get<ToolConnectionTestCallStatus>(
       `/tool-connections/${connectionId}/test-calls/${actionRequestId}`,
-    ),
-  // --- Composio services (PAP-17865) ---
-  // A Composio connection brokers many toolkits; these four read and change the
-  // per-toolkit state the Services tab renders.
-  listComposioServices: (connectionId: string) =>
-    api.get<ComposioServicesResponse>(`/tool-connections/${connectionId}/services`),
-  startComposioServiceConnect: (connectionId: string, toolkitSlug: string) =>
-    api.post<ComposioConnectLinkResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}/connect`,
-      {},
-    ),
-  getComposioServiceStatus: (connectionId: string, toolkitSlug: string) =>
-    api.get<ComposioServiceStatusResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}/status`,
-    ),
-  disconnectComposioService: (connectionId: string, toolkitSlug: string) =>
-    api.delete<ComposioDisconnectResponse>(
-      `/tool-connections/${connectionId}/services/${encodeURIComponent(toolkitSlug)}`,
     ),
   importMcpJson: (companyId: string, body: { mcpJson: unknown }) =>
     api.post<McpJsonImportPreview>(`/companies/${companyId}/tools/mcp/import-json`, body),
@@ -475,6 +484,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
+  listConnectionProfileConfiguration: (connectionId: string) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>
@@ -549,10 +560,10 @@ export const toolsApi = {
     api.get<ToolActionRequestsResponse>(
       `/companies/${companyId}/tools/action-requests?status=${encodeURIComponent(status)}`,
     ),
-  approveActionRequest: (companyId: string, actionRequestId: string) =>
-    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/approve`, { companyId }),
-  declineActionRequest: (companyId: string, actionRequestId: string) =>
-    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/decline`, { companyId }),
+  approveActionRequest: (companyId: string, actionRequestId: string, rememberAction = false) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/approve`, { companyId, rememberAction }),
+  declineActionRequest: (companyId: string, actionRequestId: string, reason?: string) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/decline`, { companyId, reason }),
   createTrustRuleFromActionRequest: (
     companyId: string,
     actionRequestId: string,

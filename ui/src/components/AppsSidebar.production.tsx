@@ -1,3 +1,6 @@
+import { useLocation } from "@/lib/router";
+import { ChatDetailSidebar } from "./chat/ChatDetailSidebar";
+import { ChatSetupSidebar } from "./chat/ChatSetupNavigation";
 import { ChevronLeft, AppWindow, Store, ShieldQuestion } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -8,10 +11,10 @@ import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem.production";
 
 /**
- * Secondary sidebar for the prosumer Apps area (PAP-10856; three-door IA
+ * Secondary sidebar for the prosumer Connectors area (PAP-10856; three-door IA
  * PAP-13254 / U3).
  *
- *   ← Back · APPS: Browse / Review (n)
+ *   ← Back · CONNECTORS: Browse / Review (n)
  *   DEVELOPER: Connections / Gateways / Profiles / Rules / Health / Activity
  *
  * "Browse" is the store and "Review" holds decisions waiting on the user's
@@ -19,12 +22,13 @@ import { SidebarNavItem } from "./SidebarNavItem.production";
  * "Needs attention" is no longer a door: health/error triage folds into
  * Connections as a status filter + banner, so approvals are never buried
  * behind an error label. The Developer section was folded in from the retired
- * ToolsSidebar (PAP-10915) so the whole Apps area shares one sidebar; a
+ * ToolsSidebar (PAP-10915) so the whole Connectors area shares one sidebar; a
  * one-line caption frames who it's for (Finding A). "Run your own" and "Paste a
  * config" moved out of the sidebar into rows on the Connect-an-app page
  * (PAP-10922).
  */
 export function AppsSidebar() {
+  const { pathname } = useLocation();
   const { selectedCompany } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
@@ -33,6 +37,10 @@ export function AppsSidebar() {
   const developerTabs = DEVELOPER_TABS.filter(
     (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
   );
+
+  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar NavItem={SidebarNavItem} />;
+  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/);
+  if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} NavItem={SidebarNavItem} />;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -49,13 +57,13 @@ export function AppsSidebar() {
         </Link>
         <div className="flex items-center gap-2 px-2 py-1">
           <AppWindow className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">Apps</span>
+          <span className="flex-1 truncate text-sm font-bold text-foreground">Connectors</span>
         </div>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Apps
+          Connectors
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/apps" label="Browse" icon={Store} end />

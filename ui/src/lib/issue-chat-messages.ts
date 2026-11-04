@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -25,6 +26,7 @@ import {
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "interrupted"]);
 
 export interface IssueChatComment extends IssueComment {
   runId?: string | null;
@@ -45,18 +47,21 @@ export interface IssueChatComment extends IssueComment {
 }
 
 export interface IssueChatLinkedRun {
+  execution?: ExecutionProjection | null;
   runId: string;
   runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType?: string;
   agentName?: string;
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  error?: string | null;
   scheduledRetryAt?: string | null;
   nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
@@ -595,6 +600,8 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    origin: comment.origin ?? "comment",
+    fastResponseRequestId: comment.fastResponseRequestId ?? null,
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
     deletedByType: comment.deletedByType ?? null,
     deletedByAgentId: comment.deletedByAgentId ?? null,
@@ -842,6 +849,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+      execution: run.execution,
         runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
@@ -879,6 +887,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      execution: run.execution,
       runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
@@ -1121,6 +1130,7 @@ function createLiveRunMessage(args: {
       runAgentId: run.agentId,
       runAgentName: run.agentName,
       runStatus: run.status,
+      execution: run.execution,
       adapterType: run.adapterType,
       notices,
       waitingText,
@@ -1134,6 +1144,20 @@ function createLiveRunMessage(args: {
     }),
   };
   return message;
+}
+
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
 }
 
 export function buildIssueChatMessages(args: {
@@ -1176,6 +1200,7 @@ export function buildIssueChatMessages(args: {
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
@@ -1219,7 +1244,18 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+  const linkedRunsById = new Map(linkedRuns.map((run) => [run.runId, run]));
+  const liveRunsById = new Map(normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus).map((run) => [run.id, run]));
+  // History can settle before the live cache drops the same run. Select one
+  // representation before creating messages: terminal history is authoritative;
+  // otherwise keep the streaming snapshot and its live metadata.
+  for (const [runId, run] of linkedRunsById) {
+    if (!liveRunsById.has(runId)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) liveRunsById.delete(runId);
+    else linkedRunsById.delete(runId);
+  }
+
+  for (const run of [...linkedRunsById.values()].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
     if (hasRunOutput || run.status !== "succeeded") {
@@ -1246,7 +1282,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
+  for (const run of liveRunsById.values()) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

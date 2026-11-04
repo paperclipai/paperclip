@@ -26,7 +26,7 @@ export const registerDeliverableAction = {
   },
   "documentation": {
     "title": "Register inspectable deliverable",
-    "description": "Register mock attachment metadata and its artifact work product without credentials or bytes in the tool result.",
+    "description": "Register attachment metadata and its artifact work product without credentials or bytes in the tool result.",
     "note": null
   },
   "examples": {
@@ -77,7 +77,7 @@ export const registerDeliverableAction = {
       "operationId": "register_deliverable",
       "version": 1,
       "title": "Register inspectable deliverable",
-      "description": "Register mock attachment metadata and its artifact work product without credentials or bytes in the tool result.",
+      "description": "Register attachment metadata and its artifact work product without credentials or bytes in the tool result.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -144,7 +144,7 @@ export const registerDeliverableAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -160,7 +160,7 @@ export const registerDeliverableAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

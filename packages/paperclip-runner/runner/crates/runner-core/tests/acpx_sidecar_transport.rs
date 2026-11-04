@@ -134,6 +134,55 @@ fn an_empty_event_poll_does_not_poison_the_transport() {
     transport.shutdown().expect("fake sidecar should stop");
 }
 
+#[cfg(unix)]
+#[test]
+fn pi_shutdown_allows_owned_snapshot_cleanup_after_the_ordinary_two_second_grace() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let marker =
+        std::env::temp_dir().join(format!("pi-sidecar-cleanup-{}-{nonce}", std::process::id()));
+    let ready = marker.with_extension("ready");
+    std::fs::write(&marker, b"owned snapshot cleanup pending").unwrap();
+    // TERM is delivered to the same owned process group as in suspension.
+    // Cleanup deliberately takes longer than the ordinary two-second grace.
+    let script =
+        "trap 'sleep 3; rm -- \"$1\"; exit 0' TERM; echo ready > \"$2\"; while :; do sleep 1; done";
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            script.into(),
+            "pi-cleanup-fixture".into(),
+            marker.to_string_lossy().into_owned(),
+            ready.to_string_lossy().into_owned(),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(30),
+        shutdown_grace: Duration::from_secs(2),
+    };
+    let mut transport = AcpxSidecarTransport::start_for_agent(&config, "pi").unwrap();
+    let startup = Instant::now();
+    while !ready.exists() && startup.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        ready.exists(),
+        "fixture did not install its TERM cleanup handler"
+    );
+    let started = Instant::now();
+    transport.shutdown().unwrap();
+    let removed = !marker.exists();
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&ready);
+    assert!(
+        removed,
+        "Pi sidecar was killed before owned snapshot cleanup completed"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
 #[test]
 fn rejects_an_unbounded_event_poll_without_poisoning_the_transport() {
     let mut transport = transport("silent", Duration::from_secs(1));
@@ -162,11 +211,69 @@ fn keeps_valid_command_rejections_separate_from_protocol_failures() {
             .expect_err("fake command should be rejected");
         let message = error.to_string();
         assert!(message.contains("was rejected"));
+        assert!(message.contains("classification=unclassified"));
         assert!(!message.contains("Q7Z9"));
         assert!(!message.contains("violet-circuit-4821"));
         assert!(!message.contains("unavailable"));
     }
     transport.shutdown().expect("fake sidecar should stop");
+}
+
+#[test]
+fn preserves_closed_admission_categories_over_the_sidecar_pipe() {
+    let mut transport = transport("remote-error", Duration::from_secs(1));
+    for (code, category) in [
+        ("ACPX_ADMISSION_INSTALLATION", "admission_installation"),
+        ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+        (
+            "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+            "grok_effort_acknowledgement_missing",
+        ),
+        ("GROK_MODEL_MISMATCH", "grok_model_mismatch"),
+        ("ACPX_ADMISSION_CREDENTIAL_SECRET", "unclassified"),
+        ("GROK_MODEL_MISMATCH_SECRET", "unclassified"),
+    ] {
+        let error = transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({"errorCode":code}),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&format!("classification={category}")));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert!(!message.contains("SECRET"));
+    }
+    transport.shutdown().unwrap();
+}
+
+#[test]
+fn session_ensure_rejection_carries_its_provider_cause_outside_the_error_text() {
+    let mut transport = transport("remote-error", Duration::from_secs(1));
+    let cause = |category: &str| {
+        json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+            "category": category, "message": "You've hit your limit [REDACTED] amber-cause-5512",
+            "retryability": "requires_action" })
+    };
+    for (category, classification) in [
+        ("quota_exhausted", "provider_quota_exhausted"),
+        ("unknown", "session_ensure_failed"),
+    ] {
+        let error = transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({ "errorCode": "ACPX_SESSION_ENSURE_FAILED", "providerFailure": cause(category) }),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&format!(
+            "retryable=false, classification={classification})"
+        )));
+        assert!(!message.contains("amber-cause-5512"));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert_eq!(error.provider_failure(), Some(cause(category)));
+    }
+    transport.shutdown().unwrap();
 }
 
 #[test]
@@ -178,4 +285,239 @@ fn redacts_sidecar_stderr_when_the_process_exits() {
     let message = error.to_string();
     assert!(message.contains("[REDACTED]"));
     assert!(!message.contains("amber-signal-7305"));
+}
+
+#[cfg(unix)]
+#[test]
+fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
+    let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "printf '%s\n' 'TypeError [ERR_INVALID_ARG_TYPE]: token=amber-signal-7305' '    at /private/secret-project/session-123.js:42' 'triggerUncaughtException(err, true /* fromPromise */);' 'Error: ACPX provider spawned after ownership admission was sealed' 'code: EPIPE' 'UnknownProviderError: private-value' 'prefixECONNRESETsuffix' >&2; exit 1".to_owned(),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(50),
+    })
+    .expect("diagnostic fixture should start");
+    let error = transport
+        .poll_event(Duration::from_secs(1))
+        .expect_err("exited sidecar must fail");
+    let message = error.to_string();
+    assert!(message.contains("stderrCategories=broken_pipe,invalid_argument_type,javascript_type_error,provider_spawn_after_ownership_seal,unhandled_rejection"));
+    assert!(message.contains("stderrTail="));
+    assert!(message.contains("[REDACTED]"));
+    for sensitive in [
+        "amber-signal-7305",
+        "secret-project",
+        "session-123",
+        "private-value",
+        "UnknownProviderError",
+        "connection_reset",
+        "TypeError",
+    ] {
+        assert!(!message.contains(sensitive));
+    }
+}
+
+#[test]
+fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets() {
+    const CHILD: &str = "PAPERCLIP_TEST_MCP_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PAPERCLIP_NATIVE_MCP_NAME", "paperclip-assigned")
+            .env("PAPERCLIP_NATIVE_MCP_URL", "http://127.0.0.1:3100/mcp")
+            .env(
+                "PAPERCLIP_NATIVE_MCP_TOKEN",
+                "fixture-token-never-returned-in-test-output",
+            )
+            .env("UNRELATED_EVAL_SECRET", "must-not-cross-boundary")
+            .env(
+                "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
+                r#"{"schema":"paperclip.acpx_credential_binding.v1","agent":"pi","sessionId":"session-1","names":["OPENROUTER_API_KEY","GEMINI_API_KEY","MY_PI_SERVICE_KEY","LD_API_KEY","DYLD_API_KEY","PAPERCLIP_PI_PROVIDERS"]}"#,
+            )
+            .envs(
+                [
+                    "ANTHROPIC_API_KEY",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                    "OPENAI_API_KEY",
+                    "CODEX_API_KEY",
+                    "OPENROUTER_API_KEY",
+                    "GEMINI_API_KEY",
+                    "MY_PI_SERVICE_KEY",
+                    "LD_API_KEY",
+                    "DYLD_API_KEY",
+                    "PAPERCLIP_PI_PROVIDERS",
+                    "CURSOR_API_KEY",
+                    "CURSOR_AUTH_TOKEN",
+                    "COPILOT_GITHUB_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_TOKEN",
+                ]
+                .into_iter()
+                .map(|key| (key, "fixture-credential")),
+            )
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated gateway environment test failed");
+        return;
+    }
+    for agent in ["claude", "codex", "pi", "cursor", "copilot"] {
+        let mut sidecar = AcpxSidecarTransport::start_for_agent(
+            &AcpxSidecarTransportConfig {
+                command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+                args: vec!["--mode".into(), "mcp-environment".into()],
+                verified_launch: None,
+                request_timeout: Duration::from_secs(2),
+                shutdown_grace: Duration::from_millis(50),
+            },
+            agent,
+        )
+        .unwrap();
+        let response = sidecar
+            .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+            .unwrap();
+        assert_eq!(response["name"], "paperclip-assigned");
+        assert_eq!(response["url"], "http://127.0.0.1:3100/mcp");
+        assert_eq!(
+            response["hasToken"], true,
+            "assigned gateway credential was dropped"
+        );
+        assert_eq!(response["hasUnrelatedSecret"], false);
+        let expected = match agent {
+            "claude" => vec!["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+            "codex" => vec!["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "pi" => vec![
+                "OPENROUTER_API_KEY",
+                "GEMINI_API_KEY",
+                "MY_PI_SERVICE_KEY",
+                "LD_API_KEY",
+                "DYLD_API_KEY",
+                "PAPERCLIP_PI_PROVIDERS",
+            ],
+            "cursor" => vec!["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "copilot" => vec!["COPILOT_GITHUB_TOKEN"],
+            _ => unreachable!(),
+        };
+        assert_eq!(response["credentialKeys"], json!(expected));
+        assert_eq!(
+            response["credentialBinding"],
+            if matches!(agent, "pi" | "cursor" | "copilot") {
+                json!(
+                    r#"{"schema":"paperclip.acpx_credential_binding.v1","agent":"pi","sessionId":"session-1","names":["OPENROUTER_API_KEY","GEMINI_API_KEY","MY_PI_SERVICE_KEY","LD_API_KEY","DYLD_API_KEY","PAPERCLIP_PI_PROVIDERS"]}"#
+                )
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        sidecar.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn antigravity_candidate_forwards_only_selected_credentials_and_binding() {
+    const CHILD: &str = "PAPERCLIP_TEST_ANTIGRAVITY_ENV_CHILD";
+    let selected = match std::env::var(CHILD) {
+        Ok(selected) => selected,
+        Err(_) => {
+            for selected in [
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "antigravity_candidate_forwards_only_selected_credentials_and_binding",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                    .env(CHILD, selected)
+                    .env(selected, "fixture-selected-credential")
+                    .env(
+                        "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
+                        "fixture-controller-binding",
+                    )
+                    .envs(
+                        [
+                            "ANTHROPIC_API_KEY",
+                            "OPENAI_API_KEY",
+                            "COPILOT_GITHUB_TOKEN",
+                            "UNRELATED_EVAL_SECRET",
+                            "GEMINI_HOME",
+                            "GOOGLE_APPLICATION_CREDENTIALS",
+                            "GOOGLE_API_KEY",
+                            "GOOGLE_CLOUD_PROJECT",
+                            "AGY_ACP_FORCE_FILE_STORAGE",
+                            "PYTHONPATH",
+                            "PYTHONHOME",
+                        ]
+                        .into_iter()
+                        .map(|key| (key, "fixture-ambient-must-not-cross")),
+                    )
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "isolated Antigravity environment test failed"
+                );
+            }
+            return;
+        }
+    };
+    let mut sidecar = AcpxSidecarTransport::start_for_agent(
+        &AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".into(), "mcp-environment".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(2),
+            shutdown_grace: Duration::from_millis(50),
+        },
+        "antigravity",
+    )
+    .unwrap();
+    let response = sidecar
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .unwrap();
+    assert_eq!(response["credentialKeys"], json!([selected]));
+    assert_eq!(response["credentialBinding"], "fixture-controller-binding");
+    assert_eq!(response["hasUnrelatedSecret"], false);
+    assert_eq!(response["ambientAntigravityKeys"], json!([]));
+    sidecar.shutdown().unwrap();
+}
+
+#[test]
+fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
+    let mut sidecar = AcpxSidecarTransport::start_for_agent(
+        &AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".to_owned(), "silent".to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(30),
+            shutdown_grace: Duration::from_millis(50),
+        },
+        "pi",
+    )
+    .unwrap();
+    let started = Instant::now();
+    let error = sidecar
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(sidecar
+        .request(GeneratedAcpxSidecarCommand::SessionOpen, json!({}))
+        .unwrap_err()
+        .to_string()
+        .contains("unavailable"));
+    sidecar
+        .shutdown()
+        .expect("timeout cleanup remains idempotent");
 }

@@ -20,6 +20,16 @@ import {
 } from "./optimistic-issue-comments";
 
 describe("optimistic issue comments", () => {
+  it("immediately replaces a derived status when a task moves or reopens", () => {
+    const monitoring = { status: "in_progress", displayStatus: "monitoring" } as Issue;
+    expect(applyOptimisticIssueFieldUpdate(monitoring, { status: "done" })).toMatchObject({ status: "done", displayStatus: "done" });
+    expect(applyOptimisticIssueFieldUpdate(monitoring, { priority: "high" })?.displayStatus).toBe("monitoring");
+    expect(applyOptimisticIssueCommentUpdate({ ...monitoring, status: "done", displayStatus: "done" }, { reopen: true })).toMatchObject({ status: "todo", displayStatus: "todo" });
+  });
+  it("keeps a workspace-held task blocked when a follow-up is sent", () => {
+    const issue = { status: "blocked", executionBlocker: { workspaceRepairRequired: true } } as Issue;
+    expect(applyOptimisticIssueCommentUpdate(issue, { reopen: true })?.status).toBe("blocked");
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -127,6 +137,7 @@ describe("optimistic issue comments", () => {
     );
 
     expect(merged.map((comment) => comment.id)).toEqual(["comment-1"]);
+    expect(merged[0]).toMatchObject({ clientId: optimistic.clientId });
   });
 
   it("reconciles repeated identical comments one-for-one", () => {

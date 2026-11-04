@@ -74,6 +74,7 @@ describe("RoutineAuditActivity", () => {
       triggerIds: ["trigger-1", "trigger-2"],
       runIds: ["run-1", "run-2"],
     });
-    expect(container.textContent).toContain("routine.run.completed");
+    expect(container.textContent).toContain("Run completed");
+    expect(container.textContent).not.toContain("routine.run.completed");
   });
 });

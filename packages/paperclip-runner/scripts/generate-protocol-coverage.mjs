@@ -46,7 +46,7 @@ const lifecycleRequirements = [
   ["secrets", "secret isolation and network restrictions", "src/live/clean-room-server.test.ts; runner/crates/runner-core/src/durable/runner.rs"],
   ["transcript-accounting", "assistant transcript capture, token usage, and cost inputs", "src/live/live-session.test.ts; src/cli/eval-session.ts"],
   ["state-reconstruction", "fixture and post-run state reconstruction", "src/scenarios/scenario-explorer.test.ts; src/live/live-session.test.ts"],
-  ["paperclip-adapter-selection", "paperclip_runner is selectable without changing legacy adapter behavior", "server/src/services/native-runtime/runtime-mode.test.ts; server/src/__tests__/heartbeat-native-runner-selection.test.ts"],
+  ["paperclip-adapter-selection", "paperclip_runner is selectable without changing legacy adapter behavior", "server/src/services/native-runtime/runtime-mode.test.ts"],
   ["real-control-plane-binding", "advertised runner tools re-authorize the live company, issue, agent, and run before using real Paperclip services", "server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts; server/src/services/native-runtime/paperclip-runner-real-server.integration.test.ts"],
   ["shared-paperclip-prp-route", "Rust runnerd authenticates to the shared Paperclip server route and completes a real bound semantic tool call", "server/src/realtime/runner-prp-ws.test.ts; server/src/services/native-runtime/paperclip-runner-real-server.integration.test.ts"],
   ["real-control-plane-idempotency", "real service mutations are replay-safe and reject conflicting idempotency-key reuse", "server/src/services/native-runtime/paperclip-runner-tool-authority.test.ts"],

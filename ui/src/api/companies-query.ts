@@ -1,9 +1,10 @@
 import { useQuery, type QueryClient } from "@tanstack/react-query";
-import type { Company } from "@paperclipai/shared";
+import type { BoardBootstrap, Company } from "@paperclipai/shared";
 import { authApi } from "./auth";
 import { companiesApi } from "./companies";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
+import { useBootstrapQuery } from "./bootstrap-query";
 
 export type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
@@ -40,6 +41,18 @@ export function companyListQueryOptions(userId: string | null) {
   } as const;
 }
 
+/** The administration directory has its own account-scoped cache and request. */
+export function companyDirectoryQueryOptions(userId: string | null) {
+  return {
+    queryKey: queryKeys.companies.directory(userId),
+    queryFn: async () => {
+      companiesApi.detachInflightDirectory();
+      return companiesApi.directory();
+    },
+    retry: false,
+  } as const;
+}
+
 const sessionQueryOptions = {
   queryKey: queryKeys.auth.session,
   queryFn: () => authApi.getSession(),
@@ -61,9 +74,19 @@ const sessionQueryOptions = {
  * So: settled on success only. A failed session lookup leaves the list unfetched
  * until the query recovers, which it does on the next refetch.
  */
-export function useAccountIdentity(): { userId: string | null; settled: boolean } {
-  const { data: session, isSuccess } = useQuery(sessionQueryOptions);
-  return { userId: session?.user.id ?? null, settled: isSuccess };
+export function useAccountIdentity(): {
+  userId: string | null;
+  settled: boolean;
+  failed: boolean;
+  bootstrap: BoardBootstrap | undefined;
+  updatedAt: number;
+} {
+  const { data: session, isSuccess, isError, dataUpdatedAt } = useQuery(sessionQueryOptions);
+  const userId = session?.user.id ?? null;
+  return {
+    userId, settled: isSuccess, failed: isError, updatedAt: dataUpdatedAt,
+    bootstrap: isSuccess && session?.boardBootstrap?.userId === userId ? session.boardBootstrap : undefined,
+  };
 }
 
 /**
@@ -75,12 +98,12 @@ export function useAccountIdentity(): { userId: string | null; settled: boolean 
 export function useCompanyListQuery(
   options: { enabled?: boolean; staleTime?: number; retry?: number | boolean } = {},
 ) {
-  const { userId, settled } = useAccountIdentity();
-  const query = useQuery<CompanyListResult>({
+  const { userId, settled, bootstrap, updatedAt } = useAccountIdentity();
+  const query = useBootstrapQuery<CompanyListResult>({
     ...companyListQueryOptions(userId),
     ...options,
     enabled: settled && (options.enabled ?? true),
-  });
+  }, bootstrap ? { identity: bootstrap, data: { companies: bootstrap.companies, unauthorized: false }, updatedAt } : undefined);
 
   // While the account is unknown this query is disabled, and a disabled query
   // reports `isLoading: false` with `data: undefined` — which consumers default

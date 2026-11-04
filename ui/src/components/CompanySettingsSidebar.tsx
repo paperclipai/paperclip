@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArrowLeft,
   Cpu,
   Download,
   FlaskConical,
   KeyRound,
+  Link2,
   MonitorCog,
   Puzzle,
   Shield,
@@ -26,6 +28,7 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -80,9 +83,26 @@ export function CompanySettingsSidebar() {
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
-    <ContextualSidebarFrame surface="settings" title="Settings" icon={SlidersHorizontal}>
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="flex flex-col gap-0.5">
+    <ContextualSidebarFrame
+      surface="settings"
+      title="Settings"
+      showHeader={false}
+      className={primarySidebarStyles.surface}
+    >
+      <div
+        data-slot="settings-sidebar-header"
+        className="flex h-(--sz-60px) shrink-0 items-center px-3"
+      >
+        <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
+          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+        </div>
+      </div>
+      <nav
+        aria-label="Settings"
+        data-slot="contextual-sidebar-nav"
+        className={primarySidebarStyles.nav}
+      >
+        <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
@@ -123,6 +143,7 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}

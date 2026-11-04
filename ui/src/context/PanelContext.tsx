@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { createContext, useCallback, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 import type { SidePanelContentMode } from "@/components/side-panel";
 
 const STORAGE_KEY = "paperclip:panel-visible";
@@ -11,6 +12,15 @@ interface PanelContextValue {
   closePanel: () => void;
   setPanelVisible: (visible: boolean) => void;
   togglePanelVisible: () => void;
+  /**
+   * One-shot maximize request (LOOA-2181): deep links with `viewer=full` ask
+   * the resizable panel host to open maximized. The request stays pending
+   * until the host consumes it (the panel may not be mounted yet when the
+   * deep link routes), so consumers must clear it after acting.
+   */
+  panelMaximizeRequested: boolean;
+  requestPanelMaximize: () => void;
+  clearPanelMaximizeRequest: () => void;
 }
 
 const PanelContext = createContext<PanelContextValue | null>(null);
@@ -35,7 +45,22 @@ function writePreference(visible: boolean) {
 export function PanelProvider({ children }: { children: ReactNode }) {
   const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
   const [panelContentMode, setPanelContentMode] = useState<SidePanelContentMode>("padded");
-  const [panelVisible, setPanelVisibleState] = useState(readPreference);
+  const [classicPanelVisible, setPanelVisibleState] = useState(readPreference);
+  const [coordinatorPanelVisible, setCoordinatorPanelVisible] = useState(false);
+  const { enabled: coordinatorWorkspaceEnabled, userId } = useCoordinatorWorkspaceEnabled();
+  // The experiment has an on-demand panel. Its visibility never overwrites
+  // the classic workspace preference, including when the experiment is off.
+  const panelVisible = coordinatorWorkspaceEnabled ? coordinatorPanelVisible : classicPanelVisible;
+  useLayoutEffect(() => setCoordinatorPanelVisible(false), [coordinatorWorkspaceEnabled, userId]);
+  const [panelMaximizeRequested, setPanelMaximizeRequested] = useState(false);
+
+  const requestPanelMaximize = useCallback(() => {
+    setPanelMaximizeRequested(true);
+  }, []);
+
+  const clearPanelMaximizeRequest = useCallback(() => {
+    setPanelMaximizeRequested(false);
+  }, []);
 
   const openPanel = useCallback((content: ReactNode, options?: { contentMode?: SidePanelContentMode }) => {
     setPanelContent(content);
@@ -48,21 +73,36 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setPanelVisible = useCallback((visible: boolean) => {
-    setPanelVisibleState(visible);
-    writePreference(visible);
-  }, []);
+    if (coordinatorWorkspaceEnabled) setCoordinatorPanelVisible(visible);
+    else { setPanelVisibleState(visible); writePreference(visible); }
+  }, [coordinatorWorkspaceEnabled]);
 
   const togglePanelVisible = useCallback(() => {
+    if (coordinatorWorkspaceEnabled) {
+      setCoordinatorPanelVisible(previous => !previous);
+      return;
+    }
     setPanelVisibleState((prev) => {
       const next = !prev;
       writePreference(next);
       return next;
     });
-  }, []);
+  }, [coordinatorWorkspaceEnabled]);
 
   return (
     <PanelContext.Provider
-      value={{ panelContent, panelContentMode, panelVisible, openPanel, closePanel, setPanelVisible, togglePanelVisible }}
+      value={{
+        panelContent,
+        panelContentMode,
+        panelVisible,
+        openPanel,
+        closePanel,
+        setPanelVisible,
+        togglePanelVisible,
+        panelMaximizeRequested,
+        requestPanelMaximize,
+        clearPanelMaximizeRequest,
+      }}
     >
       {children}
     </PanelContext.Provider>

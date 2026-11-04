@@ -5,8 +5,25 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
 import { BreadcrumbBar } from "./BreadcrumbBar";
+import { CoordinatorAgentSwitcher } from "./CoordinatorAgentSwitcher";
+import type { Agent } from "@paperclipai/shared";
+
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+const navigate = vi.hoisted(() => vi.fn());
+const chatAgents = vi.hoisted(() => [
+  { id: "first", name: "CodexCoder", role: "engineer", status: "idle" },
+  { id: "second", name: "Designer", role: "designer", status: "idle" },
+]);
+
+vi.mock("@/hooks/useAgentChatNavigation", () => ({
+  useAgentChatNavigation: () => ({
+    agents: { data: chatAgents, isPending: false, error: null },
+    chats: { data: [] },
+  }),
+}));
 
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => navigate,
   Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }) => (
     <a className={className} href={to}>{children}</a>
   ),
@@ -15,7 +32,7 @@ vi.mock("@/lib/router", () => ({
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     collapsed: false,
-    isMobile: false,
+    isMobile: viewport.isMobile,
     toggleCollapsed: vi.fn(),
     toggleSidebar: vi.fn(),
   }),
@@ -44,11 +61,13 @@ function TaskBreadcrumbs({
   panelControl,
   taskDetailLayout = false,
   identifier = "PAP-16679",
+  sourceHref = "/issues",
 }: {
   onOpen?: () => void;
   panelControl?: { open: boolean; onToggle: () => void };
   taskDetailLayout?: boolean;
   identifier?: string;
+  sourceHref?: string;
 }) {
   const {
     setBreadcrumbs,
@@ -58,7 +77,7 @@ function TaskBreadcrumbs({
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Tasks", href: "/issues" },
+      { label: "Tasks", href: sourceHref },
       {
         label: "Hire your first engineer and create a hiring plan",
         identifier,
@@ -84,6 +103,7 @@ function TaskBreadcrumbs({
     setBreadcrumbPanelControl,
     setBreadcrumbToolbar,
     setBreadcrumbs,
+    sourceHref,
   ]);
 
   return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
@@ -97,6 +117,9 @@ describe("BreadcrumbBar", () => {
   let root: Root;
 
   beforeEach(() => {
+    viewport.isMobile = false;
+    navigate.mockClear();
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -105,6 +128,96 @@ describe("BreadcrumbBar", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { mobile: false, taskDetailLayout: true },
+    { mobile: true, taskDetailLayout: true },
+    { mobile: false, taskDetailLayout: false },
+    { mobile: true, taskDetailLayout: false },
+  ])("opens the agent picker from the avatar, name and caret (mobile=$mobile, task=$taskDetailLayout)", async ({ mobile, taskDetailLayout }) => {
+    viewport.isMobile = mobile;
+    const agent = chatAgents[0] as Agent;
+    function AgentBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: agent.name,
+          control: <CoordinatorAgentSwitcher agent={agent} />,
+          controlKey: agent.id,
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Switch agent. Currently CodexCoder"]')!;
+    expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-current")).toBe("page");
+    expect(button.closest('[aria-disabled="true"]')).toBeNull();
+    expect(button.querySelector("button, a")).toBeNull();
+    expect(document.title).toBe("CodexCoder • Paperclip");
+    for (const selector of ['[data-slot="agent-avatar"]', "[data-agent-name]", "svg"]) {
+      const target = button.querySelector<HTMLElement>(selector);
+      expect(target).not.toBeNull();
+      await act(async () => { button.focus(); target!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Chat with an agent");
+      expect(button.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await vi.waitFor(() => expect(document.activeElement).toBe(button));
+    }
+    await act(async () => button.click());
+    const next = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("Designer"))!;
+    await act(async () => next.click());
+    expect(navigate).toHaveBeenCalledWith("/chats/designer");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("keeps a single task breadcrumb compact with adjacent identity and settings action", async () => {
+    const configure = vi.fn();
+    function AgentBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: "CodexCoder",
+          leading: <span aria-label="Agent avatar">CC</span>,
+          leadingKey: "codex-avatar",
+          trailing: <button aria-label="Configure CodexCoder" onClick={configure}>Settings</button>,
+          trailingKey: "codex-settings",
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
+    const label = container.querySelector('[data-slot="breadcrumb-page"]');
+    expect(label?.textContent).toBe("CCCodexCoder");
+    expect(label?.classList.contains("items-center")).toBe(true);
+    expect(label?.classList.contains("items-baseline")).toBe(false);
+    expect(container.querySelector("h1")).toBeNull();
+    const settings = container.querySelector<HTMLButtonElement>('button[aria-label="Configure CodexCoder"]');
+    expect(settings?.closest('[data-slot="breadcrumb-item"]')).toBe(label?.closest('[data-slot="breadcrumb-item"]'));
+    expect(settings?.closest('[aria-disabled="true"]')).toBeNull();
+    act(() => settings?.click());
+    expect(configure).toHaveBeenCalledOnce();
+    expect(container.querySelector('button[aria-label="Hide properties"]')).not.toBeNull();
+  });
+
+  it("shows only the title followed by its identifier for a company-scoped mobile task header", async () => {
+    viewport.isMobile = true;
+    await act(async () => {
+      root.render(
+        <BreadcrumbProvider>
+          <TaskBreadcrumbs identifier="TES-3" sourceHref="/TES/issues" />
+        </BreadcrumbProvider>,
+      );
+    });
+    expect(container.querySelector('a[href="/TES/issues"]')).toBeNull();
+    const identifier = container.querySelector('[data-slot="task-title-identifier"]');
+    expect(identifier?.textContent).toBe("TES-3");
+    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring plan");
+    expect(identifier?.previousElementSibling?.className).toContain("truncate");
+    expect(container.querySelector('button[aria-label="Open sidebar"]')).not.toBeNull();
   });
 
   it("renders a page toolbar in the same persistent row as the task breadcrumb", async () => {

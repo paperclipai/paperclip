@@ -8,7 +8,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { SentryGate } from "./SentryGate";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
-const initBrowserErrorMonitoringMock = vi.hoisted(() => vi.fn(async (_dsn: string) => {}));
+const initBrowserErrorMonitoringMock = vi.hoisted(() => vi.fn(async (_dsn: string, _environment?: string) => {}));
 const teardownBrowserErrorMonitoringMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("@/api/auth", () => ({
@@ -16,7 +16,7 @@ vi.mock("@/api/auth", () => ({
 }));
 
 vi.mock("@/lib/sentry", () => ({
-  initBrowserErrorMonitoring: (dsn: string) => initBrowserErrorMonitoringMock(dsn),
+  initBrowserErrorMonitoring: (dsn: string, environment?: string) => initBrowserErrorMonitoringMock(dsn, environment),
   teardownBrowserErrorMonitoring: () => teardownBrowserErrorMonitoringMock(),
 }));
 
@@ -93,7 +93,7 @@ describe("SentryGate", () => {
     const root = await renderGate();
 
     expect(initBrowserErrorMonitoringMock).toHaveBeenCalledTimes(1);
-    expect(initBrowserErrorMonitoringMock).toHaveBeenCalledWith("https://public@o0.ingest.sentry.io/1");
+    expect(initBrowserErrorMonitoringMock).toHaveBeenCalledWith("https://public@o0.ingest.sentry.io/1", undefined);
     root.unmount();
   });
 
@@ -113,8 +113,41 @@ describe("SentryGate", () => {
     await flushReact();
 
     expect(initBrowserErrorMonitoringMock).toHaveBeenCalledTimes(1);
-    expect(initBrowserErrorMonitoringMock).toHaveBeenCalledWith("https://public@o0.ingest.sentry.io/1");
+    expect(initBrowserErrorMonitoringMock).toHaveBeenCalledWith("https://public@o0.ingest.sentry.io/1", undefined);
     root.unmount();
+  });
+
+  it("restarts monitoring when the session environment changes with the same DSN", async () => {
+    const session = {
+      session: { id: "s1", userId: "u1" },
+      user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+      sentryDsn: "https://public@o0.ingest.sentry.io/1",
+      sentryEnvironment: "staging",
+    };
+    getSessionMock.mockResolvedValue(session);
+    const root = await renderGate();
+    try {
+      expect(initBrowserErrorMonitoringMock).toHaveBeenLastCalledWith(session.sentryDsn, "staging");
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: queryKeys.auth.session });
+      });
+      await flushReact();
+      expect(initBrowserErrorMonitoringMock).toHaveBeenCalledTimes(1);
+      expect(teardownBrowserErrorMonitoringMock).not.toHaveBeenCalled();
+
+      getSessionMock.mockResolvedValue({ ...session, sentryEnvironment: "production" });
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: queryKeys.auth.session });
+      });
+      await flushReact();
+      expect(teardownBrowserErrorMonitoringMock).toHaveBeenCalledTimes(1);
+      expect(initBrowserErrorMonitoringMock).toHaveBeenCalledTimes(2);
+      expect(initBrowserErrorMonitoringMock).toHaveBeenLastCalledWith(session.sentryDsn, "production");
+      expect(teardownBrowserErrorMonitoringMock.mock.invocationCallOrder[0])
+        .toBeLessThan(initBrowserErrorMonitoringMock.mock.invocationCallOrder[1]);
+    } finally {
+      root.unmount();
+    }
   });
 
   it("closes browser monitoring when sign-out clears the session's DSN", async () => {

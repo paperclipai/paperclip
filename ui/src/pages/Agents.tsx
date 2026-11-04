@@ -1,3 +1,7 @@
+import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -6,7 +10,6 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -15,29 +18,19 @@ import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
-import { MembershipAction } from "../components/MembershipAction";
-import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
-import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
+import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
+import { AlertTriangle, Bot } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
-import {
-  isStarred,
-  resourceMembershipState,
-  useResourceMembershipMutation,
-  useResourceMemberships,
-} from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -49,16 +42,9 @@ const ConfigureBuiltInAgentModal = lazy(() =>
   })),
 );
 
-export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+import { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
+export { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
-
-const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
-  { value: "builtin", label: "Built-in" },
-];
 
 function isFilterTab(value: string): value is FilterTab {
   return (AGENT_FILTER_TABS as readonly string[]).includes(value);
@@ -95,10 +81,16 @@ function matchesFilter(status: string, tab: FilterTab): boolean {
   return true;
 }
 
-function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<string>): Agent[] {
+function matchesSearch(agent: Pick<Agent, "name" | "role" | "title">, query: string): boolean {
+  const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const text = [agent.name, agent.role, roleLabels[agent.role], agent.title].filter(Boolean).join(" ").toLocaleLowerCase();
+  return words.every(word => text.includes(word));
+}
+
+export function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<string>, query = ""): Agent[] {
   return agents
     .filter((a) => {
-      if (HIDDEN_AGENT_STATUSES.has(a.status)) return false;
+      if (HIDDEN_AGENT_STATUSES.has(a.status) || !matchesSearch(a, query)) return false;
       // The `builtin` filter keys on the built-in marker, not agent status.
       if (tab === "builtin") return builtInAgentIds.has(a.id);
       return matchesFilter(a.status, tab);
@@ -170,10 +162,10 @@ function resolveAgentEnvironment(
     : describeMissingEnvironment(environmentId);
 }
 
-function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>): OrgNode[] {
+export function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>, matchingIds?: Set<string>): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
-      const filteredReports = filterOrgTree(node.reports, tab, builtInAgentIds);
+      const filteredReports = filterOrgTree(node.reports, tab, builtInAgentIds, matchingIds);
       // Hidden agents (terminated / pending_approval) never render as a row, but
       // any visible reports are promoted so the tree doesn't lose live agents.
       if (HIDDEN_AGENT_STATUSES.has(node.status)) {
@@ -183,7 +175,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
       const nodeMatches = tab === "builtin"
         ? builtInAgentIds.has(node.id)
         : matchesFilter(node.status, tab);
-      if (nodeMatches || filteredReports.length > 0) {
+      if ((nodeMatches && (!matchingIds || matchingIds.has(node.id))) || filteredReports.length > 0) {
         acc.push({ ...node, reports: filteredReports });
       }
       return acc;
@@ -194,6 +186,8 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+  const [query, setQuery] = useState("");
+  const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -211,27 +205,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
 
-  const { data: boardAccess } = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
-  });
-  const canUseProviderTrace =
-    boardAccess?.source === "local_implicit" ||
-    boardAccess?.isInstanceAdmin === true;
-
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
     enabled: !!selectedCompanyId,
   });
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
-  const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
-  const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
-    [builtInAgentsEnabled],
-  );
-
+  const tab: FilterTab = "all";
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
@@ -290,8 +270,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     refetchInterval: sharedRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
-  const membershipsQuery = useResourceMemberships(selectedCompanyId);
-  const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
@@ -335,10 +313,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
+    if (requestedTab !== "all") {
       navigate("/agents/all", { replace: true });
     }
-  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
+  }, [navigate, requestedTab]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select an organization to view agents." />;
@@ -348,8 +326,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
+  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query);
+  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() ? new Set(filtered.map(agent => agent.id)) : undefined);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -360,19 +338,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-    const agentPending =
-      membershipMutation.isPending &&
-      membershipMutation.variables?.resourceType === "agent" &&
-      membershipMutation.variables.resourceId === agent.id;
-    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
-    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
-    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
-    // Lifecycle chip + inline `Set up`. Rendered inline in
-    // `meta` at xl (where there's room and the meta columns align) and on a
-    // dedicated full-width line beneath the name below xl, so the chips never
-    // starve the name — the row's primary identifier — at narrow widths.
+    // Keep lifecycle controls with the metadata only when the content area
+    // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
       <>
         <BuiltInLifecycleChip status={builtInState.status} />
@@ -398,52 +367,32 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <EntityRow
         key={agent.id}
         title={agent.name}
-        // Fixed (truncating) title width at xl so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Below xl the meta columns are hidden, so
-        // the title flexes instead: a fixed width there let the shrink-0
-        // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
+        titleClassName="flex-1"
+        titleTextClassName="truncate"
+        subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className={cn(
-          "group",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
-        )}
+        className="group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={agent.status} />
+          <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
-        meta={
-          <div className="flex items-center gap-3">
-            {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            <div className="hidden xl:flex items-center gap-3">
-              <AgentMetaColumns
-                agent={agent}
-                environment={resolveRenderedEnvironment(agent.id)}
-                showEnvironment={showEnvironmentColumn}
-              />
-            </div>
+        secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
+        secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
+            {builtInCluster}
+            {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
+              {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
+            </span>}
+            {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title="Last heartbeat">{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
-        }
-        metaSpacerClassName="hidden xl:block"
+        )}
         trailing={
           <div className="flex items-center gap-3">
+            {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator
@@ -455,54 +404,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                  canRunWithProviderTrace={canUseProviderTrace}
-                />
-              </div>
-              <StarToggle
-                size="row"
-                starred={agentStarred}
-                pending={agentStarPending}
-                resourceName={agent.name}
-                onToggle={(next) => membershipMutation.mutate({
-                  resourceType: "agent",
-                  resourceId: agent.id,
-                  resourceName: agent.name,
-                  starred: next,
-                })}
-              />
             </div>
-            <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
-              resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
-            />
           </div>
         }
       />
@@ -511,56 +413,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   return (
     <div className={cn(
-      effectiveView === "org"
-        ? "flex h-full min-h-0 flex-col gap-4"
-        : "space-y-4",
+      "flex flex-col gap-4 @container",
+      effectiveView === "org" && "h-full min-h-0",
     )}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
-        <div className="flex items-center gap-2">
-          {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label="Agent view">
-              <Button
-                type="button"
-                size="icon-sm"
-                variant={effectiveView === "list" ? "secondary" : "ghost"}
-                className="rounded-none"
-                onClick={() => setView("list")}
-                title="List view"
-                aria-label="List view"
-                aria-pressed={effectiveView === "list"}
-              >
-                <List className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                type="button"
-                size="icon-sm"
-                variant={effectiveView === "org" ? "secondary" : "ghost"}
-                className="rounded-none border-l border-border"
-                onClick={() => setView("org")}
-                title="Org chart view"
-                aria-label="Org chart view"
-                aria-pressed={effectiveView === "org"}
-              >
-                <Network className="h-3.5 w-3.5" />
-              </Button>
-          </div> : null}
-          <Button size="sm" variant="outline" onClick={openNewAgent}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
-          </Button>
-        </div>
-      </div>
+      <AgentsToolbar query={query} onQueryChange={setQuery} view={effectiveView} onViewChange={setView}
+        hideViewToggle={forceListView} onNewAgent={openNewAgent} />
 
-      {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
-      )}
-
+      <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
@@ -573,17 +432,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       )}
 
       {/* List view */}
-      {effectiveView === "list" && filtered.length > 0 && (
-        <div>
-          {filtered.map(renderAgentRow)}
-        </div>
+      {effectiveView === "list" && agents && agents.length > 0 && (
+        <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
+          agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
+          visibleAgents={filtered} renderAgent={renderAgentRow} />
       )}
 
-      {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
-        </p>
-      )}
+
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
@@ -592,7 +447,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
+          No agents match your search and selected status.
         </p>
       )}
 
@@ -613,6 +468,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           />
         </Suspense>
       )}
+      </div>
     </div>
   );
 }
@@ -625,9 +481,6 @@ function OrgTreeNode({
   environmentByAgentId,
   environmentDataLoading,
   showEnvironment,
-  tab,
-  memberships,
-  membershipMutation,
   builtInByAgentId,
   onConfigureBuiltIn,
 }: {
@@ -638,9 +491,6 @@ function OrgTreeNode({
   environmentByAgentId: Map<string, EnvironmentDescriptor>;
   environmentDataLoading: boolean;
   showEnvironment: boolean;
-  tab: FilterTab;
-  memberships: ReturnType<typeof useResourceMemberships>["data"];
-  membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
@@ -648,28 +498,17 @@ function OrgTreeNode({
   const builtInState = builtInByAgentId.get(node.id);
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
-  const membershipState = resourceMembershipState(memberships, "agent", node.id);
-  const pending = membershipMutation.isPending &&
-    membershipMutation.variables?.resourceType === "agent" &&
-    membershipMutation.variables.resourceId === node.id;
-  const starPending = pending && membershipMutation.variables?.starred !== undefined;
-  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
-  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "sm:text-foreground/55",
-        )}
+        className="group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit"
       >
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={node.status} />
+          <AgentAvatar agent={agent ?? node} size={24} />
         )}
         <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
           {/* Name floor + `truncate` keeps the primary identifier readable; the
@@ -737,38 +576,6 @@ function OrgTreeNode({
               <AgentStatusBadge status={node.status} />
             </span>
           </div>
-          <MembershipAction
-            state={membershipState}
-            pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-            resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
-          />
-          <div className="hidden sm:flex items-center gap-3">
-            <StarToggle
-              size="row"
-              starred={starred}
-              pending={starPending}
-              resourceName={node.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: node.id,
-                resourceName: node.name,
-                starred: next,
-              })}
-            />
-          </div>
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
@@ -783,9 +590,6 @@ function OrgTreeNode({
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironment}
-              tab={tab}
-              memberships={memberships}
-              membershipMutation={membershipMutation}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
             />
@@ -813,7 +617,7 @@ function AgentMetaColumns({
   showEnvironment: boolean;
 }) {
   const model = getConfiguredModel(agent);
-  const adapterLabel = getAdapterLabel(agent.adapterType);
+  const adapterLabel = getAdapterLabel(agentDisplayAdapterType(agent));
   return (
     <>
       <div className="w-44 min-w-0 leading-tight">

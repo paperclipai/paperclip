@@ -20,20 +20,10 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { ProjectsToolbar, type ProjectSortField, type ProjectSortDir } from "@/components/ProjectsToolbar";
+import { Hexagon } from "lucide-react";
+import { Lock } from "lucide-react";
 import { Card } from "@/components/ui/card";
-
-type ProjectSortField = "name" | "updated" | "created" | "targetDate";
-type ProjectSortDir = "asc" | "desc";
-
-const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "updated", label: "Updated" },
-  { field: "created", label: "Created" },
-  { field: "targetDate", label: "Target date" },
-];
 
 function compareProjectNames(left: Project, right: Project) {
   const nameDiff = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
@@ -80,6 +70,7 @@ export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [query, setQuery] = useState("");
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
@@ -99,8 +90,15 @@ export function Projects() {
     [allProjects],
   );
   const sortedProjects = useMemo(
-    () => sortProjects(projects, sortField, sortDir),
-    [projects, sortDir, sortField],
+    () => {
+      const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const matching = projects.filter(project => {
+        const text = `${project.name} ${project.description ?? ""}`.toLocaleLowerCase();
+        return words.every(word => text.includes(word));
+      });
+      return sortProjects(matching, sortField, sortDir);
+    },
+    [projects, query, sortDir, sortField],
   );
   const groupedProjects = useMemo(() => {
     const groups = {
@@ -116,7 +114,6 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select an organization to view projects." />;
@@ -128,51 +125,8 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
-              <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-44 p-0">
-            <div className="p-2 space-y-0.5">
-              {PROJECT_SORT_OPTIONS.map((option) => (
-                <button
-                  key={option.field}
-                  type="button"
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                    sortField === option.field
-                      ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
-                  onClick={() => {
-                    if (sortField === option.field) {
-                      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
-                      return;
-                    }
-                    setSortField(option.field);
-                    setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
-                  }}
-                >
-                  <span>{option.label}</span>
-                  {sortField === option.field ? (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-        <Button size="sm" variant="outline" onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Project
-        </Button>
-      </div>
+      <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={sortField} sortDir={sortDir}
+        onSortChange={(field, direction) => { setSortField(field); setSortDir(direction); }} onNewProject={openNewProject} />
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
@@ -185,7 +139,9 @@ export function Projects() {
         />
       )}
 
-      {projects.length > 0 && (
+      {projects.length > 0 && sortedProjects.length === 0 && <p className="text-sm text-muted-foreground">No projects match your search.</p>}
+
+      {sortedProjects.length > 0 && (
         <div className="space-y-6">
           {([
             ["My Projects", groupedProjects.mine],
@@ -221,6 +177,7 @@ export function Projects() {
                         className={state === "left" ? "group text-foreground/55" : "group"}
                         trailing={
                           <div className="flex items-center gap-3">
+                            {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
                               title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}

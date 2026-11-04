@@ -1,3 +1,5 @@
+import { AgentIdentity } from "./AgentIdentity";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
@@ -18,7 +20,6 @@ import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody"
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
-import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
@@ -103,7 +104,7 @@ interface CommentThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
@@ -344,8 +345,8 @@ function CommentCard({
       <div className="flex items-center justify-between mb-1">
         {comment.authorAgentId ? (
           <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-            <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+            <AgentIdentity
+              agent={agentMap?.get(comment.authorAgentId) ?? { id: comment.authorAgentId, name: comment.authorAgentId.slice(0, 8) }}
               size="sm"
             />
           </Link>
@@ -478,9 +479,9 @@ function TimelineEventCard({
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
-      <Avatar size="sm" className="mt-0.5">
-        <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-      </Avatar>
+      {event.actorType === "agent" ? <AgentAvatar agent={agentMap?.get(event.actorId) ?? { id: event.actorId, name: actorName }} size={32} className="mt-0.5" /> : (
+        <Avatar size="sm" className="mt-0.5"><AvatarFallback>{initialsForName(actorName)}</AvatarFallback></Avatar>
+      )}
 
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
@@ -624,9 +625,7 @@ const TimelineList = memo(function TimelineList({
           const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
           return (
             <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
-              <Avatar size="sm">
-                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-              </Avatar>
+              <AgentAvatar agent={agentMap?.get(run.agentId) ?? { id: run.agentId, name: actorName }} size={32} />
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
@@ -753,6 +752,12 @@ export function CommentThread({
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
@@ -829,6 +834,7 @@ export function CommentThread({
         kind: "agent",
         agentId: a.id,
         agentIcon: a.icon,
+        agentAppearance: a.appearance,
       }));
   }, [agentMap, providedMentions]);
 
@@ -852,8 +858,12 @@ export function CommentThread({
   }, []);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
@@ -898,6 +908,7 @@ export function CommentThread({
     try {
       await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -1051,7 +1062,7 @@ export function CommentThread({
                 noneLabel="No responsible"
                 searchPlaceholder="Search responsible..."
                 emptyMessage="No responsible found."
-                onChange={setReassignTarget}
+                onChange={selectAssignee}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
                   if (!option) return <span className="text-muted-foreground">Responsible</span>;
@@ -1060,7 +1071,7 @@ export function CommentThread({
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>
@@ -1073,7 +1084,7 @@ export function CommentThread({
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>

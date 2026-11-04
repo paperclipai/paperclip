@@ -12,6 +12,7 @@ import {
 } from "../services/native-runtime/runtime-request-resolution-authority.js";
 
 import { logger } from "../middleware/logger.js";
+import { registerLocalRuntimeApiServer, resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../runtime-api.js";
 
 const CONNECT_PATH_PREFIX = "/api/runner/v1/connect/";
 const UUID_PATTERN =
@@ -19,6 +20,8 @@ const UUID_PATTERN =
 
 interface RegisteredAuthority {
   readonly companyId: string;
+  readonly issueId: string | null;
+  readonly agentId: string | null;
   readonly authority: DurablePrpControlPlane;
   readonly generation: symbol;
   readonly runtimeRequestResolutions: Map<
@@ -27,12 +30,25 @@ interface RegisteredAuthority {
   >;
 }
 
+interface CurrentLiveAuthority {
+  readonly runId: string;
+  readonly generation: symbol;
+}
+
 interface RunnerPrpUpgradeRequest extends IncomingMessage {
   paperclipWebSocketHandled?: boolean;
 }
 
 const registrations = new Map<string, RegisteredAuthority>();
-let loopbackOrigin: string | null = null;
+const currentLiveAuthorities = new Map<string, CurrentLiveAuthority>();
+
+function liveAuthorityKey(input: {
+  readonly companyId: string;
+  readonly issueId: string;
+  readonly agentId: string;
+}): string {
+  return JSON.stringify([input.companyId, input.issueId, input.agentId]);
+}
 
 function rejectUpgrade(
   socket: Duplex,
@@ -54,19 +70,11 @@ function rejectUpgrade(
 
 export function setupRunnerPrpWebSocketServer(
   server: Server,
-  options: { readonly apiUrl: string },
+  _options?: { readonly apiUrl: string },
 ): void {
-  const apiUrl = new URL(options.apiUrl);
-  if (!["http:", "https:"].includes(apiUrl.protocol)) {
-    throw new Error("runner_prp_websocket_api_url_invalid");
-  }
-  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-  apiUrl.username = "";
-  apiUrl.password = "";
-  apiUrl.pathname = "";
-  apiUrl.search = "";
-  apiUrl.hash = "";
-  loopbackOrigin = apiUrl.toString().replace(/\/$/, "");
+  // Older launchers may still pass an advertised apiUrl. Only the actual
+  // bound listener can authorize native transport, including ephemeral ports.
+  registerLocalRuntimeApiServer(server);
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -100,12 +108,14 @@ export function setupRunnerPrpWebSocketServer(
 
 export async function registerRunnerPrpAuthority(input: {
   readonly companyId: string;
+  readonly issueId?: string;
+  readonly agentId?: string;
   readonly runId: string;
   readonly authority: DurablePrpControlPlane;
 }): Promise<{ readonly connectUrl: string; release(): Promise<void> }> {
-  if (loopbackOrigin === null) {
-    throw new Error("runner_prp_websocket_server_not_configured");
-  }
+  const apiUrl = new URL(resolveLocalRuntimeApiUrl());
+  apiUrl.protocol = "ws:";
+  const loopbackOrigin = apiUrl.origin;
   if (!UUID_PATTERN.test(input.runId) || input.companyId.length === 0) {
     throw new Error("runner_prp_authority_binding_invalid");
   }
@@ -113,19 +123,97 @@ export async function registerRunnerPrpAuthority(input: {
     throw new Error("runner_prp_authority_already_registered");
   }
   const generation = Symbol(input.runId);
-  registrations.set(input.runId, {
+  const registeredAuthority: RegisteredAuthority = {
     companyId: input.companyId,
+    issueId: input.issueId ?? null,
+    agentId: input.agentId ?? null,
     authority: input.authority,
     generation,
     runtimeRequestResolutions: new Map(),
-  });
+  };
+  registrations.set(input.runId, registeredAuthority);
+  const currentKey = input.issueId && input.agentId
+    ? liveAuthorityKey({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        agentId: input.agentId,
+      })
+    : null;
+  if (currentKey !== null) {
+    currentLiveAuthorities.set(currentKey, {
+      runId: input.runId,
+      generation,
+    });
+  }
   return {
     connectUrl: `${loopbackOrigin}${CONNECT_PATH_PREFIX}${input.runId}`,
     release: async () => {
       if (registrations.get(input.runId)?.generation === generation) {
         registrations.delete(input.runId);
       }
+      if (currentKey !== null) {
+        const current = currentLiveAuthorities.get(currentKey);
+        if (
+          current?.runId === input.runId &&
+          current.generation === generation
+        ) {
+          currentLiveAuthorities.delete(currentKey);
+        }
+      }
     },
+  };
+}
+
+export function queueLiveRunnerPrpCommand(input: {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  type: string;
+  payload?: Record<string, unknown>;
+  commandId?: string;
+}): {
+  runId: string;
+  commandId: string;
+  controllerSeq: number;
+  completion: Promise<Record<string, unknown> | null>;
+} | null {
+  const current = currentLiveAuthorities.get(liveAuthorityKey(input));
+  if (!current) return null;
+  const binding = registrations.get(current.runId);
+  if (!binding || binding.generation !== current.generation) return null;
+  const runId = current.runId;
+  const command = binding.authority.queueCommand(
+    input.type,
+    input.payload ?? {},
+    input.commandId,
+    true,
+  );
+  return {
+    runId,
+    commandId: command.commandId,
+    controllerSeq: command.controllerSeq,
+    completion: (async () => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const outcome = binding.authority.commandOutcome(command.commandId);
+        if (!outcome) {
+          throw new Error(`runner_prp_command_missing:${command.commandId}`);
+        }
+        if (outcome.status === "completed") return outcome.result;
+        if (outcome.status === "failed" || outcome.status === "rejected") {
+          const message =
+            outcome.result && typeof outcome.result.message === "string"
+              ? outcome.result.message
+              : `runner_prp_command_${outcome.status}:${command.commandId}`;
+          throw new Error(message);
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 10);
+          timer.unref();
+        });
+      }
+      throw new Error(`runner_prp_command_timeout:${command.commandId}`);
+    })(),
   };
 }
 
@@ -146,6 +234,7 @@ export class RunnerPrpRuntimeRequestResolutionError extends Error {
  * the same request fails closed instead of answering the provider twice.
  */
 export function queueRunnerPrpRuntimeRequestResolution(input: {
+  readonly commandId?: string;
   readonly companyId: string;
   readonly runId: string;
   readonly pendingRequest: PendingNativeRuntimeRequest;
@@ -153,7 +242,13 @@ export function queueRunnerPrpRuntimeRequestResolution(input: {
   readonly resolution: HarnessRuntimeRequestResolution;
 }): { readonly commandId: string } {
   const registration = registrations.get(input.runId);
-  if (!registration || registration.companyId !== input.companyId) {
+  if (
+    !registration
+    || registration.companyId !== input.companyId
+    // Warm attachment briefly registers two routes for the same mutable core.
+    // A route is not dispatch authority before or after its exact run epoch.
+    || registration.authority.store.state.identity.runId !== input.runId
+  ) {
     throw new RunnerPrpRuntimeRequestResolutionError(
       "runner_prp_authority_not_active",
     );
@@ -197,7 +292,7 @@ export function queueRunnerPrpRuntimeRequestResolution(input: {
       resolution: input.resolution,
       resolutionActor: input.actor,
     },
-    undefined,
+    input.commandId,
     true,
   );
   registration.runtimeRequestResolutions.set(pending.requestId, {
@@ -217,6 +312,7 @@ export const runnerPrpWebSocketInternals = {
   },
   resetForTests(): void {
     registrations.clear();
-    loopbackOrigin = null;
+    currentLiveAuthorities.clear();
+    runtimeApiInternals.resetForTests();
   },
 };

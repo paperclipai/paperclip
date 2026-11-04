@@ -1,6 +1,9 @@
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
-import { runnerE2EWebServerCommand } from "./web-server-command.js";
+import {
+  runnerE2EWebServerCommand,
+  runnerE2EWebServerGracefulShutdown,
+} from "./web-server-command.js";
 
 function required(name: string) {
   const value = process.env[name]?.trim();
@@ -14,6 +17,19 @@ const privateDir = required("PAPERCLIP_RUNNER_E2E_PRIVATE_DIR");
 const paperclipHome = required("PAPERCLIP_HOME");
 const configPath = required("PAPERCLIP_CONFIG");
 const baseURL = `http://127.0.0.1:${port}`;
+const playwrightChannel = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL?.trim();
+const chromiumExecutable =
+  process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?.trim();
+if (playwrightChannel && chromiumExecutable) {
+  throw new Error(
+    "PAPERCLIP_PLAYWRIGHT_CHANNEL and PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE are mutually exclusive",
+  );
+}
+if (chromiumExecutable && !path.isAbsolute(chromiumExecutable)) {
+  throw new Error(
+    "PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE must be an absolute path",
+  );
+}
 required("PAPERCLIP_INSTANCE_ID");
 required("PAPERCLIP_AGENT_JWT_SECRET");
 required("PAPERCLIP_DECISION_SIGNING_SECRET");
@@ -29,7 +45,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "runner.spec.ts",
+  testMatch: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY === "1" ? "installed-startup.spec.ts" : "runner.spec.ts",
   timeout: Number(process.env.PAPERCLIP_RUNNER_E2E_TEST_TIMEOUT_MS ?? 600_000),
   expect: { timeout: 30_000 },
   fullyParallel: false,
@@ -38,21 +54,31 @@ export default defineConfig({
   use: {
     baseURL,
     browserName: "chromium",
+    ...(playwrightChannel ? { channel: playwrightChannel } : {}),
+    ...(chromiumExecutable
+      ? { launchOptions: { executablePath: chromiumExecutable } }
+      : {}),
     headless: true,
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-    screenshot: "only-on-failure",
-    trace: "retain-on-failure",
-    video: "retain-on-failure",
+    screenshot: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "only-on-failure",
+    trace: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
+    // A developer-supplied system Chromium keeps the local smoke loop
+    // installation-free; CI's managed browser retains failure video as usual.
+    video: chromiumExecutable || process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
   },
   webServer: {
     // Do not put an env object here: Playwright serializes webServer config in
     // blob reports. The wrapper inherits the test process and strips provider
     // keys before spawning the real Paperclip process.
     command: runnerE2EWebServerCommand(repositoryRoot),
+    gracefulShutdown: { ...runnerE2EWebServerGracefulShutdown,
+      ...(JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]").some((id: string) => id.startsWith("rolling-web-deployment.")) ? { timeout: 105_000 } : {}),
+    },
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    // Fresh databases apply the complete migration history before health is ready.
+    timeout: 300_000,
     stdout: "pipe",
     stderr: "pipe",
   },

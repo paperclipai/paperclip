@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/manufact.svg"
+    "logoUrl": "/brands/apps/manufact.svg",
+    "darkLogoUrl": "/brands/apps/manufact-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.manufact.com/*"
@@ -25,7 +26,13 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.manufact.com/mcp"
+        "serverUrl": "https://mcp.manufact.com/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access"
+        ]
       },
       "guidanceMd": "Connect Manufact in the browser. A Manufact account with MCP access.",
       "riskTier": "S3",

@@ -32,11 +32,15 @@ pub enum GeneratedAcpxSidecarCommand {
     RunAttach,
     TurnStart,
     TurnCancel,
+    TurnSteer,
     PermissionResolve,
     InputResolve,
     ToolResolve,
     SessionRead,
     SessionSnapshot,
+    SessionGoalGet,
+    SessionGoalSet,
+    SessionGoalClear,
     SessionSuspend,
     SessionClose,
 }
@@ -49,11 +53,15 @@ impl GeneratedAcpxSidecarCommand {
             Self::RunAttach => "run.attach",
             Self::TurnStart => "turn.start",
             Self::TurnCancel => "turn.cancel",
+            Self::TurnSteer => "turn.steer",
             Self::PermissionResolve => "permission.resolve",
             Self::InputResolve => "input.resolve",
             Self::ToolResolve => "tool.resolve",
             Self::SessionRead => "session.read",
             Self::SessionSnapshot => "session.snapshot",
+            Self::SessionGoalGet => "session.goal.get",
+            Self::SessionGoalSet => "session.goal.set",
+            Self::SessionGoalClear => "session.goal.clear",
             Self::SessionSuspend => "session.suspend",
             Self::SessionClose => "session.close",
         }
@@ -64,6 +72,8 @@ impl GeneratedAcpxSidecarCommand {
 pub enum GeneratedAcpxSidecarEventType {
     #[serde(rename = "runtime.event")]
     RuntimeEvent,
+    #[serde(rename = "runtime.rich_event")]
+    RuntimeRichEvent,
     #[serde(rename = "runtime.permission_requested")]
     RuntimePermissionRequested,
     #[serde(rename = "runtime.input_requested")]
@@ -76,4 +86,6 @@ pub enum GeneratedAcpxSidecarEventType {
     RuntimeProcess,
     #[serde(rename = "runtime.diagnostic")]
     RuntimeDiagnostic,
+    #[serde(rename = "runtime.goal")]
+    RuntimeGoal,
 }
