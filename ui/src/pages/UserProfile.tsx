@@ -218,7 +218,6 @@ export function UserProfile() {
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const { hidden: hiddenSettings } = useHiddenSettings();
   const canEditProfile =

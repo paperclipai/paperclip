@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
+import { describeError } from "@/api/errors";
 
 export function AdvancedPanel({
   connection,
@@ -177,7 +178,7 @@ export function ReconnectCard({
       } catch (error) {
         pushToast({
           title: "Couldn’t start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          body: describeError(error).body,
           tone: "error",
         });
       }
@@ -185,7 +186,7 @@ export function ReconnectCard({
     onError: (error) =>
       pushToast({
         title: "Couldn’t start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -201,7 +202,7 @@ export function ReconnectCard({
     },
     onError: (error) => pushToast({
       title: "Credential still needs attention",
-      body: error instanceof Error ? error.message : "Review the connector in Vercel Connect and try again.",
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -334,7 +335,7 @@ function ReconnectForm({
     onError: (error) =>
       pushToast({
         title: "That key didn't work",
-        body: error instanceof Error ? error.message : "Check the key and try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
