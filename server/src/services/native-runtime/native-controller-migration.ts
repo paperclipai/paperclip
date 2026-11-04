@@ -13,6 +13,9 @@ import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { providerPackWorkspaceId, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeSha256 } from "./canonical.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import type { StorageService } from "../../storage/types.js";
+import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
+import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date };
 
@@ -65,7 +68,7 @@ async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNati
   return { ...descriptor, execution, controlFile: join(control, "control-plane-state.json") };
 }
 
-export async function hasLocalNativeControllerObligations(db: Db): Promise<boolean> {
+export async function hasLocalNativeControllerObligations(db: Db, storage = durableNativeHarnessStorage()): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
@@ -78,15 +81,21 @@ export async function hasLocalNativeControllerObligations(db: Db): Promise<boole
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
     });
+    if (present && source.status === "failed" && storage) {
+      const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
+      const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
+        ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
+      if (controller !== undefined && await hasArchivedLegacyNativeController(db, { ...binding, storage, controller, supervisor })) continue;
+    }
     if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
   }
   return false;
 }
 
-export async function migrateNativeControllers(db: Db, input: { writersStopped: true; signal: AbortSignal }) {
+export async function migrateNativeControllers(db: Db, input: { writersStopped: true; signal: AbortSignal; storage?: StorageService }) {
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
   if (!input.writersStopped || active) throw new Error("native_controller_migration_requires_offline_writers");
-  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0 };
+  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, archivedFailed: 0 };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
     counts.inspected++;
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
@@ -129,10 +138,21 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
     const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
       ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
     input.signal.throwIfAborted();
-    const result = await importNativeControllerRecovery(db, { ...binding, agentId: selected.agentId,
-      normalizedSessionId: selected.sessionId, expectedConfigDigest: paths.configDigest,
-      supervisor: supervisor === undefined ? undefined : JSON.parse(supervisor),
-      offline: { writersStopped: true, legacyControllerState, legacyRunnerArtifact } });
+    let result: Awaited<ReturnType<typeof importNativeControllerRecovery>>;
+    try {
+      result = await importNativeControllerRecovery(db, { ...binding, agentId: selected.agentId,
+        normalizedSessionId: selected.sessionId, expectedConfigDigest: paths.configDigest,
+        supervisor: supervisor === undefined ? undefined : JSON.parse(supervisor),
+        offline: { writersStopped: true, legacyControllerState, legacyRunnerArtifact } });
+    } catch (error) {
+      const storage = input.storage ?? durableNativeHarnessStorage();
+      if (!(error instanceof Error) || error.message !== "native_runner_checkpoint_artifact_unproven"
+        || source.status !== "failed" || legacyControllerState === undefined || !storage) throw error;
+      await archiveFailedLegacyNativeController(db, { ...binding, storage, controller: legacyControllerState, supervisor,
+        writersStopped: true, signal: input.signal });
+      counts.archivedFailed++;
+      continue;
+    }
     if (result.kind !== "imported" && result.kind !== "unchanged") {
       throw new Error(`native_controller_migration_blocked:${source.id}:${"reason" in result ? result.reason : result.kind}`);
     }

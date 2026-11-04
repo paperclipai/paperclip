@@ -24,7 +24,8 @@ type Reference = Binding & {
   material: Record<string, unknown>; manifestSha256: string;
 };
 type Row = typeof nativeHarnessBackups.$inferSelect;
-type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: string; runId: string; writersStopped: true };
+type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: string; runId: string;
+  writersStopped: true; terminalFailureOnly?: true };
 const fail = (reason: string): never => { throw new Error(`native_harness_storage_${reason}`); };
 const aad = (binding: Binding) => Buffer.from(JSON.stringify([SCHEMA, binding.companyId, binding.scopeDigest, binding.id]));
 const scope = (binding: Pick<Binding, "companyId" | "scopeDigest">) => and(
@@ -99,11 +100,12 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
       eq(heartbeatRuns.id, owner.runId), eq(heartbeatRuns.companyId, owner.companyId),
       eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
     const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner,
-      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
+      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, phase: nativeRunFinalizations.phase })
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, owner.runId)).for("share");
     const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
     if (!run?.finishedAt || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
-      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))) {
+      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))
+      || owner.terminalFailureOnly && (run.status !== "failed" || coordinator.phase !== "terminal_failure")) {
       fail("offline_owner_unsettled");
     }
     return;

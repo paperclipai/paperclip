@@ -35,10 +35,11 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const storage = getStorageService();
   if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
   phase("native_controllers");
-  const controllers = await migrateNativeControllers(db, { writersStopped: true, signal });
+  const controllers = await migrateNativeControllers(db, { writersStopped: true, signal, storage });
   counts.nativeControllers = controllers.imported;
   counts.nativeControllersUnchanged = controllers.unchanged;
   counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
+  counts.nativeControllersArchivedFailed = controllers.archivedFailed;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
   phase("workspaces");

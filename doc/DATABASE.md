@@ -27,6 +27,17 @@ files stay intact, canonical database checkpoints take precedence, and missing
 source files are reported separately rather than fabricated. This migration
 does not recover provider state that was already lost before enrollment.
 
+For an already-failed run, a valid legacy controller can lack proof of the
+original Runner artifact after its old bootstrap tickets were pruned. The
+migration preserves those exact controller and supervisor bytes as an encrypted
+`paperclip.legacy-controller-archive.v1` object through the same backup ledger.
+Its scope is the hash of its manifest and is separate from the provider session
+scope. Publication requires a terminal-failure coordinator with no live owner.
+The archive does not become an executable Runner checkpoint. Task pointers,
+failed results and recovery blockers stay unchanged. A successful retained
+session without artifact proof still blocks migration. The migration receipt
+reports failed-session archives separately from imported recovery authorities.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
