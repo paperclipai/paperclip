@@ -120,8 +120,9 @@ export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQ
   if (!text.split(/[^A-Za-z0-9_-]+/).includes("PERSONAL_PUBLISHING_KEY") || !personalSecretGuidance(text)
     || !/my secrets/i.test(text)
     || solicitsChatCredential([text, ...q.options.map(o => `${o.label} ${o.description ?? ""}`)].join("\n"))) return;
-  if (/\b(?:may|can|should|could) (?:i|we)\b|\b(?:permission|want|will|would)\b/i.test(q.prompt)) return;
-  const completedSetupQuestion = [q.prompt, q.header, q.helpText].some(value => {
+  const completionFields = [q.prompt, q.header, q.helpText];
+  if (completionFields.some(value => /\b(?:may|can|should|could|will|would) (?:i|we)\b|\bdo you want (?:me|us) to\b|\bwould you (?:like|want) (?:me|us) to\b|\bpermission\b/i.test(value ?? ""))) return;
+  const completedSetupQuestion = completionFields.some(value => {
     const completion = /\b(?:have you|did you|is your|has your)\b[^?\n]{0,80}\b(?:sav(?:e|ed)|set|enter(?:ed)?|add(?:ed)?|configur(?:e|ed)|complet(?:e|ed)|stor(?:e|ed)|finish(?:ed)?|done)\b[^?\n]*/i.exec(value ?? "")?.[0];
     return !!completion && !/\b(?:not|never|haven't|didn't|Riley|another|other|their|company|shared)\b/i.test(completion);
   });
@@ -129,8 +130,8 @@ export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQ
     const answer = `${o.label} ${o.description ?? ""}`;
     const explicitOwnCompletion = /\b(?:saved|entered|added|done|stored|configured|completed)\b/i.test(answer)
       && /\b(?:my|own|personal)\b/i.test(answer);
-    const terseCompletion = /^done[.!]?$/i.test(o.label.trim())
-      || (completedSetupQuestion && /^yes[.!]?$/i.test(o.label.trim()));
+    const terseCompletion = completedSetupQuestion
+      && /^(?:done|saved|yes(?:,\s*saved)?)[.!]?$/i.test(o.label.trim());
     return (explicitOwnCompletion || terseCompletion)
       && !/\b(?:no|not|never|cannot|can.t|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|other|their|company|shared)\b/i.test(answer);
   });
