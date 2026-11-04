@@ -9,17 +9,18 @@ import { RunsTab } from "./AgentDetail";
 import { RunsTab as ProductionRunsTab } from "./AgentDetail.production";
 import { ToastProvider } from "../context/ToastContext";
 import { PanelProvider } from "../context/PanelContext";
+import { pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
 
-const { get, cancel, grokStop, actor } = vi.hoisted(() => ({ get: vi.fn(), cancel: vi.fn(), grokStop: vi.fn(), actor: { id: "operator-1" } }));
+const { get, cancel, grokStop, actor } = vi.hoisted(() => ({ get: vi.fn(), cancel: vi.fn(), grokStop: vi.fn(), actor: { id: "operator-1", source: "authenticated" } }));
 vi.mock("../api/heartbeats", async importOriginal => ({ heartbeatsApi: { ...(await importOriginal<typeof import("../api/heartbeats")>()).heartbeatsApi,
   get, events: async () => [], workspaceOperations: async () => [] } }));
 vi.mock("../api/grokBot", () => ({ grokBotApi: { stop: grokStop } }));
 vi.mock("../api/client", () => ({ api: { get: async () => [], post: cancel }, detachInflightGet: vi.fn() }));
-vi.mock("../api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ userId: actor.id, source: "authenticated", companyIds: ["company-1"], memberships: [] }) } }));
+vi.mock("../api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ userId: actor.id, source: actor.source, companyIds: ["company-1"], memberships: [] }) } }));
 vi.mock("../context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1", issuePrefix: "TEST" }, companies: [] }) }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-afterEach(() => { get.mockReset(); cancel.mockReset(); grokStop.mockReset(); actor.id = "operator-1"; sessionStorage.clear(); vi.unstubAllGlobals(); });
+afterEach(() => { get.mockReset(); cancel.mockReset(); grokStop.mockReset(); actor.id = "operator-1"; actor.source = "authenticated"; sessionStorage.clear(); vi.unstubAllGlobals(); });
 
 const states = [
   { status: "failed", eligibility: true, label: "Stop" },
@@ -43,19 +44,26 @@ const states = [
   { status: "failed", eligibility: true, label: "Stop", uncertain: true, remount: true, canonical: true, wrongRun: true },
   { status: "failed", eligibility: true, label: "Stop", http: true },
   { status: "failed", eligibility: true, label: "Stop", existingClaim: true },
+  { status: "failed", eligibility: true, label: "Stop", existingClaim: true, local: true },
+  { status: "failed", eligibility: true, label: "Stop", priorSession: true },
   { status: "failed", eligibility: true, label: null, driverKind: "grok_bot_mcp" },
   { status: "running", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
   { status: "queued", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
 ];
 it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, ...state }))))("renders and submits only eligible run cancellation (%#)", async ({ Tab, status, eligibility, label, ...state }) => {
-  const run = { id: "failed-native-run", companyId: "company-1", agentId: "agent-1", issueId: "issue-1", status, driverKind: state.driverKind, invocationSource: "manual",
+  if (state.local) { actor.id = "local-board"; actor.source = "local_implicit"; }
+  const run = { id: state.priorSession ? `persisted-run-${Tab === RunsTab ? "main" : "production"}` : "failed-native-run", companyId: "company-1", agentId: "agent-1", issueId: "issue-1", status, driverKind: state.driverKind, invocationSource: "manual",
     createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", usageJson: null, resultJson: null,
     contextSnapshot: null, exitCode: 1, error: "Runner ingress unavailable", logRef: null, startedAt: null, finishedAt: null,
     execution: { canStop: eligibility, phase: "reconnecting", label: "Reconnecting", recoveryOwner: "agent", retryAt: "2026-01-01T00:00:01Z" },
   } as unknown as HeartbeatRun;
   const existingRequestId = "11111111-1111-4111-8111-111111111111";
+  const storageKey = pendingSendKeyFor(`paperclip:native-run-stop:${run.companyId}:${run.id}`, actor.id);
+  if (state.priorSession) expect(writePendingSend(storageKey, { idempotencyKey: existingRequestId,
+    payload: { runId: run.id, companyId: run.companyId, actorUserId: actor.id }, createdAt: Date.now() - 1000,
+  }, "session")).toBe(true);
   if (state.existingClaim) run.resultJson = { startupCancellation: { cancellationRequestId: existingRequestId,
-    requestedBy: { type: "board", userId: "operator-1" } } };
+    requestedBy: { type: "board", userId: actor.id } } };
   get.mockResolvedValue(run);
   if (state.http) vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
   cancel.mockImplementation(async (_path, body) => {
@@ -93,7 +101,7 @@ it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, 
   const element = document.createElement("div"); document.body.append(element);
   let root = createRoot(element);
   const render = () => root.render(<QueryClientProvider client={client}><MemoryRouter><PanelProvider><ToastProvider>
-    <Tab runs={[]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId="failed-native-run" adapterType="paperclip_runner" adapterConfig={{}} />
+    <Tab runs={[]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId={run.id} adapterType="paperclip_runner" adapterConfig={{}} />
   </ToastProvider></PanelProvider></MemoryRouter></QueryClientProvider>);
   try {
     await act(async () => render());
@@ -103,11 +111,11 @@ it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, 
       expect(control()?.textContent).toBe(expectedLabel);
       await act(async () => control()!.click());
       await vi.waitFor(() => usesGrokStop
-        ? expect(grokStop).toHaveBeenCalledExactlyOnceWith("company-1", "agent-1", "failed-native-run")
-        : expect(cancel).toHaveBeenCalledExactlyOnceWith("/heartbeat-runs/failed-native-run/cancel",
+        ? expect(grokStop).toHaveBeenCalledExactlyOnceWith("company-1", "agent-1", run.id)
+        : expect(cancel).toHaveBeenCalledExactlyOnceWith(`/heartbeat-runs/${run.id}/cancel`,
           status === "failed" ? { cancellationRequestId: expect.stringMatching(/^[a-f0-9-]{36}$/) } : {}));
       expect(usesGrokStop ? cancel : grokStop).not.toHaveBeenCalled();
-      if (state.existingClaim) expect(cancel.mock.calls[0][1]).toEqual({ cancellationRequestId: existingRequestId });
+      if (state.existingClaim || state.priorSession) expect(cancel.mock.calls[0][1]).toEqual({ cancellationRequestId: existingRequestId });
       if (state.uncertain) {
         await vi.waitFor(async () => {
           await act(async () => {});
@@ -115,6 +123,9 @@ it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, 
           expect(control()?.textContent).toBe(expectedLabel);
         });
         const firstRequest = cancel.mock.calls[0][1];
+        expect(readPendingSend(storageKey, (value): value is Record<string, unknown> => typeof value === "object" && value !== null, "session"))
+          .toMatchObject({ idempotencyKey: firstRequest.cancellationRequestId,
+            payload: { runId: run.id, companyId: run.companyId, actorUserId: actor.id } });
         if (state.remount) {
           await act(async () => root.unmount());
           client.clear();

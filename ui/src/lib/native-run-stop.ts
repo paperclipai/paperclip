@@ -4,7 +4,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend, type PendingSend } from "./pending-send";
 import { createUuid } from "./uuid";
 
-type StopScope = { runId: string; companyId: string; actorUserId: string | null };
+type StopScope = { runId: string; companyId: string; actorUserId: string };
 const memoryRequests = new Map<string, PendingSend<StopScope>>();
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -14,9 +14,9 @@ export async function stopFailedNativeRun(runId: string, companyId: string) {
   detachInflightGet("/cli-auth/me");
   const [run, access] = await Promise.all([heartbeatsApi.get(runId), accessApi.getCurrentBoardAccess()]);
   if (run.id !== runId || run.companyId !== companyId) throw new Error("Stop was not accepted because the run changed.");
-  const actorUserId = access.source === "local_implicit" ? null : access.userId;
-  if (actorUserId !== null && !actorUserId) throw new Error("Stop was not accepted because your session changed.");
-  const key = pendingSendKeyFor(`paperclip:native-run-stop:${companyId}:${runId}`, actorUserId ?? "local-board");
+  const actorUserId = access.userId;
+  if (!actorUserId) throw new Error("Stop was not accepted because your session changed.");
+  const key = pendingSendKeyFor(`paperclip:native-run-stop:${companyId}:${runId}`, actorUserId);
   const matchesScope = (value: unknown): value is StopScope => {
     const scope = record(value);
     return scope.runId === runId && scope.companyId === companyId && scope.actorUserId === actorUserId;
