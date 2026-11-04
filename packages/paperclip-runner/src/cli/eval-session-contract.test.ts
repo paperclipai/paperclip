@@ -80,7 +80,7 @@ it("retains only closed startup failure facts in the actual CLI artifact", async
       serviceFactory: () => { throw error; },
     });
     const artifact = JSON.parse(await readFile(outputPath, "utf8"));
-    expect(exit).toBe(1);
+    expect(exit).toBe(2);
     expect(artifact.providerFailureDiagnostics).toEqual([{ phase: "startup", category: "authentication", httpStatus: 401, retryability: "requires_action" }]);
     expect(JSON.stringify(artifact)).not.toMatch(/PRIVATE-SECRET|private-request-id/);
     expect(artifact.infrastructureError).toBe("Provider startup rejected");
