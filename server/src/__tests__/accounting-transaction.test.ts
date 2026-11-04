@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { companies, createDb } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import {
@@ -7,6 +8,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { withAccountingTransaction } from "../services/accounting-transaction.js";
+
+const publishedActivities: unknown[] = [];
+vi.mock("../services/activity-log.js", () => ({
+  publishActivity: (publication: unknown) => {
+    publishedActivities.push(publication);
+  },
+}));
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BUDGETS_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -23,6 +31,7 @@ describeEmbeddedPostgres("withAccountingTransaction queue and isolation", () => 
 
   afterEach(async () => {
     await db.delete(companies);
+    publishedActivities.length = 0;
   });
 
   afterAll(async () => {
@@ -152,5 +161,71 @@ describeEmbeddedPostgres("withAccountingTransaction queue and isolation", () => 
     await expect(
       withAccountingTransaction(db, nonexistent, async () => "unreachable-2"),
     ).rejects.toThrow("Company not found");
+  });
+
+  it("does not publish activities from rolled-back nested savepoints when outer transaction commits", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback Co", issuePrefix: "ROL" });
+
+    publishedActivities.length = 0;
+
+    await withAccountingTransaction(db, companyId, async (tx, outerPubs) => {
+      outerPubs.push({ companyId, payload: { id: "outer-1" } } as any);
+      try {
+        await withAccountingTransaction(tx, companyId, async (_nestedTx, innerPubs) => {
+          innerPubs.push({ companyId, payload: { id: "inner-rolled-back" } } as any);
+          throw new Error("rolled back savepoint");
+        });
+      } catch {}
+      outerPubs.push({ companyId, payload: { id: "outer-2" } } as any);
+    });
+
+    expect(publishedActivities).toHaveLength(2);
+    expect(publishedActivities).toEqual([
+      expect.objectContaining({ payload: { id: "outer-1" } }),
+      expect.objectContaining({ payload: { id: "outer-2" } }),
+    ]);
+  });
+
+  it("prevents connection pool starvation by allowing unrelated reads while writers are queued", async () => {
+    const poolDb = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 3 });
+    const companyId = randomUUID();
+    await poolDb.insert(companies).values({ id: companyId, name: "Starve Co", issuePrefix: "STA" });
+
+    let releaseHolder!: () => void;
+    let holderStarted!: () => void;
+    const holderStartedPromise = new Promise<void>((resolve) => { holderStarted = resolve; });
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+
+    const holder = withAccountingTransaction(poolDb, companyId, async () => {
+      holderStarted();
+      await holderGate;
+      return "holder-done";
+    });
+
+    await holderStartedPromise;
+
+    const queuedWriters = Array.from({ length: 5 }, (_, i) =>
+      withAccountingTransaction(poolDb, companyId, async () => `writer-${i}-done`),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    let readFinishedBeforeRelease = false;
+    const read = poolDb.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).then((res) => {
+      readFinishedBeforeRelease = true;
+      return res;
+    });
+
+    const readResult = await read;
+    expect(readFinishedBeforeRelease).toBe(true);
+    expect(readResult).toHaveLength(1);
+
+    releaseHolder();
+    await holder;
+    const writerResults = await Promise.all(queuedWriters);
+    expect(writerResults).toHaveLength(5);
+
+    await poolDb.$client.end({ timeout: 1 });
   });
 });

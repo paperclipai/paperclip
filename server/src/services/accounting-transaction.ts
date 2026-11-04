@@ -22,18 +22,20 @@ async function executeAccountingTransaction<T>(
   held: ReadonlyMap<string, { tx: Db; publications: ActivityPublication[] }>,
   parentPublications?: ActivityPublication[],
 ): Promise<T> {
-  const publications: ActivityPublication[] = parentPublications ?? [];
+  const localPublications: ActivityPublication[] = [];
   const result = await withBudgetSpan("budget.accounting.transaction", () => db.transaction(async (transaction) => {
     const tx = transaction as unknown as Db;
     const [company] = await withBudgetSpan("budget.accounting.lock_wait", () => tx.select({ id: companies.id }).from(companies)
       .where(eq(companies.id, companyId)).for("no key update"));
     if (!company) throw notFound("Company not found");
     const nextHeld = new Map(held);
-    nextHeld.set(companyId, { tx, publications });
-    return heldCompanyLocks.run(nextHeld, () => work(tx, publications));
+    nextHeld.set(companyId, { tx, publications: localPublications });
+    return heldCompanyLocks.run(nextHeld, () => work(tx, localPublications));
   }));
-  if (!parentPublications) {
-    publishAccountingActivities(companyId, publications);
+  if (parentPublications) {
+    parentPublications.push(...localPublications);
+  } else {
+    publishAccountingActivities(companyId, localPublications);
   }
   return result;
 }
