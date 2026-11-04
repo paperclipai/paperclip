@@ -47,3 +47,10 @@ it("carries bare chat destinations from positive credential requests without req
   expect(solicitsChatCredential("Never send your credential then in chat.")).toBe(false);
   expect(solicitsChatCredential("Send your credential. In chat.")).toBe(false);
 });
+
+it("retains a subordinate verb inside the credential request", () => {
+  expect(solicitsChatCredential("Please paste the credential you want to share here in chat.")).toBe(true);
+});
+it("retains the governing prohibition across coordinated verbs", () => {
+  expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
+});

@@ -5,19 +5,17 @@ function secureEntryExcludesChat(clause: string): boolean {
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
-  const imperatives = [...clause.matchAll(/\b(?:paste|send|share|provide|enter)\b/gi)];
-  return imperatives.some((imperative, index) => {
-    const segment = clause.slice(imperative.index, imperatives[index + 1]?.index), before = clause.slice(0, imperative.index).trim();
-    const request = needsChatDestination
-      ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
-      : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
-    const carried = needsChatDestination
-      ? /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b/i
-      : /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b/i;
-    return (request.test(segment) || (hasKeyContext && carried.test(segment)))
-      && !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
-      && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
-  });
+  const request = needsChatDestination
+    ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
+    : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
+  const carried = needsChatDestination
+    ? /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b/i
+    : /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b/i;
+  const match = request.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
+  if (!match) return false;
+  const before = clause.slice(0, match.index).trim();
+  return !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
+    && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
 }
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
