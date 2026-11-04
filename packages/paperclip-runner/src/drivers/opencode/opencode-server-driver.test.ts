@@ -30,6 +30,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { createCodexTaskEnvelope } from "../../contracts/codex.js";
+import { configuredEnvironmentProjection } from "../../configured-environment.js";
 import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import {
@@ -153,6 +154,35 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("delivers configured task values without ambient credentials or driver-owned overrides", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-task-env-"));
+    roots.push(root);
+    const command = join(root, "configured-task-opencode.mjs");
+    const canaryReceipt = join(root, "task-canary.json");
+    await writeFile(command, `#!${process.execPath}\nimport { writeFile } from "node:fs/promises";\nawait writeFile(${JSON.stringify(canaryReceipt)}, JSON.stringify({ present: process.env.PUBLISHING_API_KEY === "synthetic-task-canary" }));\nawait import(${JSON.stringify(fixture)});\n`, { mode: 0o755 });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "synthetic-task-canary",
+          OPENCODE_SERVER_PASSWORD: "must-not-override", XDG_CONFIG_HOME: "/must-not-override" }),
+        PATH: process.env.PATH, UNRELATED_SECRET: "must-not-leak", PAPERCLIP_API_KEY: "must-not-leak",
+      },
+    });
+    const session = await driver.openSession({ runId: "task-env", normalizedSessionId: "task-env", workingDirectory: root });
+    try {
+      const environment = JSON.parse(await readFile(join(root, "task-env", "data", "fake-environment.json"), "utf8"));
+      expect(environment.keys).not.toContain("UNRELATED_SECRET");
+      expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
+      expect(dirname(environment.home)).toBe(join(root, "task-env", "homes"));
+      expect(environment.configHome).toBe(join(root, "task-env", "config"));
+      expect(session.ids()).toMatchObject({ providerSessionId: "ses_fake_1" });
+      expect(JSON.parse(await readFile(canaryReceipt, "utf8"))).toEqual({ present: true });
+      expect(environment.keys).toContain("PUBLISHING_API_KEY");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
