@@ -7,8 +7,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 6764,
-      "sha256": "e8c050cb081f4aabef32a3a832bcd90921811b4cc6adc54eb4d00f9a75a58921"
+      "bytes": 7357,
+      "sha256": "349c8a64444f41f06942959950afd0f480c724ee539e8a8b76523be5a3481050"
     },
     {
       "path": "after-live-stop.png",
@@ -48,12 +48,12 @@
     {
       "path": "future-helper-review-regressions.json",
       "bytes": 2064,
-      "sha256": "234994fab5fa62ee849bc76c6d4f12de3558bae299c4d91c701d4889bd504781"
+      "sha256": "1a13f8703bcace769a087499714952be7caaadbd24f7af326147d7ee065e397f"
     },
     {
       "path": "future-helper-streaming-regressions.json",
-      "bytes": 765,
-      "sha256": "201949be1dc6992410373f84c0feb387d28662062c96a6f01b54eea63f689022"
+      "bytes": 831,
+      "sha256": "26d5b8af0a13f79b20b8ce672f83abb2e73a9033887b38bedbd0108cdf04df8b"
     },
     {
       "path": "helper-source-hashes.json",
@@ -62,13 +62,13 @@
     },
     {
       "path": "helpers/live-browser-streaming-check.mjs",
-      "bytes": 7179,
-      "sha256": "3f26b2df27f9f40e5f941706a38623cf391fe92bb4091f903745a17d963e315c"
+      "bytes": 7906,
+      "sha256": "75965e259fe067ebec45f3f6de87458f568baa1820cf4e8ecd77f8dd1ff74e49"
     },
     {
       "path": "helpers/live-browser.future.mjs",
-      "bytes": 13230,
-      "sha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be"
+      "bytes": 13141,
+      "sha256": "d5aac1e02c23fd294a4bcb11c0441f92f2c2c7309d9f4f4b4c3e2030de9456a2"
     },
     {
       "path": "helpers/live-browser.guarded.mjs",
@@ -92,8 +92,8 @@
     },
     {
       "path": "helpers/verify-birth-settlement.mjs",
-      "bytes": 1752,
-      "sha256": "3eca4c0bd960e87225fee9c74a6f9ef0eb785b3d3766bc8435900aaa266d4d46"
+      "bytes": 2308,
+      "sha256": "6072f66a8fedb085f6a321a11c90fbc98b4ee95dfc9b4c3c42010feaf0ae342e"
     },
     {
       "path": "independent-birth-settlement-proof.json",
@@ -114,6 +114,11 @@
       "path": "independent-lifecycle-process-proof.json",
       "bytes": 6764,
       "sha256": "8e68827a9b29107202f5529f0f7ef3d59751336a0922fa8bc5efccefdf0d2ee6"
+    },
+    {
+      "path": "independent-successful-process-snapshot.json",
+      "bytes": 2584,
+      "sha256": "ee4a8658657b965e666d71d3bd214a15d896911d6a84dcfb9a181763ebdc429a"
     },
     {
       "path": "live-browser-stop-gate.patch",
@@ -142,13 +147,13 @@
     },
     {
       "path": "public-projections.json",
-      "bytes": 1955,
-      "sha256": "ead153cab4eb082664e48b4f92cd9ee844c67342823c9bd7a016c8682f7efea6"
+      "bytes": 2533,
+      "sha256": "766392319226de5a2338fa9c7127f24305036580b77ce00e15a40cb394e21dc4"
     },
     {
       "path": "qualification.json",
-      "bytes": 11671,
-      "sha256": "48ed5f00aa5ee8beceae638217c7df5e8db14841ffb241ba80110292e0555dad"
+      "bytes": 11814,
+      "sha256": "210a6c1e2ea617cf07ba3269490bb4c356988e75b5527989bc5641d8159539c8"
     },
     {
       "path": "retained-progressive-streaming-proof.json",
@@ -159,6 +164,11 @@
       "path": "runtime-provenance.json",
       "bytes": 1226,
       "sha256": "de542183cddfa7e64fc9eb47064ec91ac2e98a1780a07fe62a8ab7bc31495a01"
+    },
+    {
+      "path": "verification-follow-up.json",
+      "bytes": 1676,
+      "sha256": "1c87e25e957f032ac3462441a8b20a6ca07985bf5e0e396fed8e49c1596f36ff"
     }
   ]
 }

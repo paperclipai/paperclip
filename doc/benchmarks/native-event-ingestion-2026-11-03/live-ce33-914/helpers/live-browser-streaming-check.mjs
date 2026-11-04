@@ -54,7 +54,7 @@ test('hidden output, human prompts and a different thread cannot prove owned liv
 });
 
 async function observation({ phase = 'observed', status = 'running', finishedAt = null,
-  accepted = false, completedItem = false, startedItem = true, terminal = false, kind = 'agentMessage' } = {}) {
+  accepted = false, completedItem = false, startedItem = false, terminal = false, kind = 'agentMessage', recordedOpenCode = false } = {}) {
   const start = source.indexOf('  const streaming = await poll(');
   const end = source.indexOf('  await page.screenshot(', start);
   const normalizer = source.split('\n').find(line => line.startsWith('const normalizeVisible = '));
@@ -62,10 +62,11 @@ async function observation({ phase = 'observed', status = 'running', finishedAt 
   assert.ok(start >= 0 && end > start && normalizer && summaryStart >= 0 && summaryEnd > summaryStart);
   const execute = new AsyncFunction('poll', 'taskRuns', 'visibleAgentText', 'eventsFor', 'api', 'created', 'journey', 'expect',
     normalizer + '\n' + source.slice(summaryStart, summaryEnd) + '\n' + source.slice(start, end) + '\nreturn journey;');
-  const active = { id: 'owned-run', status: 'running', runtimeMode: 'native' };
+  const recorded = recordedOpenCode ? JSON.parse(await readFile(new URL('../../doc/benchmarks/native-event-ingestion-2026-11-03/live-ce33-914/retained-progressive-streaming-proof.json', import.meta.url), 'utf8')) : null;
+  const active = { id: recorded?.runId ?? 'owned-run', status: 'running', runtimeMode: 'native' };
   const identity = { runId: active.id, sourceInstanceId: 'source-1', turnId: 'turn-1', itemId: 'item-1' };
   const row = event => ({ eventType: event.eventType, payload: { prpEvent: { ...identity, ...event } } });
-  const events = [
+  const events = recorded ? recorded.matchedAndLaterOrdinaryEvents.slice(0, 2) : [
     ...(startedItem ? [row({ eventType: 'item.started', sourceEventId: 'started' })] : []),
     row({ eventType: 'item.delta', sourceEventId: 'delta-29', sourceSeq: 29, payload: { kind, text: 'The progress message was sent and' } }),
     ...(completedItem ? [row({ eventType: 'item.completed' })] : []),
@@ -81,7 +82,7 @@ async function observation({ phase = 'observed', status = 'running', finishedAt 
   value => ({ toBe(expected) { assert.equal(value, expected); } }));
 }
 
-test('fresh running observation with a still-open ordinary item proves streaming', async () => {
+test('fresh running observation with an ordinary delta and no close proves streaming', async () => {
   const value = await observation();
   assert.equal(value.visibleBeforeTerminal, true);
   assert.equal(value.visibleDelta.sourceEventId, 'delta-29');
@@ -92,7 +93,15 @@ test('fresh running observation with a still-open ordinary item proves streaming
 
 test('known finalization, accepted results, terminal state and closed items are rejected', async () => {
   for (const options of [{ phase: 'workspace_finalizing' }, { accepted: true }, { terminal: true },
-    { completedItem: true }, { startedItem: false }, { status: 'succeeded' }, { finishedAt: 'fixture-time' }, { kind: 'reasoning' }]) {
+    { completedItem: true }, { status: 'succeeded' }, { finishedAt: 'fixture-time' }, { kind: 'reasoning' }]) {
     await assert.rejects(observation(options), /streaming_observation_not_proven/);
   }
+});
+
+// OpenCode's real driver emits ordinary deltas without an item.started event.
+// The retained normalized rows carry actual run/source/item identities.
+test('recorded OpenCode ordinary deltas qualify without a synthetic item start', async () => {
+  const value = await observation({ recordedOpenCode: true });
+  assert.equal(value.visibleDelta.sourceSeq, 29);
+  assert.equal(value.visibleBeforeTerminal, true);
 });

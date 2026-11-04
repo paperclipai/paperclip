@@ -89,7 +89,6 @@ try {
     const delta = events.find(event => event?.eventType === "item.delta" && event.runId === active.id
       && event.payload.kind === "agentMessage" && normalizeVisible(event.payload.text).length >= 12
       && text.includes(normalizeVisible(event.payload.text)) && typeof event.itemId === "string"
-      && events.some(item => item.eventType === "item.started" && sameItem(item, event))
       && !events.some(item => ["item.completed", "item.failed", "item.cancelled"].includes(item.eventType) && sameItem(item, event)));
     if (!delta) return null;
     // Re-read status after observing the matching UI text. A completed run

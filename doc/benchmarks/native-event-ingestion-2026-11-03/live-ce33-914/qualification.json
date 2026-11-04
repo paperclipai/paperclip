@@ -283,11 +283,13 @@
   "futureVerificationHelper": {
     "executedInThisLiveJourney": false,
     "scope": "Verification-only selector/open-item/finalizing guards; offline regression, no new app/provider run",
-    "helperSha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be",
+    "helperSha256": "d5aac1e02c23fd294a4bcb11c0441f92f2c2c7309d9f4f4b4c3e2030de9456a2",
     "regressionCases": {
-      "focusedDomAndSource": 5,
+      "focusedDomAndSource": 6,
       "existingControlledSeams": 9
-    }
+    },
+    "previousHelperSha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be",
+    "followUp": "verification-follow-up.json"
   },
   "streamingEvidenceScope": "Original selected source52 was preterminal at workspace_finalizing. Earlier retained JPEG/DOM/source excerpts establish progressive visible content before subsequent ordinary deltas and result acceptance; no literal provider-active nativePhase is asserted."
 }

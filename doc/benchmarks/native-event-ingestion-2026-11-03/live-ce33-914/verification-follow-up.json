@@ -1,0 +1,25 @@
+{
+  "schema": "paperclip.live-verification-review-follow-up.v1",
+  "checkedAt": "2026-11-04T01:03:21.963140+00:00",
+  "scope": "Offline source/DOM verification only; no app, provider, database or cloud resource restarted",
+  "issues": [
+    {
+      "reviewComment": 4462307523,
+      "correction": "Treat first ordinary delta as opening an item; retain matching close, run-finalization and accepted/terminal checks. OpenCode does not require item.started for text.",
+      "regression": "Six offline real-browser checks pass, including actual retained OpenCode source29/30 without invented item.started.",
+      "helperSha256": "d5aac1e02c23fd294a4bcb11c0441f92f2c2c7309d9f4f4b4c3e2030de9456a2"
+    },
+    {
+      "reviewComment": 4462307531,
+      "correction": "Require a successful complete process-list read with verifier PID; all command failures propagate.",
+      "regression": "Five actual-source checks pass: original false-positive reproduced; successful absent snapshot; command failures status1/status2/ENOENT/EACCES/SIGTERM rejected; malformed/empty/incomplete snapshot rejected; live captured PID rejected.",
+      "helperSha256": "6072f66a8fedb085f6a321a11c90fbc98b4ee95dfc9b4c3c42010feaf0ae342e",
+      "testSha256": "3783686a4e3334a8ada07ec157b201c28d07412c7746b73d26a807ba230f9aeb",
+      "independentOriginalEvidence": "independent-successful-process-snapshot.json"
+    }
+  ],
+  "limits": [
+    "These helper corrections do not rewrite the exact original live journey source or create a second live execution claim.",
+    "The independent successful full process snapshot is retained from the original journey, not produced by the corrected checker."
+  ]
+}

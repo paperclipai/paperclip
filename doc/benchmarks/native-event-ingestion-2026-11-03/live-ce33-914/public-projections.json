@@ -1,5 +1,5 @@
 {
-  "scope": "Public metadata/path-only helper adaptations; not a new live acceptance run",
+  "scope": "Declared public metadata/path adaptations and offline verification follow-ups; not a new live acceptance run",
   "projections": [
     {
       "path": "cleanup.json",
@@ -15,8 +15,8 @@
     },
     {
       "path": "future-helper-review-regressions.json",
-      "originalSha256": "81a64f34ab1e635309d2f71f4bb55072e5f7b860e349a44efecc8e10ef5b79c9",
-      "publicSha256": "234994fab5fa62ee849bc76c6d4f12de3558bae299c4d91c701d4889bd504781",
+      "originalSha256": "4c4752d1211431a1e3ea94887a8ff2e2cfee440f3af80d6b93f89a5419b9b49e",
+      "publicSha256": "1a13f8703bcace769a087499714952be7caaadbd24f7af326147d7ee065e397f",
       "reason": "Remove a local evidence-directory path; controlled regression results and source hashes unchanged"
     },
     {
@@ -28,8 +28,14 @@
     {
       "path": "helpers/verify-birth-settlement.mjs",
       "originalSha256": "ce6a5aca9a0fdeef21c0e5b785d2d3ac643da62c992465f8b9b4e4c41b947cef",
-      "publicSha256": "3eca4c0bd960e87225fee9c74a6f9ef0eb785b3d3766bc8435900aaa266d4d46",
-      "reason": "Public reproduction path adaptation only; executed private source SHA remains in execution receipt; adaptation was not used for another live claim"
+      "publicSha256": "6072f66a8fedb085f6a321a11c90fbc98b4ee95dfc9b4c3c42010feaf0ae342e",
+      "reason": "Public evidence-directory argument adaptation plus reviewed process-list failure handling correction; original executed private source SHA stays in its receipt; corrected copy has five offline source regressions and was not used for a new live claim"
+    },
+    {
+      "path": "qualification.json",
+      "originalSha256": "48ed5f00aa5ee8beceae638217c7df5e8db14841ffb241ba80110292e0555dad",
+      "publicSha256": "210a6c1e2ea617cf07ba3269490bb4c356988e75b5527989bc5641d8159539c8",
+      "reason": "Only explicitly unexecuted future-helper metadata updated for the reviewed delta-without-start correction and six offline cases; original live observations and executed source hashes unchanged"
     }
   ]
 }
