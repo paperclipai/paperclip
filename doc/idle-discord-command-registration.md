@@ -32,7 +32,11 @@ The shared leased receiver owner may renew during construction only while the
 exact runtime context remains in the service's pending initialization map.
 Renewal still checks the company, endpoint, generation, credentials and original
 lease token. A missing listener alone grants no ownership. Once attached, the
-registered runtime must match that context. Token loss, pause, removal,
+registered runtime must match that context. The service verifies durable ownership
+before it calls listener initialization and retains its checks after that await.
+That verification waits for an older in-flight renewal, rechecks local ownership,
+and then performs a fresh durable renewal. The older result alone is insufficient.
+Token loss, pause, removal,
 replacement and shutdown retain their existing fences and listener stop order.
 This also applies to the Photon receiver through the same ownership module.
 

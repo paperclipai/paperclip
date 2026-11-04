@@ -272,6 +272,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
   async function ensureDiscordGatewayRuntimeIsCurrent(
     endpointId: string,
     context: RuntimeContext,
+    verification?: { renewLease: true },
   ): Promise<boolean> {
     const ownership = discordGatewayOwnerships.get(endpointId);
     if (
@@ -284,7 +285,12 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     ) {
       return false;
     }
-    if (ownership.expiresAt.getTime() <= Date.now()) {
+    if (verification?.renewLease) {
+      if (ownership.renewal) await ownership.renewal;
+      if (!canRenewLocalOwnership(ownership)) return false;
+      await refreshDiscordGatewayOwnership(ownership);
+      if (!canRenewLocalOwnership(ownership)) return false;
+    } else if (ownership.expiresAt.getTime() <= Date.now()) {
       // A host can resume after the local TTL while its durable token is still
       // authoritative. Reclaim that exact token before accepting buffered
       // callbacks. A standby takeover changes the token, so the CAS fails and
