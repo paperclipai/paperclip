@@ -1,5 +1,6 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
+  asBoolean,
   asString,
   asNumber,
   parseObject,
@@ -15,6 +16,33 @@ const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception|you(?:'|’)ve\s+reached\s+your\s+[^\n.!?]{0,60}\blimit\b|\/usage-credits\b)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+
+/**
+ * True for the aggregate `result` line the Claude CLI replays when it *resumes*
+ * a session, which is not the result of the attempt currently running.
+ *
+ * On `--resume` the CLI emits the resumed session's cumulative aggregate within
+ * ~100ms of start, before this attempt's own `system/init`, carrying the prior
+ * session's `total_cost_usd` plus `num_turns: 0` and `duration_api_ms: 0`. A
+ * real completed attempt ran at least one turn and spent non-zero API time, so
+ * the zero pair identifies the replay on its face.
+ *
+ * Deliberately narrowed to a *successful* result. A failing attempt can honestly
+ * report zero turns and zero API time (the CLI can fail before its first API
+ * call, e.g. auth or quota), and that result must stay visible so failure
+ * classification still sees it.
+ *
+ * Treating the replay as terminal latched `terminalResultSeen` in
+ * `maybeArmTerminalResultCleanup`, which SIGTERMed the process group ~5s later,
+ * mid-first-turn: 57 runs across 7 agents, median 10.9s, every one recorded
+ * `adapter_failed` with no work done. See LAC-5387.
+ */
+export function isClaudeReplayedSessionResult(event: Record<string, unknown> | null): boolean {
+  if (!event) return false;
+  if (asString(event.subtype, "").trim().toLowerCase() !== "success") return false;
+  if (asBoolean(event.is_error, false)) return false;
+  return event.num_turns === 0 && event.duration_api_ms === 0;
+}
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -51,8 +79,13 @@ export function parseClaudeStreamJson(stdout: string) {
     }
 
     if (type === "result") {
-      finalResult = event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+      // A resumed session's replayed aggregate is not this attempt's terminal
+      // result. Dropping it here keeps the terminal-result cleanup timer
+      // disarmed (LAC-5387) and keeps the prior session's cost and token counts
+      // off a run that has not produced a result of its own.
+      if (isClaudeReplayedSessionResult(event)) continue;
+      finalResult = event;
     }
   }
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   detectClaudeLoginRequired,
+  isClaudeReplayedSessionResult,
+  parseClaudeStreamJson,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
@@ -368,5 +370,131 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+
+// LAC-5387: when the Claude CLI resumes a session it replays the resumed
+// session's cumulative aggregate as a `result` line before this attempt's own
+// `system/init`. Latching on it armed the terminal-result cleanup timer, which
+// SIGTERMed the run ~5s later, before any work. The stream below is the
+// observed one from run 88f17b87 (2026-10-24).
+const RESUMED_SESSION_REPLAY_STREAM = [
+  JSON.stringify({
+    type: "system",
+    subtype: "task_notification",
+    status: "stopped",
+    message: "Orphaned by a previous Claude Code process exit",
+    session_id: "832e92dc",
+  }),
+  JSON.stringify({ type: "system", subtype: "init", session_id: "832e92dc", model: "claude-opus-5" }),
+  JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 0,
+    duration_ms: 117,
+    duration_api_ms: 0,
+    stop_reason: null,
+    total_cost_usd: 3.91,
+    result: "",
+    session_id: "832e92dc",
+    usage: { input_tokens: 4210, output_tokens: 180, cache_read_input_tokens: 99000 },
+  }),
+  JSON.stringify({ type: "system", subtype: "init", session_id: "832e92dc", model: "claude-opus-5" }),
+  JSON.stringify({
+    type: "assistant",
+    session_id: "832e92dc",
+    message: { content: [{ type: "text", text: "Reading the issue." }] },
+  }),
+  "",
+].join("\n");
+
+const REAL_TERMINAL_RESULT_LINE = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  num_turns: 14,
+  duration_ms: 182_344,
+  duration_api_ms: 161_902,
+  stop_reason: "end_turn",
+  total_cost_usd: 1.42,
+  result: "Done.",
+  session_id: "832e92dc",
+  usage: { input_tokens: 9100, output_tokens: 2400, cache_read_input_tokens: 412_000 },
+});
+
+describe("isClaudeReplayedSessionResult", () => {
+  it("identifies the zero-turn zero-api-time aggregate replayed on session resume", () => {
+    expect(
+      isClaudeReplayedSessionResult({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 0,
+        duration_api_ms: 0,
+        total_cost_usd: 3.91,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat a real completed result as a replay", () => {
+    expect(isClaudeReplayedSessionResult(JSON.parse(REAL_TERMINAL_RESULT_LINE))).toBe(false);
+  });
+
+  it("keeps a failing result visible even when it reports zero turns and zero api time", () => {
+    // The CLI can fail before its first API call (auth, quota). Dropping that
+    // result would blind failure classification, so the guard stays scoped to
+    // successful results.
+    expect(
+      isClaudeReplayedSessionResult({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 0,
+        duration_api_ms: 0,
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeReplayedSessionResult({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        num_turns: 0,
+        duration_api_ms: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("requires both zero turns and zero api time", () => {
+    expect(
+      isClaudeReplayedSessionResult({ type: "result", subtype: "success", num_turns: 0, duration_api_ms: 12 }),
+    ).toBe(false);
+    expect(
+      isClaudeReplayedSessionResult({ type: "result", subtype: "success", num_turns: 1, duration_api_ms: 0 }),
+    ).toBe(false);
+    expect(isClaudeReplayedSessionResult({ type: "result", subtype: "success" })).toBe(false);
+    expect(isClaudeReplayedSessionResult(null)).toBe(false);
+  });
+});
+
+describe("parseClaudeStreamJson on a resumed session", () => {
+  it("reports no terminal result while the only result line is the replayed aggregate", () => {
+    const parsed = parseClaudeStreamJson(RESUMED_SESSION_REPLAY_STREAM);
+    expect(parsed.resultJson).toBeNull();
+    expect(parsed.sessionId).toBe("832e92dc");
+    expect(parsed.summary).toBe("Reading the issue.");
+    // The replayed aggregate carries the *prior* session's spend; billing it to
+    // this attempt double-counted it.
+    expect(parsed.costUsd).toBeNull();
+    expect(parsed.usage).toBeNull();
+  });
+
+  it("reports the attempt's own result once it arrives", () => {
+    const parsed = parseClaudeStreamJson(`${RESUMED_SESSION_REPLAY_STREAM}${REAL_TERMINAL_RESULT_LINE}\n`);
+    expect(parsed.resultJson).not.toBeNull();
+    expect(parsed.resultJson?.num_turns).toBe(14);
+    expect(parsed.costUsd).toBe(1.42);
+    expect(parsed.summary).toBe("Done.");
   });
 });

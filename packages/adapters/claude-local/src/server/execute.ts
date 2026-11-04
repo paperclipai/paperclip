@@ -822,6 +822,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runLogTail: paperclipBridge?.runLogTail,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
+        // `parseClaudeStreamJson` drops the aggregate result the CLI replays on
+        // session resume (`isClaudeReplayedSessionResult`), so resuming a
+        // session can no longer arm this timer before the attempt has done any
+        // work. See LAC-5387.
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
     });
