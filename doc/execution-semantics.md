@@ -937,6 +937,13 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+When an admitted continuation reuses a sandbox after verified cleanup, an
+unpublished preparation uses a directory bound to its writer epoch and lease.
+Earlier unpublished directories and their receipts stay intact. Repeating the
+same preparation retains its directory and receipt check. A published workspace
+on the same allocation retains its recorded directory. Automatic bootstrap
+timeout retries still require a fresh allocation under the policy above.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the
