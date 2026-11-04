@@ -25,10 +25,12 @@ export interface RemoteWorkspaceStorageCheckpoint {
   proofSha256: string;
   fileSource: string;
   fileSnapshotId?: string;
+  locationState?: "retained" | "released";
 }
 
 export interface RemoteWorkspaceStorageEvidence {
   expectedFileSource?: "live" | "saved";
+  expectedLocation?: "retained" | "released";
   initial?: RemoteWorkspaceStorageCheckpoint;
   final?: RemoteWorkspaceStorageCheckpoint;
   browserReadPhases: string[];
@@ -51,6 +53,7 @@ export function remoteWorkspaceProofDigest(content: string): string {
 export async function readRemoteWorkspaceStorageCheckpoint(input: {
   api: Pick<RunnerApi, "get">; companyId: string; agentId: string; issueId: string; environmentId: string;
   expectedFileSource?: "live" | "saved";
+  expectedLocation?: "retained" | "released";
 }): Promise<{ point?: RemoteWorkspaceStorageCheckpoint; content?: string }> {
   const view = await input.api.get<{ issueId: string; workspace: ExecutionWorkspace | null }>(`/api/issues/${input.issueId}/workspace`);
   const workspace = view.workspace;
@@ -59,9 +62,10 @@ export async function readRemoteWorkspaceStorageCheckpoint(input: {
     || workspace.providerType !== "cloud_sandbox" || !authorityResult.success) return {};
   const authority = authorityResult.data;
   const expectedSource = input.expectedFileSource ?? "live";
+  const expectedLocation = input.expectedLocation ?? (expectedSource === "saved" ? "released" : "retained");
   if (!authority.snapshotId || authority.dirty || authority.writerRunId) return {};
-  if (expectedSource === "live" && (!authority.location || authority.location.environmentId !== input.environmentId)) return {};
-  if (expectedSource === "saved" && authority.location !== null) return {};
+  if (expectedLocation === "retained" && (!authority.location || authority.location.environmentId !== input.environmentId)) return {};
+  if (expectedLocation === "released" && authority.location !== null) return {};
   const runs = await input.api.get<RunSummary[]>(`/api/issues/${input.issueId}/runs`);
   const latest = runs.filter(run => run.runtimeMode === "native" && run.status === "succeeded"
     && run.agentId === input.agentId && typeof run.runId === "string")
@@ -95,6 +99,7 @@ export async function readRemoteWorkspaceStorageCheckpoint(input: {
     authoritySchema: authority.schema, authorityDirty: authority.dirty,
     authorityWriter: authority.writerRunId, providerType: workspace.providerType,
     proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind, fileSnapshotId,
+    locationState: authority.location ? "retained" : "released",
   } };
 }
 
@@ -106,6 +111,7 @@ export function gradeRemoteWorkspaceStorage(evidence: RemoteWorkspaceStorageEvid
     && point.authoritySchema === "paperclip.remote-workspace.v1" && point.authorityDirty === false
     && point.authorityWriter === null && point.providerType === "cloud_sandbox"
     && point.fileSource === (evidence.expectedFileSource ?? "live")
+    && (!evidence.expectedLocation || point.locationState === evidence.expectedLocation)
     && (point.fileSource !== "saved" || point.fileSnapshotId === point.snapshotId)
     && /^[a-f0-9]{64}$/.test(point.proofSha256));
   return [

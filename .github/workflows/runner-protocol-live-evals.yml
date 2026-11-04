@@ -381,16 +381,18 @@ jobs:
           GROK_AUTHENTICATION: ${{ inputs.grok_authentication || 'api_key' }}
         run: |
           set -euo pipefail
-          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
-            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 2 through $MAX_PARALLEL_LIMIT for the two-shard direct suite." >&2
+          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ]; then
+            echo "RUNNER_E2E_MAX_PARALLEL must be an integer of at least 2 for the two-shard direct suite." >&2
             exit 1
           fi
           if [ -n "${REQUESTED_MAX_PARALLEL:-}" ]; then
-            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REQUESTED_MAX_PARALLEL" -lt 2 ] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ]; then
-              echo "max_parallel must be an integer from 2 through the configured campaign limit." >&2
+            if ! [[ "$REQUESTED_MAX_PARALLEL" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$REQUESTED_MAX_PARALLEL" -lt 2 ] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL" ] || [ "$REQUESTED_MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
+              echo "max_parallel must be an integer from 2 through both configured campaign and runner limits." >&2
               exit 1
             fi
             MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
+          elif [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
+            MAX_PARALLEL="$MAX_PARALLEL_LIMIT"
           fi
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs catalog \
             --evals-root .paperclip-evals \
@@ -849,6 +851,15 @@ jobs:
         with:
           artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
           path: /tmp/paperclip-runner-controlled-${{ github.run_id }}/runtime
+
+      - name: Stage an owned provider Node before credentials
+        run: |
+          set -euo pipefail
+          mkdir -p cell-output
+          node packages/paperclip-runner/scripts/stage-runner-provider-node.mjs \
+            "$RUNNER_TEMP/runner-protocol-provider-node" \
+            "$GITHUB_WORKSPACE/runner-protocol-build/extracted/portable/dist/cli/acpx-runtime-sidecar.cjs" \
+            cell-output/provider-node-receipt.json
 
       - name: Verify controller code before archive access
         if: needs.authorize.outputs.accounting_mode == 'controlled'

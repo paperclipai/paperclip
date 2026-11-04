@@ -34,6 +34,16 @@ approvals do not authorize the proposal. A newer pending or rejected proposal su
 older acceptance. A saved plan requires approval of its current document revision;
 checkbox decisions retain the user's actual selected scope.
 
+A later accepted execution proposal can be untargeted when the unchanged saved
+plan already has its own human approval. Admission validates both decisions. It
+uses the latest plan proposal, so pending, rejected, invalid, or stale plan
+approval cannot fall back to an older acceptance. A later pending or rejected
+execution proposal still stops creation. Accepted checkbox plan confirmations
+also appear in native task context and authorize normal accepted-plan decomposition.
+Native context includes `acceptedPlan.approvedOptions` for checkbox decisions,
+with the saved selected IDs and option text. It does not substitute the card's
+defaults or unchecked options, including after a later execution confirmation.
+
 Planning documents, questions and proposal cards remain available before approval.
 Ordinary task delegation and previously committed task-creation replay retain
 their existing behavior, including dispatch recovery for already admitted work.
@@ -1673,6 +1683,18 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+### Session settlement after a run
+
+Attaching a later run to a session asks whether anything is live or waiting: an
+active or ambiguous turn, an active goal, an unanswered tool or runtime request, or
+a session that needs accounting reconciliation. Events recorded after a run's terminal describe the
+past. Refusing the session cannot undo them, so they never block attachment. The
+Runner keeps its pending events and commits them under the prior authority before it
+rotates. Core accepts any authenticated event after the terminal, except one that
+starts work, and the next run's log names what was recorded. Identity, source and
+ownership checks are unchanged. A failed attachment reports its original cause; the
+same run does not attach again.
+
 ### Provider continuity and bounded finalization
 
 A permanently unusable native runner session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.
@@ -2709,6 +2731,21 @@ after complete usage leaves the saved wait unfinalized until a provider terminal
 is retained; complete token counters alone cannot certify a stopped provider.
 A timeout, missing accounting, or an unproven provider terminal remains a failure;
 the saved wait does not certify successful provider execution.
+
+An exact governed-cancellation terminal with an explicit turn ID may return its
+durable event receipt before postcommit accounting and output observers finish.
+Schema-valid terminals without a turn ID keep the ordinary append path and await
+their observers; they do not request the turn-bound early-receipt option. The
+receipt requires the ordinary company, run, session, source and transaction fences; it is not a
+physical-stop or accounting-completion receipt. The control plane retains the
+observer debt and joins it before accepting a checkpoint or result. The existing
+checkpoint deadline bounds that join, while the provider-terminal drain keeps its
+existing deadline. Observer rejection preserves its original cause, and abort or
+controller revocation prevents late checkpoint/result writes. A retained terminal
+and saved wait can be replayed through duplicate-event observers after restart
+without starting another model turn. Committed-only live events and trace
+milestones are not re-emitted by that replay. Ordinary event appends still await
+their observers.
 
 Before either shutdown path exits, idle warm sessions close through their
 normal suspend-and-checkpoint path. Remote sessions therefore leave verified

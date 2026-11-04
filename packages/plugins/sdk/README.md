@@ -1398,10 +1398,10 @@ implement `onResourceLifecycle` and `onWorkspaceOperation`. Project lifecycle
 creates and retains the storage; workspace operations manage task checkouts in
 that storage. Execution remains a separate environment driver contract.
 
-Set `project.executionWorkspacePolicy.storageProviderPluginId` to an installed
-plugin's UUID for an explicit selection, or `null` for explicit Core/local storage.
-Omit the field to inherit the installed company-enabled default. A provider claims
-that default by declaring, for example:
+`project.executionWorkspacePolicy.storageProviderPluginId` holds a project's storage:
+an installed plugin's UUID, or `null` or no value for Core/local storage. Core
+applies the installed company-enabled default once, when it creates the project. A
+provider claims that default by declaring, for example:
 
 ```ts
 workspaceProvider: {
@@ -1411,13 +1411,16 @@ workspaceProvider: {
 }
 ```
 
-The declared defaults must be supported by the provider. Core applies missing mode
-and strategy settings to Git projects, including existing unconfigured projects,
-without writing their policy. Explicit settings remain intact; incompatible
-settings fail with a configuration error. Multiple enabled default claims require
-an explicit project choice or disabling a conflicting provider. Worker health does
-not change the selected default: unavailable providers fail without local fallback.
-No company settings row means enabled, matching the normal plugin contract.
+The declared defaults must be supported by the provider. Installing a provider
+does not change existing projects. A Core/local project can move to a provider, and
+a plugin-backed project stays attached to that plugin: requests to change it fail,
+and it never falls back to local storage. Core applies missing mode and strategy
+settings without writing them. Explicit settings remain intact; incompatible
+settings fail with a configuration error. If more than one enabled provider claims
+the default, creating a project needs an explicit choice. Core sends a provider
+project lifecycle events only for projects attached to it, and acknowledges the
+others on its behalf. No company settings row means enabled, matching the normal
+plugin contract.
 
 New and imported tasks leave an unspecified project mode inherited. Provider-owned
 workspaces retain explicit project and task strategies in shared and operator-branch

@@ -1,4 +1,5 @@
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -1243,6 +1244,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1335,17 +1344,6 @@ export function TaskChatComposer({
         }
       }}
         onPasteCapture={handlePasteCapture}
-        onDragOver={(event) => {
-          if (canAcceptFiles && !disabled && !creation && event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDropCapture={(event) => {
-          if (!canAcceptFiles || disabled || creation) return;
-          const files = Array.from(event.dataTransfer.files);
-          if (!files.length) return;
-          event.preventDefault();
-          event.stopPropagation();
-          for (const file of files) void attachPickedFile(file);
-        }}
       >
         {creation?.header}
         {uncertainSubmission ? (

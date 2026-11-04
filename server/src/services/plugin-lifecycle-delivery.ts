@@ -1,10 +1,12 @@
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
-import { pluginCompanySettings, pluginConfig, plugins, type Db } from "@paperclipai/db";
+import { pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { isWorkspaceProvider } from "./project-workspace-provider.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
@@ -75,6 +77,16 @@ export function registerPluginLifecycleDelivery(
                   .where(and(eq(plugins.id, plugin.id), eq(plugins.status, "ready"),
                     or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
                 if (!enabled?.manifest.resourceLifecycle?.includes(event.resourceType) || !enabled.manifest.capabilities.includes("events.subscribe")) break;
+                if (event.resourceType === "project" && isWorkspaceProvider(enabled.manifest)) {
+                  stage = "ownership";
+                  const [project] = await db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
+                    .where(and(eq(projects.id, event.resourceId), eq(projects.companyId, companyId)));
+                  if (project && parseProjectExecutionWorkspacePolicy(project.policy)?.storageProviderPluginId !== plugin.id) {
+                    await inbox.acknowledge(companyId, event.id);
+                    wake();
+                    continue;
+                  }
+                }
                 stage = "credentials";
                 const credentials = event.resourceType === "project" && enabled.manifest.capabilities.includes("projects.instance-secrets")
                   ? await projectInstanceSecretService(db, plugin.id).prepare(event) : undefined;

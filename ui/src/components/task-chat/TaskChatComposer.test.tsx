@@ -1314,7 +1314,7 @@ describe("TaskChatComposer", () => {
     expect(openPicker).toHaveBeenCalledOnce();
   });
 
-  it.each(["picker", "drop"])("uploads images from %s into a preview row above the text", async (source) => {
+  it.each(["picker", "drop", "page drop"])("uploads images from %s into a preview row above the text", async (source) => {
     const onAdd = vi.fn();
     const onAttachImage = vi.fn().mockResolvedValue({ contentPath: "/attachments/shot.png" });
     renderComposer({ onAdd, workMode: "standard", onAttachImage });
@@ -1326,8 +1326,8 @@ describe("TaskChatComposer", () => {
       flushSync(() => input.dispatchEvent(new Event("change", { bubbles: true })));
     } else {
       const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
-      flushSync(() => editable().dispatchEvent(event));
+      Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } });
+      flushSync(() => (source === "page drop" ? document.body : editable()).dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
     await flushAsync();
