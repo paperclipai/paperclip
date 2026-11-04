@@ -14185,12 +14185,6 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const decisionId = randomUUID();
 
-      // The transition is computed from a row locked inside the transaction,
-      // not from `existing`: without the lock, a concurrent approve/reassign
-      // landing between the initial read and this write could have its
-      // outcome silently overwritten by a transition built against stale
-      // state (e.g. an approval undone, or the stage handed to a participant
-      // who is no longer current).
       let transition:
         | ReturnType<typeof applyIssueExecutionStageReassignment>
         | undefined;
@@ -14269,10 +14263,6 @@ export function issueRoutes(
         },
       });
 
-      // Best-effort wake of the new participant, mirroring the normal
-      // issue-update wake dispatch: the reassignment has already committed,
-      // so a transient enqueue failure here must not fail the request (and
-      // cannot be retried without redoing the reassignment itself).
       let wakeQueued = false;
       const executionStageWakeup = buildExecutionStageWakeup({
         issueId: issue.id,

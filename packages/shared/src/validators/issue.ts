@@ -1005,9 +1005,6 @@ export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 export const reassignIssueExecutionStageSchema = z
   .object({
     toParticipant: issueExecutionStagePrincipalSchema,
-    // Required, but enforced with a 422 (not the generic 400) by the route
-    // handler — same posture as `comment` on `updateIssueSchema` for
-    // request-changes, so it stays optional here.
     comment: multilineTextSchema.pipe(z.string().trim().min(1)).optional(),
   })
   .strict();
