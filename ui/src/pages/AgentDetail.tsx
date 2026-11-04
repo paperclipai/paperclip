@@ -3126,7 +3126,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 requested={runRequestedProviderTrace(run.contextSnapshot)}
                 showOff
               />
-              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.execution?.canStop === true)) && (
+              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.driverKind !== "grok_bot_mcp" && run.execution?.canStop === true)) && (
                 <Button
                   variant="ghost"
                   size="sm"

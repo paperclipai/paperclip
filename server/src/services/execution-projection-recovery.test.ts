@@ -47,6 +47,9 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "retryable_failure", resultId: null });
     const projections = await executionProjectionsForRuns(db, companyId, [runId]);
     expect(projections.get(runId)).toMatchObject({ canStop: true });
+    await db.update(heartbeatRuns).set({ driverKind: "grok_bot_mcp" }).where(eq(heartbeatRuns.id, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);
+    await db.update(heartbeatRuns).set({ driverKind: "codex_app_server" }).where(eq(heartbeatRuns.id, runId));
     for (const status of ["succeeded", "cancelled", "timed_out"] as const) {
       await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, runId));
       expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.canStop).toBe(false);

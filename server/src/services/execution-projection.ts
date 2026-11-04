@@ -224,7 +224,7 @@ export function projectExecution(
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
   const projection: ExecutionProjection = {
-    canStop: run.runtimeMode === "native" && run.status === "failed" && !!run.nativeIssueId
+    canStop: run.runtimeMode === "native" && run.status === "failed" && run.driverKind !== "grok_bot_mcp" && !!run.nativeIssueId
       && coordinator?.runId === run.id && coordinator.issueId === run.nativeIssueId && coordinator.resultId === null
       && coordinator.phase === "retryable_failure"
       && nativeRetryCancellationEligible({ runId: run.id, companyId: coordinator.companyId,

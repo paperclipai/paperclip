@@ -2931,7 +2931,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
-              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.execution?.canStop === true)) && (
+              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.driverKind !== "grok_bot_mcp" && run.execution?.canStop === true)) && (
                 <Button
                   variant="ghost"
                   size="sm"
