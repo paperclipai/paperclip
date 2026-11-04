@@ -1767,6 +1767,15 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
+Reattachment readies the exact retained sandbox lease through the provider's
+bounded lifecycle resume before running short preparation commands such as the
+managed project-authentication check. The resume receipt must confirm the same
+provider allocation without reporting expiration. Missing or mismatched receipts
+hold recovery; this path never acquires a replacement sandbox. The validated
+lease retains its recorded working directory, since optional provider metadata
+can describe the allocation root. A resume setup failure preserves the retained
+sandbox and saved work. Plugin task reattachment remains with its task owner.
+
 After a remote sandbox session passes provider recovery and durable run admission,
 its local suspension receipt is removed. This applies to built-in sandbox runners
 and plugin tasks. The running session then owns authority;
@@ -2897,6 +2906,13 @@ Paperclip submits saved input through normal task admission, once, with the
 original user's authority. Pauses, task ownership, budgets, approvals, and
 execution recovery holds still apply. Unconfirmed cleanup does not start work.
 
+An admitted connected-task Retry keeps its existing successor queued while the
+exact native predecessor still owes cleanup, even when the task already points
+to the successor. A stop-and-retain receipt alone does not settle that cleanup.
+Cleanup writes and exact workspace-owner releases wake scoped dispatch after
+commit; the same run then passes the normal source, identity, Stop, approval and
+budget checks again.
+
 A Stop from a bound Slack session records the verified user's identity, just as
 a board Stop does. Native cancellation can then recognize the acknowledged
 operator Stop instead of creating an execution recovery hold. An AI login request
@@ -3486,3 +3502,16 @@ response with no matching cancellation intent. A matching durable pending intent
 can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
+
+### Native session diagnostic ownership
+
+Native session diagnostics follow the current execution's recorder epoch, including
+warm-session reuse. Active diagnostics enter the recorder synchronously. Execution
+retirement detaches that exact epoch without awaiting optional progress metadata.
+The recorder retains ownership of admitted-byte draining and finalization, including
+its existing unknown-size/hash result when an append cannot settle. A later idle transport
+close retains its transport evidence and emits only a fixed diagnostic category
+with company/run identifiers to the process logger; it cannot append provider text
+to a completed run or borrow a successor run's recorder. Canonical native output
+export, source coverage, secret redaction and persistence-failure warnings retain
+their existing contracts.

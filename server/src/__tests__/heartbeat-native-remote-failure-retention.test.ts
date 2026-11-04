@@ -11,7 +11,7 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { pinFailedObservedWorkspace } from "../services/native-runtime/native-observed-workspace-preservation.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { environmentRuntimeService, classifyEnvironmentCapabilities } from "../services/environment-runtime.js";
+import { environmentRuntimeService, classifyEnvironmentCapabilities, type EnvironmentDriverResumeInput } from "../services/environment-runtime.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
@@ -107,9 +107,11 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       expect(await pinFailedObservedWorkspace(db, companyId, f.runId)).toBe(false);
       throw preparationFailure;
     });
+    const acquireAllocation = vi.fn(async () => { throw new Error("Unexpected new allocation"); });
+    const readyAllocation = vi.fn(async ({ lease }: EnvironmentDriverResumeInput) => lease);
     const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
-      acquireRunLease: async () => { throw new Error("Unexpected new allocation"); },
-      resumeRunLease: async () => { throw new Error("Reattachment must not resume the allocation"); },
+      acquireRunLease: acquireAllocation,
+      resumeRunLease: readyAllocation,
       releaseRunLease: async () => { throw new Error("Unexpected destructive cleanup"); },
       retryPendingSandboxTeardown: async () => { throw new Error("Stop must remain separately verified"); },
       realizeWorkspace: async () => { throw new Error("Unexpected workspace realization"); },
@@ -124,6 +126,14 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       nativeSessionBackendFactory: () => { throw new Error("No provider backend may be created"); } });
       await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
       await heartbeat.drainActiveRunExecutions();
+      expect(readyAllocation).toHaveBeenCalledExactlyOnceWith({
+        environment: expect.objectContaining({ id: environmentId }),
+        lease: expect.objectContaining({ id: leaseId, companyId, environmentId,
+          executionWorkspaceId: workspaceId, heartbeatRunId: f.runId, providerLeaseId,
+          status: "active", leasePolicy: "ephemeral" }),
+        requestedCwd: remoteCwd,
+      });
+      expect(acquireAllocation).not.toHaveBeenCalled();
       expect(resumed).toHaveBeenCalledOnce();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       expect(run.error).toBe(preparationFailure.message);
