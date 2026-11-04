@@ -1,6 +1,6 @@
 # Native event ingestion measurements (2026-11-03)
 
-Historical cursor service acceptance passed at B0 `83b5f7d` and B1 `7922802f`. The current common-base revisions require fresh qualification; their first A/A run failed the frozen noise gates, so no candidate comparison has started. Application and batching acceptance remain in progress. These measurements use the actual append service and real PostgreSQL on a dedicated quiet host. They establish a local service improvement.
+The tables and raw reports below are **historical** cursor service evidence at B0 `83b5f7d` and B1 `7922802f`. Fresh [interleaved cursor source measurements](2026-11-03-native-event-ingestion-interleaved.md) and the incremental/combined source series in [the batching PR](https://github.com/paperclipai/paperclip/pull/18818) now pass all five source stages: B0 A/A, B0→B1, B1 A/A, B1→B2 and B0→B2. Their estimand is active source append cost, not whole-application burst completion. The first common-base monolithic A/A failed and remains excluded; it was not silently converted into a pass. Application acceptance remains open and the full task is incomplete.
 
 The long-history cursor/range operations are bounded; replay still performs its required indexed event identity lookup. At 100k seeded events, the separately recorded baseline plans examine about 100,000 source entries; the candidate performs a one-row identity lookup and bounded projection work. The raw reports retain the SQL and plans.
 
@@ -8,7 +8,7 @@ The long-history cursor/range operations are bounded; replay still performs its 
 
 Each ordinary sample contains **512 append attempts** (16 groups of 32). Five baseline/candidate pairs alternate order; two warmups, seeding, rebuild preparation and verification are excluded. The mixed replay case contains 256 new events and 256 exact duplicates; duplicate attempts reuse receipts and allocate nothing. The table reports median wall time per 512 attempts, not individual event latency.
 
-| Seeded history / case | B0 ms/512 | B1 ms/512 | Change | Pairs beating noise | A/A noise | SQL calls/attempt B0 → B1 |
+| Seeded history / case | B0 ms/512 | B1 ms/512 | Change | Pairs beating noise | A/A noise | Owner query calls/attempt B0 → B1 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1,000 / ordered | 3821.9 | 3602.4 | -5.74% | 0/5 | 14.603% | 5 → 5 |
 | 1,000 / replay | 3115.1 | 3044.4 | -2.27% | 0/5 | 5.697% | 4 → 4 |
@@ -19,6 +19,8 @@ Each ordinary sample contains **512 append attempts** (16 groups of 32). Five ba
 | 100,000 / ordered | 7966.9 | 3564.6 | -55.26% | 5/5 | 1.261% | 5 → 5 |
 | 100,000 / replay | 7417.3 | 2972.4 | -59.93% | 5/5 | 1.829% | 4 → 4 |
 | 100,000 / warm-suffix | 8526.7 | 3616.2 | -57.59% | 5/5 | 1.207% | 6 → 5 |
+
+The diagnostic counter records event-owner Drizzle `preparedQuery.execute` calls only, excluding driver-generated `BEGIN`/`COMMIT` and other wire SQL; transactions are counted separately. Historical raw JSON keeps its original `sqlCalls` field names.
 
 All six required 10k/100k cases exceed their observed per-case A/A envelope in **5/5 individual pairs** and in the median. The 1k cases pass nonregression; 1k ordered and replay gains remain inside noise. Every A/A timing case met the preregistered maximum paired difference ≤20% and median drift ≤10%; the largest median drift was 1.791%. Both full experiments completed correctness checks and cleanup.
 
@@ -37,4 +39,4 @@ See [experiment commands](../../scripts/native-ingestion/README.md) and the [imp
 
 Use `gzip -dc <report.json.gz>` to inspect the complete original JSON. Its byte-for-byte SHA256 is recorded above and in the summary. No p99 is inferred from five service samples. The initial noisy calibration and failed browser qualifications remain excluded; the final report will record their failure ledger alongside the application comparisons. The [local-journal diagnostic](2026-11-03-native-event-ingestion-local-journal.md) records a separate baseline bottleneck and its measurement limits.
 
-Application streaming, control responsiveness, batching, profile-only backlog/resource diagnostics, final delivery revisions and current-head CI remain pending. The live-provider functional journey has passed separately. This report makes no deployed production or 10,000-agent qualification claim.
+Fresh source acceptance is recorded in the linked source reports; the historical tables above are unchanged. Full H4 application acceptance remains failed: the latest H4c B0 and B2 attempts both missed the original 120-second streaming deadline, and earlier failures remain retained. No application A/A, application throughput gain or browser-latency improvement is accepted. The H5 observation protocol is prospective and unexecuted; upstream disk/journal findings are diagnostic only. Sparse-stream/control responsiveness, successful complete application comparisons, final delivery revisions and current-head CI remain open. The live-provider functional journey passed separately. The full ingestion task is not complete, and this report makes no deployed production or 10,000-agent qualification claim.

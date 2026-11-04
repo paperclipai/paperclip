@@ -18,8 +18,8 @@
     "node --check gates.mjs"
   ],
   "scan": {
-    "files": 26,
-    "decompressedBytes": 15713136,
+    "files": 27,
+    "decompressedBytes": 15719804,
     "actualCredentialSourcePresent": true,
     "actualCredentialMatches": 0,
     "patternMatches": {
@@ -27,5 +27,11 @@
       "vault_or_person_path": 0,
       "nonloopback_credential_url": 0
     }
+  },
+  "statusAndLabelRefresh": {
+    "scope": "Docs/status/owner-query labels only; no new measurement",
+    "historicalPrimaryNumericTableRowsUnchanged": true,
+    "ownerQueryCounterScope": "Event-owner Drizzle preparedQuery.execute only; excludes driver BEGIN/COMMIT and other wire SQL; transaction counts separate; legacy JSON unchanged",
+    "allFiveSourceStageStatus": "Passed source-owner cost gates; application/H4 original120 gate remains failed; H5 prospective/unexecuted"
   }
 }

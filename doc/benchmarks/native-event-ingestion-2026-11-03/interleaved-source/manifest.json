@@ -62,8 +62,8 @@
     },
     {
       "path": "packaging-verification.json",
-      "bytes": 1176,
-      "sha256": "143fb11e55a78977d4d6bced8a236e98ed4b46e855889f7c94e4b0736d8cee86"
+      "bytes": 1659,
+      "sha256": "81f0d4234bc251dcc806e3b20568080ea729d23774a19aea10fda3bf3e65ffe9"
     },
     {
       "path": "prospective-protocol.md",
@@ -157,8 +157,13 @@
   "externalOwnedFiles": [
     {
       "repositoryPath": "doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md",
-      "bytes": 13105,
-      "sha256": "69f0b1895e1c72f9ddfaeb31c2f0152cf63fed077e780832aaeff687112f4e0d"
+      "bytes": 13923,
+      "sha256": "3e8308f0abb33036388f2c88f8f1e87732279cc0490215fdf5a935fc59a61dae"
+    },
+    {
+      "repositoryPath": "doc/benchmarks/2026-11-03-native-event-ingestion.md",
+      "bytes": 5850,
+      "sha256": "a98c829eb271ee2319dd8ce7eca17910377ddd2c8848c6cb5f0ee973781fd7a3"
     },
     {
       "repositoryPath": "scripts/benchmark-native-event-ingestion-interleaved.ts",
