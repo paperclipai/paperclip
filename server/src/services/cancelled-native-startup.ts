@@ -1,5 +1,5 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
-import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
@@ -9,6 +9,7 @@ import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
@@ -67,31 +68,7 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<bo
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
       "workspaceRestoreRecovery"].includes(key))) return false;
-  const events = await db.select().from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-  )).orderBy(asc(heartbeatRunEvents.seq)).limit(4);
-  const hostEvent = (event: typeof heartbeatRunEvents.$inferSelect) => event.agentId === source.agentId
-    && event.stream === "system" && event.sourceInstanceId === null && event.sourceEventId === null
-    && event.sourceSeq === null && event.sourcePayloadSha256 === null && event.protocolSchemaVersion === null;
-  let offset = 0;
-  const warning = events[0];
-  if (warning?.eventType === "agent_observability.unavailable") {
-    if (!hostEvent(warning) || warning.seq !== 1 || warning.level !== "warn"
-      || warning.payload?.reason !== "unsupported_harness" || typeof warning.payload.revision !== "string" || !isUuidLike(warning.payload.revision)
-      || Object.keys(warning.payload).some(key => !["reason", "revision"].includes(key))) return false;
-    offset = 1;
-  }
-  const [error, measured] = events.slice(offset);
-  return events.length === 2 + offset && Boolean(error && measured && hostEvent(error) && hostEvent(measured)
-    && typeof run.error === "string" && run.error.length > 0
-    && error.seq === 1 + offset && error.eventType === "error" && error.level === "error"
-    && error.message === run.error && error.payload === null
-    && measured.seq === 2 + offset && measured.eventType === "lifecycle" && measured.level === "info" && measured.message === "task.run.measured"
-    && measured.payload?.phase === "task.run.measured" && measured.payload.outcome === "failed"
-    && measured.payload.durableSettlement === true
-    && Object.keys(measured.payload).every(key => ["phase", "outcome", "durationMs", "durableSettlement"].includes(key))
-    && typeof measured.payload.durationMs === "number"
-    && Number.isFinite(measured.payload.durationMs) && measured.payload.durationMs >= 0);
+  return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }));
 }
 
 function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): boolean {

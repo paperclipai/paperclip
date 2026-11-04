@@ -41,6 +41,7 @@ import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -640,6 +641,51 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
   }, 30_000);
+
+  it.each(["plain", "unsupported_warning", "warning_presentation", "provider_warning", "measurement"] as const)(
+    "keeps the existing-directory readiness settlement contract: %s", async mode => {
+    const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), sourceRunId = randomUUID(),
+      successorRunId = randomUUID(), requestId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Preparation settlement", issuePrefix: `S${companyId.slice(0, 6)}` });
+    fixtureCompanyIds.add(companyId);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue existing directory", status: "blocked", assigneeAgentId: agentId });
+    const cwd = await materializeIsolatedTaskDirectory({ companyId, issueId });
+    await writeFile(path.join(cwd, "saved.txt"), "existing task work\n");
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Task directory", cwd }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issueId));
+    const error = "The selected existing task directory has no Git checkout.";
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
+      status: "failed", finishedAt: new Date(), errorCode: "workspace_validation_failed", error, executionStage: "preparing",
+      contextSnapshot: { issueId }, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      usageJson: { ledgerScope: { issueId, projectId: null, billingCode: null } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        workspaceValidation: { reason: "git_worktree_base_not_git_checkout", issueId,
+          resolvedWorkspaceSource: "task_session", requestedExecutionWorkspaceMode: "isolated_workspace",
+          issueExecutionWorkspacePreference: "reuse_existing", issueExecutionWorkspaceId: workspace.id,
+          issueProjectId: null, issueProjectWorkspaceId: null, resolvedWorkspaceCwd: cwd } } });
+    if (mode.includes("warning")) await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId,
+      eventType: "agent_observability.unavailable", level: "warn", stream: "system",
+      message: mode === "warning_presentation" ? "Changed presentation" : "Company observability was not applied: this harness is not supported.",
+      payload: { reason: "unsupported_harness", revision: randomUUID() },
+      ...(mode === "provider_warning" ? { nativeSource: { sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1,
+        protocolSchemaVersion: 1, canonicalPayload: { type: "agent_observability.unavailable" } } } : {}) });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "error", level: "error", stream: "system", message: error });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "lifecycle", level: "info", stream: "system",
+      message: "task.run.measured", payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1, durableSettlement: mode !== "measurement" } });
+    const [successor] = await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, issueId, status: "queued",
+      contextSnapshot: { issueId, previousRunId: sourceRunId, taskRetryRequestId: requestId } }).returning();
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "coalesced", runId: successor.id, requestedByActorType: "user", requestedByActorId: "local-board",
+      idempotencyKey: `task-retry:${randomUUID()}`, payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: requestId, sourceRunId, actorId: "local-board", actorSource: "session", strategy: "evaluate" } } });
+    const reuse = mode === "plain" || mode === "unsupported_warning";
+    expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject(reuse
+      ? { mode: "reuse_current_workspace", retryIntentId: requestId, sourceRunId, workspaceId: workspace.id, cwd }
+      : { mode: "fresh_isolated_workspace", retryIntentId: requestId, sourceRunId, retainedSourceIds: [] });
+    expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
+  });
 
   it.each(["complete", "catalog", "catalog_warning", "catalog_unknown_warning", "catalog_provider_warning"] as const)(
     "dispatches the recovered failed-preparation Retry once through the native provider boundary (%s)", async mode => {
