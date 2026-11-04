@@ -164,6 +164,17 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("exposes team preview and install bodies through the actual adapter override search", () => {
+    const results = searchRunnerApi({ query: "adapterOverrides install team under manager parentAgentId", limit: 10 }).results;
+    const preview = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    const install = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    const previewBody = preview.requestBody?.content["application/json"].schema;
+    const installBody = install.requestBody?.content["application/json"].schema;
+    expect(previewBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), nameOverrides: expect.any(Object) } });
+    expect(installBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), adapterOverrides: expect.any(Object), secretValues: expect.any(Object) } });
+    expect(previewBody.properties).not.toHaveProperty("adapterOverrides");
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
