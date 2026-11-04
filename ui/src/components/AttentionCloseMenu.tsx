@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { AlarmClock, Archive, ArrowRightLeft, Ban, ChevronDown, Clock, ExternalLink, RotateCcw, UserRound } from "lucide-react";
+import { AlarmClock, Archive, ArrowRightLeft, Ban, Clock, MoreHorizontal, ExternalLink, RotateCcw, UserRound } from "lucide-react";
 import type { AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import {
@@ -112,14 +112,15 @@ export function AttentionCloseMenu({
           <Button
             type="button"
             variant="ghost"
-            size="xs"
+            size="icon-xs"
             disabled={busy}
             className={className ?? "text-muted-foreground"}
+            aria-label="Close…"
+            title="Close…"
             data-attention-close-menu
             onClick={(event) => event.stopPropagation()}
           >
-            Close…
-            <ChevronDown aria-hidden="true" />
+            <MoreHorizontal className="size-4" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">

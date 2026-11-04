@@ -336,7 +336,7 @@ describe("AttentionQueueRow", () => {
     // live in a portal and opening is environment-flaky in jsdom, so assert the
     // wiring by locating the trigger; AttentionCloseMenu.test covers the verbs.
     const trigger = container?.querySelector("[data-attention-close-menu]");
-    expect(trigger?.textContent).toContain("Close…");
+    expect(trigger?.getAttribute("aria-label")).toBe("Close…");
   });
 
   it("toggles expand when the collapsed header of an inline row is clicked", () => {
