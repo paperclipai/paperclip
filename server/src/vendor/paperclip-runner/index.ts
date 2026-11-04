@@ -94,6 +94,7 @@ export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEA
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const providerFailureFromError = runner.providerFailureFromError;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
+export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;

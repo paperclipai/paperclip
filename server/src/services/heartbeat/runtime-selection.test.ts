@@ -432,14 +432,14 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     const { input, run } = await fixture("process");
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     expect(input.nativeRuntimeResolution.kind).toBe("legacy");
-    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("warm Paperclip Runner");
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
     expect((await read(run.id)).runtimeMode).toBe("legacy");
     expect(await coordinators(run.id)).toHaveLength(0);
     expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
     expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
   });
 
-  it.each(["warm", "per_turn"] as const)("checks resolved %s policy for ephemeral admission", async mode => {
+  it.each(["warm", "per_turn"] as const)("preserves resolved %s policy on an ephemeral server", async mode => {
     const { input, run } = await fixture();
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     // Deliberately disagree with the resolved provider policy in both cases.
@@ -447,14 +447,41 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true,
       effectiveCapabilities: { reusableLeases: true } as never,
       runnerLifecyclePolicy: mode === "warm" ? { mode, idleTimeoutMs: 300_000 } : { mode, idleTimeoutMs: null } };
-    if (mode === "per_turn") {
-      await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("warm Paperclip Runner");
-      expect(await coordinators(run.id)).toHaveLength(0);
-    } else {
-      const selected = await selectHeartbeatRuntime(db, input);
-      expect(selected.selected && selected.nativeExecution?.session.lifecyclePolicy.mode).toBe("warm");
-      expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } } });
-    }
+    const selected = await selectHeartbeatRuntime(db, input);
+    expect(selected.selected && selected.nativeExecution?.session.lifecyclePolicy.mode).toBe(mode);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode } } } });
+    expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  it.each([
+    { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", credentialProvider: "anthropic" as const, method: "subscription" as const },
+    { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", credentialProvider: "xai" as const, method: "subscription" as const },
+    { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", credentialProvider: "openrouter" as const, method: "api_key" as const },
+  ])("admits managed $provider/$acpxAgent on an ephemeral server without changing credential lifecycle", async profile => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    const { input, run, issue } = await fixture();
+    const { credentialProvider, method, ...providerConfig } = profile;
+    const adapterConfig = { ...providerConfig, lifecycleMode: "warm" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never, runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: input.workspace.executionTarget, workspaceId: null });
+    expect(input.nativeRuntimeResolution.kind).toBe("native");
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider: credentialProvider, method,
+      mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.nativeExecution.provider.kind).toBe(profile.provider);
+    expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "per_turn", idleTimeoutMs: null });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: "per_turn" } } },
+    });
+    expect(await coordinators(run.id)).toHaveLength(1);
   });
 
   it.each([

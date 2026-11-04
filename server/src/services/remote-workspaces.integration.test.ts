@@ -387,7 +387,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it("prepares, saves and restores task files without a controller checkout or original allocation", async () => {
+  it.each(["same root", "different root", "destroyed allocation", "occupied root"] as const)(
+    "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
     expect(readRemoteWorkspaceAuthority(prepared.workspace.metadata)?.snapshotId).toBeTruthy();
@@ -399,8 +400,16 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
     const current = await workspace(reserved.id);
     expect(readRemoteWorkspaceAuthority(current.metadata)).toMatchObject({ dirty: false, writerRunId: null, snapshotId: saved.snapshotId });
-    await fs.rm(path.dirname(prepared.remoteRoot), { recursive: true, force: true });
-    const second = await target("sandbox-B");
+    if (mode === "destroyed allocation") {
+      const destroyed: EnvironmentLease = { ...prepared.lease, status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { ...prepared.lease.metadata, remoteExecutionTermination: remoteTerminationReceipt(prepared.lease,
+          { providerLeaseId: prepared.lease.providerLeaseId, state: "destroyed" }) } };
+      await db.transaction(tx => clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: destroyed }));
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.location).toBeNull();
+    }
+    await fs.rm(path.join(root, "sandbox-A"), { recursive: true, force: true });
+    const second = await target(mode === "different root" ? "sandbox-B" : "sandbox-A");
+    const expectedRemoteRoot = path.join(second.remoteCwd, ".paperclip-workspaces", path.basename(prepared.remoteRoot));
     const nextRun = randomUUID(), nextLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
     await db.insert(environmentLeases).values({ id: nextLease, companyId: ids.company, environmentId: ids.environment,
@@ -408,7 +417,19 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const reservedAgain = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
       agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
     const newLease = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease)))[0]! as EnvironmentLease;
+    if (mode === "occupied root") {
+      await fs.mkdir(expectedRemoteRoot, { recursive: true });
+      await fs.writeFile(path.join(expectedRemoteRoot, "unpublished.txt"), "preserve unknown preparation\n");
+      await expect(prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second }))
+        .rejects.toThrow("remote_workspace_operation_failed");
+      expect(await fs.readFile(path.join(expectedRemoteRoot, "unpublished.txt"), "utf8")).toBe("preserve unknown preparation\n");
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
+        .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
+      await fs.rename(expectedRemoteRoot, path.join(root, "retained-unknown-preparation"));
+    }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
+    expect(restored.remoteRoot).toBe(expectedRemoteRoot);
+    if (mode !== "different root") expect(restored.remoteRoot).toBe(prepared.remoteRoot);
     expect(await fs.readFile(path.join(restored.remoteRoot, "report.md"), "utf8")).toBe("useful saved result\n");
     expect(await fs.readFile(path.join(restored.remoteRoot, "binary.bin"))).toEqual(Buffer.from([0, 1, 255]));
     expect((await fs.stat(path.join(restored.remoteRoot, "empty-folder"))).isDirectory()).toBe(true);
@@ -619,8 +640,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       existingWorkspaceId: reserved.id, source: { kind: "empty" } });
     const nextTarget = await target("restore-cleanup-destination");
     const sandbox = nextTarget as Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
-    const expectedRemoteRoot = path.join(sandbox.remoteCwd, ".paperclip-workspaces",
-      `${reserved.id}-${readRemoteWorkspaceAuthority(nextWorkspace.metadata)!.epoch}-${nextLease}`);
+    const expectedRemoteRoot = path.join(sandbox.remoteCwd, ".paperclip-workspaces", path.basename(prepared.remoteRoot));
     const execute = sandbox.runner!.execute.bind(sandbox.runner!);
     let failCleanup = true, cleanupAttempts = 0;
     sandbox.runner!.execute = async input => {

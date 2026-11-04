@@ -104,6 +104,24 @@ its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
 
+`rolling-web-deployment` definition 4 selects every registered native Daytona
+profile in disposable per-turn environments; `rolling-web-deployment-warm`
+uses the same profiles in reusable warm environments. Their
+provider-backup path uses encrypted object storage and a fenced database ledger.
+The earlier per-turn failure remains failed evidence; this definition requires
+a fresh passing run, including the strict post-replacement continuation oracle.
+Its revision task includes a 180-second foreground CLI reliability soak, giving
+the replacement time to become ready while useful agent work remains active.
+The observer rechecks the original live owner immediately before switching
+traffic and fails if that turn already settled. A completed turn cannot count
+as active takeover. Per-turn file inspection requires the exact committed saved
+snapshot; the warm lane still requires the live workspace.
+Cold restores retain the published workspace directory name, including after
+the old allocation is destroyed, because provider recovery binds the working
+directory into session identity. Unpublished preparations retain distinct
+epoch/lease directories, and a restore refuses to overwrite an occupied path
+owned by another preparation.
+
 The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
 
@@ -2169,6 +2187,12 @@ Missing subscription coverage remains a qualification blocker;
 an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
+
+Grok accounting uses the complete prompt ledger bound to the matching ACP
+response. Its reasoning counter can exceed its output counter; it is not a
+validation bound or an extra term in the ledger's input-plus-output total.
+Reported cost remains authoritative. See the upstream
+[`UsageTotals` ledger](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-chat-state/src/usage.rs).
 
 ### Kimi Code qualification
 

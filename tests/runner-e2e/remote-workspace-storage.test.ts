@@ -56,6 +56,36 @@ describe("remote workspace Product E2E qualification", () => {
     expect(result.content).toBe(`${"a".repeat(32)}\n`);
   });
 
+  it("reads the exact saved snapshot after per-turn sandbox retirement", async () => {
+    const f = checkpointApi();
+    const originalGet = f.api.get;
+    const location = f.workspace.workspace.metadata.remoteWorkspace.location;
+    const detached = { ...f.workspace, workspace: { ...f.workspace.workspace,
+      metadata: { remoteWorkspace: { ...f.workspace.workspace.metadata.remoteWorkspace, location: null } } } };
+    const file = { ...f.file, resource: { ...f.file.resource, source: { kind: "saved", snapshotId: f.receipt.snapshotId } } };
+    const lease = { id: location.leaseId, companyId: f.context.companyId, issueId: f.context.issueId,
+      providerLeaseId: location.providerLeaseId };
+    const api = { get: async <T>(route: string): Promise<T> => {
+      if (route.endsWith("/workspace")) return detached as T;
+      if (route.endsWith("/leases")) return [lease] as T;
+      if (route.includes("file-resources/content")) return file as T;
+      return originalGet<T>(route);
+    } };
+    const input = { ...f.context, api, expectedFileSource: "saved" as const };
+    expect((await readRemoteWorkspaceStorageCheckpoint(input)).point).toMatchObject({ fileSource: "saved", fileSnapshotId: id("2") });
+    expect(await readRemoteWorkspaceStorageCheckpoint({ ...input, expectedFileSource: "live" })).toEqual({});
+    file.resource.source.snapshotId = id("5");
+    expect(await readRemoteWorkspaceStorageCheckpoint(input)).toEqual({});
+    file.resource.source.snapshotId = f.receipt.snapshotId;
+    lease.companyId = id("5");
+    expect(await readRemoteWorkspaceStorageCheckpoint(input)).toEqual({});
+    const evidence = goodEvidence(); evidence.expectedFileSource = "saved";
+    for (const point of [evidence.initial!, evidence.final!]) Object.assign(point, { fileSource: "saved", fileSnapshotId: point.snapshotId });
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(true);
+    evidence.final!.fileSnapshotId = id("9");
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(false);
+  });
+
   it.each(["run-id", "company", "agent", "native-issue", "runtime", "status", "schema", "workspace",
     "epoch", "snapshot", "save-state", "lease", "provider", "remote-root"] as const)(
     "rejects a full-run %s mismatch even when its public summary succeeds", async mismatch => {

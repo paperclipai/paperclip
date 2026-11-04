@@ -1632,6 +1632,18 @@ describe("native provider usage normalization", () => {
   it("does not treat a protocol-default price as free usage", () => {
     expect(nativeUsageCostUsd({ runDelta: { inputTokens: 20, outputTokens: 10, providerCostUsd: 0 } })).toBeUndefined();
   });
+  it("attributes Grok API usage while preserving managed billing identity", () => {
+    const provider = { kind: "acpx", agent: "grok", model: "grok-4.7" } as NativeExecutionInput["provider"];
+    expect(nativeUsageBiller(provider)).toBe("xai");
+    expect(resolveNativeBilling(provider)).toEqual({ provider: "xai", biller: "xai", billingType: "unknown" });
+    expect(resolveNativeBilling(provider, { XAI_API_KEY: "fixture" }))
+      .toEqual({ provider: "xai", biller: "xai", billingType: "metered_api" });
+    const subscription = { provider: "xai", biller: "xai", billingType: "subscription_included" as const };
+    expect(resolveNativeBilling(provider, { XAI_API_KEY: "fixture" }, subscription)).toEqual(subscription);
+    expect(nativeUsageCostUsd({ runDelta: { inputTokens: 30787, outputTokens: 5763, cacheReadTokens: 475008,
+      cacheWriteTokens: 0, providerCostUsd: 0.336842 } }, provider)).toBe(0.336842);
+  });
+
   it("reports the actual runtime billing identity", () => {
     expect(resolveNativeBilling({ kind: "opencode", model: "openrouter/deepseek/test", permissionMode: "allow" }))
       .toEqual({ provider: "deepseek", biller: "openrouter", billingType: "unknown" });
