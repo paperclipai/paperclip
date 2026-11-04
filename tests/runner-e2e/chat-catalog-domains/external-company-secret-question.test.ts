@@ -100,3 +100,7 @@ it("keeps a coordinated negative alternative within the original prohibition",()
  const positive=environmentQuestion();positive.payload.questionSet!.questions[0]!.helpText="Enter the key in plaintext files.";
  expect(companySecretQuestionHandoff(positive,binding)).toBeUndefined();
 });
+it.each(["but","however","then"])("checks an independent %s request after coordinated negative guidance",contrast=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=`Do not paste the key in chat, or enter the key in plaintext files ${contrast} instead send the key by email.`;
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
