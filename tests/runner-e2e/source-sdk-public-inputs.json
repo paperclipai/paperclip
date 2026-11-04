@@ -205,7 +205,7 @@
     "packages/shared/src/connection-instructions.test.ts": "5095a9eeaa378b8d881feafa699c1705f207717f",
     "packages/shared/src/connection-instructions.ts": "61b3e102838bd8bcab20eb9d0497a182f86eaac0",
     "packages/shared/src/connection-intent-guidance.test.ts": "76047c037508beb098f914d231cc239a9b1d256a",
-    "packages/shared/src/connection-intent-guidance.ts": "7178d4afddd09dac4eaa5b7203b44fc1c6a499cf",
+    "packages/shared/src/connection-intent-guidance.ts": "7ddd678e9517c59fb403e5a99acc137eabf7ab79",
     "packages/shared/src/connection-routing.test.ts": "95f6d30b790a2ef69f409fb72e4ba83256d7771e",
     "packages/shared/src/connection-routing.ts": "fa29ecccbed3f38497ed7f6eadcb8f7c2b193177",
     "packages/shared/src/connection-search.test.ts": "fc7a3ee0df22b19afe1d58f4d9bfbf8213ed0092",
