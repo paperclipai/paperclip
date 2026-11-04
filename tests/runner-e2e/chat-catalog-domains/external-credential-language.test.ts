@@ -54,3 +54,7 @@ it("retains a subordinate verb inside the credential request", () => {
 it("retains the governing prohibition across coordinated verbs", () => {
   expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
 });
+
+it("does not carry a prohibition across an explicit instead request", () => {
+  expect(solicitsChatCredential("Do not paste your credential into files and instead send it here in chat.")).toBe(true);
+});

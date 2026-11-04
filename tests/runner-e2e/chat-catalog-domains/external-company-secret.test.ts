@@ -72,3 +72,7 @@ it("distinguishes subordinate chat requests from coordinated company warnings", 
   expect(deploymentSecretGuidance(context + "Please paste the credential you want to share here in chat.")).toBe(false);
   expect(deploymentSecretGuidance(context + "You must never paste or share your credential here.")).toBe(true);
 });
+
+it("rejects a company chat request after an explicit instead boundary", () => {
+  expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Do not paste your credential into files and instead send it here in chat.")).toBe(false);
+});
