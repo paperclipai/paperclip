@@ -105,6 +105,12 @@ that an ACPX startup rejection keeps Runner's closed rejection text and its
 classification. Startup receipts retain the cause across controller restart before
 any provider turn exists.
 
+When a failed ACPX control closes the session before polling, the resulting
+`turn.failed` event retains that control's closed-code error. A later closed-session
+check does not replace it, and a closed code does not infer a provider explanation.
+The terminal still reports `recoverable: false` and no observed provider terminal;
+it does not prove termination or authorize replay.
+
 Every ACPX session ensure rejection carries a startup cause. When the provider
 returned no ACP error, the cause keeps the rejection's own redacted message with
 category `unknown`. A provider can type the failure with ACP's
