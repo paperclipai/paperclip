@@ -96,6 +96,49 @@ function assignedSkillReadText(output: string, binding: NativePrpRunBinding, fix
   } catch { return undefined; }
 }
 
+/** OpenCode's proxy forwards the builtin skill loader without an operation.
+ * Core091 therefore records unknown/false even though the loader exposes its saved body.
+ * Only this complete, immutable-version-bound native loader may use that shape.
+ */
+function nativeOpenCodeSkillLoad(row: Row, bound: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture,
+  runtimeName: string | undefined, assignment: SavedSkillReadAssignment | undefined, run: Row | undefined): boolean {
+  const event = row.payload.prpEvent, payload = event.payload, input = run?.runnerProfileJson?.nativeExecutionInput;
+  const skills = Array.isArray(input?.runtimeContext?.skills)
+    ? input.runtimeContext.skills.filter((skill: Row) => skill.key === assignment?.key) : [];
+  if (!run || run.runtimeMode !== "native" || input?.provider?.kind !== "opencode"
+    || run.id !== binding.runId || run.companyId !== binding.companyId || run.agentId !== binding.agentId
+    || typeof run.runnerInstanceId !== "string" || !run.runnerInstanceId.trim()
+    || typeof run.nativeSessionId !== "string" || !run.nativeSessionId.trim()
+    || event.sourceInstanceId !== run.runnerInstanceId || event.normalizedSessionId !== run.nativeSessionId
+    || typeof event.itemId !== "string" || !event.itemId.trim() || !Number.isSafeInteger(row.seq)
+    || !assignment || assignment.key !== `company/${binding.companyId}/${fixture.slug}`
+    || typeof assignment.versionId !== "string" || !assignment.versionId.trim()
+    || skills.length !== 1 || skills[0].versionId !== assignment.versionId || skills[0].runtimeName !== runtimeName
+    || run.contextSnapshot?.skillSelectionSnapshot !== true
+    || run.contextSnapshot?.skillVersions?.[assignment.key] !== assignment.versionId
+    || typeof runtimeName !== "string" || !/^[a-z0-9][a-z0-9_-]*$/i.test(runtimeName)
+    || payload.name !== "skill" || payload.operation !== "unknown" || payload.readOnly !== false || payload.target !== null) return false;
+  const wrapper = /^<skill_content name="([^"<>\r\n]+)">\n# Skill: ([^\r\n]+)\n\n([\s\S]*?)\n\nBase directory for this skill: ([^\r\n]+)\n([\s\S]*)\n<\/skill_content>\s*$/.exec(payload.output);
+  if (!wrapper || wrapper[1] !== fixture.slug || wrapper[2] !== fixture.slug || wrapper[3] !== fixture.procedure.trim()
+    || !/<skill_files>\s*<\/skill_files>/.test(wrapper[5]!)
+    || (payload.output.match(/<skill_content\b/g) ?? []).length !== 1
+    || (payload.output.match(/<\/skill_content>/g) ?? []).length !== 1
+    || (payload.output.match(/<skill_files>/g) ?? []).length !== 1
+    || (payload.output.match(/<\/skill_files>/g) ?? []).length !== 1) return false;
+  // The native loader prints an absolute filesystem path, not a URI.
+  const path = wrapper[4]!;
+  if (!path.startsWith("/") || /[\\\0\r\n?#]/.test(path) || /%[a-f0-9]{2}/i.test(path)
+    || path.split("/").some(part => part === "." || part === "..")
+    || !path.replace(/\/$/, "").endsWith(`/.claude/skills/${runtimeName}`)) return false;
+  const pair = bound.filter(candidate => ["tool.execution.started", "tool.execution.completed"].includes(candidate.payload.prpEvent.eventType)
+    && candidate.payload.prpEvent.payload?.executionId === payload.executionId);
+  const start = pair.find(candidate => candidate.payload.prpEvent.eventType === "tool.execution.started");
+  const initial = start?.payload.prpEvent, initialPayload = initial?.payload;
+  return Boolean(pair.length === 2 && start && Number.isSafeInteger(start.seq) && start.seq < row.seq
+    && initial.sourceSeq < event.sourceSeq && initial.normalizedSessionId === event.normalizedSessionId && initial.itemId === event.itemId
+    && initialPayload?.readOnly === false && initialPayload.target === null);
+}
+
 // Core091 provider_bridge.rs hashes UTF-8 JSON with object keys ordered by UTF-16.
 // This oracle reconstructs the complete pinned read result, not provider display text.
 function semanticDigest(value: unknown): string {
@@ -189,6 +232,8 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
     // OpenCode's skill tool names the loaded skill in its provider-visible result.
     const loading = payload.operation === "execute" && name === "skill"
       && payload.output.includes(`<skill_content name="${fixture.slug}">`);
+    const nativeLoading = name === "skill" && payload.operation === "unknown"
+      && nativeOpenCodeSkillLoad(row, bound, binding, fixture, runtimeName, assignment, run);
     // Deployed OpenCode reports this read with operation unknown and target null.
     // Its successful file-result wrapper supplies the exact materialized source path.
     const wrapped = /^<path>([^<>\r\n]+)<\/path>\r?\n<type>file<\/type>\r?\n<content>\r?\n([\s\S]*)\r?\n<\/content>\s*$/.exec(payload.output);
@@ -206,7 +251,7 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
       && assignment?.key === `company/${binding.companyId}/${fixture.slug}`
       && typeof assignment.versionId === "string" && assignment.versionId.trim()
       ? assignedSkillReadText(payload.output, binding, fixture, assignment.versionId) : undefined;
-    if (!reading && !loading && !wrappedRead && assignedText === undefined) return false;
+    if (!reading && !loading && !nativeLoading && !wrappedRead && assignedText === undefined) return false;
     // File readers may prefix each source line with its line number.
     const output = (assignedText ?? (wrappedRead ? wrapped![2]! : payload.output)).split("\n").map((line: string) => line.replace(/^\s*\d+(?:[:|]|→)\s?/, "")).join("\n");
     if (!output.includes(fixture.procedure.trim())) return false;
