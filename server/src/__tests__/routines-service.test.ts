@@ -8,6 +8,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -104,6 +105,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -1162,6 +1164,53 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain(sentinelSecret);
     expect(serialized).not.toContain("adapterConfig");
     expect(serialized).not.toContain("runtimeConfig");
+  });
+
+  it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const userId = "new-responsible-person";
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    const before = await svc.runRoutine(routine.id, { source: "api" }, {});
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, before.linkedIssueId!));
+    const updated = await svc.update(routine.id, {
+      responsibleUserId: userId,
+      baseRevisionId: routine.latestRevisionId,
+    }, { userId: "operator" });
+    expect(updated?.responsibleUserId).toBe(userId);
+    expect(updated?.latestRevisionNumber).toBe(2);
+    const revisions = await svc.listRevisions(routine.id);
+    expect(revisions[0]?.snapshot.routine.responsibleUserId).toBe(userId);
+    expect(revisions[1]?.snapshot.routine.responsibleUserId).toBe(routine.responsibleUserId);
+    const after = await svc.runRoutine(routine.id, { source: "api" }, {});
+    const [oldTask] = await db.select().from(issues).where(eq(issues.id, before.linkedIssueId!));
+    const [newTask] = await db.select().from(issues).where(eq(issues.id, after.linkedIssueId!));
+    expect(oldTask?.responsibleUserId).toBe(routine.responsibleUserId);
+    expect(newTask?.responsibleUserId).toBe(userId);
+    const noOp = await svc.update(routine.id, { responsibleUserId: userId }, {});
+    expect(noOp?.latestRevisionId).toBe(updated?.latestRevisionId);
+    await expect(svc.update(routine.id, {
+      responsibleUserId: userId, baseRevisionId: routine.latestRevisionId,
+    }, {})).rejects.toThrow("Routine was updated by someone else");
+    const restored = await svc.restoreRevision(routine.id, routine.latestRevisionId!, {});
+    expect(restored.routine.responsibleUserId).toBe(userId);
+    expect(restored.revision.snapshot.routine.responsibleUserId).toBe(userId);
+  });
+
+  it.each(["missing", "suspended", "archived", "other-company"])("rejects a %s responsible person", async (state) => {
+    const { companyId, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    if (state !== "missing") {
+      const memberCompanyId = state === "other-company" ? randomUUID() : companyId;
+      if (state === "other-company") await db.insert(companies).values({ id: memberCompanyId, name: "Other company", issuePrefix: "OTHER" });
+      await db.insert(companyMemberships).values({
+        companyId: memberCompanyId, principalType: "user", principalId: userId,
+        status: state === "other-company" ? "active" : state,
+      });
+    }
+    await expect(svc.update(routine.id, { responsibleUserId: userId }, {}))
+      .rejects.toThrow("Responsible user must be an active company member");
+    expect((await svc.get(routine.id))?.responsibleUserId).toBe(routine.responsibleUserId);
+    expect(await svc.listRevisions(routine.id)).toHaveLength(1);
   });
 
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {

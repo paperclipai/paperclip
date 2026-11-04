@@ -96,6 +96,12 @@ export function routineRoutes(
     }
   }
 
+  async function canChangeResponsibleUser(req: Request, companyId: string) {
+    if (req.actor.type !== "board") return false;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    return access.canUser(companyId, req.actor.userId, "tasks:assign");
+  }
+
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
@@ -194,7 +200,7 @@ export function routineRoutes(
   router.get("/routines/:id", async (req, res) => {
     const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
     if (!detail) return;
-    res.json(detail);
+    res.json({ ...detail, canChangeResponsibleUser: await canChangeResponsibleUser(req, detail.companyId) });
   });
 
   router.get("/routines/:id/revisions", async (req, res) => {
@@ -369,6 +375,12 @@ export function routineRoutes(
     const assigneeWillChange =
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== routine.assigneeAgentId;
+    if (req.body.responsibleUserId !== undefined) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only people can change routine responsibility");
+      }
+      await assertBoardCanAssignTasks(req, routine.companyId);
+    }
     if (assigneeWillChange) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
@@ -402,7 +414,13 @@ export function routineRoutes(
       action: "routine.updated",
       entityType: "routine",
       entityId: routine.id,
-      details: { title: updated?.title ?? routine.title },
+      details: {
+        title: updated?.title ?? routine.title,
+        ...(req.body.responsibleUserId !== undefined ? {
+          previousResponsibleUserId: routine.responsibleUserId,
+          responsibleUserId: updated?.responsibleUserId,
+        } : {}),
+      },
     });
     if (updated && updated.latestRevisionId !== routine.latestRevisionId) {
       await remapRoutineDescriptionAnnotations(req, routine.id);

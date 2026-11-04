@@ -529,6 +529,36 @@ describe("routine routes", () => {
     expect(mockRoutineService.create).not.toHaveBeenCalled();
   });
 
+  it("hides responsibility editing from people without tasks:assign and rejects their writes", async () => {
+    const app = await createApp({ type: "board", userId: "viewer", source: "session", isInstanceAdmin: false, companyIds: [companyId] });
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "viewer" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["granted", "instance-admin", "local"])("allows responsibility changes for a %s operator", async (kind) => {
+    const app = await createApp({ type: "board", userId: "operator", source: kind === "local" ? "local_implicit" : "session", isInstanceAdmin: kind === "instance-admin", companyIds: [companyId] });
+    mockAccessService.canUser.mockResolvedValue(kind === "granted");
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    mockRoutineService.update.mockResolvedValue({ ...routine, responsibleUserId: "operator" });
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(true);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator", baseRevisionId: revisionId });
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.update).toHaveBeenCalledWith(routineId, expect.objectContaining({ responsibleUserId: "operator", baseRevisionId: revisionId }), expect.objectContaining({ userId: "operator" }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "routine.updated", details: expect.objectContaining({ responsibleUserId: "operator" }) }));
+  });
+
+  it("prevents even the assigned agent from transferring routine responsibility", async () => {
+    const app = await createApp({ type: "agent", agentId, companyId });
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
     const app = await createApp({
       type: "board",

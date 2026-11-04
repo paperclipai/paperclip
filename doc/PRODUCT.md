@@ -141,6 +141,14 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
 ### Task collection creation filters
 
 The task Filters menu also offers **Routine tasks**. It selects tasks with

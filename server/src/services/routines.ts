@@ -2317,7 +2317,7 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
-      const responsibleUserId = await resolveRoutineResponsibleUserId(
+      const responsibleUserId = patch.responsibleUserId ?? existing.responsibleUserId ?? await resolveRoutineResponsibleUserId(
         db,
         existing.companyId,
         actor.userId,
@@ -2343,6 +2343,20 @@ export function routineService(
           });
         }
 
+        if (patch.responsibleUserId !== undefined) {
+          const member = await txDb.select({ id: companyMemberships.id })
+            .from(companyMemberships)
+            .where(and(
+              eq(companyMemberships.companyId, locked.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, patch.responsibleUserId),
+              eq(companyMemberships.status, "active"),
+            ))
+            .for("share")
+            .then((rows) => rows[0] ?? null);
+          if (!member) throw unprocessable("Responsible user must be an active company member");
+        }
+
         const candidate: RoutineRow = {
           ...locked,
           projectId: nextProjectId,
@@ -2360,7 +2374,7 @@ export function routineService(
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
-          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          responsibleUserId: patch.responsibleUserId ?? locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
