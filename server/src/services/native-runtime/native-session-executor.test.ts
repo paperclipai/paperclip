@@ -84,6 +84,7 @@ import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
 } from "../../vendor/paperclip-runner/index.js";
@@ -11752,6 +11753,21 @@ describe("native session bounded recovery", () => {
     },
   );
 
+  it("stops same-run retries when the runner proves the saved provider session incompatible", () => {
+    const failure = new NativeProviderStateIncompatibleError(
+      "Error: PRP command run.attach failed: ACPX durable launch profile digest does not match runner startup",
+    );
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("native_provider_state_incompatible");
+    const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+    expect(disposition).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+    expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+      issueStatus: "blocked", recoveryOwner: { kind: "board" },
+    });
+    // Only the typed runner class is deterministic; the same text stays retryable.
+    expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
   it("makes only typed operator-required cleanup quarantine terminal on the first attempt", () => {
     const code = nativeSessionFailureSourceCode(
       new NativeSessionCleanupQuarantinedError(),
@@ -14006,7 +14022,7 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -14022,7 +14038,12 @@ describe("runnerd provider runtime wiring", () => {
       const scoped = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
       await mkdir(join(scoped, "control-plane"), { recursive: true });
       const journal = JSON.stringify({ ...durableControlPlaneState(identity), commands: [{ status: mode.endsWith("pending-command") ? "pending" : "completed" }],
-        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } }] });
+        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } },
+          ...(mode === "local-receipt-late-notice" ? [{ eventType: "provider.notice.recorded", envelope: { ...identity, payload: { schema: "paperclip.prp.event.v1", eventType: "provider.notice.recorded",
+            runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, sourceInstanceId: identity.runnerInstanceId, sourceKind: "runner",
+            payload: { schema: "paperclip.provider.notice.v1", noticeId: "codex-warning", severity: "warning", category: "warning", scope: "turn", recoverable: true, userActionable: true,
+              summary: "ignored a notification for a settled Codex turn" } } } }] : []),
+          ...(mode === "local-receipt-late-work" ? [{ eventType: "turn.started", envelope: { ...identity } }] : [])] });
       await writeFile(join(scoped, "control-plane/control-plane-state.json"), journal);
       if (mode.startsWith("empty-runner") || mode === "nonempty-runner") {
         await mkdir(join(scoped, "runner"));
@@ -14095,7 +14116,7 @@ describe("runnerd provider runtime wiring", () => {
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
           expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
@@ -14105,9 +14126,18 @@ describe("runnerd provider runtime wiring", () => {
           expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {
-          await expect(backend).rejects.toThrow();
+          await expect(backend).rejects.toThrow({
+            "local-receipt-late-work": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "ambiguous": "plugin_checkpoint_recovery_unproven: quarantine_ambiguous",
+            "not-suspended": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+            "pending-outbox": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+          }[mode as string] ?? "");
           expect(state.createBackend).not.toHaveBeenCalled();
-          if (["local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
+          if (["local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
             expect(task).not.toHaveBeenCalled();
           }
           if (mode === "ambiguous") expect(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
@@ -15225,6 +15255,8 @@ describe("runnerd provider runtime wiring", () => {
   it.each([
     "quarantined",
     "large control plane",
+    "late provider notice",
+    "post-terminal work",
     "empty retry shell",
     "unsuspended current",
     "live runner",
@@ -15441,6 +15473,35 @@ describe("runnerd provider runtime wiring", () => {
                     }))
                   : []),
                 { eventType: "run.terminal", envelope: identity },
+                ...(scenario === "late provider notice"
+                  ? [{
+                      eventType: "provider.notice.recorded",
+                      envelope: {
+                        ...identity,
+                        payload: {
+                          schema: "paperclip.prp.event.v1",
+                          eventType: "provider.notice.recorded",
+                          runId: identity.runId,
+                          normalizedSessionId: identity.normalizedSessionId,
+                          sourceInstanceId: identity.runnerInstanceId,
+                          sourceKind: "runner",
+                          payload: {
+                            schema: "paperclip.provider.notice.v1",
+                            noticeId: "codex-warning",
+                            severity: "warning",
+                            category: "warning",
+                            scope: "turn",
+                            recoverable: true,
+                            userActionable: true,
+                            summary: "ignored a notification for a settled Codex turn",
+                          },
+                        },
+                      },
+                    }]
+                  : []),
+                ...(scenario === "post-terminal work"
+                  ? [{ eventType: "turn.started", envelope: identity }]
+                  : []),
               ],
             }),
           );
@@ -15481,6 +15542,7 @@ describe("runnerd provider runtime wiring", () => {
           "quarantined",
           "released process identity",
           "large control plane",
+          "late provider notice",
           "empty retry shell",
           "unsuspended current",
           "active goal",

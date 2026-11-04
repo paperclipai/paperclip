@@ -26,6 +26,7 @@ type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
   | "followup-while-running"
   | "file-input-answer"
   | "routine-scheduled-run"
+  | "agent-settings-persistence"
   | "repository-continuation">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }

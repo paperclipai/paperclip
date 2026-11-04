@@ -112,13 +112,42 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("offline_maintenance_required");
     await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).rejects.toThrow("offline_maintenance_required");
   });
-  it.each(["running", "queued"])("refuses offline archived imports while any execution is %s", async status => {
+  it.each(["running", "queued"])("refuses offline archived imports while any execution is running or requeued (%s)", async status => {
     const f = await seed(); await retainDirectory(f); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated writer" }).returning();
-    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status, startedAt: status === "queued" ? new Date() : null });
     await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
       .rejects.toThrow("active_execution_requires_drain");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["startedAt", "runtimeModeResolvedAt", "processPid", "processStartedAt", "runnerInstanceId", "nativeSessionId", "nativePhase", "controllerLeaseExpiresAt", "executionStage", "checkpoint", "finalizer", "lease"])("keeps queued execution with %s as an offline blocker", async evidence => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Retained execution" }).returning();
+    const patch = evidence.endsWith("At") ? { [evidence]: new Date() }
+      : evidence === "processPid" ? { processPid: 123 }
+      : evidence.endsWith("Id") ? { [evidence]: randomUUID() }
+      : evidence === "nativePhase" ? { nativePhase: "observed" }
+      : evidence === "executionStage" ? { executionStage: "dispatch" }
+      : evidence === "checkpoint" ? { runnerProfileJson: { sessionCheckpoint: {} } } : {};
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id,
+      nativeIssueId: evidence === "finalizer" ? f.issueId : null, status: "queued", ...patch }).returning();
+    if (evidence === "finalizer") await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
+      issueId: f.issueId, runId: run!.id, phase: "observed" });
+    if (evidence === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run!.id });
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
+      .rejects.toThrow("active_execution_requires_drain");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("preserves an unstarted queued turn during offline import while live migration still refuses it", async () => {
+    const f = await seed();
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Queued turn" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id,
+      issueId: f.issueId, status: "queued", contextSnapshot: { issueId: f.issueId, executionWorkspaceId: f.workspaceId } }).returning();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("active_execution");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]).toEqual(run);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
   });
   it("detects overlapping folders reached through symlinked parent directories", async () => {
     const f = await seed(), alias = path.join(root, "alias"); await fs.symlink(root, alias);

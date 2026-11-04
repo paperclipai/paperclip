@@ -19,8 +19,9 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
+import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
@@ -2164,6 +2165,9 @@ export async function executeNativeSession(
           };
     if (!recovery.recovered || !recovery.session) {
       if (!replacementAllowed) {
+        if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
+          throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+        }
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );

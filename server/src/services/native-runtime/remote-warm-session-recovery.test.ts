@@ -7,6 +7,10 @@ const goal = { schema: "paperclip.session_goal.snapshot.v1", goal: null, working
 const notification = { schema: "paperclip.prp.event.v1", eventType: "session.goal.snapshot", runId: identity.runId,
   normalizedSessionId: identity.normalizedSessionId, sourceInstanceId: "runner", sourceKind: "runner", payload: goal };
 const snapshot = { eventType: "session.goal.snapshot", envelope: { ...identity, payload: notification } };
+const notice = { schema: "paperclip.provider.notice.v1", noticeId: "codex-warning", severity: "warning", category: "warning", scope: "turn",
+  recoverable: true, userActionable: true, summary: "ignored a notification for a settled Codex turn" };
+const noticeNotification = { ...notification, eventType: "provider.notice.recorded", payload: notice };
+const lateNotice = { eventType: "provider.notice.recorded", envelope: { ...identity, payload: noticeNotification } };
 const state = (events: unknown[]) => ({ identity, commands: [{ status: "completed" }], committedEvents: events });
 
 describe("settled remote warm control evidence", () => {
@@ -32,6 +36,28 @@ describe("settled remote warm control evidence", () => {
     ["missing payload", { ...snapshot, envelope: { ...identity } }],
   ])("holds a %s suffix", (_name, suffix) => {
     expect(isSettledRemoteWarmControlState(state([terminal, suffix]), identity)).toBe(false);
+  });
+
+  it("accepts recoverable provider notices recorded after the terminal", () => {
+    const info = { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, payload: { ...notice, severity: "info" } } } };
+    expect(isSettledRemoteWarmControlState(state([terminal, lateNotice]), identity)).toBe(true);
+    expect(isSettledRemoteWarmControlState(state([terminal, lateNotice, snapshot, info]), identity)).toBe(true);
+  });
+
+  it.each([
+    ["error notice", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, payload: { ...notice, severity: "error" } } } }],
+    ["unrecoverable notice", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, payload: { ...notice, recoverable: false } } } }],
+    ["unknown notice schema", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, payload: { ...notice, schema: "paperclip.provider.notice.v2" } } } }],
+    ["notification type mismatch", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, eventType: "session.goal.snapshot" } } }],
+    ["foreign notice source", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, sourceInstanceId: "other" } } }],
+    ["foreign notice lease", { ...lateNotice, envelope: { ...lateNotice.envelope, environmentLeaseId: "other" } }],
+    ["control plane notice source", { ...lateNotice, envelope: { ...lateNotice.envelope, payload: { ...noticeNotification, sourceKind: "control_plane" } } }],
+  ])("holds a %s suffix", (_name, suffix) => {
+    expect(isSettledRemoteWarmControlState(state([terminal, suffix]), identity)).toBe(false);
+  });
+
+  it("holds new work recorded after a late provider notice", () => {
+    expect(isSettledRemoteWarmControlState(state([terminal, lateNotice, { ...snapshot, eventType: "turn.started" }]), identity)).toBe(false);
   });
 
   it("holds missing terminals, pending commands and mixed core identities", () => {
