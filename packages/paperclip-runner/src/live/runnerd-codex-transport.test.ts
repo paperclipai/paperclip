@@ -77,6 +77,30 @@ import {
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
 
+// Failure-only metadata; never establishes that this checkout produced the binary.
+function nativeTestFailureProvenance(binaryPath: string) {
+  const errors: Array<{ stage: string; message: string }> = [];
+  const observe = (stage: string, read: () => unknown) => {
+    try { return read(); }
+    catch (error) { errors.push({ stage, message: String(error).slice(0, 1024) }); return null; }
+  };
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const inputs = ["runner","runner/Cargo.toml","runner/Cargo.lock","runner/crates/runner-core/Cargo.toml","package.json","rust-toolchain.toml","protocol","protocol/manifest.json","generated/semantic-action-catalog.json","antigravity-distributions.json","scripts","acpx-profiles.json","cursor-distributions.json","cursor-contract.json","src/drivers/acpx/kimi-closure-pins.ts"];
+  return {
+    capturedAt: new Date().toISOString(), binaryPath,
+    binarySha256: observe("binarySha256", () => createHash("sha256").update(readFileSync(binaryPath)).digest("hex")),
+    buildMetadata: observe("buildMetadata", () => JSON.parse(execFileSync(binaryPath, ["--build-metadata"],
+      { encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }))),
+    checkoutInputs: observe("checkoutInputs", () => {
+      const values = execFileSync("git", ["rev-parse", "HEAD", ...inputs.map(input => "HEAD:packages/paperclip-runner/" + input)],
+        { cwd: root, encoding: "utf8", timeout: 1_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim().split(String.fromCharCode(10)).map(value => value.trim());
+      if (values.length !== inputs.length + 1) throw new Error("Incomplete native checkout input observation");
+      return { revision: values[0], nativeInputObjects: Object.fromEntries(inputs.map((input, index) => [input, values[index + 1]])) };
+    }),
+    checkoutInputsAreNotCompiledBinaryProof: true, errors,
+  };
+}
+
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
   for (const model of ["gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "claude-sonnet-5"]) {
@@ -3738,7 +3762,11 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   let registrationReleased = false;
   let refreshed = false;
   let cleanupConfirmed = false;
+  const phases = { probeCalledAtMs: 0, registrationEnteredAtMs: null as number | null,
+    registrationReadyAtMs: null as number | null, registrationReleaseAtMs: null as number | null,
+    registrationAbortAtMs: null as number | null };
   try {
+    phases.probeCalledAtMs = Date.now();
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
@@ -3749,14 +3777,17 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         ...(remote ? {
           runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
           readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
-          controlPlaneRegistration: async authority => {
+          controlPlaneRegistration: async (authority, _identity, signal) => {
+            phases.registrationEnteredAtMs = Date.now();
+            signal?.addEventListener("abort", () => { phases.registrationAbortAtMs = Date.now(); }, { once: true });
             await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
             const remoteHome = join(remoteFilesystem, "codex-home");
             await mkdir(remoteHome, { mode: 0o700 });
             for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
             if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
             await authority.start();
-            return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
+            phases.registrationReadyAtMs = Date.now();
+            return { connectUrl: authority.connectUrl, release: async () => { phases.registrationReleaseAtMs = Date.now(); registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
           },
         } : {}),
         runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
@@ -3820,6 +3851,15 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         expect(requests.some(value => value.method === "turn/start")).toBe(false);
       }
     }
+  } catch (error) {
+    if (mode === "late-remote-release-error") {
+      const observation = { failedAtMs: Date.now(), phases: { ...phases }, registrationReleased, cleanupConfirmed, refreshed };
+      try {
+        console.error("Native probe failure diagnostics: " + JSON.stringify({ ...observation,
+          nativeBinary: nativeTestFailureProvenance(resolve("runner/target/debug/paperclip-runnerd")) }));
+      } catch { /* Diagnostics must not replace the original probe assertion. */ }
+    }
+    throw error;
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 20_000);
 
