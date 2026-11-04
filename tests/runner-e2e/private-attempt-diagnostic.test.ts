@@ -108,3 +108,15 @@ it("reports fixed embedded HTML and reporter text bounds while excluding unknown
   ]);
   expect(JSON.stringify(diagnostic)).not.toMatch(/private-error|html-report/);
 });
+
+
+it("retains each remaining fixed scanner reason without dynamic text", () => {
+  const reasons = ["embedded report encoding could not be inspected", "reporter symlink cannot be inspected",
+    "credential in reporter filename", "reporter JSON could not be safely parsed"];
+  const diagnostic = privateAttemptDiagnostic({ stage: "package-original", observation: { privacy: { issues: [
+    ...reasons.map(reason => ({ file: "html-report/index.html", reason })),
+    { file: "private-filename", reason: "zip could not be inspected: private-error" },
+  ] } } });
+  expect(diagnostic.carrierReasons).toEqual(reasons.map(reason => ({ source: "reporter", carrier: "embedded-html", reason, count: 1 })));
+  expect(JSON.stringify(diagnostic)).not.toMatch(/private-filename|private-error|html-report/);
+});
