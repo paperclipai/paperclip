@@ -189,6 +189,7 @@ function browserReport(revision, latency) {
 
 function h5Report(revision, loadedLatency) {
   const report = browserReport(({ ...H5_BASELINE_REVISIONS, B2: "c".repeat(40) })[revision], 1000);
+  if (revision === "B2") report.remote.runner.sha256 = "8".repeat(64);
   Object.assign(report, { protocolVersion: H5_PROTOCOL, observationMode: H5_MODE,
     workloadSha256: H5_WORKLOAD_SHA256, observationLimits: H5_LIMITS, observationComplete: true,
     actualPlaywrightTimeoutMs: H5_LIMITS.fullInvocationMs, measurementSha256: "h5-synthetic-fixed-fixture",
@@ -255,7 +256,7 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
       const inventorySummaryFile = await save(`${variant}-summary.json`, { inventories: { [variant]: {
         manifest: path.basename(manifestFile), manifestSha256: manifestFileSha256, aggregateSha256, fileCount: files.length } } });
       const qualifiedReceiptFile = await save(`${variant}-qualified.json`, { results: [{ variant, revision: report.sourceRevision,
-        compiledBuildRevision: report.compiledBuildRevision, sourceClean: true }], rustSourceTree: "9".repeat(40),
+        compiledBuildRevision: report.compiledBuildRevision, sourceClean: true }], rustSourceTree: (variant === "B2" ? "8" : "9").repeat(40),
         binarySha256: report.remote.runner.sha256, nativeStageHashes: [{ variant, binarySha256: report.remote.runner.sha256 }],
         artifactInventorySummary: inventorySummaryFile });
       inventories.set(variant, { manifestFile, manifestFileSha256, aggregateSha256, inventorySummaryFile,
@@ -291,6 +292,22 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
       entries.push(entry);
     }
     return save(`${prefix}-pairs.json`, entries);
+  }
+  async function requalifyNative(entry, arm, binarySha256, rustSourceTree) {
+    const report = JSON.parse(await readFile(entry[`${arm}File`], "utf8"));
+    report.remote.runner.sha256 = binarySha256;
+    await writeFile(entry[`${arm}File`], JSON.stringify(report));
+    const owner = JSON.parse(await readFile(entry[`${arm}PlaywrightFile`], "utf8"));
+    owner.suites[0].tests[0].results[0].attachments[0].body = Buffer.from(JSON.stringify(report)).toString("base64");
+    await writeFile(entry[`${arm}PlaywrightFile`], JSON.stringify(owner));
+    const sidecar = JSON.parse(await readFile(entry[`${arm}InventoryFile`], "utf8"));
+    const receipt = JSON.parse(await readFile(sidecar.qualifiedReceiptFile, "utf8"));
+    receipt.binarySha256 = binarySha256; receipt.rustSourceTree = rustSourceTree;
+    receipt.nativeStageHashes[0].binarySha256 = binarySha256;
+    sidecar.qualifiedReceiptFile = await save(`${path.basename(entry[`${arm}File`])}-qualified-native.json`, receipt);
+    sidecar.qualifiedReceiptSha256 = hash(await readFile(sidecar.qualifiedReceiptFile));
+    sidecar.playwrightReportSha256 = hash(await readFile(entry[`${arm}PlaywrightFile`]));
+    await writeFile(entry[`${arm}InventoryFile`], JSON.stringify(sidecar));
   }
   try {
     const proof = JSON.parse(JSON.stringify(h5Report("B2", 1000)).replaceAll("00000000-", "10000000-"));
@@ -403,6 +420,45 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     const goodPairs = await manifest("good", 1000);
     const good = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, ...finalProofArgs, "--require-acceptance"]);
     assert.equal(good.status, 0, good.stderr);
+    const goodReport = JSON.parse(good.stdout);
+    assert.equal(goodReport.artifactInventories.baseline.binarySha256, "d".repeat(64));
+    assert.equal(goodReport.artifactInventories.candidate.binarySha256, "8".repeat(64));
+    assert.notEqual(goodReport.artifactInventories.baseline.rustSourceTree, goodReport.artifactInventories.candidate.rustSourceTree);
+    await context.test("each arm accepts its distinct qualified Runner binary", () => {
+      assert.equal(goodReport.performancePassed, true); assert.equal(goodReport.acceptancePassed, true);
+      assert.equal(goodReport.originalH4eConfirmation.inventory.binarySha256, "8".repeat(64));
+    });
+    await context.test("a serving binary outside its qualified receipt is rejected", async () => {
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${await manifest("unqualified-native", 1000, {
+        mutateArm: (report, { arm, index }) => { if (arm === "candidate" && index === 2) report.remote.runner.sha256 = "7".repeat(64); },
+      })}`, `--noise-report=${noise}`, "--require-performance"]);
+      assert.notEqual(attempt.status, 0); assert.match(attempt.stderr, /Serving native binary differs from qualified build/);
+    });
+    await context.test("a second qualified binary within one arm is rejected", async () => {
+      const file = await manifest("changed-qualified-native", 1000), entries = JSON.parse(await readFile(file, "utf8"));
+      await requalifyNative(entries[2], "candidate", "7".repeat(64), "7".repeat(40));
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${file}`, `--noise-report=${noise}`, "--require-performance"]);
+      assert.notEqual(attempt.status, 0); assert.match(attempt.stderr, /Qualified Runner binary changed between samples of an arm/);
+    });
+    await context.test("A/A cannot compare two qualified Runner binaries", async () => {
+      const file = await manifest("aa-changed-qualified-native", 181000, { sameRevision: true }), entries = JSON.parse(await readFile(file, "utf8"));
+      await requalifyNative(entries[0], "candidate", "7".repeat(64), "7".repeat(40));
+      const attempt = run(["--phase=aa", `--pairs=${file}`]);
+      assert.notEqual(attempt.status, 0); assert.match(attempt.stderr, /Qualified Runner binary changed between samples of an arm/);
+    });
+    await context.test("later original-deadline proof must use the candidate's qualified binary", async () => {
+      const entry = { candidateFile: await save("changed-proof-evidence.json", proof),
+        candidatePlaywrightFile: await save("changed-proof-playwright.json", JSON.parse(await readFile(originalProof, "utf8"))),
+        candidateInventoryFile: await save("changed-proof-inventory.json", JSON.parse(await readFile(originalInventory, "utf8"))) };
+      await requalifyNative(entry, "candidate", "7".repeat(64), "7".repeat(40));
+      const result = path.join(directory, "changed-proof-result.json");
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`,
+        `--original-h4e-proof=${entry.candidatePlaywrightFile}`, `--original-h4e-inventory=${entry.candidateInventoryFile}`, `--output=${result}`, "--require-acceptance"]);
+      assert.notEqual(attempt.status, 0);
+      const rejected = JSON.parse(await readFile(result, "utf8"));
+      assert.equal(rejected.performancePassed, true); assert.equal(rejected.acceptancePassed, false);
+      assert.match(rejected.originalH4eConfirmation.reason, /Original confirmation used a different full qualified artifact inventory/);
+    });
     const completionRegressionPairs = await manifest("verified-drain-regression", 1000, {
       mutateArm: (report, { arm }) => {
         if (arm !== "candidate") return;
@@ -424,7 +480,6 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     assert.equal(regressionGate.improvementRequired, true); assert.equal(regressionGate.passed, false);
     assert(completionRegressionReport.gates.filter(gate => gate.name === "burst512" &&
       ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms", "drainThroughTerminalMs"].includes(gate.metric)).every(gate => gate.passed));
-    const goodReport = JSON.parse(good.stdout);
     const rate = goodReport.verifiedCompletionRates.find(item => item.name === "burst512");
     assert.equal(rate.samples[0].measuredDeltas, 51200);
     assert.equal(rate.samples[0].baselineDeltasPerSecond, 51200000 / 180010);
