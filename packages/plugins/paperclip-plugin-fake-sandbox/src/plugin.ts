@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { definePlugin } from "@paperclipai/plugin-sdk";
+import { removeOwnedLeaseDirectory, type LeaseRootIdentity } from "./lease-cleanup.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
@@ -40,6 +41,7 @@ interface FakeDriverConfig {
 interface FakeLeaseState {
   providerLeaseId: string;
   rootDir: string;
+  rootIdentity: LeaseRootIdentity;
   remoteCwd: string;
   image: string;
   reuseLease: boolean;
@@ -87,11 +89,13 @@ async function createLeaseState(input: {
   reuseLease: boolean;
 }): Promise<FakeLeaseState> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-fake-sandbox-"));
+  const { dev, ino } = await lstat(rootDir);
   const remoteCwd = path.join(rootDir, "workspace");
   await mkdir(remoteCwd, { recursive: true });
   const state = {
     providerLeaseId: input.providerLeaseId,
     rootDir,
+    rootIdentity: { dev, ino },
     remoteCwd,
     image: input.image,
     reuseLease: input.reuseLease,
@@ -183,9 +187,9 @@ function cancelStatusFromReason(
 async function removeLease(providerLeaseId: string | null | undefined): Promise<void> {
   if (!providerLeaseId) return;
   const state = leases.get(providerLeaseId);
-  leases.delete(providerLeaseId);
   if (state) {
-    await rm(state.rootDir, { recursive: true, force: true });
+    await removeOwnedLeaseDirectory(state.rootDir, state.rootIdentity);
+    leases.delete(providerLeaseId);
   }
 }
 
