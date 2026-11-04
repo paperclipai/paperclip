@@ -299,6 +299,21 @@ export const appReviewExternalCases = [
       try {
         const connection = await connectNotes(ctx, provider, "ask-first");
         provider.failWrites();
+        // Three human intents each need a proposal turn and an outcome turn.
+        // Keep the daily admission gate finite and consistent with this case.
+        const agentPath = `/api/agents/${ctx.input.fixtures.agent.id}`;
+        const agent = await ctx.input.api.get<{
+          runtimeConfig: { heartbeat?: Record<string, unknown>; [key: string]: unknown };
+        }>(agentPath);
+        await ctx.input.api.patch(agentPath, {
+          runtimeConfig: {
+            ...agent.runtimeConfig,
+            heartbeat: { ...agent.runtimeConfig.heartbeat, maxDailyRuns: 6 },
+          },
+        });
+        const savedAgent = await ctx.input.api.get<typeof agent>(agentPath);
+        if (savedAgent.runtimeConfig.heartbeat?.maxDailyRuns !== 6)
+          throw new Error("Tool review fixture requires its declared six-turn daily allowance");
         const project = await ctx.input.api.post<{ id: string }>(
             `${root(ctx)}/projects`,
             { name: "Launch notes review", status: "in_progress" },
@@ -347,7 +362,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v3",
+      oracleVersion: "paperclip.chat-catalog.app-review.v4",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
