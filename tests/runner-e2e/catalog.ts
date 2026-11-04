@@ -44,7 +44,8 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
-import { firstTaskTasks } from "./first-task-cases.js";
+import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-cases.js";
+import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -1784,6 +1785,18 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       vendorBaseEvidence: "required deterministic Codex driver/runnerd/Rust gate; task success is not vendor-base proof",
       paidCalls: "one skill turn, two ordered-comment turns, three chat turns per profile",
     },
+  },
+  {
+    id: APPROVAL_HISTORY_SUITE, label: "Onboarding approval history", manualOnly: true,
+    description: "Interview, partial plan approval, approved hiring, a separate execution confirmation, and the writer’s saved result.",
+    groups: ["onboarding", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: [onboardingApprovalHistoryTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, sourceDigest: approvalHistoryDefinitionDigest(), scheduling: "explicit-only",
+      automaticRetryPolicy: "single_attempt", maximumAttemptsPerCell: 1, expectedWorkRuns: 7,
+      companyTaskBudgetCents: 500, maximumCompanyRuns: 12, attemptTimeoutMs: 900_000,
+      instructions: "production-wizard-and-first-task", approvalSequence: "plan-checkbox-subset/hiring-checkbox/execution-confirmation",
+      oracle: "persisted-human-decisions/current-plan-revision/assigned-child/one-worker-execution/saved-document/reload" },
   },
   {
     id: "first-task", label: "First-task onboarding",

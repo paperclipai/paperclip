@@ -1,5 +1,16 @@
 # Runner E2E security for a public repository
 
+The explicit `onboarding-approval-history` suite uses only synthetic garden-club
+facts in an owned disposable onboarding company. The human selects drafting and
+clears publishing; the scenario forbids external publication. The hired writer
+must use the lead's existing provider/AI connection through normal hiring.
+Credentials remain in the existing encrypted fixture path. It makes no direct
+database writes and changes no shared company. Public first-task projection
+retains synthetic checkbox option IDs/labels, selected IDs, plan document/revision
+IDs, and task/agent/run bindings so the approval history can be regraded. Provider
+session IDs, account configuration, raw traces, and full instructions retain
+their existing private-only treatment. Registration is separate from live proof.
+
 The deployment-targeted `saved-skill-use` journey creates one synthetic skill on
 the campaign-owned agent. Its random receipt reference and numeric inputs occur
 only in the saved skill source. Exact source, immutable version, ordinary assignment, native read

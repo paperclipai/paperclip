@@ -1,4 +1,5 @@
 import type { RunnerTaskFixture } from "./types.js";
+import { APPROVAL_HISTORY_CASE, approvalHistoryFacts } from "./first-task-approval-history.js";
 
 export const FIRST_TASK_CASES = [
   ["interview-first-response", "Interview: first response", "interview", 1],
@@ -35,12 +36,13 @@ export const FIRST_TASK_CASES = [
   ["revise-accept", "Revise scope before accepting", "task", 4],
   ["reject-no-execution", "Decline proposed work", "task", 2],
 ] as const;
-export type FirstTaskCaseId = (typeof FIRST_TASK_CASES)[number][0];
+const approvalHistoryCase = [APPROVAL_HISTORY_CASE, "Interview, plan scope, hiring, and execution approval", "interview", 7] as const;
+export type FirstTaskCaseId = (typeof FIRST_TASK_CASES)[number][0] | typeof APPROVAL_HISTORY_CASE;
 export type FirstTaskOpening = (typeof FIRST_TASK_CASES)[number][2];
 export const firstTaskMarker = (nonce: string) =>
   `GARDEN${nonce.replace(/[^a-z0-9]/gi, "")}`;
 export function firstTaskScenario(id: string, nonce: string) {
-  const entry = FIRST_TASK_CASES.find((row) => row[0] === id);
+  const entry = FIRST_TASK_CASES.find((row) => row[0] === id) ?? (id === APPROVAL_HISTORY_CASE ? approvalHistoryCase : undefined);
   if (!entry) throw new Error(`Unknown first-task case ${id}`);
   const marker = firstTaskMarker(nonce);
   const originalMarker = id === "revise-accept" ? `DRAFT${marker}` : marker;
@@ -51,7 +53,7 @@ export function firstTaskScenario(id: string, nonce: string) {
     opening: entry[2],
     marker,
     originalMarker,
-    facts,
+    facts: id === APPROVAL_HISTORY_CASE ? approvalHistoryFacts(marker) : facts,
     firstResponseOnly:
       id.endsWith("first-response") || id === "ordinary-task-control",
     prompt:
@@ -68,8 +70,7 @@ export function firstTaskScenario(id: string, nonce: string) {
       "No, do not proceed. I do not want this work done. Please acknowledge that and stop.",
   };
 }
-export const firstTaskTasks: readonly RunnerTaskFixture[] =
-  FIRST_TASK_CASES.map(([id, label, , expectedRunCount]) => ({
+const buildFirstTaskFixture = ([id, label, , expectedRunCount]: readonly [string, string, string, number]): RunnerTaskFixture => ({
     id,
     label,
     groups: ["onboarding"],
@@ -82,4 +83,6 @@ export const firstTaskTasks: readonly RunnerTaskFixture[] =
     buildPrompt: (nonce) => firstTaskScenario(id, nonce).prompt,
     buildVisibleMarker: firstTaskMarker,
     buildMatchers: () => [], // Checkpoints and state effects are graded by first-task-scoring.
-  }));
+  });
+export const firstTaskTasks: readonly RunnerTaskFixture[] = FIRST_TASK_CASES.map(buildFirstTaskFixture);
+export const onboardingApprovalHistoryTask = { ...buildFirstTaskFixture(approvalHistoryCase), automaticRetryPolicy: "single_attempt" as const };

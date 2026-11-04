@@ -1763,6 +1763,35 @@ Revision delivery checks exclude preserved originals by their content hash, even
 
 ## First-task onboarding
 
+The explicit-only `onboarding-approval-history` suite extends the interview path
+through three separate human decisions: a saved plan checkbox selection, a
+writer hiring checkbox, and an untargeted Start drafting confirmation. The user
+selects drafting and clears publishing. The model must hire the approved writer,
+assign one child, and produce the saved welcome document through that child's
+own execution. Persisted decisions, the unchanged plan revision and selection,
+creation timestamps, one child work run, and readback after browser reload own
+the grade. A successful parent run without the child or output fails.
+
+It has one local cell each for native Codex and ACPX Claude. It reuses the
+production wizard, first-task fixtures, $5 company task budget, twelve-run
+maximum, fifteen-minute attempt deadline, five-minute response waits, screenshots,
+private diagnostics, sanitized public evidence, and disposable-company cleanup.
+Expect seven provider work turns; setup probes are accounted separately. It
+permits one attempt and is excluded from `--all`. Run it explicitly when
+qualifying changes to onboarding or approval semantics:
+
+```sh
+pnpm test:e2e:runner -- --list --suite onboarding-approval-history
+pnpm test:e2e:runner -- --id onboarding-approval-history.runner-codex.local.interview-hire-execute
+```
+
+The deterministic PostgreSQL contract in
+`server/src/__tests__/onboarding-approval-history.test.ts` runs in the ordinary
+Vitest suite. It uses native-produced cards, authenticated human acceptance,
+and a later native run to check standard and checkbox plan approvals across
+native creation, both REST creation routes, decomposition, context, and replay.
+Journey discovery and grader calibration do not establish a live provider pass.
+
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
 includes its 52 executions alongside the other suites in one shared dashboard,
