@@ -35,7 +35,7 @@ import { readNativeMonitorSource } from "./native-runtime/native-monitor-deliver
 import { readNativeContinuationSource } from "./native-runtime/native-continuation-delivery.js";
 import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTerminalCaseHandoffsForIssue } from "./heartbeat/case-handoff-lifecycle.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
-import { assertDeliveryAttestationSatisfied } from "./delivery-attestations.js";
+import { assertCompletionRequirementMutation, assertDeliveryAttestationSatisfied } from "./delivery-attestations.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
@@ -12114,6 +12114,12 @@ export function issueService(db: Db) {
           issueData.completionRequirement !== undefined &&
           issueData.completionRequirement !== receiptExisting.completionRequirement
         ) {
+          assertCompletionRequirementMutation({
+            previousRequirement: receiptExisting.completionRequirement,
+            nextRequirement: issueData.completionRequirement,
+            actorUserId,
+            actorAgentId,
+          });
           patch.completionRequirementRevision = receiptExisting.completionRequirementRevision + 1;
         }
         if (patch.status === "done" && receiptExisting.status !== "done") {

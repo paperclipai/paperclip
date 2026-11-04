@@ -31,7 +31,7 @@ const support = await getEmbeddedPostgresTestSupport();
       completionRequirement: "workspace_delivery",
     });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId }).returning();
-    return { companyId, issueId, workspaceId: workspace.id, runId: run.id };
+    return { companyId, issueId, workspaceId: workspace.id, runId: run.id, agentId: agent.id };
   }
 
   it("blocks done without any attestation", async () => {
@@ -71,6 +71,19 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(service.update(issueId, { status: "done", companyGuard: companyId })).rejects.toThrow(
       /delivery attestation is required/i,
     );
+  });
+
+  it("does not let an agent clear the requirement to slip past the gate", async () => {
+    const { issueId, companyId, agentId } = await fixture("https://example.com/org/repo.git");
+    const service = issueService(db);
+    await expect(
+      service.update(issueId, {
+        status: "done",
+        completionRequirement: null,
+        companyGuard: companyId,
+        actorAgentId: agentId,
+      }),
+    ).rejects.toThrow(/only a human may change the completion requirement/i);
   });
 
   it("does not gate issues with no completion requirement (today's default)", async () => {
