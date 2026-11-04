@@ -213,6 +213,8 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import {
   assertCurrentWakeCommentsRead,
+  NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ,
+  NATIVE_CURRENT_WAKE_COMMENTS_UNREAD,
   resolveCurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
 import {
@@ -6994,8 +6996,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "runner_remote_provider_verification_unavailable" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE ||
-    sourceFailureCode === "native_current_wake_comments_unread" ||
-    sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
+    sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD ||
+    sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit";
@@ -7066,8 +7068,8 @@ export function nativeSessionFailureSourceCode(
   | "native_event_replay_conflict"
   | "native_provider_runtime_missing"
   | "native_provider_model_rejected"
-  | "native_current_wake_comments_unread"
-  | "native_current_wake_comments_changed_after_read"
+  | typeof NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
+  | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
@@ -7147,11 +7149,11 @@ export function nativeSessionFailureSourceCode(
   if (/native_event_replay_conflict/i.test(message)) {
     return "native_event_replay_conflict";
   }
-  if (/native_current_wake_comments_changed_after_read/i.test(message)) {
-    return "native_current_wake_comments_changed_after_read";
+  if (message.toLowerCase().includes(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ.toLowerCase())) {
+    return NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ;
   }
-  if (/native_current_wake_comments_unread/i.test(message)) {
-    return "native_current_wake_comments_unread";
+  if (message.toLowerCase().includes(NATIVE_CURRENT_WAKE_COMMENTS_UNREAD.toLowerCase())) {
+    return NATIVE_CURRENT_WAKE_COMMENTS_UNREAD;
   }
   // The runner reported a definite session.open outcome. That command runs
   // before any prompt, so provider work cannot have started. An indeterminate
