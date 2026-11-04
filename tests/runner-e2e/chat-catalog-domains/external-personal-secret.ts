@@ -113,7 +113,6 @@ export function personalSecretGuidance(reply: string) {
   );
 }
 export interface PersonalSecretQuestionBinding extends SecretQuestionBinding { definitionId: string }
-/** Admit only the actual human's bound, finite secure-entry confirmation. */
 export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQuestionBinding, status: "pending" | "answered" = "pending") {
   const bound = boundSecretQuestion(value, b, status);
   if (!bound) return;
