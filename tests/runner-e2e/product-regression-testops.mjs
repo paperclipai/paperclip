@@ -31,8 +31,14 @@ export const productRegressionCases = [
 
 const fail = code => { throw new Error(`product_regression_testops_${code}`); };
 const sha = value => createHash('sha256').update(value).digest('hex');
-const identifier = value => typeof value === 'string' && /^[a-zA-Z0-9._:-]{1,200}$/.test(value);
-const modelIdentifier = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value);
+// Closed transmission contracts, checked against all 20 catalog cells. Dynamic
+// matcher paths stay in the linked source artifact; only their digest leaves it.
+export const productReportingModels = ['gpt-5.6-sol', 'gpt-6.1-sol', 'openrouter/deepseek/deepseek-v4-flash-0731'];
+export const productReportingMatcherKinds = ['message_exact', 'message_contains', 'message_occurrences', 'message_regex',
+  'message_ordered', 'issue_status', 'run_status', 'runtime_mode', 'environment', 'file_exists', 'file_exact',
+  'file_contains', 'artifact_exists', 'artifact_exact', 'json_path', 'json_schema'];
+const failureClasses = ['candidate_failure', 'provider_variance', 'transient_infrastructure', 'permanent_infrastructure',
+  'secret_leak', 'cleanup_failure', 'setup_blocked'];
 export const endpoint = 'https://paperclip.testops.cloud';
 export const workflowUrl = 'https://github.com/paperclipai/paperclip/actions/workflows/runner-full-stack-e2e.yml';
 // Official GitHub/Allure job metadata uses these exact aliases for workflow
@@ -106,6 +112,9 @@ export function projectProductResults(campaign, selection, sourceSha) {
           || !['passed', 'failed'].includes(result.status) || (!missingArtifact && !Array.isArray(result.matcherResults)))) fail('result_binding');
       const checks = result?.matcherResults ?? [];
       if (checks.length > 300 || checks.some(check => typeof check.passed !== 'boolean')) fail('checks_invalid');
+      if ((result?.model != null && !productReportingModels.includes(result.model))
+          || (result?.failureClass != null && !failureClasses.includes(result.failureClass))
+          || checks.some(check => !productReportingMatcherKinds.includes(check.matcher?.kind))) fail('metadata_invalid');
       const passed = result?.status === 'passed' && result.cleanup === 'passed' && checks.length > 0 && checks.every(check => check.passed);
       const infrastructure = !result || ['permanent_infrastructure', 'transient_infrastructure', 'setup_blocked'].includes(result.failureClass);
       const status = passed ? 'passed' : infrastructure ? 'broken' : 'failed';
@@ -115,12 +124,13 @@ export function projectProductResults(campaign, selection, sourceSha) {
         workflowSha: selection.workflowSha, sourceSha, status, originalStatus: result?.status ?? null,
         attempt: result?.attempt ?? null, cleanup: result?.cleanup ?? 'not_started',
         profile: selected.profile, environment: 'local',
-        model: modelIdentifier(result?.model) ? result.model : null,
+        model: result?.model ?? null,
         suiteDefinitionHash: /^[a-f0-9]{64}$/.test(result?.suiteDefinitionHash ?? '') ? result.suiteDefinitionHash : null,
-        failureClass: identifier(result?.failureClass) ? result.failureClass : null,
+        failureClass: result?.failureClass ?? null,
         durationMs: Number.isFinite(result?.durationMs) && result.durationMs >= 0 ? result.durationMs : null,
-        checks: checks.map(check => ({
-          name: identifier(check.matcher?.path) ? check.matcher.path : identifier(check.matcher?.kind) ? check.matcher.kind : 'assertion',
+        checks: checks.map((check, index) => ({
+          name: check.matcher.kind, ordinal: index + 1,
+          pathSha256: typeof check.matcher.path === 'string' ? sha(check.matcher.path) : null,
           passed: check.passed,
         })),
         retainedAttempts: (accounting?.attempts ?? []).filter(row => row.executionId === selected.executionId).map(row => ({
@@ -147,7 +157,7 @@ export function projectProductResults(campaign, selection, sourceSha) {
           url: `https://github.com/paperclipai/paperclip/actions/runs/${selection.runId}` },
         { name: 'Evaluated source', type: 'custom', url: `https://github.com/paperclipai/paperclip/commit/${sourceSha}` }],
         attachments: [{ name: 'Bound execution provenance and assertions', source: attachment, type: 'application/json' }],
-        steps: provenance.checks.map(check => ({ name: check.name, status: check.passed ? 'passed' : 'failed', stage: 'finished' })),
+        steps: provenance.checks.map(check => ({ name: `${check.ordinal}. ${check.name}`, status: check.passed ? 'passed' : 'failed', stage: 'finished' })),
       };
       if (result && !missingArtifact) for (const [key, date] of [['start', result.startedAt], ['stop', result.finishedAt]]) {
         const timestamp = Date.parse(date);
