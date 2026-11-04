@@ -271,7 +271,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read bounded comments on the active task.",
+    "description": "Read bounded comments on the active task only. Calling get_task does not change the active task. This is not a status or assignment audit. For progress chronology and handoff actors, use search_api to discover the company timeline or issue activity, then call_api.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
