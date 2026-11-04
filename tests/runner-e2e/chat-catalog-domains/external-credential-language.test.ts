@@ -93,3 +93,15 @@ it("separates secure entry from its dash-prefixed negative chat warning", () => 
   expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — don't paste it in chat.")).toBe(false);
   expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — paste it in chat.")).toBe(true);
 });
+
+it.each(["don't", "shouldn't", "mustn't", "can't", "couldn't", "won't", "wouldn't"])("keeps a contracted negative warning separate from a later request: %s", contraction => {
+  for (const negative of [contraction, contraction.replace("'", "’")]) {
+    const warning = `Choose Set my value and enter your publishing key there — ${negative} paste it in chat.`;
+    expect(solicitsChatCredential(warning), warning).toBe(false);
+    expect(solicitsChatCredential(`${warning} But share it here in chat.`)).toBe(true);
+  }
+});
+it("keeps ever within a negative warning without extending it across contrast", () => {
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — don't ever paste it in chat.")).toBe(false);
+  expect(solicitsChatCredential("Don't ever paste your key in files — send it here in chat.")).toBe(true);
+});

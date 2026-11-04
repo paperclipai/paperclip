@@ -20,7 +20,10 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
-  const requestText = text.replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
+  const negativeModals: Record<string, string> = { don: "do", shouldn: "should", mustn: "must", can: "can", couldn: "could", won: "will", wouldn: "would" };
+  const requestText = text.replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
+    .replace(/\b((?:do|should|must|can|could|will|would)\s+not)\s+ever\b/gi, "$1")
+    .replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
     .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:(?:you\s+)?(?:(?:do|should|must|can|could|will|would)\s+not|don.t|never|not)\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ");
   const hasKeyContext = /key|credential|token/i.test(text);
   if (requestText.split(/[.!?;\n]+/).some(sentence => {
