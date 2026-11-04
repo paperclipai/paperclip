@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
+import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 import { dependencyEvidenceFixture } from "./task-dependency-resume-fixture.js";
+import * as observedReader from "./observation-read.js";
 
 const controls = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("../user-actions.js", () => ({ createTaskThroughUi: (...args: unknown[]) => controls.create(...args) }));
@@ -117,6 +118,73 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
 }
 afterEach(() => { vi.useRealTimers(); controls.create.mockReset(); });
 describe("dependency browser flow orchestration", () => {
+  const evidenceFiles = ["task-dependency-observations.json", "observation-read-failures.json"] as const;
+  const writerFaults = ["observations", "reads", "both"] as const;
+  const obstructWriters = async (directory: string, fault: typeof writerFaults[number]) => {
+    const names = fault === "both" ? [...evidenceFiles] : [evidenceFiles[fault === "observations" ? 0 : 1]];
+    await Promise.all(names.map(name => mkdir(path.join(directory, name))));
+    return names;
+  };
+  it.each(writerFaults.flatMap(fault => (["unsupported", "failed"] as const).map(outcome => [fault, outcome] as const)))(
+    "preserves the original %s writer failure outcome %s and attempts both evidence files", async (fault, outcome) => {
+      const f = await fixture(), blocked = await obstructWriters(f.directory, fault);
+      const logging = vi.spyOn(console, "error").mockImplementation(() => {});
+      const original = Object.freeze(new JourneyError("failed", "dependency_observation_control_failed"));
+      if (outcome === "unsupported") f.context.agent!.provider = "";
+      else vi.spyOn(f.context.api, "get").mockRejectedValue(original);
+      try {
+        const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+          { deadlineAt: Date.now() + 60_000, directory: f.directory });
+        if (outcome === "unsupported") await expect(operation).rejects.toMatchObject({ outcome, code: "dependency_execution_identity_unavailable" });
+        else await expect(operation).rejects.toBe(original);
+        for (const name of evidenceFiles.filter(name => !blocked.includes(name))) {
+          expect(JSON.parse(await readFile(path.join(f.directory, name), "utf8"))).toBeTypeOf("object");
+        }
+        expect(logging).toHaveBeenCalledWith("dependency_evidence_preservation_failed", blocked);
+        expect(JSON.stringify(logging.mock.calls)).not.toContain(f.directory);
+        expect(f.actions).toEqual([]); expect(f.owned).toEqual([]); expect(f.writes).toEqual([]);
+      } finally { logging.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
+    });
+  it.each(["unsupported", "failed"] as const)("awaits the other evidence file when the read writer throws synchronously after %s", async outcome => {
+    const f = await fixture(), createReader = observedReader.createObservedReader;
+    const original = Object.freeze(new JourneyError("failed", "dependency_observation_control_failed"));
+    const failingWrite = vi.fn(() => { throw new Error("private writer diagnostic"); });
+    const reader = vi.spyOn(observedReader, "createObservedReader").mockImplementation((...args) => ({
+      ...createReader(...args), preserve: failingWrite,
+    }));
+    const logging = vi.spyOn(console, "error").mockImplementation(() => {});
+    if (outcome === "unsupported") f.context.agent!.model = "";
+    else vi.spyOn(f.context.api, "get").mockRejectedValue(original);
+    try {
+      const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory });
+      if (outcome === "unsupported") await expect(operation).rejects.toMatchObject({ outcome, code: "dependency_execution_identity_unavailable" });
+      else await expect(operation).rejects.toBe(original);
+      expect(failingWrite).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"))).toHaveProperty("stage",
+        outcome === "unsupported" ? "prerequisites" : "observe_starting_runs");
+      expect(logging).toHaveBeenCalledWith("dependency_evidence_preservation_failed", ["observation-read-failures.json"]);
+      expect(JSON.stringify(logging.mock.calls)).not.toContain("private writer diagnostic");
+    } finally { logging.mockRestore(); reader.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each(writerFaults)("fails a successful journey when its %s evidence writer fails", async fault => {
+    const f = await fixture(), blocked = await obstructWriters(f.directory, fault);
+    const logging = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+    try {
+      const rejection = expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory })).rejects.toMatchObject({
+        outcome: "failed", code: "dependency_evidence_preservation_failed",
+      });
+      await vi.advanceTimersByTimeAsync(11_000); await rejection;
+      expect(f.evidence.checks).toHaveLength(8); expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+      expect(logging).toHaveBeenCalledWith("dependency_evidence_preservation_failed", blocked);
+      for (const name of evidenceFiles.filter(name => !blocked.includes(name))) {
+        expect(JSON.parse(await readFile(path.join(f.directory, name), "utf8"))).toBeTypeOf("object");
+      }
+      expect(f.writes).toEqual([]);
+    } finally { logging.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
+  });
   it.each((["provider", "model"] as const).flatMap(field => [
     [field, "missing", undefined], [field, "null", null], [field, "empty", ""], [field, "blank", " \t "],
   ] as const))("rejects a %s identity that is %s before observation or task work", async (field, _kind, value) => {

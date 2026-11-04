@@ -50,6 +50,13 @@ changes a shared source agent, company budget, or execution environment.
 The private evidence folder contains `task-dependency-observations.json` and
 `observation-read-failures.json`, with allowlisted owned task, run, audit, and
 document facts. The normal launcher captures the final owned task screenshot.
+Both evidence writes are attempted. A write failure retains an existing journey
+error and its outcome; a previously successful journey fails if required evidence
+cannot be saved. Diagnostics name only the affected evidence file.
+Runtime identity, document authorship, reload visibility, and retained history
+use their own observations bound to the same company, task, agent, and run. One
+failed control does not mark unrelated controls failed. All eight checks remain
+required for acceptance.
 There are no direct database writes, private runner hooks, manually dispatched
 resumption wakes, retry loops for failed model work, or fixture-authored outputs.
 Independent controls reject premature or duplicate execution, a never-resumed

@@ -104,7 +104,10 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && run.contextSnapshot?.wakeReason === "issue_blockers_resolved" && run.contextSnapshot?.source === "issue.blockers_resolved"
     && run.contextSnapshot?.resolvedBlockerIssueId === s.blockerId && exactId(run.contextSnapshot?.blockerIssueIds, s.blockerId)
     && Number.isFinite(date(run.startedAt)) && date(run.startedAt) >= date(released.blocker.completedAt);
-  const runtime = oneRun && run.runtimeMode === "native" && run.nativePhase === "committed"
+  const boundRun = scoped && [run, reopened.dependentRuns[0], newRuns(finished)[0], newRuns(reopened)[0]].every(row =>
+    nonempty(row?.id) && row.id === run?.id && row.companyId === s.companyId && row.agentId === s.agentId
+    && dependencyRunIssueId(row) === s.dependentId);
+  const runtime = boundRun && run?.runtimeMode === "native" && run.nativePhase === "committed"
     && run.runnerProfileJson?.nativeExecutionInput?.provider?.kind === s.provider
     && run.runnerProfileJson?.nativeExecutionInput?.provider?.model === s.model
     && run.contextSnapshot?.paperclipEnvironment?.id === s.environmentId;
@@ -114,11 +117,11 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && p.document.latestRevisionId === p.revision.id && p.revision.documentId === p.document.id
     && p.revision.createdByAgentId === s.agentId && p.revision.createdByUserId === null && p.revision.createdByRunId === run?.id
     && dependencyOutputMatches(p.document.body, s) && dependencyOutputMatches(p.revision.body, s);
-  const authored = runtime && documentMatches(finished);
-  const resultReopened = authored && documentMatches(reopened) && reopened.resultVisible === true
-    && reopened.document!.id === finished.document!.id && reopened.document!.latestRevisionId === finished.document!.latestRevisionId
-    && reopened.document!.body === finished.document!.body;
-  const history = resultReopened && points.every(p => p.blockerRuns.length === 0)
+  const authored = boundRun && documentMatches(finished);
+  const resultReopened = boundRun && documentMatches(reopened) && finished.document && reopened.resultVisible === true
+    && reopened.document!.id === finished.document.id && reopened.document!.latestRevisionId === finished.document.latestRevisionId
+    && reopened.document!.body === finished.document.body;
+  const history = boundRun && points.every(p => p.blockerRuns.length === 0)
     && points.every(p => p.activityCoverage?.blocker === true && p.activityCoverage?.dependent === true && p.activityCoverage?.agent === true)
     && !reopened.activity.some(row => row.runId === run?.id
       && ["issue.created", "issue.child_created", "project.created", "agent.created", "agent.hire_created"].includes(row.action))

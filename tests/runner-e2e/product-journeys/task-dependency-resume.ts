@@ -57,7 +57,7 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
   const { api, page, company, user, agent } = context;
   const read = createObservedReader(api, options.deadlineAt);
   const reference = randomBytes(16).toString("hex");
-  let scope: DependencyScope | undefined, stage = "prerequisites";
+  let scope: DependencyScope | undefined, stage = "prerequisites", journeyFailed = false;
   let latest: DependencyPoint | undefined;
   const observations: Partial<DependencyEvidence> = { waiting: [] };
   const preserve = async () => {
@@ -225,8 +225,19 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
     const failed = checks.find(check => !check.passed);
     if (failed) throw new JourneyError("failed", failed.id.replaceAll("-", "_"));
     stage = "complete";
+  } catch (error) {
+    journeyFailed = true;
+    throw error;
   } finally {
-    await preserve();
-    await read.preserve(options.directory);
+    const writers = [
+      { label: "task-dependency-observations.json", write: preserve },
+      { label: "observation-read-failures.json", write: () => read.preserve(options.directory) },
+    ];
+    const results = await Promise.allSettled(writers.map(writer => Promise.resolve().then(writer.write)));
+    const failedWriters = results.flatMap((result, index) => result.status === "rejected" ? [writers[index]!.label] : []);
+    if (failedWriters.length) {
+      console.error("dependency_evidence_preservation_failed", failedWriters);
+      if (!journeyFailed) throw new JourneyError("failed", "dependency_evidence_preservation_failed");
+    }
   }
 }

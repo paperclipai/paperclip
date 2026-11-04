@@ -7,6 +7,25 @@ describe("task dependency resume evidence", () => {
     const checks = gradeTaskDependencyResume(dependencyEvidenceFixture());
     expect(checks).toEqual(TASK_DEPENDENCY_RESUME_CHECKS.map(id => ({ id, passed: true })));
   });
+  const changeRuns = (f: DependencyEvidence, mutate: (run: Record<string, any>) => void) => {
+    for (const point of [f.finished, f.reopened]) for (const run of [...point.dependentRuns, ...point.agentRuns]) mutate(run);
+  };
+  it.each([
+    ["provider", (f: DependencyEvidence) => changeRuns(f, run => { run.runnerProfileJson.nativeExecutionInput.provider.kind = "other"; }), "configured-model-and-environment"],
+    ["model", (f: DependencyEvidence) => changeRuns(f, run => { run.runnerProfileJson.nativeExecutionInput.provider.model = "other"; }), "configured-model-and-environment"],
+    ["environment", (f: DependencyEvidence) => changeRuns(f, run => { run.contextSnapshot.paperclipEnvironment.id = "other"; }), "configured-model-and-environment"],
+    ["runtime mode", (f: DependencyEvidence) => changeRuns(f, run => { run.runtimeMode = "legacy"; }), "configured-model-and-environment"],
+    ["uncommitted phase", (f: DependencyEvidence) => changeRuns(f, run => { run.nativePhase = "saving"; }), "configured-model-and-environment"],
+    ["document author", (f: DependencyEvidence) => { f.finished.document!.createdByUserId = "user"; }, "dependency-output-authored-by-run"],
+    ["revision run", (f: DependencyEvidence) => { f.finished.revision!.createdByRunId = "foreign"; }, "dependency-output-authored-by-run"],
+    ["reload visibility", (f: DependencyEvidence) => { f.reopened.resultVisible = false; }, "dependency-result-reopened"],
+    ["activity coverage", (f: DependencyEvidence) => { f.reopened.activityCoverage.agent = false; }, "dependency-history-preserved"],
+    ["extra child work", (f: DependencyEvidence) => { f.reopened.activity.push({ runId: "run", action: "issue.created" }); }, "dependency-history-preserved"],
+    ["retained completion", (f: DependencyEvidence) => { f.reopened.blocker.completedAt = "2020-01-01T00:00:22.000Z"; }, "dependency-history-preserved"],
+  ] as const)("attributes the %s defect to its own evidence check", (_name, mutate, failedId) => {
+    const f = dependencyEvidenceFixture(); mutate(f);
+    expect(gradeTaskDependencyResume(f).filter(check => !check.passed).map(check => check.id)).toEqual([failedId]);
+  });
   const mutants: Array<[string, (value: DependencyEvidence) => void]> = [
     ["missing observation", f => { f.waiting = []; }],
     ["short quiet window", f => { f.waiting[1]!.observedAt--; }],
