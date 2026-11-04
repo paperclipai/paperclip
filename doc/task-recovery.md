@@ -65,7 +65,7 @@ skip any hold's independent containment and effect checks. Attaching a Retry to
 active automatic recovery preserves its generation, attempt count and deadline.
 
 A deliberate board Retry can continue a failed native preparation after its
-saved workspace is verified. The source must retain its unresolved native
+saved remote workspace is verified. The source must retain its unresolved native
 adapter claim and the server's failed-preparation settlement records, with no
 provider execution, session, input or result evidence, and no active controller
 or native coordinator. Every source

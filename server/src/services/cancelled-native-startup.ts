@@ -1,6 +1,7 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -37,9 +38,8 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
   if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
   if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return true;
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
-  return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId && lease.releasedAt && lease.status !== "pending_cleanup"
-    && lease.cleanupStatus === "success" && lease.metadata?.pendingCleanupInFlight !== true
-    && (lease.provider === "local" || hasRemoteTerminationReceipt(lease)))
+  return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
+    && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
     && await hasSettledFailedPreparationEvidence(db, run)
     && await hasVerifiedWorkspaceRepair(db, run);
 }
@@ -59,7 +59,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<bo
     usageJson: heartbeatRuns.usageJson, exitCode: heartbeatRuns.exitCode, signal: heartbeatRuns.signal,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
   if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
-    !["agentId", "logCompressed", "lastOutputSeq"].includes(key) && value !== null)
+    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) && value !== null)
+    || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
       "chatControlRecoveryAdmission"].includes(key))
     || run.resultJson?.stopReason !== "adapter_failed"
@@ -68,21 +69,39 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<bo
       "workspaceRestoreRecovery"].includes(key))) return false;
   const events = await db.select().from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-  )).orderBy(asc(heartbeatRunEvents.seq)).limit(3);
-  const [error, measured] = events;
+  )).orderBy(asc(heartbeatRunEvents.seq)).limit(4);
   const hostEvent = (event: typeof heartbeatRunEvents.$inferSelect) => event.agentId === source.agentId
     && event.stream === "system" && event.sourceInstanceId === null && event.sourceEventId === null
     && event.sourceSeq === null && event.sourcePayloadSha256 === null && event.protocolSchemaVersion === null;
-  return events.length === 2 && Boolean(error && measured && hostEvent(error) && hostEvent(measured)
+  let offset = 0;
+  const warning = events[0];
+  if (warning?.eventType === "agent_observability.unavailable") {
+    if (!hostEvent(warning) || warning.seq !== 1 || warning.level !== "warn"
+      || warning.payload?.reason !== "unsupported_harness" || typeof warning.payload.revision !== "string" || !isUuidLike(warning.payload.revision)
+      || Object.keys(warning.payload).some(key => !["reason", "revision"].includes(key))) return false;
+    offset = 1;
+  }
+  const [error, measured] = events.slice(offset);
+  return events.length === 2 + offset && Boolean(error && measured && hostEvent(error) && hostEvent(measured)
     && typeof run.error === "string" && run.error.length > 0
-    && error.seq === 1 && error.eventType === "error" && error.level === "error"
+    && error.seq === 1 + offset && error.eventType === "error" && error.level === "error"
     && error.message === run.error && error.payload === null
-    && measured.seq === 2 && measured.eventType === "lifecycle" && measured.level === "info" && measured.message === "task.run.measured"
+    && measured.seq === 2 + offset && measured.eventType === "lifecycle" && measured.level === "info" && measured.message === "task.run.measured"
     && measured.payload?.phase === "task.run.measured" && measured.payload.outcome === "failed"
     && measured.payload.durableSettlement === true
     && Object.keys(measured.payload).every(key => ["phase", "outcome", "durationMs", "durableSettlement"].includes(key))
     && typeof measured.payload.durationMs === "number"
     && Number.isFinite(measured.payload.durationMs) && measured.payload.durationMs >= 0);
+}
+
+function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): boolean {
+  if (usage === null) return true;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)
+    || Object.keys(usage).length !== 1 || !Object.hasOwn(usage, "ledgerScope")) return false;
+  const scope = (usage as Record<string, unknown>).ledgerScope as Record<string, unknown> | null;
+  return Boolean(scope && typeof scope === "object" && !Array.isArray(scope) && Object.keys(scope).length === 3
+    && scope.issueId === issueId && (scope.projectId === null || typeof scope.projectId === "string" && isUuidLike(scope.projectId))
+    && (scope.billingCode === null || typeof scope.billingCode === "string"));
 }
 
 /** Candidate state only. Admission must also verify ownership, execution records,
