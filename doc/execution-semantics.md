@@ -2022,6 +2022,13 @@ main repository trust key for Git worktrees. Start the provider in that same
 root. This does not change sandbox permissions, tool authorization, secret
 access, or Codex's separate per-hook trust policy.
 
+Every Paperclip-managed MCP entry in the isolated Codex configuration uses
+native `default_tools_approval_mode = "approve"`. This permits the call to
+reach Paperclip's gateway, which owns live per-tool authorization, denial and
+human approval cards. Per-tool policy is evaluated at the gateway rather than
+copied into Codex configuration. The shared renderer covers CLI and ACPX;
+unmanaged MCP entries keep their existing approval modes.
+
 Codex retains the model conversation. Paperclip resumes with `excludeTurns: true`,
 reads lightweight thread state, and fetches paginated turn metadata or specific
 turn items only when execution reconciliation needs them. Unsupported

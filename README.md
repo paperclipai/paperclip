@@ -428,6 +428,18 @@ Source development also builds the native Paperclip Runner when enabled (the sel
 
 <br/>
 
+### Managed Codex MCP approvals
+
+Paperclip-managed Codex MCP entries set native
+`default_tools_approval_mode = "approve"` so calls reach the gateway under
+noninteractive execution. The gateway applies current tool policies, denies
+unauthorized calls and creates a human approval card when review is required.
+The shared configuration renderer applies this setting for CLI and ACPX runs
+and removes it with the managed block. Unmanaged MCP entries retain their own
+approval settings. See [execution semantics](doc/execution-semantics.md).
+
+<br/>
+
 ## FAQ
 
 **Q: Is this project maintained or just slop?**

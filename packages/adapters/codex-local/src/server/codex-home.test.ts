@@ -1039,6 +1039,34 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
+  it("delegates managed gateway approvals to Paperclip and preserves unmanaged server policy", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-approval-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      const unmanaged = '[mcp_servers."runtime-gitea-harness-98f87cfd"]\nurl = "https://direct.example/mcp"\ndefault_tools_approval_mode = "writes"\n';
+      await fs.writeFile(configPath, unmanaged);
+      await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [
+          { name: "runtime-gitea-harness-98f87cfd", endpointPath: "/mcp/gateways/gitea", bearerToken: "test-gitea" },
+          { name: "runtime-paperclip", endpointPath: "/mcp/gateways/paperclip", bearerToken: "test-paperclip" },
+        ],
+      });
+      const config = await fs.readFile(configPath, "utf8");
+      expect(config).toContain(unmanaged);
+      for (const server of ["paperclip-runtime-gitea-harness-98f87cfd", "runtime-paperclip"]) {
+        const section = config.split(`[mcp_servers.\"${server}\"]`)[1]?.split("[mcp_servers.")[0];
+        expect(section).toContain('default_tools_approval_mode = "approve"');
+      }
+      expect(config.match(/default_tools_approval_mode = "approve"/g)).toHaveLength(2);
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways: [] });
+      expect(await fs.readFile(configPath, "utf8")).toBe(unmanaged);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("restricts permissions on an existing managed MCP config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
     try {
