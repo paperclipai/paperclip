@@ -10,6 +10,7 @@ import type {
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { collectRunEvents } from "../run-observations.js";
+import type { ChatRun } from "../chat-flow.js";
 import {
   identityWorker,
   openStandingChat,
@@ -159,6 +160,44 @@ export function personalSecretConfirmation(reply: string) {
       )
   );
 }
+export type PersonalSecretWorkerRun = ChatRun & { responsibleUserId?: string | null; finishedAt?: string | null };
+export interface PersonalSecretWorkerEvent {
+  companyId: string; runId: string; agentId: string; seq: number; eventType: string; createdAt: string;
+  payload: Record<string, unknown> | null;
+}
+export interface PersonalSecretWorkerEvidence {
+  task: Entity & { responsibleUserId?: string | null };
+  calls: Awaited<ReturnType<typeof secretTestEndpoint>>["calls"];
+  events: PersonalSecretWorkerEvent[];
+}
+export function personalSecretWorkerReceipt(run: PersonalSecretWorkerRun | undefined, evidence: PersonalSecretWorkerEvidence | undefined,
+  expected: { companyId: string; agentId: string; taskId: string; userId: string }) {
+  const task = evidence?.task;
+  if (!run || !task || !Array.isArray(evidence?.calls) || !Array.isArray(evidence.events)
+    || run.companyId !== expected.companyId || run.agentId !== expected.agentId || run.responsibleUserId !== expected.userId
+    || run.runtimeMode !== "native" || run.status !== "succeeded" || run.contextSnapshot?.issueId !== expected.taskId
+    || (run.nativeIssueId && run.nativeIssueId !== expected.taskId) || task.id !== expected.taskId || task.companyId !== expected.companyId
+    || task.assigneeAgentId !== expected.agentId || task.responsibleUserId !== expected.userId || task.status !== "done" || evidence.calls.length !== 1) return;
+  const call = evidence.calls[0]!, started = Date.parse(String(run.startedAt)), finished = Date.parse(String(run.finishedAt)), requested = Date.parse(String(call.createdAt));
+  if (!call.authorized || call.status !== 200 || call.method !== "GET" || call.pathname !== "/publishing-check"
+    || !/^[a-f0-9]{48}$/.test(call.receiptId ?? "") || ![started, finished, requested].every(Number.isFinite)
+    || requested < started || requested > finished) return;
+  const matching = evidence.events.filter(event => {
+    if (event.companyId !== expected.companyId || event.agentId !== expected.agentId || event.runId !== run.id
+      || event.eventType !== "tool.execution.completed" || !Number.isSafeInteger(event.seq) || event.seq <= 0) return false;
+    const prp = event.payload?.prpEvent as { runId?: string; eventType?: string; payload?: { name?: string; status?: string; exitCode?: number; outputTruncated?: boolean; output?: unknown } } | undefined;
+    const tool = prp?.payload, observed = Date.parse(String(event.createdAt));
+    if (prp?.runId !== run.id || prp.eventType !== event.eventType || tool?.name !== "bash" || tool.status !== "completed"
+      || tool.exitCode !== 0 || tool.outputTruncated !== false || typeof tool.output !== "string"
+      || !Number.isFinite(observed) || observed < requested || observed > finished) return false;
+    try {
+      const output = JSON.parse(tool.output) as { ok?: boolean; status?: number; check?: string; receiptId?: string } | null;
+      return output?.ok === true && output.status === 200 && output.check === "publishing endpoint" && output.receiptId === call.receiptId;
+    } catch { return false; }
+  });
+  if (!matching.length) return;
+  return { receiptId: call.receiptId!, runId: run.id, agentId: run.agentId, event: matching[0]! };
+}
 export function gradePersonalSecret(value: unknown) {
   const c = checks(),
     o = externalObservation(value);
@@ -194,6 +233,8 @@ export function gradePersonalSecret(value: unknown) {
     "Another person's real stored value does not satisfy the current person's required publishing definition, and chat directs secure own-value entry before claiming completion.",
   );
   const secret = o.state.currentSecret as Partial<CompanySecret> | undefined;
+  const workerReceipt = personalSecretWorkerReceipt(o.runs.find(run => run.id === o.state.workerRunId), o.state.workerReceiptEvidence as PersonalSecretWorkerEvidence | undefined,
+    { companyId: o.companyId, agentId: String(o.state.morganId), taskId: String(o.state.taskId), userId: String(o.state.currentPersonId) });
   c.add(
     "actual-own-definition-and-private-ui",
     o.state.operatorChannel === "private-browser-personal-set-my-value" &&
@@ -221,7 +262,7 @@ export function gradePersonalSecret(value: unknown) {
     o.state.requiredReferenceAfter === true &&
       o.state.taskResponsibleUserId === o.state.currentPersonId &&
       o.state.taskAfterStatus === "done" &&
-      o.state.workerReceiptBound === true &&
+      o.state.workerReceiptBound === true && workerReceipt?.runId === o.state.workerRunId &&
       o.runs.some(
         (run) =>
           run.id === o.state.workerRunId &&
@@ -342,7 +383,7 @@ export const personalSecretExternalCases = [
           ctx,
           morgan.id,
           value,
-          "PUBLISHING_API_KEY",
+          "PUBLISHING_API_KEY", undefined, { personalWorkerReceipt: true },
         );
         fixtures.set(ctx, { value, otherValue, other, endpoint });
         const task = await ctx.input.api.post<
@@ -618,24 +659,24 @@ export const personalSecretExternalCases = [
             "current-person publishing credential actually delivered to Morgan",
           deadlineAt: Date.now() + 150000,
           intervalMs: 1000,
-          load: async () => ({
-            task: await ctx.input.api.get<Entity>(
-              `/api/issues/${state.taskId}`,
-            ),
-            runs: (await ctx.allRuns()).filter(
-              (run) => run.contextSnapshot?.issueId === state.taskId,
-            ),
-          }),
+          load: async () => {
+            const task = await ctx.input.api.get<PersonalSecretWorkerEvidence["task"]>(`/api/issues/${state.taskId}`),
+              runs = (await ctx.allRuns()).filter(run => run.contextSnapshot?.issueId === state.taskId);
+            let evidence: PersonalSecretWorkerEvidence | undefined;
+            let receipt: ReturnType<typeof personalSecretWorkerReceipt>;
+            if (runs.length === 1 && runs[0]?.status === "succeeded" && task.status === "done") {
+              const worker = await ctx.input.api.get<PersonalSecretWorkerRun>(`/api/heartbeat-runs/${runs[0].id}`);
+              evidence = { task, calls: fixture.endpoint.calls, events: await collectRunEvents<PersonalSecretWorkerEvent>(afterSeq =>
+                privateScanJson(ctx, `/api/heartbeat-runs/${worker.id}/events?afterSeq=${afterSeq}&limit=1000`)) };
+              receipt = personalSecretWorkerReceipt(worker, evidence, { companyId: source.companyId, agentId: String(state.morganId), taskId: String(state.taskId), userId: String(state.currentPersonId) });
+            }
+            return { task, runs, evidence, receipt };
+          },
           accept: (v) =>
             v.runs.length === 1 &&
             v.runs[0]?.status === "succeeded" &&
             v.task.status === "done" &&
-            fixture.endpoint.calls.some(
-              (call) =>
-                call.authorized &&
-                call.runId === v.runs[0]?.id &&
-                call.agentId === state.morganId,
-            ),
+            v.receipt?.runId === v.runs[0]?.id,
           reject: (v) =>
             v.runs.length > 1 ||
             v.runs.some((run) =>
@@ -644,7 +685,9 @@ export const personalSecretExternalCases = [
               ? "Personal publishing worker did not complete one actual credential check"
               : undefined,
         });
-        state.workerRunId = result.runs[0]!.id;
+        if (!result.receipt || !result.evidence) throw new Error("Actual native worker output did not bind the authenticated publishing receipt");
+        state.workerRunId = result.receipt.runId;
+        state.workerReceiptEvidence = { ...result.evidence, events: [result.receipt.event] };
         if (question) {
           const [current] = (await ctx.input.api.get<OwnEntry[]>(`${root(ctx)}/me/user-secrets`)).filter(row => row.definition.id === state.definitionId);
           if (!current?.secret || current.secret.id !== state.secretId || current.secret.ownerUserId !== state.currentPersonId
@@ -717,7 +760,10 @@ export const personalSecretExternalCases = [
         const comments = await ctx.input.api.get<Entity[]>(
           `/api/issues/${state.taskId}/comments?order=asc`,
         );
-        state.workerReceiptBound = comments.some(
+        const delivery = state.workerRunId ? personalSecretWorkerReceipt(await ctx.input.api.get<PersonalSecretWorkerRun>(`/api/heartbeat-runs/${state.workerRunId}`),
+          { ...(state.workerReceiptEvidence as PersonalSecretWorkerEvidence), task },
+          { companyId: ctx.input.fixtures.company.id, agentId: String(state.morganId), taskId: String(state.taskId), userId: String(state.currentPersonId) }) : undefined;
+        state.workerReceiptBound = !!delivery && comments.some(
           (row) =>
             row.createdByRunId === state.workerRunId &&
             row.authorAgentId === state.morganId &&
@@ -727,8 +773,8 @@ export const personalSecretExternalCases = [
         state.authorizedChecks = checks.length;
         state.unauthorizedChecks =
           fixture.endpoint.calls.length - checks.length;
-        state.checkRunId = checks[0]?.runId;
-        state.checkAgentId = checks[0]?.agentId;
+        state.checkRunId = delivery?.runId;
+        state.checkAgentId = delivery?.agentId;
         const o = await observeExternal(ctx, state),
           ids = new Set([ctx.issue()!.id, String(state.taskId)]);
         for (;;) {
