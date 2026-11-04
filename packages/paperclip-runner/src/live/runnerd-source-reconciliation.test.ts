@@ -82,6 +82,7 @@ it.each(["attach", "prepared-attach", "suspend"] as const)("reconciles killed so
     if (mode === "suspend") {
       await resumed.transport.close();
       expect((await read(fixture.runnerFile)).lifecycle).toBe("suspended");
+      expect(await fixture.calls("process-start")).toBe(2);
     } else {
       const before = resumed.evidence();
       await resumed.transport.attachRun!(target);

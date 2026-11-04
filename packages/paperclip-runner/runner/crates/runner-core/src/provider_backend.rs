@@ -2249,7 +2249,9 @@ impl CodexCommandExecutor {
             || !(matches!(
                 state.lifecycle.as_str(),
                 "session_open" | "turn_active" | "provider_exited"
-            ) || (self.source_reconciliation && state.lifecycle == "prepared"))
+            ) || (self.source_reconciliation
+                && !self.restore_checked
+                && state.lifecycle == "prepared"))
         {
             return Ok(());
         }
