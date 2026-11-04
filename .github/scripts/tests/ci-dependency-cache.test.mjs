@@ -71,6 +71,36 @@ test('unmodelled workspace lifecycle scripts disable materialized reuse', () => 
   }
 });
 
+test('known Copilot hooks permit caching, track their helpers, and still run on restore', () => {
+  const files = { ...entries,
+    'server/package.json': JSON.stringify({ scripts: { postinstall: 'node scripts/install-copilot-assets.mjs' } }),
+    'packages/paperclip-runner/package.json': JSON.stringify({ scripts: { postinstall: 'node scripts/install-copilot-assets.mjs' } }),
+    'server/scripts/install-copilot-assets.mjs': 'server bootstrap',
+    'packages/paperclip-runner/scripts/install-copilot-assets.mjs': 'runner bootstrap',
+    'packages/paperclip-runner/scripts/materialize-copilot-binary.mjs': 'native materializer',
+    'packages/paperclip-runner/scripts/copilot-inner-distribution.mjs': 'closure pins',
+  };
+  const compute = (input) => cachePlan({ files: Object.keys(input),
+    read: file => input[file] == null ? null : Buffer.from(input[file]), scope,
+    packageDirs: ['.', 'server', 'packages/paperclip-runner'],
+  });
+  const original = compute(files);
+  assert.equal(original.cacheable, true);
+  for (const file of Object.keys(files).filter(file => /^(server|packages\/paperclip-runner)\/scripts\//.test(file))) {
+    for (const replacement of ['changed', null]) {
+      assert.notEqual(compute({ ...files, [file]: replacement }).dependencyKey, original.dependencyKey, file);
+    }
+  }
+  assert.equal(cachePlan({ files: ['elsewhere/package.json'],
+    read: () => Buffer.from(files['server/package.json']), scope, packageDirs: ['elsewhere'],
+  }).cacheable, false, 'the command is allowed only in its reviewed owners');
+  const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
+  const replay = action.split('    - name: Replay workspace install hooks after restore')[1].split('    - name:')[0];
+  assert.match(replay, /if: steps\.installed\.outputs\.cache-hit == 'true'/);
+  assert.match(replay, /pnpm -r --if-present run postinstall\s+pnpm run postinstall/);
+  assert.ok(action.indexOf('Replay workspace install hooks') < action.indexOf('Validate workspace links'));
+});
+
 test('cache restores are exact and only a frozen canonical master push can publish entries', () => {
   const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
   const installed = action.slice(action.indexOf('    - name: Restore installed'), action.indexOf('    - name: Locate pnpm'));
@@ -97,6 +127,15 @@ test('paired test timings remain available when lifecycle hooks disable material
     assert.match(step(name), /if: steps.qualification.outputs.cacheable == 'true'/);
   }
   assert.match(step('Explain disabled materialized reuse'), /cacheable != 'true'/);
-  assert.doesNotMatch(step('Prepare unchanged baseline'), /if:/);
-  assert.doesNotMatch(step('Compare complete commands and executed case inventories'), /if:/);
+  for (const name of ['Prepare unchanged baseline', 'Compare complete commands and executed case inventories']) {
+    assert.match(step(name), /if: steps\.test_scope\.outputs\.run == 'true'/);
+    assert.doesNotMatch(step(name), /if:.*cacheable/);
+  }
+  const scope = step('Select changed server test work');
+  assert.match(scope, /git diff --name-only HEAD\^1 HEAD --/);
+  for (const file of ['scripts/benchmark-ci-work.mjs', 'scripts/run-vitest-stable.mjs',
+    'server/src/__tests__/setup-supertest.ts', 'server/src/__tests__/workspace-runtime.test.ts',
+    'server/src/services/workspace-git-snapshot-streaming.test.ts']) assert.ok(scope.includes(file));
+  assert.doesNotMatch(scope, /scripts\/ci-dependency-cache|\.github\/actions\/setup-ci-dependencies/);
+  assert.match(step('Exercise restored dependencies for cache-only changes'), /pnpm exec vitest run --project @paperclipai\/shared/);
 });

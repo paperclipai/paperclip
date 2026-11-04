@@ -1841,9 +1841,10 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
-If shutdown interrupts Paperclip Runner preparation before native execution was
-selected, recovery verifies that no provider, process launch, native result or
-coordinator exists. The previous controller must have settled or lost its lease.
+If shutdown or a recorded unexpected system interruption stops Paperclip Runner
+preparation before native execution was selected, recovery verifies that no
+provider, process launch, native result or coordinator exists. The previous
+controller must have settled or lost its lease.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
@@ -1852,7 +1853,8 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
-Operator Stops retain their explicit continuation requirements.
+Operator Stops retain their explicit continuation requirements. Other ambiguous
+interruptions without a server system-cancellation record remain held.
 
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
 control, then waits within one shared 30-second window for provider stop and
@@ -2618,6 +2620,26 @@ Saved process configuration must match before reuse. Old checkpoints, changed
 configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
+
+A different task can reuse the same physical sandbox after its prior task
+finishes. Provider ingress has one listener per allocation. Before a new logical
+session starts, Runner retires a locally retained idle session that still owns
+that listener. The new run must hold the current native claim, task assignment,
+environment lease and remote workspace writer. Company, agent, provider,
+allocation, workspace and directory must match. The prior run must be committed
+and accounted, with its original controller generation and a clean released or
+expired lease. Retirement saves the prior session through its own checkpoint and
+file-collection callbacks and waits for close before the new listener binds.
+After close, admission rechecks the canonical native claim, task, workspace and
+leases before staging files or invoking the new backend. Ownership loss, Stop
+or a changed writer during retirement cannot authorize the new execution.
+The new task keeps its own logical session and authority.
+
+Active owners, a changed controller or writer, missing canonical proof and failed
+close block admission. A retained entry stays available for verified retirement;
+no process is selected by its port number. This rule covers current-controller
+warm entries with recorded physical identity. A historical process outside that
+registry still needs the existing exact-owner recovery proof.
 
 A fresh native session admitted for the current task may replace a terminal
 predecessor's goal source epoch when the saved goal is absent or complete.

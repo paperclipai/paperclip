@@ -18,9 +18,11 @@ import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
 import { runClarificationJourney } from "./clarification-flow.js";
+import { runChatContinuity } from "./chat-continuity-flow.js";
 import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
 import { runInputFile } from "./input-file-flow.js";
+import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
@@ -150,6 +152,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "project-context-evidence.ts",
     "agent-flows.ts",
     "hire-delegate-flow.ts",
+    "agent-settings-flow.ts",
+    "agent-settings-evidence.ts",
     "hire-delegate-composer.ts",
     "hire-delegate-evidence.ts",
     "active-followup-flow.ts",
@@ -161,6 +165,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "../question-resume-scoring.ts",
     "../runtime-question-readiness.ts",
     "../chat-flow.ts",
+    "chat-continuity-flow.ts",
+    "chat-continuity-evidence.ts",
+    "../chat-cases.ts",
     "../continuation-readiness.ts",
     "../continuation-cases.ts",
     "success-contract.ts",
@@ -278,6 +285,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.runtimeMode = ready.agent.runtimeMode;
             if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
@@ -292,6 +301,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
                 await mkdir(directory, { recursive: true, mode: 0o700 });
                 await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
+            else if (id === "chat-continuity") await runChatContinuity(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else await runAgentJourney(id, ready, session!, campaignId, evidence, { deadlineAt,
               directory: path.join(outputDir, "private-stories", id),
               capture: async (_id, _label, file) => {

@@ -4,12 +4,14 @@ export const agentJourneyRuns = {
   "routine-scheduled-run": 1,
   "file-input-answer": 1,
   "ask-question": 1,
+  "chat-continuity": 4,
   "plan-revise-accept": 3,
   "build-revise": 2,
   "followup-while-running": 2,
   "protected-actions": 4,
   "create-skill-studio": 1,
   "stop-redirect": 3,
+  "agent-settings-persistence": 1,
   "question-answer-resume": 3,
   "hire-delegate-reuse": 7
 } as const;
@@ -33,6 +35,7 @@ export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "project-task-context": ["browser-created-project-persisted", "browser-created-project-task-persisted", "project-task-association-reloaded", "project-task-context-visible", "no-agent-work"],
   "task-search-filter": ["task-search-results-exact", "task-status-filter-excludes-controls", "task-search-filter-reloaded", "task-search-result-reopened", "no-agent-work"],
   "ask-question": ["question-answer-persisted", "one-bound-successful-run", "configured-model-and-environment"],
+  "chat-continuity": ["chat-fresh-owned-conversation", "chat-user-messages-stored-once", "chat-reload-preserved-context", "chat-new-session-boundary", "chat-fresh-context-answer", "chat-history-preserved-after-reload", "chat-no-unrequested-work", "chat-exact-turn-accounting", "configured-model-and-environment"],
   "question-answer-resume": ["question-resume.forms", "question-resume.choice.answer", "question-resume.choice.path",
     "question-resume.text.answer", "question-resume.text.path", "question-resume.complete-evidence", "question-no-premature-output",
     "question-answers-owned-by-board", "question-document-attributed", "question-document-reloaded", "configured-model-and-environment"],
@@ -45,5 +48,6 @@ export const journeyRequiredChecks: Record<string, readonly string[]> = {
     "stopped-run-no-later-events", "stop-preserved-download", "redirect-consumed-once", "user-reply-stored-once", "configured-model-and-environment"],
   "followup-while-running": ["followup-native-command-active", "followup-stored-once", "followup-consumed-once", "followup-final-answer-persisted", "followup-one-or-two-native-runs", "configured-model-and-environment"],
   "hire-delegate-reuse": ["one-attributed-native-hire", "first-delegated-task-complete", "checklist-authored-by-hired-run", "same-teammate-reused", "review-authored-by-same-hired-run", "original-checklist-preserved", "hire-user-messages-stored-once", "delegated-result-visible-after-reload", "configured-model-and-environment"],
+  "agent-settings-persistence": ["agent-settings-browser-save", "agent-settings-reload-persisted", "agent-settings-instruction-only-input", "agent-settings-result-attributed", "agent-settings-result-reopened", "agent-settings-original-restored", "configured-model-and-environment"],
   "cloud-onboarding": ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"],
 };

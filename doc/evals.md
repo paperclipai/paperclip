@@ -1,5 +1,7 @@
 # Paperclip evaluation guide
 
+The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
+
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
 cell checks a native Codex agent on Daytona installing an authorized saved API
 response and delivering unchanged bytes. The oracle binds the source capture,
@@ -115,8 +117,10 @@ successor. Registration and calibration are separate from a live staging pass.
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
 onboarding supplies reusable verified state. The document journey checks exact
-saved content and both revision records through independent API reads. Cloud
-fleet operations and trusted CI remain private. Local eval gateway qualification
+saved content and both revision records through independent API reads. The explicit `chat-continuity` selection verifies browser reload/reopen, prompt-hidden recall,
+ordinary `/new` reset, fresh native context and retained history against an attached target.
+It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
+Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
