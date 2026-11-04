@@ -106,5 +106,34 @@
       "exactOwnedCleanupCalls": 2
     },
     "sourceSha256": "026fe92d5452062ddd5840a0bc9aeba9f6b4f7fda57040eaadb76ca80b960409"
+  },
+  "providerLookupFailureCleanup": {
+    "scope": "Offline actual-source admission, first provider lookup, and finally-cleanup sections; SDK and filesystem effects stubbed; no provider calls",
+    "red": {
+      "exitCode": 1,
+      "reason": "First provider lookup threw before any of two host-observed IDs reached the ledger",
+      "sourceSha256": "026fe92d5452062ddd5840a0bc9aeba9f6b4f7fda57040eaadb76ca80b960409"
+    },
+    "green": {
+      "status": "passed",
+      "cloudCalls": 0,
+      "cases": [
+        {
+          "failure": "resource-cap",
+          "observedOwnedResources": 2,
+          "declaredCap": 1,
+          "ledgeredBeforeFailure": 2,
+          "exactOwnedCleanupCalls": 2
+        },
+        {
+          "failure": "first-provider-lookup",
+          "observedOwnedResources": 2,
+          "declaredCap": 2,
+          "ledgeredBeforeFailure": 2,
+          "exactOwnedCleanupCalls": 2
+        }
+      ]
+    },
+    "sourceSha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9"
   }
 }

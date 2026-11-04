@@ -121,12 +121,12 @@ try {
     // Ledger every admitted host-owned ID before further observer work.
     for (const lease of leases) if (lease.heartbeatRunId && lease.providerLeaseId && !ledger.resources.some(row => row.providerLeaseId === lease.providerLeaseId)) {
       const row = { providerLeaseId: lease.providerLeaseId, leaseId: lease.id, runId: lease.heartbeatRunId, expectedLabels: expectedLabels(lease.heartbeatRunId), admittedAt: Date.now() };
-      const sandbox = await daytona.get(row.providerLeaseId); assertOwned(sandbox, row);
       ledger.resources.push(row); await writeFile(ledgerPath, JSON.stringify(ledger, null, 2));
       console.log(JSON.stringify({ resourceAdmitted: row.providerLeaseId, leaseId: row.leaseId, runId: row.runId, ttlMinutes: 30 }));
     }
-    // These resources already exist. Record every observed owned ID before a
-    // bound failure so finally/watchdog cleanup can retire all of them.
+    // These scoped host-observed resources already exist. Record every ID
+    // before the first provider lookup or bound failure. The post-admission
+    // lookup and every cleanup still verify labels before execution/deletion.
     assert.ok(priorResourceCount + ledger.resources.length <= RESOURCE_CAP, 'cloud_resource_bound');
     if (runs.length !== 1) return null;
     if (!['running', 'queued'].includes(runs[0].status)) throw new Error('native_run_terminal_before_admission');

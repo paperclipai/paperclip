@@ -5,8 +5,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 6340,
-      "sha256": "1b5f3dfd236c083c212003d0bafd4b39bec6282f72de6a3f62bdd72f7bf22664"
+      "bytes": 6471,
+      "sha256": "2e501c60a59686809cd1302539cf0945c97be6d0adec93d96c918c994db02978"
     },
     {
       "path": "after-stop-reload.png",
@@ -35,8 +35,8 @@
     },
     {
       "path": "helper-checks.json",
-      "bytes": 3750,
-      "sha256": "3af2aaa7073a720b999c48efeee20f367f1fb1d063801f3c53c9a443a43fdc1c"
+      "bytes": 4772,
+      "sha256": "b34e33f2df0fa63589630fd1e425cf0d3f04e01b002eed49f74e8f8cd406e43f"
     },
     {
       "path": "helpers/cloud-ui.mjs",
@@ -55,8 +55,8 @@
     },
     {
       "path": "helpers/run.mjs",
-      "bytes": 26810,
-      "sha256": "026fe92d5452062ddd5840a0bc9aeba9f6b4f7fda57040eaadb76ca80b960409"
+      "bytes": 26801,
+      "sha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9"
     },
     {
       "path": "helpers/watchdog.mjs",
@@ -65,13 +65,13 @@
     },
     {
       "path": "qualification.json",
-      "bytes": 10731,
-      "sha256": "f810543654f373ad4472dd441da3c8d7ea9ad6a8ebfa49a285a0d1ca8cf1b83e"
+      "bytes": 10815,
+      "sha256": "47e68bd12c90f2fb0bee58166b0e3ea63fc67233dd9a6a9bbebce79f04658610"
     },
     {
       "path": "helpers/verify-failure-cleanup.mjs",
-      "bytes": 3135,
-      "sha256": "5b32c076598087cbba2fb51bee16514d3be163bcdc428563385dbd2b46ca9996"
+      "bytes": 4045,
+      "sha256": "3ae73e3146ddb65051568e7b25e7b9f87fdd35ee6a649f9bc29b434ee8086d83"
     }
   ],
   "checks": {
@@ -82,7 +82,7 @@
     "reproductionHelperSyntax": "all6 passed after public guard/cleanup corrections",
     "terminalLeaseAndClockCorrections": "passed",
     "localControllerDatabaseDataCleanup": "passed",
-    "offlineFailureCleanupRegression": "passed; old helper failed; current helper ledgered and cleaned both already-admitted owned IDs despite cap1; zero cloud calls"
+    "offlineFailureCleanupRegression": "passed; previous helper failed injected first SDK lookup; both cap failure and first-lookup failure ledger and clean all two observed IDs; zero cloud calls"
   },
   "excluded": [
     "Private credential bootstrap identifiers",

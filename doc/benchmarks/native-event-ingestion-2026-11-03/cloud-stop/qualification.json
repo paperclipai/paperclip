@@ -233,7 +233,7 @@
   "sourceDurabilityLimit": "This verifies database-retained events and derived cursors. It does not equate every wire ACK with a durable ordinary streaming event.",
   "provenance": {
     "executedPrivateHelperSha256": "a1a9b14f3718a448dbd566a92de9e14306df165fbacad5f3b6371eaaae3e005b",
-    "publicReproductionAdaptation": "Environment-supplied DAYTONA_API_KEY, one-resource cap, OP metadata omitted, same-provider-clock process-age guard, and ledger all observed owned resources before enforcing the cap. Public adaptations passed syntax checks and an offline actual-source failure-cleanup regression; they were not used for a second live acceptance claim. The historical same-provider-clock process age is independently retained in this proof."
+    "publicReproductionAdaptation": "Environment-supplied DAYTONA_API_KEY, one-resource cap, OP metadata omitted, same-provider-clock process-age guard, and ledger all host-observed resource IDs before any SDK lookup or cap assertion. Provider label checks remain before execution and every deletion. Public adaptations passed syntax and offline actual-source cap/lookup-failure cleanup regressions; they were not used for a second live acceptance claim. The historical same-provider-clock process age is independently retained in this proof."
   },
   "terminalLease": {
     "id": "1b1aca64-e936-47d4-8509-43b7fe49f75f",
