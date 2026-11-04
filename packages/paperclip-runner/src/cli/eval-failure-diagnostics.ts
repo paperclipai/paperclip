@@ -12,14 +12,19 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown> : {};
 }
 
+export function evalFailureDiagnosticFromError(error: unknown): EvalProviderFailureDiagnostic | null {
+  const failure = providerFailureFromError(error);
+  if (!failure) return null;
+  return { phase: failure.phase, category: failure.category, retryability: failure.retryability,
+    ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }) };
+}
+
 export function evalProviderFailureDiagnostic(notification: CodexRpcNotification): EvalProviderFailureDiagnostic | null {
   if (notification.method !== "turn/completed") return null;
   const params = record(notification.params), turn = record(params.turn);
   if ((turn.status ?? params.status) !== "failed") return null;
-  const failure = providerFailureFromError(turn.error ?? params.error);
-  if (!failure) return { phase: "turn", category: "unknown", retryability: "unknown" };
-  return { phase: failure.phase, category: failure.category, retryability: failure.retryability,
-    ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }) };
+  return evalFailureDiagnosticFromError(turn.error ?? params.error)
+    ?? { phase: "turn", category: "unknown", retryability: "unknown" };
 }
 
 /** Observe the real notification before the board evidence projection redacts it. */

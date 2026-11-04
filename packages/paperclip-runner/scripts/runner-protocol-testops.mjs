@@ -13,6 +13,14 @@ const json = value => `${JSON.stringify(value, null, 2)}\n`;
 const workflowUrl = "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml";
 const runUrl = runId => `https://github.com/paperclipai/paperclip/actions/runs/${runId}`;
 
+export function standingPlanCases(plan) {
+  if (plan?.version !== "1.0" || !Array.isArray(plan.tests)) fail("standing_plan");
+  const rows = plan.tests.map(row => ({ id: typeof row.id === "string" && /^[1-9][0-9]*$/.test(row.id) ? Number(row.id) : row.id,
+    selector: row.selector }));
+  if (rows.length !== contract.cases.length) fail("standing_plan_coverage");
+  return rows;
+}
+
 export function selectCases(planned, context) {
   if (!positive(Number(context.runId)) || !sha(context.workflowSha) || !sha(context.sourceSha) || !sha(context.evalsSha)
     || !positive(Number(context.allureJobRunId)) || !positive(context.launchId) || !positive(context.jobId)) fail("context");
@@ -33,28 +41,48 @@ function validateSelection(selection) {
   const canonical = selectCases(selection.cases?.map(row => ({ id: row.testCaseId, selector: row.fullName })), selection);
   if (selection.schema !== canonical.schema || selection.projectId !== contract.projectId || selection.planId !== contract.planId
     || selection.rosterId !== contract.rosterId || selection.fullPlan !== canonical.fullPlan
-    || selection.cases.some((row, index) => row.caseId !== canonical.cases[index].caseId)) fail("selection_identity");
+    || JSON.stringify(selection.cases) !== JSON.stringify(canonical.cases)) fail("selection_identity");
   return selection;
 }
 
-export async function inspectSelection(api, env) {
+export async function inspectSelection(api, env, manualPlan) {
   const jobRunId = Number(env.ALLURE_JOB_RUN_ID);
   if (!positive(jobRunId)) fail("jobrun_missing");
+  if (manualPlan ? env.RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID !== "" : env.RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID !== String(jobRunId)) fail("selection_mode");
   const run = await api(`/api/jobrun/${jobRunId}`);
   const acceptedUrls = [workflowUrl, `https://github.com/paperclipai/paperclip/actions/workflows/${contract.workflowId}`, "https://github.com/paperclipai/paperclip/blob/master/.github/workflows/runner-protocol-live-evals.yml"];
-  if (run.id !== jobRunId || run.job?.type !== "github" || !positive(run.job?.id)
-    || !acceptedUrls.includes(run.job.url) || run.url !== runUrl(env.GITHUB_RUN_ID)
+  if (run.id !== jobRunId || !positive(run.job?.id) || run.job.type !== undefined && run.job.type !== "github"
+    || run.job.url !== undefined && !acceptedUrls.includes(run.job.url) || run.url !== runUrl(env.GITHUB_RUN_ID)
     || !["scheduled", "in_progress"].includes(run.stage)) fail("jobrun_binding");
-  const [launch, plan, planned] = await Promise.all([
+  const [job, launch, plan, planned] = await Promise.all([
+    api(`/api/job/${run.job.id}`),
     api(`/api/launch/${run.launchId}`), api(`/api/testplan/${contract.planId}`),
-    api(`/api/jobrun/${jobRunId}/plan?expected=true`),
+    manualPlan ? standingPlanCases(manualPlan) : api(`/api/jobrun/${jobRunId}/plan?expected=true`),
   ]);
+  if (job.id !== run.job.id || job.type !== "github" || !acceptedUrls.includes(job.url)) fail("job_binding");
   if (launch.id !== run.launchId || launch.projectId !== contract.projectId || launch.closed === true
     || plan.id !== contract.planId || plan.projectId !== contract.projectId || plan.name !== contract.planName
     || plan.testCasesCount !== contract.cases.length) fail("plan_binding");
-  return selectCases(planned, { runId: env.GITHUB_RUN_ID, workflowSha: env.GITHUB_SHA,
+  const selected = selectCases(planned, { runId: env.GITHUB_RUN_ID, workflowSha: env.GITHUB_SHA,
     sourceSha: env.PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA, evalsSha: env.PAPERCLIP_PROTOCOL_EVALS_SHA,
     allureJobRunId: String(jobRunId), launchId: launch.id, jobId: run.job.id, accountingMode: "legacy" });
+  if (!manualPlan) return selected;
+  const bootstrap = selected.cases.find(row => row.testCaseId === 194 && row.caseId === "get-task-context");
+  if (!bootstrap) fail("bootstrap_case");
+  return selectCases([{ id: bootstrap.testCaseId, selector: bootstrap.fullName }], selected);
+}
+
+function publicUsage(usage) {
+  if (usage === undefined || usage === null) return null;
+  if (typeof usage !== "object" || Array.isArray(usage)) fail("usage_schema");
+  const result = {};
+  for (const key of ["agentTurns", "providerRequests", "inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens",
+    "providerReportedCostNanodollars", "estimatedCostNanodollars"]) {
+    if (usage[key] === undefined) continue;
+    if (!Number.isSafeInteger(usage[key]) || usage[key] < 0) fail("usage_schema");
+    result[key] = usage[key];
+  }
+  return result;
 }
 
 export function filterCatalog(catalog, selection) {
@@ -91,15 +119,19 @@ export function projectResults({ selection, campaign, payloads = new Map() }) {
     if (payload && (payload.attemptId !== cell.finalAttemptId || payload.caseId !== expected.caseId
       || payload.publication?.schema !== "paperclip.runner-protocol-eval.public-chat/v1"
       || payload.disposition !== cell.disposition || payload.passed !== cell.passed)) fail("payload_binding");
-    const recorded = cell && payload && Array.isArray(payload.checks) && payload.checks.length > 0;
+    const rawChecks = payload?.checks ?? [];
+    if (!Array.isArray(rawChecks) || rawChecks.some(check => !check || typeof check.id !== "string"
+      || !Object.hasOwn(expected.checks, check.id) || expected.checks[check.id] !== check.kind)
+      || new Set(rawChecks.map(check => check.id)).size !== rawChecks.length) fail("check_binding");
+    const recorded = cell && payload && rawChecks.length === Object.keys(expected.checks).length;
     if (cell?.passed && (!recorded || cell.disposition !== "passed" || payload.checks.some(check => check.passed !== true))) fail("unsupported_pass");
     const status = cell?.passed ? "passed" : !recorded || cell.disposition === "infrastructure_failure" ? "broken" : "failed";
-    const checks = (payload?.checks ?? []).map(check => ({ id: check.id, kind: check.kind, passed: check.passed === true }));
+    const checks = rawChecks.map(check => ({ id: check.id, kind: expected.checks[check.id], passed: check.passed === true }));
     const uuid = randomUUID();
     const evidence = { schema: "paperclip.runner-protocol-testops-evidence/v1", ...selection,
       cases: undefined, caseId: expected.caseId, model: contract.model, provider: contract.provider, driver: contract.driver,
       attemptId: cell?.finalAttemptId ?? null, disposition: cell?.disposition ?? "infrastructure_failure", checks,
-      recorded: Boolean(recorded), usage: cell?.usage ?? null };
+      recorded: Boolean(recorded), usage: publicUsage(cell?.usage) };
     return { file: `${uuid}-result.json`, attachment: `${uuid}-attachment.json`, evidence,
       result: { uuid, name: expected.title, fullName: expected.fullName,
         historyId: createHash("sha256").update(`${expected.fullName}:${contract.rosterId}`).digest("hex"),
@@ -157,7 +189,8 @@ async function readJson(file) { return JSON.parse(await readFile(file, "utf8"));
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "selection") {
-    const selection = await inspectSelection(await testopsClient(process.env.ALLURE_TOKEN), process.env);
+    const selection = await inspectSelection(await testopsClient(process.env.ALLURE_TOKEN), process.env,
+      args[1] === undefined ? undefined : await readJson(args[1]));
     await writeFile(args[0], json(selection), { mode: 0o600 });
     await githubOutputs({ allure_job_run_id: selection.allureJobRunId, full_plan: String(selection.fullPlan) });
     console.log(json({ selected: selection.cases.length, fullPlan: selection.fullPlan, launchId: selection.launchId }));

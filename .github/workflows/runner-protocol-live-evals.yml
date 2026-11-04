@@ -298,7 +298,7 @@ jobs:
           allure-endpoint: https://paperclip.testops.cloud
           allure-project-id: '1'
           allure-token: ${{ secrets.ALLURE_TOKEN }}
-      - name: Read the standing plan for a manual full attempt
+      - name: Read the standing plan for a one-case registration attempt
         if: inputs.ALLURE_JOB_RUN_ID == ''
         run: |
           allurectl test-case plan -q 'testPlan=3' --output-file "$RUNNER_TEMP/runner-protocol-testplan.json"
@@ -309,6 +309,7 @@ jobs:
           ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
           ALLURE_ENDPOINT: https://paperclip.testops.cloud
           ALLURE_PROJECT_ID: '1'
+          RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
           ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
           ALLURE_USERNAME: ${{ inputs.ALLURE_USERNAME }}
           ALLURE_RESULTS: ${{ runner.temp }}/runner-protocol-selection-results
@@ -316,7 +317,11 @@ jobs:
           PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
         run: |
           mkdir -m 700 "$ALLURE_RESULTS"
-          allurectl watch -- node packages/paperclip-runner/scripts/runner-protocol-testops.mjs selection "$RUNNER_TEMP/runner-protocol-testops-selection.json"
+          selection_args=(selection "$RUNNER_TEMP/runner-protocol-testops-selection.json")
+          if [ -z "$RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID" ]; then
+            selection_args+=("$RUNNER_TEMP/runner-protocol-testplan.json")
+          fi
+          allurectl watch -- node packages/paperclip-runner/scripts/runner-protocol-testops.mjs "${selection_args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-protocol-testops-selection-${{ github.run_id }}-${{ github.run_attempt }}

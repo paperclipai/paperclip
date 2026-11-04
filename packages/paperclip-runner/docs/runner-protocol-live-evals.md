@@ -992,8 +992,9 @@ unchanged and cannot publish through this path.
 Before provider work, a protected reporting job validates the current GitHub
 job run, launch, standing plan and exact selected case identities. The full
 41-case roster is filtered to that selection before matrix fan-out. A manual
-reporting run resolves plan 3; a TestOps-triggered job uses its requested
-selection. Targeted selections retain their smaller coverage and omit the
+reporting run validates the complete standing plan and executes only existing
+case 194 (`get-task-context`) to register the GitHub job with real evidence.
+A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
 The final protected reporting job consumes only the separately sanitized

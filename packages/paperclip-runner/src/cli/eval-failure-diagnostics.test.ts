@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CodexRpcNotification } from "../drivers/codex/app-server-transport.js";
 import type { CapabilityLiveTransportFactory } from "../live/live-session.js";
-import { evalProviderFailureDiagnostic, observeEvalProviderFailures } from "./eval-failure-diagnostics.js";
+import { evalFailureDiagnosticFromError, evalProviderFailureDiagnostic, observeEvalProviderFailures } from "./eval-failure-diagnostics.js";
 
 const notification = (providerFailure: unknown): CodexRpcNotification => ({ method: "turn/completed", params: {
   turn: { status: "failed", error: { providerFailure } },
@@ -21,6 +21,14 @@ describe("eval-only terminal failure diagnostics", () => {
       { ...failure, phase: "other" }, { ...failure, httpStatus: 999 }, { ...failure, retryability: "always" }]) {
       expect(evalProviderFailureDiagnostic(notification(value))).toEqual({ phase: "turn", category: "unknown", retryability: "unknown" });
     }
+  });
+
+  it("retains a startup rejection's existing typed facts without provider text", () => {
+    const error = Object.assign(new Error("Startup rejected"), { runnerCommandResult: { result: {
+      providerFailure: { ...failure, phase: "startup" }, raw: "PRIVATE-SECRET",
+    } } });
+    expect(evalFailureDiagnosticFromError(error)).toEqual({ phase: "startup", category: "authentication", httpStatus: 401, retryability: "requires_action" });
+    expect(evalFailureDiagnosticFromError(new Error("PRIVATE-SECRET"))).toBeNull();
   });
 
   it("does not reinterpret completed, canceled or nonterminal events", () => {

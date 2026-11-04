@@ -12,247 +12,551 @@
       "testCaseId": 178,
       "caseId": "list-company-agents",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.list-company-agents",
-      "title": "Agent lists company agents"
+      "title": "Agent lists company agents",
+      "checks": {
+        "list-agents": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 179,
       "caseId": "request-task-review",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.request-task-review",
-      "title": "Agent requests task review"
+      "title": "Agent requests task review",
+      "checks": {
+        "review": "semantic_operation",
+        "task-in-review": "state_record_field",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 180,
       "caseId": "create-child-task",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.create-child-task",
-      "title": "Agent creates a child task"
+      "title": "Agent creates a child task",
+      "checks": {
+        "create-task": "semantic_operation",
+        "one-child": "state_effect",
+        "child-state": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 181,
       "caseId": "avoid-generic-api-request",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.avoid-generic-api-request",
-      "title": "Agent avoids the generic API escape hatch"
+      "title": "Agent avoids the generic API escape hatch",
+      "checks": {
+        "context-call": "semantic_operation",
+        "no-generic-api": "evidence_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 182,
       "caseId": "get-workspace-runtime",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.get-workspace-runtime",
-      "title": "Agent inspects workspace runtime"
+      "title": "Agent inspects workspace runtime",
+      "checks": {
+        "workspace-runtime": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 183,
       "caseId": "answer-status-question",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.answer-status-question",
-      "title": "Agent answers a status-only wake"
+      "title": "Agent answers a status-only wake",
+      "checks": {
+        "answer": "semantic_operation",
+        "one-answer": "state_effect",
+        "remains-active": "state_match",
+        "no-finish": "evidence_match",
+        "no-block": "evidence_match",
+        "no-review": "evidence_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 184,
       "caseId": "register-deliverable",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.register-deliverable",
-      "title": "Agent registers an inspectable deliverable"
+      "title": "Agent registers an inspectable deliverable",
+      "checks": {
+        "register": "semantic_operation",
+        "one-artifact": "state_effect",
+        "one-work-product": "state_effect",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 185,
       "caseId": "list-approvals",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.list-approvals",
-      "title": "Agent lists approvals"
+      "title": "Agent lists approvals",
+      "checks": {
+        "list-approvals": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 186,
       "caseId": "update-task-document",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.update-task-document",
-      "title": "Agent safely updates a task document"
+      "title": "Agent safely updates a task document",
+      "checks": {
+        "read-document": "semantic_operation",
+        "write-document": "semantic_operation",
+        "read-before-write": "operation_order",
+        "no-new-document": "state_effect",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 187,
       "caseId": "workflow-context-document-progress",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-context-document-progress",
-      "title": "Orient, revise a document, and report progress"
+      "title": "Orient, revise a document, and report progress",
+      "checks": {
+        "context": "semantic_operation",
+        "read": "semantic_operation",
+        "write": "semantic_operation",
+        "progress": "semantic_operation",
+        "read-before-write": "operation_order",
+        "write-before-progress": "operation_order",
+        "progress-comment": "state_effect",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 188,
       "caseId": "block-task",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.block-task",
-      "title": "Agent blocks its assigned task"
+      "title": "Agent blocks its assigned task",
+      "checks": {
+        "block": "semantic_operation",
+        "task-blocked": "state_record_field",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 189,
       "caseId": "request-approval",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.request-approval",
-      "title": "Agent requests governed approval"
+      "title": "Agent requests governed approval",
+      "checks": {
+        "request-approval": "semantic_operation",
+        "one-approval": "state_effect",
+        "approval-state": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 190,
       "caseId": "search-company-tasks",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.search-company-tasks",
-      "title": "Agent searches company tasks"
+      "title": "Agent searches company tasks",
+      "checks": {
+        "search-tasks": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 191,
       "caseId": "get-company-agent",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.get-company-agent",
-      "title": "Agent reads one company agent"
+      "title": "Agent reads one company agent",
+      "checks": {
+        "get-agent": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 192,
       "caseId": "reassign-existing-task",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-existing-task",
-      "title": "Reassign existing work without duplicating it"
+      "title": "Reassign existing work without duplicating it",
+      "checks": {
+        "reassigned": "semantic_operation",
+        "new-owner": "state_match",
+        "no-extra-tasks": "state_effect",
+        "one-wake": "state_effect",
+        "terminal-completed": "terminal",
+        "mock-only": "network",
+        "preserved-context": "state_same",
+        "wake-recipient": "state_match"
+      }
     },
     {
       "testCaseId": 193,
       "caseId": "comment-on-approval",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.comment-on-approval",
-      "title": "Agent comments on an approval"
+      "title": "Agent comments on an approval",
+      "checks": {
+        "comment-approval": "semantic_operation",
+        "comment-state": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 194,
       "caseId": "get-task-context",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.get-task-context",
-      "title": "Agent orients itself with task context"
+      "title": "Agent orients itself with task context",
+      "checks": {
+        "context-call": "semantic_operation",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 195,
       "caseId": "finish-task",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.finish-task",
-      "title": "Agent finishes its assigned task"
+      "title": "Agent finishes its assigned task",
+      "checks": {
+        "finish": "semantic_operation",
+        "task-done": "state_record_field",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 196,
       "caseId": "get-approval",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.get-approval",
-      "title": "Agent reads one approval"
+      "title": "Agent reads one approval",
+      "checks": {
+        "get-approval": "semantic_operation",
+        "no-context-read": "evidence_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 197,
       "caseId": "workflow-workspace-recovery",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-workspace-recovery",
-      "title": "Inspect and recover a workspace service"
+      "title": "Inspect and recover a workspace service",
+      "checks": {
+        "context": "semantic_operation",
+        "runtime": "semantic_operation",
+        "control": "semantic_operation",
+        "progress": "semantic_operation",
+        "inspect-before-control": "operation_order",
+        "control-before-progress": "operation_order",
+        "stopped": "state_match",
+        "no-finish": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 198,
       "caseId": "get-approval-context",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.get-approval-context",
-      "title": "Agent reads approval context"
+      "title": "Agent reads approval context",
+      "checks": {
+        "approval-context": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 199,
       "caseId": "lazy-unauthorized-undisclosed",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-unauthorized-undisclosed",
-      "title": "Discovery does not reveal unauthorized delegation"
+      "title": "Discovery does not reveal unauthorized delegation",
+      "checks": {
+        "searched": "evidence_match",
+        "no-create": "semantic_operation",
+        "tasks-unchanged": "state_same",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 200,
       "caseId": "read-task-document",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.read-task-document",
-      "title": "Agent discovers and reads a task document"
+      "title": "Agent discovers and reads a task document",
+      "checks": {
+        "list-documents": "semantic_operation",
+        "read-document": "semantic_operation",
+        "list-before-read": "operation_order",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 201,
       "caseId": "workflow-orient-delegate",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-orient-delegate",
-      "title": "Orient, select an agent, and delegate bounded work"
+      "title": "Orient, select an agent, and delegate bounded work",
+      "checks": {
+        "context": "semantic_operation",
+        "agents": "semantic_operation",
+        "child": "semantic_operation",
+        "context-before-child": "operation_order",
+        "agents-before-child": "operation_order",
+        "one-task": "state_effect",
+        "no-finish": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 202,
       "caseId": "workflow-governed-wait",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-governed-wait",
-      "title": "Orient, request approval, and schedule continuation"
+      "title": "Orient, request approval, and schedule continuation",
+      "checks": {
+        "context": "semantic_operation",
+        "approval": "semantic_operation",
+        "wake": "semantic_operation",
+        "context-before-approval": "operation_order",
+        "approval-before-wake": "operation_order",
+        "one-approval": "state_effect",
+        "no-finish": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 203,
       "caseId": "set-task-dependencies",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.set-task-dependencies",
-      "title": "Agent sets task dependencies"
+      "title": "Agent sets task dependencies",
+      "checks": {
+        "set-dependencies": "semantic_operation",
+        "blocker-state": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 204,
       "caseId": "block-task-narrative-baseline",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.block-task-narrative-baseline",
-      "title": "Block with a benign historical summary"
+      "title": "Block with a benign historical summary",
+      "checks": {
+        "block": "semantic_operation",
+        "task-blocked": "state_record_field",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network",
+        "no-unrelated-wake": "semantic_operation",
+        "no-opposite-disposition": "semantic_operation",
+        "narrative-reached-operation": "evidence_match"
+      }
     },
     {
       "testCaseId": 205,
       "caseId": "lazy-discover-agents",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-discover-agents",
-      "title": "Agent discovers an authorized optional capability"
+      "title": "Agent discovers an authorized optional capability",
+      "checks": {
+        "discovery-loaded": "evidence_match",
+        "list-agents": "semantic_operation",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 206,
       "caseId": "lazy-core-no-search",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-core-no-search",
-      "title": "Core task context needs no discovery"
+      "title": "Core task context needs no discovery",
+      "checks": {
+        "context": "semantic_operation",
+        "no-discovery": "evidence_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 207,
       "caseId": "create-task-document",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.create-task-document",
-      "title": "Agent creates a task document"
+      "title": "Agent creates a task document",
+      "checks": {
+        "context-call": "semantic_operation",
+        "write-document": "semantic_operation",
+        "context-before-write": "operation_order",
+        "one-new-document": "state_effect",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 208,
       "caseId": "request-human-confirmation",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.request-human-confirmation",
-      "title": "Agent requests structured confirmation"
+      "title": "Agent requests structured confirmation",
+      "checks": {
+        "request-input": "semantic_operation",
+        "one-interaction": "state_effect",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 209,
       "caseId": "reassign-without-permission",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-without-permission",
-      "title": "Reassignment is unavailable without authority"
+      "title": "Reassignment is unavailable without authority",
+      "checks": {
+        "no-reassign": "semantic_operation",
+        "same-owner": "state_same",
+        "no-wakes": "state_effect",
+        "terminal-completed": "terminal",
+        "mock-only": "network",
+        "no-generic-api-request": "semantic_operation",
+        "no-call-api": "semantic_operation"
+      }
     },
     {
       "testCaseId": 210,
       "caseId": "context-before-action",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.context-before-action",
-      "title": "Agent reads context before changing task state"
+      "title": "Agent reads context before changing task state",
+      "checks": {
+        "context-call": "semantic_operation",
+        "progress-call": "semantic_operation",
+        "context-before-progress": "operation_order",
+        "one-progress-comment": "state_effect",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 211,
       "caseId": "schedule-task-wake",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.schedule-task-wake",
-      "title": "Agent schedules a bounded wake"
+      "title": "Agent schedules a bounded wake",
+      "checks": {
+        "schedule-wake": "semantic_operation",
+        "one-wake": "state_effect",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 212,
       "caseId": "create-skill",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.create-skill",
-      "title": "Agent creates a company skill"
+      "title": "Agent creates a company skill",
+      "checks": {
+        "create-skill-call": "semantic_operation",
+        "one-skill": "state_effect",
+        "skill-content": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 213,
       "caseId": "read-document-revisions",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.read-document-revisions",
-      "title": "Agent inspects document revision history"
+      "title": "Agent inspects document revision history",
+      "checks": {
+        "revision-history": "semantic_operation",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 214,
       "caseId": "finish-task-narrative-baseline",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.finish-task-narrative-baseline",
-      "title": "Finish with misleading approval wording"
+      "title": "Finish with misleading approval wording",
+      "checks": {
+        "finish": "semantic_operation",
+        "task-done": "state_record_field",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network",
+        "no-unrelated-wake": "semantic_operation",
+        "no-opposite-disposition": "semantic_operation",
+        "narrative-reached-operation": "evidence_match"
+      }
     },
     {
       "testCaseId": 215,
       "caseId": "control-workspace-service",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.control-workspace-service",
-      "title": "Agent controls a workspace service"
+      "title": "Agent controls a workspace service",
+      "checks": {
+        "control-service": "semantic_operation",
+        "service-stopped": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 216,
       "caseId": "read-task-history",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.read-task-history",
-      "title": "Agent reads task history"
+      "title": "Agent reads task history",
+      "checks": {
+        "history-call": "semantic_operation",
+        "terminal-completed": "terminal",
+        "transcript-complete": "transcript_complete",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 217,
       "caseId": "decide-approval",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.decide-approval",
-      "title": "Authorized approver decides an approval"
+      "title": "Authorized approver decides an approval",
+      "checks": {
+        "decide-approval": "semantic_operation",
+        "approved-state": "state_match",
+        "terminal-completed": "terminal",
+        "mock-only": "network"
+      }
     },
     {
       "testCaseId": 218,
       "caseId": "reassign-blocked-task",
       "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-blocked-task",
-      "title": "Reassignment preserves a blocked task"
+      "title": "Reassignment preserves a blocked task",
+      "checks": {
+        "reassigned": "semantic_operation",
+        "still-blocked": "state_match",
+        "no-wakes": "state_effect",
+        "no-extra-tasks": "state_effect",
+        "terminal-completed": "terminal",
+        "mock-only": "network",
+        "preserved-context": "state_same"
+      }
     }
   ],
   "workflowId": 351260602

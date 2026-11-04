@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication } from "./runner-protocol-testops.mjs";
+import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases } from "./runner-protocol-testops.mjs";
 
 const context = { runId: "123", workflowSha: "a".repeat(40), sourceSha: "a".repeat(40), evalsSha: "b".repeat(40),
   allureJobRunId: "7", jobId: 9, launchId: 11, accountingMode: "legacy" };
@@ -42,22 +42,34 @@ test("rejects foreign, duplicate, missing and mismatched selections before provi
 });
 
 test("binds the selected TestOps job to this exact workflow run and standing plan", async () => {
-  const env = { ALLURE_JOB_RUN_ID: "7", GITHUB_RUN_ID: "123", GITHUB_SHA: context.workflowSha,
+  const env = { ALLURE_JOB_RUN_ID: "7", RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "7", GITHUB_RUN_ID: "123", GITHUB_SHA: context.workflowSha,
     PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: context.sourceSha, PAPERCLIP_PROTOCOL_EVALS_SHA: context.evalsSha };
   const run = { id: 7, job: { id: 9, type: "github", url: "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml" },
     url: "https://github.com/paperclipai/paperclip/actions/runs/123", stage: "in_progress", launchId: 11 };
-  const values = new Map([["/api/jobrun/7", run], ["/api/launch/11", { id: 11, projectId: 1, closed: false }],
+  const job = { ...run.job };
+  const values = new Map([["/api/jobrun/7", run], ["/api/job/9", job], ["/api/launch/11", { id: 11, projectId: 1, closed: false }],
     ["/api/testplan/3", { id: 3, projectId: 1, name: contract.planName, testCasesCount: 41 }],
     ["/api/jobrun/7/plan?expected=true", planned.slice(0, 1)]]);
   const api = async route => { assert.ok(values.has(route)); return values.get(route); };
   for (const alias of [run.job.url, `https://github.com/paperclipai/paperclip/actions/workflows/${contract.workflowId}`,
     "https://github.com/paperclipai/paperclip/blob/master/.github/workflows/runner-protocol-live-evals.yml"]) {
-    run.job.url = alias;
+    run.job.url = alias; job.url = alias;
     assert.equal((await inspectSelection(api, env)).cases.length, 1);
   }
   run.job.url = "https://github.com/paperclipai/paperclip/actions/workflows/other.yml";
   await assert.rejects(inspectSelection(api, env), /jobrun_binding/);
   run.job.url = "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml";
+  job.url = run.job.url;
+  delete run.job.url;
+  assert.equal((await inspectSelection(api, env)).cases.length, 1);
+  const manual = { version: "1.0", tests: planned.map(row => ({ ...row, id: String(row.id) })) };
+  const admittedManual = await inspectSelection(api, { ...env, RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "" }, manual);
+  assert.equal(admittedManual.fullPlan, false);
+  assert.equal(admittedManual.cases.length, 1);
+  assert.equal(admittedManual.cases[0].testCaseId, 194);
+  await assert.rejects(inspectSelection(api, env, manual), /selection_mode/);
+  assert.throws(() => standingPlanCases({ ...manual, tests: manual.tests.slice(0, 1) }), /standing_plan_coverage/);
+  assert.throws(() => standingPlanCases({ ...manual, version: "other" }), /standing_plan/);
   run.url = "https://github.com/paperclipai/paperclip/actions/runs/122";
   await assert.rejects(inspectSelection(api, env), /jobrun_binding/);
 });
@@ -76,7 +88,8 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
   const campaign = { schema: "paperclip.runner-protocol-eval.campaign/v1", source: { paperclip: { sha: context.sourceSha },
     evals: { sha: context.evalsSha }, workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" }, results: [cell] };
   const payload = { attemptId: "attempt-1", caseId: expected.caseId, disposition: "passed", passed: true,
-    publication: { schema: "paperclip.runner-protocol-eval.public-chat/v1" }, checks: [{ id: "behavior", kind: "semantic_operation", passed: true }] };
+    publication: { schema: "paperclip.runner-protocol-eval.public-chat/v1" },
+    checks: Object.entries(expected.checks).map(([id, kind]) => ({ id, kind, passed: true })) };
   const payloads = new Map([["attempt-1", payload]]);
   assert.equal(projectResults({ selection: selected, campaign, payloads })[0].result.status, "passed");
   assert.throws(() => projectResults({ selection: selected, campaign }), /unsupported_pass/);
@@ -86,6 +99,16 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
   payload.passed = false;
   assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /payload_binding/);
   payload.passed = true;
+  cell.usage = { inputTokens: 10, unexpected: "PRIVATE-SECRET" };
+  const projected = projectResults({ selection: selected, campaign, payloads })[0];
+  assert.deepEqual(projected.evidence.usage, { inputTokens: 10 });
+  assert.ok(!JSON.stringify(projected).includes("PRIVATE-SECRET"));
+  payload.checks[0].id = "PRIVATE-SECRET";
+  assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /check_binding/);
+  payload.checks[0].id = Object.keys(expected.checks)[0];
+  cell.usage.inputTokens = "PRIVATE-SECRET";
+  assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /usage_schema/);
+  cell.usage.inputTokens = 10;
   campaign.source.evals.sha = "c".repeat(40);
   assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /campaign_binding/);
 });
@@ -97,7 +120,8 @@ test("preserves real behavior failures and infrastructure failures", () => {
     const campaign = { schema: "paperclip.runner-protocol-eval.campaign/v1", source: { paperclip: { sha: context.sourceSha },
       evals: { sha: context.evalsSha }, workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" }, results: [cell] };
     const payload = { attemptId: "attempt-1", caseId: cell.caseId, disposition, passed: false,
-      publication: { schema: "paperclip.runner-protocol-eval.public-chat/v1" }, checks: [{ id: "behavior", passed: false }] };
+      publication: { schema: "paperclip.runner-protocol-eval.public-chat/v1" },
+      checks: Object.entries(selected.cases[0].checks).map(([id, kind]) => ({ id, kind, passed: false })) };
     assert.equal(projectResults({ selection: selected, campaign, payloads: new Map([["attempt-1", payload]]) })[0].result.status, status);
   }
 });

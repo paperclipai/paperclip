@@ -41,7 +41,7 @@ import { prepareEvalObservabilityRuntime } from "./eval-observability-runtime.js
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
-import { observeEvalProviderFailures, type EvalProviderFailureDiagnostic } from "./eval-failure-diagnostics.js";
+import { evalFailureDiagnosticFromError, observeEvalProviderFailures, type EvalProviderFailureDiagnostic } from "./eval-failure-diagnostics.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
@@ -541,6 +541,8 @@ export async function runEvalSessionCli(
     }, null, 2)}\n`));
     return accountingError === null ? 0 : 2;
   } catch (error) {
+    const failureDiagnostic = evalFailureDiagnosticFromError(error);
+    if (failureDiagnostic && providerFailureDiagnostics.length < 8) providerFailureDiagnostics.push(failureDiagnostic);
     if (session !== null) {
       snapshot = session.snapshot();
       const attempt = snapshot.attempts?.find(
