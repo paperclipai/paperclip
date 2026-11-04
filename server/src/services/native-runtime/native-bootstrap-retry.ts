@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { captureLegacyDurablePrpCheckpoint, inspectUnclaimedBootstrapCheckpoint, parseNativeExecutionInput,
+import { inspectUnclaimedBootstrapState, parseNativeExecutionInput,
   type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
 import { loadNativeUnclaimedBootstrapCheckpoint } from "./native-runner-checkpoint.js";
@@ -45,10 +45,7 @@ export async function admitUnclaimedNativeBootstrapRetry(input: {
       runId: binding.runId, normalizedSessionId: run.nativeSessionId, turnId: `turn-${binding.runId}`, itemId: `item-${binding.runId}` };
     const canonical = await loadNativeUnclaimedBootstrapCheckpoint(tx, binding, identity);
     if (!canonical) return false;
-    try {
-      const local = captureLegacyDurablePrpCheckpoint(input.localStateContents, identity,
-        { version: canonical.runnerVersion, digest: canonical.runnerDigest });
-      return inspectUnclaimedBootstrapCheckpoint(local.records, identity)?.fingerprint === canonical.fingerprint;
-    } catch { return false; }
+    return inspectUnclaimedBootstrapState(input.localStateContents, identity,
+      { version: canonical.runnerVersion, digest: canonical.runnerDigest })?.fingerprint === canonical.fingerprint;
   });
 }

@@ -530,14 +530,9 @@ export function decodeDurablePrpCheckpoint(records: ReadonlyMap<string, string>)
   }
 }
 
-export function inspectUnclaimedBootstrapCheckpoint(
-  records: ReadonlyMap<string, string>, expected: DurableRecoveryIdentity,
-): { fingerprint: string; runnerVersion: string; runnerDigest: string } | null {
-  try {
-    if (records.size !== 4 || [...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return null;
-    const { state, runnerVersion, runnerDigest } = checkpointState(records);
-    const history = state.bootstrapHistory;
-    if (state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+function isUnclaimedBootstrapState(state: StoredCoreState, expected: DurableRecoveryIdentity): boolean {
+  const history = state.bootstrapHistory;
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
       || canonicalJson(state.identity) !== canonicalJson(expected)
       || history?.schema !== "paperclip.runner.bootstrap-history.v1"
       || canonicalJson(history.originIdentity) !== canonicalJson(expected)
@@ -551,9 +546,29 @@ export function inspectUnclaimedBootstrapCheckpoint(
       || state.commands.length !== 2 || state.commands[0]?.type !== "run.prepare"
       || state.commands[1]?.type !== "session.open"
       || state.commands.some(command => command.status !== "pending" || command.result !== null)
-      || !state.runAttachTemplate || canonicalJson(state.commands[0].payload) !== canonicalJson(state.runAttachTemplate)) return null;
+      || !state.runAttachTemplate || canonicalJson(state.commands[0].payload) !== canonicalJson(state.runAttachTemplate));
+}
+
+export function inspectUnclaimedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: DurableRecoveryIdentity,
+): { fingerprint: string; runnerVersion: string; runnerDigest: string } | null {
+  try {
+    if (records.size !== 4 || [...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return null;
+    const { state, runnerVersion, runnerDigest } = checkpointState(records);
+    if (!isUnclaimedBootstrapState(state, expected)) return null;
     return { runnerVersion, runnerDigest, fingerprint: `sha256:${createHash("sha256")
       .update(canonicalJson([...records].sort(([left], [right]) => left.localeCompare(right)))).digest("hex")}` };
+  } catch { return null; }
+}
+
+export function inspectUnclaimedBootstrapState(
+  contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
+): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
+  try {
+    if (Buffer.byteLength(contents) > 8 * 1024 * 1024) return null;
+    const state: unknown = JSON.parse(contents);
+    if (!isStoredCoreState(state, expected) || !isUnclaimedBootstrapState(state, expected)) return null;
+    return inspectUnclaimedBootstrapCheckpoint(captureLegacyDurablePrpCheckpoint(contents, expected, verifiedArtifact).records, expected);
   } catch { return null; }
 }
 
@@ -2519,9 +2534,7 @@ export class DurablePrpControlPlane {
   }
 
   unclaimedBootstrapCheckpoint() {
-    const history = this.#store.state.bootstrapHistory;
-    if (this.#store.state.commands.length !== 2 || this.#store.state.committedEvents.length !== 0
-      || history?.credentialsIssued !== 0 || history.adopted !== false) return null;
+    if (!isUnclaimedBootstrapState(this.#store.state, this.#identity)) return null;
     return inspectUnclaimedBootstrapCheckpoint(
       captureCheckpoint(this.#store.state, this.#expectedRunnerVersion, this.#expectedRunnerDigest).records,
       this.#identity,

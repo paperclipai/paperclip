@@ -97,6 +97,7 @@ export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
+export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;

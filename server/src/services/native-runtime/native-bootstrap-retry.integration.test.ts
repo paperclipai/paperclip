@@ -17,7 +17,8 @@ describeEmbeddedPostgres("unclaimed native bootstrap retry admission", () => {
   it.each([
     "current proof", "stale claim", "expired claim", "Stop", "paused agent", "changed model", "changed trust",
     "changed account", "provider progress", "issued and pruned credential", "adopted authority", "legacy state",
-    "truncated checkpoint", "local fingerprint mismatch", "hidden delivery", "unknown command", "foreign company",
+    "truncated checkpoint", "local fingerprint mismatch", "local streamed progress", "local missing event policy",
+    "hidden delivery", "unknown command", "foreign company",
   ])("admits only a current complete proof: %s", async scenario => {
     const { db, runId, issueId, native } = await environment.seedRun(`ADMISSION-${scenario}`);
     const { companyId, agentId, runtimeRoot } = environment.current;
@@ -68,6 +69,19 @@ describeEmbeddedPostgres("unclaimed native bootstrap retry admission", () => {
       checkpoint!.restoreSessionDirectory(projection);
       let localStateContents = await readFile(join(projection, "control-plane", "control-plane-state.json"), "utf8");
       const original = JSON.parse(localStateContents);
+      if (scenario === "local streamed progress" || scenario === "local missing event policy") {
+        expect(await admitUnclaimedNativeBootstrapRetry({ db, execution, leaseOwner, localStateContents })).toBe(true);
+        if (scenario === "local missing event policy") delete original.checkpointEventPolicy;
+        else {
+          const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner",
+            sourceInstanceId: identity.runnerInstanceId, sourceEventId: "fixture-local-progress", sourceSeq: 1, runId,
+            normalizedSessionId: identity.normalizedSessionId, turnId: identity.turnId, itemId: identity.itemId,
+            eventType: "item.delta", priority: 2, emittedAt: "2026-01-01T00:00:00.000Z", payload: { delta: "Prior local progress" } };
+          original.committedEvents = [{ sourceSeq: 1, sourceEventId: event.sourceEventId, eventType: event.eventType,
+            priority: event.priority, envelope: { kind: "event", payload: event }, deliveryCount: 1, logicalEffectCount: 1 }];
+        }
+        localStateContents = JSON.stringify(original);
+      }
       if (scenario === "local fingerprint mismatch") {
         original.commands[1].payload = { reuse: "same_session", changed: true };
         localStateContents = JSON.stringify(original);

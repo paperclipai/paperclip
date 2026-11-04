@@ -46,13 +46,13 @@ cd packages/plugins/sandbox-providers/daytona
 pnpm install --ignore-workspace --no-lockfile
 pnpm build
 pnpm test
-pnpm test:sdk-ingress
+pnpm exec vitest run --config vitest.sdk-ingress.config.ts
 pnpm typecheck
 ```
 
 These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
 
-`test:sdk-ingress` requires this package's installed, pinned Daytona SDK. It sends
+The dedicated `vitest.sdk-ingress.config.ts` requires this package's installed, pinned Daytona SDK. It sends
 local HTTP faults through the real SDK and worker RPC without a provider account
 or sandbox. The root workspace does not install standalone provider dependencies;
 its normal Daytona tests use mocked SDK boundaries. This target fails if the SDK

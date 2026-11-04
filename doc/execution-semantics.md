@@ -1757,7 +1757,8 @@ physical termination, release a workspace hold, or create a semantic result.
 The automatic next attempt can admit absent remote Runner state only after it
 rechecks that proof against both the encrypted checkpoint and its complete local
 projection under the exact current claim. The frozen execution envelope must
-still match. It keeps the original pending `run.prepare` and `session.open`
+still match. It validates raw local state before checkpoint projection can omit
+streaming events or normalize event policy. It keeps the original pending `run.prepare` and `session.open`
 command IDs. A proved unused Codex home can rematerialize its sealed skills for
 that attempt. Provider progress, issued credentials, legacy state, Stop and
 configuration changes retain the normal state-identity hold.

@@ -1,7 +1,7 @@
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import https, { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -22,7 +22,7 @@ import { claimNativeSessionResumptions, reconcileNativeFinalizations } from "./n
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
-import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
+import { releaseMaterializedNativeRuntimeSkills, spawnRunner } from "../../vendor/paperclip-runner/testing.js";
 import { materializeAsset } from "./runtime-context.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -57,8 +57,11 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       mode: "isolated", strategyType: "directory", name: "Owned retry fixture", cwd: sandbox });
     await db.update(issues).set({ executionWorkspaceId: runId }).where(eq(issues.id, issueId));
     const runtimeContext = nativeRuntimeContextFixture();
+    const skillContent = "---\nname: retry-fixture\ndescription: Controlled sealed retry skill.\n---\nKeep the admitted task and configuration.\n";
     runtimeContext.instructions.bundle = await materializeAsset([{ path: "AGENTS.md", mode: 0o444,
       content: Buffer.from("Complete only the controlled fixture task.\n") }]);
+    if (provider === "codex") runtimeContext.skills = [{ key: "company/retry-fixture", runtimeName: "retry-fixture",
+      versionId: "fixture-v1", bundle: await materializeAsset([{ path: "SKILL.md", mode: 0o444, content: Buffer.from(skillContent) }]) }];
     runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
     const execution = parseNativeExecutionInput({
       schema: "paperclip.native-execution-input.v5", executionMode: "default", planningContext: null, runtimeContext,
@@ -89,6 +92,13 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
       normalizedSessionId: native.normalizedSessionId, turnId: `turn-${runId}`, itemId: `item-${runId}` };
+    const assertSealedSkills = async () => {
+      if (provider !== "codex") return;
+      const skill = join(root, "codex-home", "skills", "retry-fixture", "SKILL.md");
+      expect(await readFile(skill, "utf8")).toBe(skillContent);
+      expect((await stat(skill)).mode & 0o222).toBe(0);
+      expect((await stat(join(root, "codex-home", "skills", "retry-fixture"))).mode & 0o222).toBe(0);
+    };
     const resultFile = join(sandbox, "fixture-result.json");
     await writeFile(resultFile, canonicalNativeJson({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
       summary: "Controlled retry completed.", completionClaim: { contractRevision: execution.completionContract.contract.revision,
@@ -205,6 +215,7 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       await expect(execute()).rejects.toThrow("HTTP 502");
       expect(acquisitions).toBe(1);
       expect(handles).toHaveLength(0);
+      await assertSealedSkills();
       const saved = await loadNativeRunnerCheckpoint(db, execution.binding);
       expect(saved?.records.size).toBe(4);
       const savedBootstrapIds = [...saved!.records].filter(([part]) => part.startsWith("command:"))
@@ -230,6 +241,7 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       } finally { if (timer) clearTimeout(timer); }
       expect(acquisitions).toBe(2);
       expect(handles).toHaveLength(1);
+      await assertSealedSkills();
       const completed = await loadNativeRunnerCheckpoint(db, execution.binding);
       const commands = [...completed!.records].filter(([part]) => part.startsWith("command:")).map(([, value]) => JSON.parse(value));
       expect(commands.filter(command => command.type === "run.prepare")).toHaveLength(1);
@@ -254,6 +266,7 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     } finally {
       for (const bundle of bundles) await bundle.transport.close().catch(() => undefined);
       for (const handle of handles) await stopOwnedProcessGroup(handle.child.pid ?? null, sandbox);
+      if (provider === "codex") await releaseMaterializedNativeRuntimeSkills(join(root, "codex-home", "skills"));
       for (const socket of sockets) socket.terminate();
       websocket.close(); preview.closeAllConnections();
       await new Promise<void>(done => preview.close(() => done()));

@@ -34,6 +34,7 @@ import {
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectUnclaimedBootstrapCheckpoint,
+  inspectUnclaimedBootstrapState,
   inspectStagedRunAttachment,
   inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
@@ -73,6 +74,21 @@ it("recognizes a complete unclaimed bootstrap through cold checkpoint restoratio
     expect(proof).toEqual({ fingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest });
     expect(core.unclaimedBootstrapCheckpoint()).toEqual(proof);
+    const projection = resolve(root, "projection");
+    checkpoint.restoreSessionDirectory(projection);
+    const local = JSON.parse(readFileSync(resolve(projection, "control-plane", "control-plane-state.json"), "utf8"));
+    const artifact = { version: expectedRunnerVersion, digest: expectedRunnerDigest };
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(local), identity, artifact)).toEqual(proof);
+    const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner",
+      sourceInstanceId: identity.runnerInstanceId, sourceEventId: "local-progress", sourceSeq: 1,
+      runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, turnId: identity.turnId,
+      itemId: identity.itemId, eventType: "item.delta", priority: 2, emittedAt: "2026-01-01T00:00:00.000Z",
+      payload: { delta: "Prior local progress" } };
+    const progressed = { ...local, committedEvents: [{ sourceSeq: 1, sourceEventId: event.sourceEventId,
+      eventType: event.eventType, priority: 2, envelope: { kind: "event", payload: event }, deliveryCount: 1, logicalEffectCount: 1 }] };
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(progressed), identity, artifact)).toBeNull();
+    delete local.checkpointEventPolicy;
+    expect(inspectUnclaimedBootstrapState(JSON.stringify(local), identity, artifact)).toBeNull();
     expect(inspectUnclaimedBootstrapCheckpoint(decodeDurablePrpCheckpoint(checkpoint.records).records, identity)).toEqual(proof);
     for (const field of Object.keys(identity) as Array<keyof DurableRecoveryIdentity>) {
       expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, { ...identity, [field]: "foreign" })).toBeNull();
