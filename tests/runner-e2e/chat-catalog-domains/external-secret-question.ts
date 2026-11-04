@@ -18,6 +18,6 @@ export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, st
   const q = qs.questions[0]!;
   if (q.answerMode !== "single_select" || !q.required || !q.options?.length) return;
   return { row: { ...row, id: row.id }, questionSet: qs, question: { ...q, options: q.options },
-    text: [qs.title, qs.description, q.header, q.prompt, q.helpText, q.customAnswer?.enabled ? q.customAnswer.label : undefined, qs.submitLabel].filter(Boolean).join("\n"),
+    text: [qs.title, qs.description, q.header, q.prompt, q.helpText, q.customAnswer?.enabled ? q.customAnswer.label : undefined, q.customAnswer?.enabled ? q.customAnswer.placeholder : undefined, qs.submitLabel].filter(Boolean).join("\n"),
     payloadHash: createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") };
 }
