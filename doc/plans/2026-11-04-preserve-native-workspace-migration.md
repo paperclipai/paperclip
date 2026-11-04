@@ -26,3 +26,11 @@ receipts, wrong targets, occupied roots, and reusable-lease replacement. The liv
 acceptance gate is an ordinary agent continuation through the packaged offline
 migration, followed by a rolling deployment with active ownership transfer.
 Named staging enrollment remains pending until this proof and the PR gates pass.
+
+The first live enrollment also found that already-packaged local skill objects
+were skipped by the older database-body migration. The skill storage owner now
+copies each verified local archive and manifest to a new S3 upload claim, reads
+back their exact bytes, then publishes the new receipt with a compare-and-swap.
+Package and version IDs stay unchanged. Failed copies retain the original
+receipt, local objects and durable upload journal. The maintenance entry pages
+through this owner before its existing package and version verification.
