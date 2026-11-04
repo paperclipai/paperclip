@@ -11,6 +11,7 @@ import {
   workspaceOperations, type Db,
 } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { workspaceRecoverySourceEligible } from "./workspace-recovery-source.js";
 import {
   readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
   type RemoteWorkspaceAuthority, type RemoteWorkspaceRunReference, type RemoteWorkspaceSource,
@@ -182,11 +183,12 @@ async function terminalWriterSaveHolder(tx: Transaction, companyId: string, writ
   const [writerIssue] = await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`))));
   if (!writerIssue) return null;
-  // Superseded or resolved actions do not describe the current save.
+  // Read exactly the actions that workspace recovery treats as owning this writer's save.
   const actions = await tx.select({ evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
-    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
-      eq(issueRecoveryActions.sourceIssueId, writerIssue.id), inArray(issueRecoveryActions.status, ["active", "escalated"]),
-      sql`${issueRecoveryActions.evidence}->>'runId' = ${writerRunId}`));
+    .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+      eq(heartbeatRuns.id, writerRunId)))
+    .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, writerIssue.id),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${writerRunId}`, workspaceRecoverySourceEligible()));
   let lastActivityAt = prior.finishedAt ?? prior.createdAt;
   for (const action of actions) {
     const recovery = readSystemRecovery(action.evidence);

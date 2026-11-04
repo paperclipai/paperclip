@@ -122,6 +122,7 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
     { name: "a failed writer whose recovery is actively saving", finishedAgoMs: hours(2), recovery: "running", expected: "deferred" },
     { name: "a failed writer whose long save reports only its beacon", finishedAgoMs: hours(2), recovery: "beacon", expected: "deferred" },
     { name: "a failed writer whose earlier recovery was superseded", finishedAgoMs: 0, recovery: "superseded", expected: "deferred" },
+    { name: "a failed writer saved by a resolved preservation action", finishedAgoMs: hours(2), recovery: "resolved_preservation", expected: "deferred" },
     { name: "a failed writer whose recovery is exhausted", finishedAgoMs: 0, recovery: "exhausted", expected: "failed" },
     { name: "a failed writer silent past the holder cutoff", finishedAgoMs: hours(2), recovery: null, expected: "failed" },
   ] as const)("handles $name", async ({ finishedAgoMs, recovery, expected }) => {
@@ -155,7 +156,10 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
         kind: "active_run_watchdog", status, cause: "run_failed", fingerprint: `save-${randomUUID()}`,
         nextAction: "preserve_files", updatedAt,
-        evidence: { runId: writer.id, ...extra, systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
+        evidence: { runId: writer.id, ...extra,
+          workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: writer.id },
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1" },
+          systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
           sourceRunId: writer.id, revision: 2, generationId: randomUUID(), intentId: null, phase: "preserve_files",
           state, attemptId: null, attempts: 1, retriesUsed: state === "exhausted" ? 5 : 0,
           firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
@@ -163,6 +167,10 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
     if (recovery === "running") await recoveryAction("running", "active", new Date());
     if (recovery === "beacon") await recoveryAction("running", "active", finishedAt, { systemRecoveryActiveAt: Date.now() });
     if (recovery === "exhausted") await recoveryAction("exhausted", "escalated", new Date());
+    // A resolved preserve-without-replay action still owns its unfinished save.
+    if (recovery === "resolved_preservation") await recoveryAction("running", "resolved", finishedAt, {
+      systemRecoveryActiveAt: Date.now(),
+      automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked", runId: writer.id } });
     if (recovery === "superseded") {
       await recoveryAction("exhausted", "cancelled", new Date());
       await recoveryAction("running", "active", new Date());
