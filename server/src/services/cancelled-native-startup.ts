@@ -1,5 +1,5 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
-import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
@@ -26,15 +26,63 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
     || recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false
     || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
     || run.nativeIssueId || run.nativeSessionId || run.runnerProfileJson?.nativeExecutionInput != null
-    || run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null
+    || run.runnerProfileJson?.nativeWorkspaceSync != null
     || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
-  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+  const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-  )).limit(1);
+  ));
   const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
     eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
   )).limit(1);
-  return !lease && !result && !await nativeStartupHasExecutionEvidence(db, run);
+  if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
+  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return true;
+  const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId && lease.releasedAt && lease.status !== "pending_cleanup"
+    && lease.cleanupStatus === "success" && lease.metadata?.pendingCleanupInFlight !== true
+    && (lease.provider === "local" || hasRemoteTerminationReceipt(lease)))
+    && await hasSettledFailedPreparationEvidence(db, run)
+    && await hasVerifiedWorkspaceRepair(db, run);
+}
+
+async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<boolean> {
+  const [source] = await db.select({ agentId: heartbeatRuns.agentId,
+    runtimeModeResolverVersion: heartbeatRuns.runtimeModeResolverVersion, runtimeModeReason: heartbeatRuns.runtimeModeReason,
+    runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
+    driverKind: heartbeatRuns.driverKind, driverVersion: heartbeatRuns.driverVersion,
+    completionContractId: heartbeatRuns.completionContractId, completionContractSha256: heartbeatRuns.completionContractSha256,
+    sessionIdBefore: heartbeatRuns.sessionIdBefore, externalRunId: heartbeatRuns.externalRunId,
+    logStore: heartbeatRuns.logStore, logRef: heartbeatRuns.logRef, logBytes: heartbeatRuns.logBytes,
+    logSha256: heartbeatRuns.logSha256, logCompressed: heartbeatRuns.logCompressed,
+    stdoutExcerpt: heartbeatRuns.stdoutExcerpt, stderrExcerpt: heartbeatRuns.stderrExcerpt,
+    lastOutputAt: heartbeatRuns.lastOutputAt, lastOutputSeq: heartbeatRuns.lastOutputSeq,
+    lastOutputStream: heartbeatRuns.lastOutputStream, lastOutputBytes: heartbeatRuns.lastOutputBytes,
+    usageJson: heartbeatRuns.usageJson, exitCode: heartbeatRuns.exitCode, signal: heartbeatRuns.signal,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+  if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
+    !["agentId", "logCompressed", "lastOutputSeq"].includes(key) && value !== null)
+    || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
+      "chatControlRecoveryAdmission"].includes(key))
+    || run.resultJson?.stopReason !== "adapter_failed"
+    || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
+      "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
+      "workspaceRestoreRecovery"].includes(key))) return false;
+  const events = await db.select().from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+  )).orderBy(asc(heartbeatRunEvents.seq)).limit(3);
+  const [error, measured] = events;
+  const hostEvent = (event: typeof heartbeatRunEvents.$inferSelect) => event.agentId === source.agentId
+    && event.stream === "system" && event.sourceInstanceId === null && event.sourceEventId === null
+    && event.sourceSeq === null && event.sourcePayloadSha256 === null && event.protocolSchemaVersion === null;
+  return events.length === 2 && Boolean(error && measured && hostEvent(error) && hostEvent(measured)
+    && typeof run.error === "string" && run.error.length > 0
+    && error.seq === 1 && error.eventType === "error" && error.level === "error"
+    && error.message === run.error && error.payload === null
+    && measured.seq === 2 && measured.eventType === "lifecycle" && measured.level === "info" && measured.message === "task.run.measured"
+    && measured.payload?.phase === "task.run.measured" && measured.payload.outcome === "failed"
+    && measured.payload.durableSettlement === true
+    && Object.keys(measured.payload).every(key => ["phase", "outcome", "durationMs", "durableSettlement"].includes(key))
+    && typeof measured.payload.durationMs === "number"
+    && Number.isFinite(measured.payload.durationMs) && measured.payload.durationMs >= 0);
 }
 
 /** Candidate state only. Admission must also verify ownership, execution records,
