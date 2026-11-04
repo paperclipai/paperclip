@@ -9,6 +9,11 @@ import {
 
 const DEFAULT_PORTFOLIO_CACHE_TTL_MS = 30_000;
 const CLOUD_PORTFOLIO_PATH = "/v1/tenant/portfolio";
+// The Cloud edge can close a pooled keep-alive connection just as a request is
+// written. The reset arrives before any response and the GET is idempotent, so
+// one more attempt within the same deadline is safe. Other failures, including
+// the deadline itself, are reported without a retry.
+const RETRYABLE_FETCH_RESET_CODES = new Set(["ECONNRESET", "UND_ERR_SOCKET"]);
 
 type PortfolioCacheEntry = {
   expiresAt: number;
@@ -86,16 +91,29 @@ export function cloudRoutes(opts: {
 
     try {
       upstreamSignal = AbortSignal.timeout(10_000);
-      const upstream = await fetchImpl(portfolioUrl, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${tenantToken}`,
-          "x-paperclip-cloud-user-id": actorUserId,
-          "x-paperclip-cloud-stack-id": context.stackId,
-        },
-        signal: upstreamSignal,
-      });
+      let upstream: Response;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          upstream = await fetchImpl(portfolioUrl, {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${tenantToken}`,
+              "x-paperclip-cloud-user-id": actorUserId,
+              "x-paperclip-cloud-stack-id": context.stackId,
+            },
+            signal: upstreamSignal,
+          });
+          break;
+        } catch (error) {
+          const { diagnostics } = portfolioError("upstream", error);
+          if (attempt > 1 || !RETRYABLE_FETCH_RESET_CODES.has(String(diagnostics.networkCode))) throw error;
+          logger.warn(
+            { cloudPortfolio: diagnostics },
+            "Paperclip Cloud portfolio connection reset; retrying once",
+          );
+        }
+      }
       phase = "http_response";
       upstreamStatus = upstream.status;
       if (!upstream.ok) {
