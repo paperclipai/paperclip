@@ -9876,6 +9876,7 @@ async function executePaperclipNativeSessionWithinScope(
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             onSessionAdmission: async () => {
+              if (existingWarmSession) runnerdBackend?.bindDiagnosticSession?.(existingWarmSession);
               // Invalidate prior stop evidence before a backend can spawn.
               await appendHeartbeatRunEvent(input.db, {
                 companyId: input.execution.binding.companyId,
