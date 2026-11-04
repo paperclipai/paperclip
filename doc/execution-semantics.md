@@ -2722,9 +2722,11 @@ is retained; complete token counters alone cannot certify a stopped provider.
 A timeout, missing accounting, or an unproven provider terminal remains a failure;
 the saved wait does not certify successful provider execution.
 
-An exact governed-cancellation terminal may return its durable event receipt
-before postcommit accounting and output observers finish. The receipt requires
-the ordinary company, run, session, source and transaction fences; it is not a
+An exact governed-cancellation terminal with an explicit turn ID may return its
+durable event receipt before postcommit accounting and output observers finish.
+Schema-valid terminals without a turn ID keep the ordinary append path and await
+their observers; they do not request the turn-bound early-receipt option. The
+receipt requires the ordinary company, run, session, source and transaction fences; it is not a
 physical-stop or accounting-completion receipt. The control plane retains the
 observer debt and joins it before accepting a checkpoint or result. The existing
 checkpoint deadline bounds that join, while the provider-terminal drain keeps its

@@ -1004,7 +1004,7 @@ async function consumeTurn(
           if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
             const receipt = await controlPlane.appendEvent(trailing, {
               signal: drainAbort.signal,
-              ...(terminal && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
+              ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
                 ? { deferPostCommitObservers: true as const } : {}),
             });
             if (drainAbort.signal.aborted) return;
