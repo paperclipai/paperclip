@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { productRegressionCases, selectProductRegression, validateSelection, projectProductResults, workflowUrl, workflowUrls } from './product-regression-testops.mjs';
-import { admitProductTestOps, officialProductContext, verifyProductJob, validateUploadedProductResults } from './product-regression-testops-cli.mjs';
+import { admitProductTestOps, officialProductContext, verifyProductJob, validateUploadedProductResults, productTestOps } from './product-regression-testops-cli.mjs';
 
 const workflowSha = 'a'.repeat(40), targetSha = 'b'.repeat(40);
 const env = {
@@ -144,6 +146,46 @@ test('server verification accepts real Allure string statuses and rejects wrong 
   validateUploadedProductResults(rows, selection([selected]), summary);
   assert.throws(() => validateUploadedProductResults([{ ...rows[0], status: 'failed' }], selection([selected]), summary));
   assert.throws(() => validateUploadedProductResults([{ ...rows[0], jobRun: { id: 999 } }], selection([selected]), summary));
+});
+
+test('the separated selection, retained-report projection and server verification preserve one TestOps subset', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'product-testops-control-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const selectionFile = path.join(root, 'selection.json');
+  const runtime = { ...env, RUNNER_TEMP: root, GITHUB_OUTPUT: path.join(root, 'output'), GITHUB_STEP_SUMMARY: path.join(root, 'summary'),
+    ALLURE_JOB_RUN_ID: '456', ALLURE_TOKEN: 'synthetic-test-token', TESTOPS_CASE: 'all',
+    REPORT_DIR: path.join(root, 'report'), ALLURE_RESULTS: path.join(root, 'allure'), EXPORT_SUMMARY: path.join(root, 'export.json') };
+  let uploadedStatus = 'passed';
+  const fetchImpl = async url => {
+    const parsed = new URL(url), route = parsed.pathname;
+    const resources = {
+      '/api/uaa/oauth/token': { access_token: 'synthetic-access-token' },
+      '/api/jobrun/456': { id: 456, launchId: 789, job: { id: 50, type: 'github' }, url: 'https://github.com/paperclipai/paperclip/actions/runs/123' },
+      '/api/job/50': { id: 50, type: 'github', url: [...workflowUrls][1] }, '/api/launch/789': { id: 789, projectId: 1 },
+      '/api/testresult': { content: [{ id: 501, testCaseId: 66 }], totalPages: 1, totalElements: 1 },
+      '/api/testresult/501': { id: 501, testCaseId: 66, fullName: selected.fullName, projectId: 1, launchId: 789, jobRun: { id: 456 }, status: uploadedStatus },
+    };
+    assert.ok(resources[route], route);
+    return new Response(JSON.stringify(resources[route]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const exec = async (command, args) => {
+    assert.equal(command, 'allurectl');
+    if (args[1] === 'env') return { stdout: 'ALLURE_JOB_RUN_ID=456\nALLURE_LAUNCH_ID=789\n' };
+    if (args[1] === 'plan') await writeFile(args.at(-1), JSON.stringify({ version: '1.0', tests: [{ id: '66', selector: selected.fullName }] }));
+    return { stdout: '' };
+  };
+  assert.equal(await productTestOps('select', selectionFile, runtime, exec, fetchImpl), 0);
+  const receipt = JSON.parse(await readFile(selectionFile));
+  assert.deepEqual(receipt.cases, [selected]);
+  runtime.SELECTION_SHA256 = (await readFile(runtime.GITHUB_OUTPUT, 'utf8')).match(/selection_sha256=([a-f0-9]{64})/)[1];
+  await mkdir(path.join(runtime.REPORT_DIR, 'normalized'), { recursive: true });
+  await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
+  assert.equal(await productTestOps('project', selectionFile, runtime, exec, fetchImpl), 0);
+  assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl), 0);
+  uploadedStatus = 'failed';
+  await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl), /uploaded_status_mismatch/);
+  await writeFile(selectionFile, JSON.stringify({ ...receipt, targetSha: workflowSha }));
+  await assert.rejects(productTestOps('project', selectionFile, runtime, exec, fetchImpl), /selection_hash/);
 });
 
 test('workflow keeps reporting credentials and trusted code outside candidate/provider jobs', async () => {
