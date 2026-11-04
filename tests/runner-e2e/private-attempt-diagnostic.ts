@@ -33,6 +33,22 @@ function closedPackagingBudget(input: unknown, message: string) {
 export interface PrivateAttemptDiagnosticInput { stage: unknown; result?: unknown; error?: unknown; observation?: unknown; evidence?: unknown }
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" ? value as Record<string, any> : {};
 const member = (value: unknown, choices: string[]) => typeof value === "string" && choices.includes(value) ? value : "unknown";
+const reporterReasons = ["zip inspection exceeded its expanded-byte bound", "zip inspection exceeded its time bound", "exact secret value", "secret-shaped value", "embedded report exceeded its byte bound", "reporter text exceeds inspection bound", "embedded report encoding could not be inspected", "reporter symlink cannot be inspected", "credential in reporter filename", "reporter JSON could not be safely parsed"];
+function carrierReasons(input: unknown, source: "reporter" | "packaging") {
+  const findings = (Array.isArray(input) ? input : []).map(issue => {
+    const file = typeof record(issue).file === "string" ? record(issue).file.replace(/\\/g, "/") : "";
+    const carrier = /^blob-report\/[^/]+\.zip$/.test(file) ? "blob-zip"
+      : /^playwright-output\/[^/]+\/trace\.zip$/.test(file) ? "playwright-trace-zip"
+      : /^html-report\/data\/[^/]+\.zip$/.test(file) ? "html-trace-zip"
+      : file === "html-report/index.html" ? "embedded-html" : "other";
+    return { carrier, reason: record(issue).reason };
+  });
+  return ["blob-zip", "playwright-trace-zip", "html-trace-zip", "embedded-html", "other"].flatMap(carrier =>
+    reporterReasons.flatMap(reason => {
+      const count = Math.min(findings.filter(issue => issue.carrier === carrier && issue.reason === reason).length, 1000);
+      return count ? [{ source, carrier, reason, count }] : [];
+    }));
+}
 const failures = new Map([
   ["Credential-contaminated original evidence cannot be retained", "credential-contamination"],
   ["Unsupported original evidence carrier cannot be retained", "unsupported-carrier"],
@@ -107,7 +123,7 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
     phase: phases.find(([label]) => [...errors, message].some(error => error.includes(label!)))?.[1] ?? "unclassified",
     privacy: { persistedState: errors.some(error => error.startsWith("Secret leak in persisted ")),
       reporter: Array.isArray(privacy.issues) ? Math.min(privacy.issues.length, 1000) : 0,
-      reporterReasons: Object.fromEntries(["zip inspection exceeded its expanded-byte bound", "zip inspection exceeded its time bound", "exact secret value", "secret-shaped value"].map(reason =>
+      reporterReasons: Object.fromEntries(reporterReasons.map(reason =>
         [reason, Array.isArray(privacy.issues) ? Math.min(privacy.issues.filter(issue => record(issue).reason === reason).length, 1000) : 0])),
       packaging: /^Secret leak in /.test(message) ? (/^Secret leak in snapshots\//.test(message) ? "snapshot" : /^Secret leak in .*\.json:/.test(message) ? "json" : "text") : "unknown" },
     runStatusCounts: Object.fromEntries(["queued", "running", "succeeded", "failed", "cancelled", "timed_out"].map(label =>
@@ -119,6 +135,7 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
     held: status(runs.find(run => typeof state.activeRunId === "string" && run.id === state.activeRunId)),
     productGradePassed: record(envelope.grade).passed === true,
     sourceProgress: sourceProgress(envelope.sourceEvents),
+    carrierReasons: [...carrierReasons(privacy.issues, "reporter"), ...carrierReasons(leaks, "packaging")],
     carrier: leaks.some(leak => record(leak).reason === "zip inspection exceeded its expanded-byte bound") ? "zip-byte-bound"
       : leaks.some(leak => record(leak).reason === "zip inspection exceeded its time bound") ? "zip-time-bound" : leaks.length ? "other-finding" : "none",
   };
