@@ -237,6 +237,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(run.accountingLastError).toBeNull();
   });
 
+  it("keeps an older receipt with conflicting billing as debt even when its tokens are covered", async () => {
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    await persistUsageReceipt(db, receipt(owner, sourceId, 1, 1, 100));
+    await accountRunCost(db, owner.runId);
+    const conflicting = receipt(owner, sourceId, 2, 1.2, 120);
+    conflicting.receipt.biller = "another-biller";
+    await persistUsageReceipt(db, conflicting);
+    await persistUsageReceipt(db, receipt(owner, sourceId, 3, 1.4, 140));
+    for (let attempt = 0; attempt < 3; attempt++) await accountRunCost(db, owner.runId);
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charges.reduce((sum, charge) => sum + charge.inputTokens, 0)).toBe(140);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ accountingLateReceiptPending: true, accountingLateReceiptId: conflicting.id });
+    expect(run.accountingLastError).toBe("late_usage_requires_reconciliation");
+  });
+
   it("corrects authoritative same-token late money on the original charge", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });

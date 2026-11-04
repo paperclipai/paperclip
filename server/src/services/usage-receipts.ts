@@ -343,8 +343,10 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     return true;
   }
   // Totals are cumulative, so an older receipt at or below the accepted totals
-  // from this source is already covered. Nothing is owed, whatever order they ran.
+  // from this source is already covered. Conflicting billing stays visible debt.
   if (late && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId && late.sequence <= acceptedSequence && receipt?.usage
+    && receipt.usageBasis !== "session_cumulative" && events.length === 1 && receipt.model === events[0].event.model
+    && receipt.provider === events[0].event.provider && biller === events[0].event.biller && billingType === events[0].event.billingType
     && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0))) {
     await updateDebtState(true, false);
     if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
