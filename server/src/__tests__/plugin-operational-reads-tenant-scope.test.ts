@@ -156,13 +156,13 @@ describeEmbeddedPostgres("plugin operational reads are company-scoped", () => {
     await db.insert(pluginJobRuns).values([
       { id: runA, jobId, pluginId, companyId: companyA, trigger: "manual", status: "succeeded", createdAt: new Date(base) },
       { id: runB, jobId, pluginId, companyId: companyB, trigger: "manual", status: "failed", error: "company B failure", logs: ["company B run log"], createdAt: new Date(base + 1_000) },
-      { id: runInstance, jobId, pluginId, companyId: null, trigger: "scheduled", status: "succeeded", createdAt: new Date(base + 2_000) },
+      { id: runInstance, jobId, pluginId, companyId: null, trigger: "schedule", status: "succeeded", createdAt: new Date(base + 2_000) },
     ]);
 
     await db.insert(pluginWebhookDeliveries).values([
-      { id: deliveryA, pluginId, companyId: companyA, webhookKey: "hook", status: "succeeded", payload: { who: "A" }, createdAt: new Date(base) },
+      { id: deliveryA, pluginId, companyId: companyA, webhookKey: "hook", status: "success", payload: { who: "A" }, createdAt: new Date(base) },
       { id: deliveryB, pluginId, companyId: companyB, webhookKey: "hook", status: "failed", error: "company B delivery error", payload: { who: "B" }, createdAt: new Date(base + 1_000) },
-      { id: deliveryInstance, pluginId, companyId: null, webhookKey: "hook", status: "succeeded", payload: { who: "instance" }, createdAt: new Date(base + 2_000) },
+      { id: deliveryInstance, pluginId, companyId: null, webhookKey: "hook", status: "success", payload: { who: "instance" }, createdAt: new Date(base + 2_000) },
     ]);
   }, 20_000);
 

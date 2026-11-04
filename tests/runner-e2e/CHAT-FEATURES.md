@@ -217,7 +217,7 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`51ef450754370c8a8f2cbe4bd18e1536bbc93966`. It retains the evaluated app from
+`ab2019e976076ec0eb60b026844f3d9211cb0208`. It retains the evaluated app from
 `3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
 owned SDK staging, public membership for three incidental human fixtures,
 company settings observation inside its original case deadline, and exact
@@ -315,10 +315,23 @@ The SDK public-input registry is generated from the committed candidate tree. Co
 The full-catalog private evidence policy binds the launcher digest from the same reviewed manifest as the immutable candidate target. Every final GO reads `launch.ts` from that exact Git object and validates its digest against every selected singleton policy before submission. The legacy pilot launcher digest remains separately pinned.
 
 
-### Repair source 4 (2026-11-03; candidate only)
+### Historical repair source 4 (2026-11-03; candidate only)
 
-The current target is the canonical revision above. This source adds remaining-original-deadline observation for primary guidance; independently expected normalized MCP results; fixed owned timeline-file reads through fixture board authority; finite supported CLI profile guidance with no identifier substitutions and fresh board/API/company/human readback; real completion-turn observation for plan review; and the reviewed true-price hire counterpart. Original failed attempts remain unchanged.
+Historical target `51ef450754370c8a8f2cbe4bd18e1536bbc93966` adds remaining-original-deadline observation for primary guidance; independently expected normalized MCP results; fixed owned timeline-file reads through fixture board authority; finite supported CLI profile guidance with no identifier substitutions and fresh board/API/company/human readback; real completion-turn observation for plan review; and the reviewed true-price hire counterpart. Original failed attempts remain unchanged.
 
 The app-review journey now requires inspection of the exact full redacted arguments and audit hash in the normal shared review card, then verifies that authorized provider dispatch equals that proposal. The 17-line product disclosure is an explicit candidate-only overlay from unmerged core PR #18734; no backend permission or approval rule changes. The independent core guidance PR #18717 also remains unmerged.
 
 SDK public-source eligibility explicitly changes its expected restored lock from stale c7f230 to the authenticated credential-free build-input SHA256 `54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8`. Compiler/parser/Zod identities and all privacy/AST/custody guards remain enforced. This correction is not a plugin pass: case 115 must qualify with its original 300-second/one-native limits, and the other five SDK cases, including plugin 558's canary certificates, remain held. All case clocks and the controller model remain unchanged; Studio144's earlier explicit 2..3 accounting revision remains the only native-bound change.
+
+### Historical repair source 5 (2026-11-03; candidate only)
+
+The reviewed prior cut `de6d29e025683f5c28125bcaa4f38b41836d8516` has not run as a campaign lane. It adds case53 observation within its original300s budget, case74 actual rich-editor ordered-block inspection, case550 normal Projects-surface announcement fixture, case578 server-canonical secret-key metadata checks, and case466 canonical native status audit joins to the exact accepted task/run/worker decision. The timeline keeps its real exit1, human handoff and exit0 checks; legacy audit support remains. Queries, models and original per-case clocks/run counts stay fixed. Its candidate-only UI487 overlay includes reviewed pre-trim size guards from unmerged corePR18734/50600786. Historical Source4 `51ef450754370c8a8f2cbe4bd18e1536bbc93966` remains the source of launch1888; later master metadata never retargets that running workflow. These repairs and focused controls are not real feature acceptance. Other five SDK cases remain held pending actual115 evidence; no core PR is merged.
+
+
+### Repair source 6 (2026-11-03; candidate only)
+
+The canonical candidate above retains Source5 and adds initial personal-secret and team-install observation within their original deadlines, real hire-review link readiness, and skill-update observation at genuine provider checkpoints after local native readiness. Case queries, controller model, permissions and declared clocks/run counts remain unchanged from Source5; Studio144 retains its earlier explicit 2..3 accounting revision.
+
+The reviewed product overlay from unmerged core PR #18742 at `61996a96dd09e90a5788e8711a94fc5ae631f425` allows a new Ask-first review for a strictly authenticated later same-person human intent following a declined request, including the normal reopened-comment source. Repeating the same intent stays denied; this grants no approval or execution authority. Both PostgreSQL route regressions ran and passed on that core head. The candidate preserves the compatible gateway and actual database row contracts; this is not a core merge or a qualified chat pass. Core PRs #18717, #18734 and #18742 remain unmerged. SDK115 completion remains unknown; the other five SDK cases remain held.
+
+For one selected case, the trusted controller downloads each exact bundle and publication artifact name into an explicit matching child directory. For multiple cases, it keeps separate named artifact directories. The gather command authenticates the frozen selection, every prepared bundle and its hashes before it copies the safe projections. Final coverage still authenticates the original publication receipts and verifies TestOps results without another export or upload. Empty, mixed, foreign and symbolic-link layouts fail closed. The producer's optional once-upload marker has an exact closed schema; it does not replace a verified publication receipt.

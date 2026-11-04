@@ -1,3 +1,4 @@
+import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
@@ -56,7 +57,7 @@ import {
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
-import { verifyNativeHarnessBackupStamp } from "./native-runtime/native-harness-backup-stamp.js";
+import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
 import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
@@ -964,6 +965,8 @@ async function buildReusableSandboxLeaseFingerprint(input: {
     companyId: input.companyId,
     environment: input.environment,
   });
+  const workspaceMigration = input.executionWorkspaceId
+    ? await readNativeWorkspaceMigration(input.db, { companyId: input.companyId, id: input.executionWorkspaceId }) : null;
   return createEffectiveRunConfigFingerprints({
     lease: {
       companyId: input.companyId,
@@ -972,6 +975,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
         driver: input.environment.driver,
       },
       executionWorkspaceId: input.executionWorkspaceId,
+      ...(workspaceMigration ? { workspaceMigrationGeneration: workspaceMigration.operationId } : {}),
       ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
       agentId: input.agentId,
       adapterType: input.adapterType,
@@ -1847,10 +1851,8 @@ function createSandboxEnvironmentDriver(
           if (!providerLease) {
             if (
               input.adapterType === "paperclip_runner" &&
-              !verifyNativeHarnessBackupStamp(
-                reusableLease.metadata?.nativeHarnessBackup,
-                reusableLease.providerLeaseId,
-              )
+              !await verifyRecoverableNativeHarnessBackup({ db, companyId: reusableLease.companyId,
+                stamp: reusableLease.metadata?.nativeHarnessBackup, providerLeaseId: reusableLease.providerLeaseId })
             ) {
               throw new RunnerHarnessBackupUnavailableError(
                 reusableLease.providerLeaseId,
@@ -3986,10 +3988,8 @@ export function environmentRuntimeService(
               "paperclip_runner" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
             (!leaseSnapshot.providerLeaseId ||
-              !verifyNativeHarnessBackupStamp(
-                leaseSnapshot.metadata.nativeHarnessBackup,
-                leaseSnapshot.providerLeaseId,
-              ))
+              !await verifyRecoverableNativeHarnessBackup({ db, companyId: leaseSnapshot.companyId,
+                stamp: leaseSnapshot.metadata.nativeHarnessBackup, providerLeaseId: leaseSnapshot.providerLeaseId }))
           ) {
             throw new RunnerHarnessBackupUnavailableError(
               leaseSnapshot.providerLeaseId ?? leaseSnapshot.id,
@@ -4307,7 +4307,7 @@ export function environmentRuntimeService(
       return { destroyed, failed, skippedLiveRun };
     },
 
-    async resumeRunLease(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
+    async resumeRunLease(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
       if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.resumeRunLease) {

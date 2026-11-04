@@ -83,7 +83,7 @@ describeEmbeddedPostgres(
                 sourceEventId: event.sourceEventId,
                 sourceSeq: event.sourceSeq,
                 protocolSchemaVersion: event.schemaVersion,
-                canonicalPayload: event,
+                canonicalPayload: { ...event },
               },
             });
           }

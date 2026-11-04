@@ -59,10 +59,10 @@ const mockDb = vi.hoisted(() => ({
     callback({ select: mockDbSelect })),
 }));
 
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: unknown) => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
-  listForIssue: vi.fn(async () => []),
+  listForIssue: vi.fn(async (): Promise<unknown[]> => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -281,7 +281,7 @@ describe("issue execution policy routes", () => {
     { interrupt: true },
     { comment: "Continue now" },
   ])("rejects mixed snapshot-guarded updates before execution side effects: %j", async (controlFields) => {
-    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board", companyIds: ["company-1"], isInstanceAdmin: false }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ expectedExecutionPolicy: null, executionPolicy: null, ...controlFields });
     expect(res.status).toBe(422);
@@ -293,7 +293,7 @@ describe("issue execution policy routes", () => {
   });
 
   it("rejects a snapshot without a policy update", async () => {
-    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board", companyIds: ["company-1"], isInstanceAdmin: false }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ expectedExecutionPolicy: null });
     expect(res.status).toBe(422);

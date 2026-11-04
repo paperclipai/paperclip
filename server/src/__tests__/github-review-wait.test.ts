@@ -59,7 +59,7 @@ describe("inherited GitHub review wait projection", () => {
       const f = await seedGitHubReviewWait(db);
       expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
       if (change === "disabled") await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connectionId));
-      if (change === "inactive") await db.update(toolConnections).set({ status: "error" }).where(eq(toolConnections.id, f.connectionId));
+      if (change === "inactive") await db.update(toolConnections).set({ status: "disabled" }).where(eq(toolConnections.id, f.connectionId));
       if (change === "review_state") await db.update(chatGitHubReviews).set({ state: "queued" }).where(eq(chatGitHubReviews.id, f.reviewId));
       if (change === "review_agent" || change === "endpoint_agent") {
         const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
@@ -80,8 +80,41 @@ describe("inherited GitHub review wait projection", () => {
     },
   );
 
+  it("binds each call afresh while reusing the compiled query", async () => {
+    const first = await seedGitHubReviewWait(db), second = await seedGitHubReviewWait(db);
+    const queries: CapturedReviewWaitQuery[] = [];
+    const captured = captureReviewWaitQueries(db, queries);
+    for (const f of [first, second, first]) {
+      expect(await readInheritedGitHubReviewWait(captured, f.run)).toMatchObject({ reviewId: f.reviewId });
+    }
+    const joined = queries.filter(query => query.sql.includes('join "chat_github_reviews"'));
+    expect(joined).toHaveLength(3);
+    expect(joined[0]).toEqual(joined[2]);
+    expect(joined[0]!.sql).toBe(joined[1]!.sql);
+    expect(joined[0]!.params).not.toEqual(joined[1]!.params);
+  });
+
+  it("keeps transaction and savepoint reads on their own sessions", async () => {
+    const f = await seedGitHubReviewWait(db);
+    expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
+    await expect(db.transaction(async tx => {
+      const scoped = tx as unknown as Db;
+      await tx.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connectionId));
+      expect(await readInheritedGitHubReviewWait(scoped, f.run)).toEqual({ kind: "revoked" });
+      await expect(tx.transaction(async savepoint => {
+        await savepoint.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, f.connectionId));
+        expect((await readInheritedGitHubReviewWait(savepoint as unknown as Db, f.run))?.kind).toBe("published");
+        throw new Error("rollback savepoint");
+      })).rejects.toThrow("rollback savepoint");
+      expect(await readInheritedGitHubReviewWait(scoped, f.run)).toEqual({ kind: "revoked" });
+      throw new Error("rollback transaction");
+    })).rejects.toThrow("rollback transaction");
+    expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
+  });
+
   it("does not reuse an older completed review when a newer head is queued", async () => {
     const f = await seedGitHubReviewWait(db);
+    expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
     const [review] = await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.reviewId));
     await db.insert(chatGitHubReviews).values({ ...review!, id: randomUUID(), deliveryId: randomUUID(),
       headSha: "2".repeat(40), state: "queued", createdAt: new Date(review!.createdAt.getTime() + 1_000) });

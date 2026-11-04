@@ -31,6 +31,7 @@ import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectStagedRunAttachment,
   inspectRetainedRunInstructions,
@@ -217,6 +218,40 @@ it("restores authentication and commands from opaque checkpoint records", async 
     await restored?.stop();
     await first.stop();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("imports the authenticated legacy authority without changing its source and restores it in an empty home", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-legacy-import-"));
+  const options = { stateDirectory: resolve(root, "old/control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    core.queueCommand("session.snapshot", {}, "retained-maintenance");
+    client.socket.destroy();
+    await core.stop();
+    const file = resolve(options.stateDirectory, "control-plane-state.json");
+    const source = readFileSync(file, "utf8");
+    const checkpoint = captureLegacyDurablePrpCheckpoint(source, identity);
+    expect(readFileSync(file, "utf8")).toBe(source);
+    expect(checkpoint.runnerDigest).toBe(expectedRunnerDigest);
+    expect(checkpoint.recoveryEvidence.authenticatedConnectionCount).toBe(1);
+    rmSync(resolve(root, "old"), { recursive: true });
+    checkpoint.restoreSessionDirectory(resolve(root, "new"));
+    restored = new DurablePrpControlPlane({ ...options, stateDirectory: resolve(root, "new/control-plane") });
+    expect(restored.getCommand("retained-maintenance")).toMatchObject({ type: "session.snapshot" });
+    expect(() => captureLegacyDurablePrpCheckpoint(source, { ...identity, runId: "another-run" })).toThrow("binding_mismatch");
+    const state = JSON.parse(source);
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity)).toThrow("artifact_unproven");
+    expect(captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity,
+      { version: expectedRunnerVersion, digest: expectedRunnerDigest }).runnerDigest).toBe(expectedRunnerDigest);
+    expect(() => captureLegacyDurablePrpCheckpoint(source, identity,
+      { version: expectedRunnerVersion, digest: `sha256:${"0".repeat(64)}` })).toThrow("artifact_unproven");
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity }), identity)).toThrow("binding_mismatch");
+  } finally {
+    await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -1598,6 +1633,41 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
   expect(launches[0]!.environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
+});
+
+it.each([undefined, {}, {
+  CURSOR_API_KEY: "explicit-cloud-key",
+  PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH: "/private/cloud/config.json",
+  PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT: "/private/cloud/artifacts",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH: "/private/cloud/mcp.sock",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN: "explicit-cloud-relay",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_URL: "https://relay.example.test/mcp/native-runs/run",
+  PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT: "2000000000000",
+  PAPERCLIP_CURSOR_CLOUD_UNRELATED: "must-not-cross",
+}])("forwards only explicitly supplied Cloud launch bindings at the runner boundary (%j)", (environment: NodeJS.ProcessEnv | undefined) => {
+  const names = [
+    "CURSOR_API_KEY", "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH", "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH", "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_URL", "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
+  ] as const;
+  for (const name of names) vi.stubEnv(name, "ambient-must-not-cross");
+  const launches: RunnerProcessLaunchSpec[] = [];
+  try {
+    spawnRunner({
+      connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+      stateDirectory: "/tmp/paperclip-runner-test", identity, ticket: "bootstrap-ticket",
+      maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+      runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest, environment,
+      processLauncher: spec => {
+        launches.push(spec);
+        return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+          completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
+      },
+    });
+    expect(launches).toHaveLength(1);
+    for (const name of names) expect(launches[0]!.environment[name]).toBe(environment?.[name]);
+    expect(launches[0]!.environment.PAPERCLIP_CURSOR_CLOUD_UNRELATED).toBeUndefined();
+  } finally { vi.unstubAllEnvs(); }
 });
 
 it("preserves only bounded GitHub credential projection at the runner spawn boundary", () => {

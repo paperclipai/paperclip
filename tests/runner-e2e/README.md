@@ -1,5 +1,59 @@
 # Paid runner full-stack E2E
 
+The deployment-targeted [saved agent instructions journey](product-journeys/AGENT-SETTINGS.md) verifies browser save/reload, one instruction-dependent native task, independently attributed output, and restoration of the owned agent’s original instructions. Discovery and local grader controls remain separate from QA staging qualification.
+
+The explicit-only `cursor-cloud` suite uses a local controller and hosted Cursor
+Cloud work. Its four required cells check a downloaded registered artifact,
+question/answer continuation on the same Cloud agent, UI Stop of an
+independently observed active Cloud run, and semantic Plan revision/approval.
+It is experimental and unqualified until all four real cells pass.
+Model acknowledgement and provider dollar cost remain
+unavailable; catalog discovery and support tests are not live acceptance.
+
+Configure `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL` with an exact account model,
+`PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO` with an owned disposable HTTPS repository,
+optional `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF`, and `CURSOR_API_KEY`.
+Set `PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT` to a dedicated free loopback port and
+point an HTTPS tunnel at **that port only**. After approving unpriced provider
+spend for these disposable tests, set
+`PAPERCLIP_CURSOR_CLOUD_ALLOW_UNPRICED_QUALIFICATION=1`. Missing opt-in blocks
+before credential loading or fixture creation. Each fresh Cursor Cloud fixture
+sets and reads back only its company and agent monthly billed-cost policies:
+1,000 cents, active hard stops, and `unpricedUsagePolicy: allow`. A failed or
+mismatched readback blocks task dispatch. The verified policy receipt is retained
+in `fixtures.json`. These limits still stop known billed costs; they do not cap
+unpriced usage. Provider cost remains unavailable, never inferred as zero.
+Set `PAPERCLIP_PUBLIC_URL` to the
+tunnel's origin. The E2E wrapper exposes only POST `/mcp/native-runs/:runId`
+through this listener; it rejects the UI and `/api/` paths. Public ingress is
+checked before fixtures or provider work. Never tunnel the local operator app.
+
+Discover with `pnpm test:e2e:runner -- --list --suite cursor-cloud`. The smallest
+paid cell is `pnpm test:e2e:runner -- --id cursor-cloud.runner-cursor-cloud.local.task-artifact`.
+Select `cloud-followup`, `active-run-stop`, or `plan-revise-accept` explicitly for
+the other cells. The Plan cell reuses the production planning flow: publish a
+two-step Plan, request and review a three-step revision, then approve that exact
+revision in the browser before completion. Its three expected runs use
+Paperclip planning authority with Cursor's default harness; it does not exercise
+Cursor's native Plan API or native plan-decision callbacks.
+Draft and revision share one owned Cloud session. Approval must carry the exact
+revised interaction's fresh-session receipt and start a new owned Agent/session;
+all three turns require distinct Cloud runs. The follow-up cell keeps its
+separate same-Agent/session continuity requirement.
+The complete bounded checkpoint is `pnpm test:e2e:runner -- --suite cursor-cloud`.
+Each cell permits one attempt. Missing prerequisites setup-block before provider
+work. Teardown cancels observed active runs and deletes only agents named by
+run-owned persisted notices.
+After each owned Agent deletion, cleanup polls only its exact GET for up to
+30 seconds to confirm 404, including after an ambiguous deletion reply. It does
+not repeat DELETE; authorization failures, unknown read failures and continued
+presence still fail cleanup. Earlier cleanup failures keep their original grades.
+The Stop proof includes a 15-second quiet window
+over native run status, published artifact absence, and local non-continuation;
+it does not inspect the entire remote filesystem. Attempts remain private because
+ordinary run snapshots can contain native session identifiers. Use the existing
+local report generator; the public history publisher refuses this suite.
+
 The [chat scenario catalog](chat-scenarios/README.md) plans conversational
 coverage across the product using human requests, assumed context and expected
 outcomes. It shares feature-map capability IDs and belongs to this Product E2E
@@ -49,6 +103,24 @@ including provider failover-backup bytes. Once a per-turn sandbox is disposed,
 its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
+
+`rolling-web-deployment` definition 4 selects every registered native Daytona
+profile in disposable per-turn environments; `rolling-web-deployment-warm`
+uses the same profiles in reusable warm environments. Their
+provider-backup path uses encrypted object storage and a fenced database ledger.
+The earlier per-turn failure remains failed evidence; this definition requires
+a fresh passing run, including the strict post-replacement continuation oracle.
+Its revision task includes a 180-second foreground CLI reliability soak, giving
+the replacement time to become ready while useful agent work remains active.
+The observer rechecks the original live owner immediately before switching
+traffic and fails if that turn already settled. A completed turn cannot count
+as active takeover. Per-turn file inspection requires the exact committed saved
+snapshot; the warm lane still requires the live workspace.
+Cold restores retain the published workspace directory name, including after
+the old allocation is destroyed, because provider recovery binds the working
+directory into session identity. Unpublished preparations retain distinct
+epoch/lease directories, and a restore refuses to overwrite an occupied path
+owned by another preparation.
 
 The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
@@ -2116,6 +2188,12 @@ an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
 
+Grok accounting uses the complete prompt ledger bound to the matching ACP
+response. Its reasoning counter can exceed its output counter; it is not a
+validation bound or an extra term in the ledger's input-plus-output total.
+Reported cost remains authoritative. See the upstream
+[`UsageTotals` ledger](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-chat-state/src/usage.rs).
+
 ### Kimi Code qualification
 
 `kimi-qualification` is a separate explicit-only candidate suite for maintained
@@ -3414,3 +3492,19 @@ separate BROKEN gap shape and must not be used for this recovery bundle. Final
 coverage must match all selected case IDs and preserve the separate gap count.
 This mode prepares data only. It does not upload, start jobs, reopen launches,
 change credentials, or change evaluation and evidence limits.
+# Legacy workspace migration
+
+`legacy-workspace-migration` and `legacy-workspace-migration-warm` are explicit,
+paid, two-turn Daytona workflows for registered native production profiles. They
+create a private reference file and ask a question on a local-disk controller.
+The supervisor stops that controller, runs the packaged offline migration with
+owned PostgreSQL and S3, verifies the export, starts an empty-home controller,
+and deletes the original home. The browser answers the existing question. The
+oracle requires the same native and provider session, workspace addresses and
+file bytes, plus the exact final document. Provider session identifiers are
+hashed in the added evidence. The company budget is $10 and automatic retries
+are disabled. Existing fixture teardown owns sandboxes, credentials, processes,
+database and storage; failed private evidence is retained under the usual policy.
+
+This proves preservation during initial enrollment, which has an offline step.
+Use the separate rolling deployment suites for uninterrupted deployment proof.

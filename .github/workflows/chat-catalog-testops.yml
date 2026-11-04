@@ -270,17 +270,27 @@ jobs:
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
+          path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
+          merge-multiple: false
           path: catalog-bundles
       - name: Gather only safe singleton projections from immutable bundles
-        run: |
-          mkdir -m 700 catalog-projections
-          for bundle in catalog-bundles/*; do
-            test -d "$bundle/projection"
-            cp -R "$bundle/projection" "catalog-projections/${bundle##*/}"
-          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+          EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
+          CHAT_TESTOPS_BUNDLES: ${{ github.workspace }}/catalog-bundles
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs gather-case-projections catalog-projections
       - name: Authenticate selection and validate all singleton exports before aggregation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -318,13 +328,31 @@ jobs:
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
+          path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
+          merge-multiple: false
           path: catalog-bundles
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-catalog-case-publication-${{ github.run_id }}-1-0
+          path: catalog-publications/chat-catalog-case-publication-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: chat-catalog-case-publication-${{ github.run_id }}-1-*
+          merge-multiple: false
           path: catalog-publications
       - name: Authenticate every frozen publication and verify the exact original selection
         id: verification

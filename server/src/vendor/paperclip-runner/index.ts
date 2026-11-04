@@ -10,6 +10,7 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  NativeCursorCloudConfig,
   AcpxCandidateAdmission,
   DotHarnessDriver,
   DotAssignment,
@@ -86,9 +87,14 @@ const sourceUrl = new URL(
   import.meta.url,
 );
 const runner = (await import(sourceUrl.href)) as RunnerModule;
+export const taskDocumentKeySchema = runner.taskDocumentKeySchema;
 
+export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEOUT_MS;
+export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const providerFailureFromError = runner.providerFailureFromError;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
+export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
@@ -177,6 +183,7 @@ export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
+export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
@@ -204,3 +211,8 @@ export const configuredEnvironment = runner.configuredEnvironment;
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
 
 export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;
+
+export const CursorCloudClient = runner.CursorCloudClient;
+export const parseNativeCursorCloudConfig = runner.parseNativeCursorCloudConfig;
+
+export const archiveCursorCloudSessionCheckpoint = runner.archiveCursorCloudSessionCheckpoint;

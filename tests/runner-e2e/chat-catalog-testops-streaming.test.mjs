@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, realpath, cp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, realpath, cp, symlink, rename, access } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import * as streaming from './chat-catalog-testops-streaming.mjs';
+const { parseDocument } = createRequire(import.meta.url)('yaml');
 import { fullCatalogCases, catalogTargetSha } from './chat-full-catalog-testops-manifest.mjs';
 import { hash, model } from './chat-completion-testops-contract.mjs';
 import { run } from './chat-completion-testops-cli.mjs';
@@ -14,7 +17,7 @@ const cases = fullCatalogCases.filter(row => Object.hasOwn(caseIds, row.key)).ma
 const selection = { schema: 'paperclip.chat-completion-testops-selection/v1', ...context, projectId: 1,
   planId: 102, jobId: 100, launchId: 12, allureJobRunId: '77', cases };
 const digest = hash(JSON.stringify(selection)), current = cases.find(row => row.caseId === 388), runUrl = 'https://github.com/paperclipai/paperclip/actions/runs/123';
-async function fixture(t, failed = false, owned = current, runtimeContext = context) {
+async function fixture(t, failed = false, owned = current, runtimeContext = context, runtimeSelection = selection) {
   const base = await realpath(await mkdtemp(path.join(tmpdir(), 'chat-stream-test-')));
   t.after(() => rm(base, { recursive: true, force: true }));
   const root = path.join(base, 'projection'), output = path.join(base, 'allure'); await mkdir(root);
@@ -31,7 +34,7 @@ async function fixture(t, failed = false, owned = current, runtimeContext = cont
       finalScreenshot: failed ? null : { sha256: 'e'.repeat(64), bytes: 24 } }] };
   for (const [name, bytes] of files) await writeFile(path.join(root, name), bytes);
   await writeFile(path.join(root, 'binding.json'), JSON.stringify(binding));
-  const prepared = await prepareCaseBundle(root, output, runtimeContext, selection, owned.executionId, digest);
+  const prepared = await prepareCaseBundle(root, output, runtimeContext, runtimeSelection, owned.executionId, hash(JSON.stringify(runtimeSelection)));
   return { root, output, prepared };
 }
 function server(prepared, { existing = false, uncertain = false, apply = true, scheduled = false, processingReads = 0 } = {}) {
@@ -315,4 +318,212 @@ test('the final CLI verifies all authenticated mixed-grade publications without 
     assert.deepEqual(await Promise.all((await readdir(bundles)).map(async name => [name, hash(await readFile(path.join(bundles, name, 'prepared.json')))])), before);
     assert.doesNotMatch(stderr, /SYNTHETIC_/);
   }
+});
+
+// Exact download-path decision from pinned download-artifact 3e5f45b, lines185–194.
+// Even merge-multiple:false flattens a one-artifact pattern result.
+const pinnedDownloadPath = (resolvedPath, artifact, artifacts, isSingleArtifactDownload, mergeMultiple = false) =>
+  isSingleArtifactDownload || mergeMultiple || artifacts.length === 1 ? resolvedPath : path.join(resolvedPath, artifact.name);
+async function downloaded(t, selected, available = selected.cases.length, runtimeContext = context) {
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), 'chat-stream-download-')));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workflow = parseDocument(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8')).toJS();
+  const roots = { bundle: path.join(base, 'catalog-bundles'), publication: path.join(base, 'catalog-publications') };
+  const active = step => !step.if || (step.if.includes('!= null') ? selected.cases.length > 1 : selected.cases.length === 1);
+  for (const role of ['bundle', 'publication']) {
+    const steps = workflow.jobs.verify.steps.filter(step => step.uses?.startsWith('actions/download-artifact@')
+      && (step.with.pattern ?? step.with.name ?? '').startsWith(`chat-catalog-case-${role}-`) && active(step));
+    assert.equal(steps.length, 1);
+    const step = steps[0], artifacts = Array.from({ length: available }, (_, i) => ({ name: `chat-catalog-case-${role}-123-1-${i}` }));
+    await mkdir(roots[role]);
+    for (const [index, artifact] of artifacts.entries()) {
+      const destination = pinnedDownloadPath(path.join(base, step.with.path.replaceAll('${{ github.run_id }}', '123')),
+        artifact, artifacts, Boolean(step.with.name));
+      await mkdir(destination, { recursive: true });
+      const row = selected.cases[index];
+      if (role === 'bundle') {
+        const f = await fixture(t, index === 1, row, runtimeContext, selected);
+        await cp(f.root, path.join(destination, 'projection'), { recursive: true });
+        await cp(f.output, path.join(destination, 'allure'), { recursive: true });
+        await writeFile(path.join(destination, 'prepared.json'), JSON.stringify(f.prepared));
+      } else {
+        // Use the matching bundle's frozen UUID bytes; never independently export the receipt.
+        const bundlePath = artifacts.length === 1 && selected.cases.length > 1 ? roots.bundle
+          : path.join(roots.bundle, `chat-catalog-case-bundle-123-1-${index}`);
+        let prepared;
+        try { prepared = JSON.parse(await readFile(path.join(bundlePath, 'prepared.json'))); }
+        catch { prepared = JSON.parse(await readFile(path.join(roots.bundle, 'prepared.json'))); }
+        await writeFile(path.join(destination, 'publication.json'), JSON.stringify({ ...prepared,
+          schema: 'paperclip.chat-catalog-testops-case-publication/v1', exported: prepared.exported[0], verification: 'VERIFIED',
+          results: [{ executionId: row.executionId, caseId: row.caseId, attachmentsVerified: true }] }));
+        // The unchanged real upload-case producer retains this marker on a fresh POST.
+        await writeFile(path.join(destination, 'once-upload_case.json'), JSON.stringify({ stage: 'upload_case', status: 'STARTED_NO_AUTOMATIC_RESEND' }));
+      }
+    }
+  }
+  return { base, workflow, bundles: roots.bundle, publications: roots.publication, digest: hash(JSON.stringify(selected)) };
+}
+test('actual pinned singleton download reaches safe gather', async t => {
+  const selected = { ...selection, cases: [current] }, f = await downloaded(t, selected);
+  const output = path.join(f.base, 'catalog-projections');
+  await streaming.gatherCaseProjections(f.bundles, output, context, selected, f.digest);
+  assert.deepEqual(await readdir(output), ['chat-catalog-case-bundle-123-1-0']);
+});
+test('actual pinned singleton download reaches final publication validation', async t => {
+  const selected = { ...selection, cases: [current] }, f = await downloaded(t, selected);
+  const exported = await publicationSet(f.bundles, f.publications, context, selected, f.digest);
+  assert.deepEqual(exported.map(row => row.status), ['passed']);
+});
+test('actual pinned multi download preserves all mixed grades and missing singleton among a multi selection still refuses', async t => {
+  const f = await downloaded(t, selection);
+  assert.deepEqual((await publicationSet(f.bundles, f.publications, context, selection, f.digest)).map(row => row.status), ['passed','failed','passed']);
+  const incomplete = await downloaded(t, selection, 1);
+  await assert.rejects(publicationSet(incomplete.bundles, incomplete.publications, context, selection, incomplete.digest));
+});
+
+test('named layouts reject empty, mixed, foreign, malformed and symlink entries before gathering', async t => {
+  const selected = { ...selection, cases: [current] };
+  const changes = [
+    async f => rm(path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0'), { recursive: true }),
+    async f => writeFile(path.join(f.bundles, 'prepared.json'), '{}'),
+    async f => rename(path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0'), path.join(f.bundles, 'chat-catalog-case-bundle-999-1-0')),
+    async f => writeFile(path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0', 'unknown.json'), '{}'),
+    async f => {
+      const directory = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0');
+      await rename(directory, path.join(f.base, 'outside'));
+      await symlink(path.join(f.base, 'outside'), directory);
+    },
+    async f => {
+      const file = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0', 'projection', 'normalized-results.json');
+      await rename(file, path.join(f.base, 'outside.json')); await symlink(path.join(f.base, 'outside.json'), file);
+    },
+    async f => {
+      const file = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0', 'prepared.json');
+      const prepared = JSON.parse(await readFile(file)); prepared.targetSha = 'f'.repeat(40);
+      await writeFile(file, JSON.stringify(prepared));
+    },
+    async f => {
+      const file = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0', 'allure');
+      await rename(file, path.join(f.base, 'outside')); await symlink(path.join(f.base, 'outside'), file);
+    },
+  ];
+  for (const change of changes) {
+    const f = await downloaded(t, selected); await change(f);
+    const output = path.join(f.base, 'must-not-gather');
+    await assert.rejects(streaming.gatherCaseProjections(f.bundles, output, context, selected, f.digest));
+    await assert.rejects(access(output));
+    await assert.rejects(publicationSet(f.bundles, f.publications, context, selected, f.digest));
+  }
+  for (const change of [
+    async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'failure.json'), JSON.stringify({ command: 'upload-case', code: 'chat_completion_testops_upload_unverified' })),
+    async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'once-upload_case.json'), JSON.stringify({ stage: 'upload_case', status: 'COMPLETE' })),
+    async f => {
+      const file = path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'once-upload_case.json');
+      await rename(file, path.join(f.base, 'marker')); await symlink(path.join(f.base, 'marker'), file);
+    },
+    async f => writeFile(path.join(f.publications, 'extra'), '{}'),
+    async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'extra'), '{}'),
+    async f => {
+      const file = path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'publication.json');
+      await rename(file, path.join(f.base, 'outside')); await symlink(path.join(f.base, 'outside'), file);
+    },
+  ]) {
+    const f = await downloaded(t, selected); await change(f);
+    await assert.rejects(publicationSet(f.bundles, f.publications, context, selected, f.digest));
+  }
+});
+test('the owning gather CLI authenticates selection and copies only unchanged projections without TestOps access', async t => {
+  const selected = { ...selection, cases: [current] };
+  const actual = { ...context, operation: 'evaluate', actorId: 42, triggeringActorId: 42, workflowId: 99 };
+  const f = await downloaded(t, selected, 1, actual), selectionRoot = path.join(f.base, 'chat-completion-testops-selection');
+  await mkdir(selectionRoot); await writeFile(path.join(selectionRoot, 'testops-pilot-selection.json'), JSON.stringify(selected));
+  const event = { repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' },
+    ref: 'refs/heads/master', sender: { id: 42 }, inputs: { operation: 'evaluate', ALLURE_JOB_RUN_ID: '77' } };
+  const eventPath = path.join(f.base, 'event.json'); await writeFile(eventPath, JSON.stringify(event));
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: event.repository.full_name,
+    GITHUB_REF: event.ref, GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master',
+    GITHUB_SHA: context.workflowSha, GITHUB_RUN_ATTEMPT: '1', GITHUB_RUN_ID: '123', GITHUB_ACTOR_ID: '42',
+    TESTOPS_ALLOWED_ACTOR_IDS: '[42]', GITHUB_RUN_NUMBER: '1', GITHUB_EVENT_PATH: eventPath,
+    GH_TOKEN: 'SYNTHETIC_GITHUB_SECRET', RUNNER_TEMP: f.base, GITHUB_WORKSPACE: f.base, ALLURE_JOB_RUN_ID: '77',
+    EXPECTED_SELECTION_SHA256: f.digest, CHAT_TESTOPS_BUNDLES: f.bundles };
+  const exec = async () => ({ stdout: JSON.stringify({ id: 123, run_attempt: 1, run_number: 1, workflow_id: 99,
+    head_sha: context.workflowSha, head_branch: 'master', event: 'workflow_dispatch', path: '.github/workflows/chat-catalog-testops.yml',
+    repository: event.repository, actor: { id: 42 }, triggering_actor: { id: 42 } }) });
+  const output = path.join(f.base, 'projections');
+  assert.equal(await run('gather-case-projections', output, { ...env, GITHUB_RUN_ATTEMPT: '2' }, { exec,
+    fetchImpl: async () => assert.fail('unsupported retry must not contact TestOps') }), 1);
+  await assert.rejects(access(output));
+  assert.equal(await run('gather-case-projections', output, env, { exec, fetchImpl: async () => assert.fail('metadata gather must not contact TestOps') }), 0);
+  assert.deepEqual(await readdir(output), ['chat-catalog-case-bundle-123-1-0']);
+  const copied = path.join(output, 'chat-catalog-case-bundle-123-1-0');
+  assert.deepEqual((await readdir(copied)).sort(), ['binding.json', 'junit.xml', 'normalized-results.json']);
+  for (const name of await readdir(copied)) assert.deepEqual(await readFile(path.join(copied, name)),
+    await readFile(path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0', 'projection', name)));
+  const gather = f.workflow.jobs.aggregate.steps.find(step => step.name?.startsWith('Gather only'));
+  assert.match(gather.run, /chat-completion-testops-cli.mjs gather-case-projections catalog-projections/);
+  for (const job of ['aggregate', 'verify']) {
+    const downloads = f.workflow.jobs[job].steps.filter(step => step.with?.name?.startsWith('chat-catalog-case-bundle-'));
+    assert.equal(downloads.length, 1); assert.equal(downloads[0].with.name, 'chat-catalog-case-bundle-${{ github.run_id }}-1-0');
+    assert.equal(downloads[0].with.path, 'catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0');
+  }
+});
+
+test('singleton destination uses trusted run naming; the admitted producer remains first-attempt-only', async () => {
+  const workflow = parseDocument(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8')).toJS();
+  const callee = parseDocument(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8')).toJS();
+  for (const role of ['bundle', 'publication']) {
+    const step = workflow.jobs.verify.steps.find(step => step.with?.name?.startsWith(`chat-catalog-case-${role}-`));
+    const name = step.with.name.replaceAll('${{ github.run_id }}', '987654321');
+    const destination = step.with.path.replaceAll('${{ github.run_id }}', '987654321');
+    assert.equal(path.basename(destination), name);
+    assert.equal(pinnedDownloadPath(destination, { name }, [{ name }], true), destination);
+    const job = role === 'bundle' ? callee.jobs.report : callee.jobs.upload;
+    const producer = job.steps.find(step => step.with?.name?.startsWith(`chat-catalog-case-${role}-`));
+    assert.equal(producer.with.name.replaceAll('${{ github.run_id }}', '987654321').replaceAll('${{ fromJSON(inputs.cell).index }}', '0'), name);
+    if (role === 'publication') {
+      assert.match(producer.with.path, /once-upload_case.json/);
+      assert.match(producer.with.path, /failure.json/);
+    }
+  }
+});
+
+test('the unchanged upload CLI real publication and once files validate after a named singleton download', async t => {
+  const selected = { ...selection, cases: [current] };
+  const actual = { ...context, operation: 'evaluate', actorId: 42, triggeringActorId: 42, workflowId: 99 };
+  const f = await downloaded(t, selected, 1, actual), bundle = path.join(f.bundles, 'chat-catalog-case-bundle-123-1-0');
+  const preparedFile = path.join(bundle, 'prepared.json'), prepared = JSON.parse(await readFile(preparedFile));
+  const selectionRoot = path.join(f.base, 'chat-completion-testops-selection');
+  await mkdir(selectionRoot); await writeFile(path.join(selectionRoot, 'testops-pilot-selection.json'), JSON.stringify(selected));
+  const event = { repository: { full_name: 'paperclipai/paperclip', private: false, default_branch: 'master' },
+    ref: 'refs/heads/master', sender: { id: 42 }, inputs: { operation: 'evaluate', ALLURE_JOB_RUN_ID: '77' } };
+  const eventPath = path.join(f.base, 'event.json'); await writeFile(eventPath, JSON.stringify(event));
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: event.repository.full_name,
+    GITHUB_REF: event.ref, GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master',
+    GITHUB_SHA: context.workflowSha, GITHUB_RUN_ATTEMPT: '1', GITHUB_RUN_ID: '123', GITHUB_ACTOR_ID: '42',
+    TESTOPS_ALLOWED_ACTOR_IDS: '[42]', GITHUB_RUN_NUMBER: '1', GITHUB_EVENT_PATH: eventPath,
+    GH_TOKEN: 'SYNTHETIC_GITHUB_SECRET', RUNNER_TEMP: f.base, GITHUB_WORKSPACE: f.base, ALLURE_JOB_RUN_ID: '77',
+    ALLURE_TOKEN: 'SYNTHETIC_REPORT_TOKEN', EXPECTED_SELECTION_SHA256: f.digest,
+    ALLURE_RESULTS: path.join(bundle, 'allure'), CHAT_TESTOPS_PREPARED_FILE: preparedFile, CHAT_TESTOPS_EXECUTION_ID: current.executionId };
+  const exec = async () => ({ stdout: JSON.stringify({ id: 123, run_attempt: 1, run_number: 1, workflow_id: 99,
+    head_sha: context.workflowSha, head_branch: 'master', event: 'workflow_dispatch', path: '.github/workflows/chat-catalog-testops.yml',
+    repository: event.repository, actor: { id: 42 }, triggering_actor: { id: 42 } }) });
+  const transport = server(prepared);
+  const fetchImpl = async (url, options) => {
+    const u = new URL(url);
+    if (u.pathname === '/api/uaa/oauth/token') return Response.json({ access_token: 'SYNTHETIC_ACCESS_TOKEN' });
+    const value = await transport.api(u.pathname + u.search, options.method, options.body);
+    if (u.pathname === '/api/testresult') {
+      value.content = value.content.filter(row => row.testCaseId === current.caseId);
+      value.totalElements = value.content.length;
+    }
+    return Response.json(value);
+  };
+  assert.equal(await run('upload-case', path.join(bundle, 'projection'), env, { exec, fetchImpl }), 0);
+  assert.equal(transport.posts, 1);
+  const emitted = path.join(f.base, 'chat-completion-testops-upload-case');
+  assert.deepEqual((await readdir(emitted)).sort(), ['once-upload_case.json', 'publication.json']);
+  const target = path.join(f.publications, 'chat-catalog-case-publication-123-1-0');
+  await rm(target, { recursive: true }); await cp(emitted, target, { recursive: true });
+  const exported = await publicationSet(f.bundles, f.publications, actual, selected, f.digest);
+  assert.equal(exported[0].status, 'passed'); assert.equal(transport.posts, 1, 'finalizer must not resend');
 });

@@ -290,6 +290,9 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
   async function interruptedBootstrap() {
     const f = await seed(); await f.finish(); const run = await f.run();
     const interrupted = await terminalizeLegacyExecution({ db, run, status: "interrupted", patch: {
+      // The real controller claim records preparation before terminal status
+      // records completion. The delivery fixture otherwise leaves both unset.
+      executionStage: "preparing", finishedAt: new Date(),
       errorCode: "server_shutdown_interrupted", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
     } });
     expect(await getExecutionBlocker(db, f.companyId, f.sourceId)).toMatchObject({ runId: run.id });
@@ -338,8 +341,10 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     expect(await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false })).not.toBeNull();
     expect(await issueService(db).getById(f.sourceId)).toMatchObject({ status: "blocked" });
   });
-  it.each(["provider-entered", "runtime-selected", "other-adapter", "restore-unsafe", "active-lease", "cleanup-failed", "retry-exhausted"])("retains an interrupted bootstrap hold for %s", async kind => {
+  it.each(["provider-entered", "runtime-selected", "other-adapter", "restore-unsafe", "active-lease", "cleanup-failed", "retry-exhausted", "missing-stage", "unfinished"])("retains an interrupted bootstrap hold for %s", async kind => {
     const { f, run } = await interruptedBootstrap();
+    if (kind === "missing-stage") await db.update(heartbeatRuns).set({ executionStage: null }).where(eq(heartbeatRuns.id, run.id));
+    if (kind === "unfinished") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "runtime-selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "other-adapter") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "process" } } }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "restore-unsafe") await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } }).where(eq(heartbeatRuns.id, run.id));

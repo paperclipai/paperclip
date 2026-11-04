@@ -107,7 +107,7 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.get("/actor", (req, res) => {
     res.json(req.actor);
   });
-  app.post(["/api/routine-triggers/public/:publicId/fire", "/api/routine-triggers/public/:publicId/sentry-run-failures"], (req, res) => {
+  app.post("/api/routine-triggers/public/:publicId/fire", (req, res) => {
     res.json({ reachedWebhook: true, actorType: req.actor.type });
   });
   app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
@@ -242,14 +242,12 @@ describe("agent auth middleware", () => {
     "leaves webhook authentication to the trigger in %s mode",
     async (deploymentMode) => {
       const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
-      for (const route of ["fire", "sentry-run-failures"]) {
-        const res = await request(createApp(db, deploymentMode))
-          .post(`/api/routine-triggers/public/${"a".repeat(24)}/${route}`)
-          .set("Authorization", "Bearer routine-secret")
-          .send({ event: "created" });
-        expect(res.status).toBe(200);
-        expect(res.body).toEqual({ reachedWebhook: true, actorType: "none" });
-      }
+      const res = await request(createApp(db, deploymentMode))
+        .post(`/api/routine-triggers/public/${"a".repeat(24)}/fire`)
+        .set("Authorization", "Bearer routine-secret")
+        .send({ event: "created" });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ reachedWebhook: true, actorType: "none" });
     },
   );
 
@@ -257,7 +255,6 @@ describe("agent auth middleware", () => {
     `/api/routine-triggers/public/${"a".repeat(24)}/rotate-secret`,
     "/api/routine-triggers/public/not-a-public-id/fire",
     `/api/routine-triggers/public/${"a".repeat(24)}/fire/extra`,
-    `/api/routine-triggers/public/${"a".repeat(24)}/sentry-run-failures/extra`,
   ])("does not bypass actor authentication for %s", async (path) => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const res = await request(createApp(db)).post(path).set("Authorization", "Bearer routine-secret");
@@ -310,7 +307,7 @@ describe("agent auth middleware", () => {
   it.each(["key", "jwt"])("rejects unfinished setup authentication with a %s", async kind => {
     const companyId = randomUUID();
     const agentId = randomUUID();
-    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1") : "pcp_setup-test-token";
+    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1")! : "pcp_setup-test-token";
     const { db } = createDbState({
       agent: { id: agentId, companyId, status: "paused", lifecycleHolds: ["setup"] },
       ...(kind === "key" ? { agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-1" } } : {}),

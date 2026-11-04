@@ -49,7 +49,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
     const commentIds = [randomUUID(), randomUUID()];
     await db.insert(issueComments).values(commentIds.map((id, index) => ({ id, companyId: f.companyId,
-      issueId: f.issueId, authorType: "user", authorUserId: index ? "second-user" : "board",
+      issueId: f.issueId, authorType: "user" as const, authorUserId: index ? "second-user" : "board",
       body: index ? "Preserve the recovered files." : "Continue the original work.",
       createdAt: new Date(Date.now() - 20_000 + index) })));
     const queueId = randomUUID();
@@ -150,6 +150,16 @@ const support = await getEmbeddedPostgresTestSupport();
       recoveryActionId: f.originalActionId, workspaceRepairRequired: true,
     });
   });
+
+  it.each(["nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace", "nativeWorkspaceFinalizationOwner", "sessionCheckpoint"])(
+    "retains an admission-wait hold with a retained %s profile", async key => {
+      const f = await seed(true);
+      const [run] = await db.update(heartbeatRuns).set({ runnerProfileJson: { [key]: { retained: true } } })
+        .where(eq(heartbeatRuns.id, f.runId)).returning();
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(true);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    },
+  );
 
   it.each(["started", "runtime_selected", "process", "session", "controller", "stage", "receipt", "receipt_issue", "receipt_action", "lease", "coordinator", "launch", "provider", "workspace"])(
     "retains a hold with conflicting or incomplete %s evidence", async kind => {

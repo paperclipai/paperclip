@@ -107,7 +107,7 @@ suite("native terminal-run cleanup admission", () => {
       await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "process",
         adapterConfig: {}, permissions: {}, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } });
       await db.insert(issues).values({ id: issueId, companyId, title: "Recover startup", status: "todo", assigneeAgentId: agentId, responsibleUserId: "owner" });
-      const [environment] = await db.insert(environments).values({ companyId, name: "Controlled provider", driver: "plugin", config: {} }).returning();
+      const [environment] = await db.insert(environments).values({ name: "Controlled provider", driver: "plugin", config: {} }).returning();
       await db.execute(sql`create table test_cleanup_intent_fault (enabled boolean not null)`);
       await db.execute(sql`insert into test_cleanup_intent_fault values (true)`);
       await db.execute(sql`create sequence test_cleanup_intent_attempts`);

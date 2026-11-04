@@ -8,6 +8,6 @@ if (!["http:", "https:"].includes(target.protocol) || !["127.0.0.1", "localhost"
 }
 export default defineConfig({
   testDir: ".", workers: 1, fullyParallel: false, timeout: 120_000,
-  use: { baseURL, browserName: "chromium", headless: true, viewport: { width: 1440, height: 900 }, serviceWorkers: "block", trace: "retain-on-failure" },
+  use: { baseURL, extraHTTPHeaders: { Origin: target.origin }, browserName: "chromium", headless: true, viewport: { width: 1440, height: 900 }, serviceWorkers: "block", trace: "retain-on-failure" },
   outputDir: "../../../test-results/collections/playwright", reporter: [["list"]],
 });

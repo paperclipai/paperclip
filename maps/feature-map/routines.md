@@ -29,9 +29,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 ### `trigger-history`
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc`. Uncheck the
-filter to return to other tasks. **History** records configuration versions, not executions.
+offer Run now. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -54,15 +52,10 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
-Sentry run-failure alerts can use the bearer-authenticated
-`/api/routine-triggers/public/:publicId/sentry-run-failures` receiver. It validates
-the source run against this company's task, admits one repair per failed run,
-and ignores tasks originating from the repair routine, including children and
-standalone creation descendants. Private or unreadable sources are ignored rather
-than copied into company-readable routine history. The routine's instructions
-should reuse existing repair cases/PRs for the same root cause. Service and HTTP
-regressions in the routine suites cover recursion, concurrent delivery, and access;
-these checks do not prove a live Sentry integration is configured.
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 ## Gotchas
 
@@ -96,5 +89,3 @@ Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/Routine
 ### Documentation scope: Routines, cases, and status cards
 
 All three capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas and summarizer quality need deeper cases.
-
-The target-independent Product E2E journey `routine-scheduled-run` covers browser creation, an actual scheduled invocation, run-attributed saved output, history after reload, and no new invocation across the next minute boundary after pause. Source: `tests/runner-e2e/product-journeys/routine-schedule-flow.ts`. Registration is not evidence of a passing deployed run.

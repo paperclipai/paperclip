@@ -13,7 +13,7 @@ import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js"
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { authorizationService } from "./authorization.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -21,6 +21,8 @@ import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-ch
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
+import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
+import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
 
 export async function taskRetryMutationAllowed(db: Db, input: {
   companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
@@ -206,14 +208,39 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
-/** Persist a deliberate click under dispatch's issue-first lock order. This
- * transaction never contacts a provider. The normal wake queue owns execution. */
-export async function requestTaskRetry(input: {
+type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
-}) {
+};
+
+const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
+const TASK_RETRY_CONTENTION_DELAY_MS = 100;
+
+function isTaskRetryContention(error: unknown) {
+  return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
+}
+
+/** Persist a deliberate click under dispatch's issue-first lock order. This
+ * transaction never contacts a provider. The normal wake queue owns execution. */
+export async function requestTaskRetry(input: TaskRetryRequest) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await admitTaskRetry(input);
+    } catch (error) {
+      if (!isTaskRetryContention(error)) throw error;
+      // Chat authorization for the same principal is briefly locked. The whole
+      // admission rolled back, so a fresh attempt rereads every fact.
+      if (attempt >= TASK_RETRY_CONTENTION_ATTEMPTS)
+        throw conflict("Retry is busy because chat authorization is in progress. Try again.",
+          { code: "task_retry_busy", retryable: true });
+    }
+    await new Promise(resolve => setTimeout(resolve, TASK_RETRY_CONTENTION_DELAY_MS));
+  }
+}
+
+function admitTaskRetry(input: TaskRetryRequest) {
   return writeExecutionControl(input.db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const db = tx as unknown as Db;
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
@@ -256,6 +283,7 @@ export async function requestTaskRetry(input: {
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
+      await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
       // Historical deadline failures can predate their preservation record.
       // Register the exact prepared source; this proves neither a stopped
       // executor nor permission to replay its work.
@@ -330,8 +358,11 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
-        if (previous.state === "running") {
+        if (!previous) continue;
+        // A completed preservation still owns its snapshot evidence. Bind the
+        // new intent so sibling holds can select that same continuation, without
+        // repeating recovery or renewing its attempt budget.
+        if (previous.state === "complete" || previous.state === "running") {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;

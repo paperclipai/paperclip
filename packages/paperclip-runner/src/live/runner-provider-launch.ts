@@ -186,6 +186,7 @@ export interface RunnerProviderLaunchEnvironment {
   codexCommand?: string;
   opencodeProxyPath: string;
   acpxSidecarPath: string;
+  cursorCloudProxyPath?: string;
 }
 
 export function createRunnerProviderLaunch(
@@ -193,6 +194,16 @@ export function createRunnerProviderLaunch(
   input: RunnerProviderLaunchEnvironment,
 ): Record<string, unknown> {
   const { identity, instructions: baseInstructions, runtimeContext, settings, provider } = requirements;
+  if (provider === "cursor_cloud") {
+    if (input.options.runnerFilesystemRoot || !requirements.model || requirements.readOnly) {
+      throw new Error("cursor_cloud_local_controller_required: experimental Cursor Cloud supports standard tasks with a local controller");
+    }
+    if (!input.cursorCloudProxyPath) throw new Error("cursor_cloud_proxy_missing");
+    return { kind: "cursor_cloud", provider: "cursor_cloud", driver: "cursor_cloud_api", providerVersion: "cursor-cloud-v1",
+      command: input.providerNodeCommand, args: [input.cursorCloudProxyPath], cwd: input.cwd,
+      model: requirements.model, instructions: baseInstructions, approvalPolicy: "never",
+      conversationMode: requirements.preparedConversation ? "prepared" : "task" };
+  }
   const acpxAgent = provider === "acpx" ? settings.acpxAgent ?? "codex" : null;
   const requestedModel = requirements.model ?? "";
   const includeCodexCollaborationInstructions = provider === "codex" &&

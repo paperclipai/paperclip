@@ -178,6 +178,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         runner_digest: format!("sha256:{}", "a".repeat(64)),
         acpx_launch_profile: None,
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: 16 * 1024 * 1024,
         p0_reserve_bytes: 1024 * 1024,
         max_frame_bytes: 1024 * 1024,
@@ -234,6 +235,7 @@ fn failed_provider_startup_is_persistently_fenced_before_another_process_can_res
         .execute(&command("open", 2, "session.open", json!({})))
         .unwrap_err();
     assert!(failure.to_string().contains("no rollout found"));
+    assert_eq!(failure.provider_failure().unwrap()["provider"], "openai");
     let persisted: Value =
         serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
             .unwrap();

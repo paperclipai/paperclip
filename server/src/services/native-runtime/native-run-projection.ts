@@ -1,3 +1,5 @@
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
@@ -5,7 +7,7 @@ import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-wor
 import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, exists, inArray, isNotNull, isNull, not, or, sql, type SQL } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -26,11 +28,41 @@ export function projectNativeTerminalRunStatus(
 
 
 
+function claimedNativeWakeNeedsSettlement() {
+  return sql`exists (select 1 from ${agentWakeupRequests} where
+    ${agentWakeupRequests.id} = ${heartbeatRuns.wakeupRequestId}
+    and ${agentWakeupRequests.companyId} = ${heartbeatRuns.companyId}
+    and ${agentWakeupRequests.agentId} = ${heartbeatRuns.agentId}
+    and ${agentWakeupRequests.runId} = ${heartbeatRuns.id}
+    and ${agentWakeupRequests.status} = 'claimed')`;
+}
+
+/** Settle only the exact persisted source claim inside terminal projection. */
+export async function settleNativeTerminalWake(tx: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "wakeupRequestId" | "runtimeMode" | "status" | "finishedAt" | "error">) {
+  if (run.runtimeMode !== "native" || !run.wakeupRequestId || !run.finishedAt
+    || !["succeeded", "failed", "cancelled"].includes(run.status)) return;
+  const claim = and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+    eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+    eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.status, "claimed"));
+  const [current] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+    .where(claim).for("update").limit(1);
+  if (!current) return;
+  await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
+  await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+  await tx.update(agentWakeupRequests).set({
+    status: run.status === "succeeded" ? "completed" : run.status,
+    finishedAt: run.finishedAt, error: run.error, updatedAt: new Date(),
+  }).where(claim);
+}
+
 export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "failed" | "cancelled" | SQL) {
   return and(
     eq(heartbeatRuns.runtimeMode, "native"),
     or(
       inArray(heartbeatRuns.status, ["queued", "running", "failed"]),
+      and(eq(heartbeatRuns.status, projectedStatus),
+        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled"]), claimedNativeWakeNeedsSettlement()),
       and(
         eq(heartbeatRuns.status, "succeeded"),
         or(
@@ -51,6 +83,7 @@ export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "f
 
     or(
       sql`${heartbeatRuns.status} is distinct from ${projectedStatus}`,
+      claimedNativeWakeNeedsSettlement(),
       isNull(heartbeatRuns.finishedAt),
       sql`${heartbeatRuns.nativePhase} is distinct from 'committed'`,
       sql`${heartbeatRuns.resultJson}->>'finalizationPhase' is distinct from 'committed'`,
@@ -164,6 +197,7 @@ export async function projectCommittedRun(input: {
       })
       .where(needsRepair)
       .returning();
+    if (after) await settleNativeTerminalWake(tx, after);
     return after ? { before, after } : null;
   });
 

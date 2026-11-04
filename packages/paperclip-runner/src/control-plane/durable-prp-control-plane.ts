@@ -392,6 +392,33 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
   };
 }
 
+export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
+  runId: string; runnerInstanceId: string; normalizedSessionId: string;
+}, verifiedArtifact?: { version: string; digest: string }): DurablePrpCheckpoint {
+  if (Buffer.byteLength(contents) > maxStateBytes) throw new Error("native_runner_checkpoint_invalid");
+  const value: unknown = JSON.parse(contents);
+  if (!isRecord(value) || !exactIdentity(value.identity) || !isStoredCoreState(value, value.identity)
+    || value.identity.runId !== expected.runId || value.identity.runnerInstanceId !== expected.runnerInstanceId
+    || value.identity.normalizedSessionId !== expected.normalizedSessionId
+    || checkpointRunId(value) !== expected.runId || value.warmTransition
+    || value.stagedRunAttachment && !stagedTargetActivated(value)) {
+    throw new Error("native_runner_checkpoint_binding_mismatch");
+  }
+  const artifacts: Array<{ runnerVersion: string; runnerDigest: string }> = value.completedWarmTransition
+    ? [value.completedWarmTransition.receipt]
+    : Object.values(value.tickets).filter(ticket => ticket.usedAt !== null
+      && Number.isFinite(Date.parse(ticket.usedAt))
+      && canonicalJson(ticket.identity) === canonicalJson(value.identity));
+  if (verifiedArtifact) artifacts.push({ runnerVersion: verifiedArtifact.version, runnerDigest: verifiedArtifact.digest });
+  const artifact = artifacts[0];
+  if (!artifact || typeof artifact.runnerVersion !== "string" || !artifact.runnerVersion
+    || !runnerDigestPattern.test(artifact.runnerDigest)
+    || artifacts.some(candidate => candidate.runnerVersion !== artifact.runnerVersion || candidate.runnerDigest !== artifact.runnerDigest)) {
+    throw new Error("native_runner_checkpoint_artifact_unproven");
+  }
+  return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
+}
+
 function parseCheckpointHeader(contents: string): Record<string, unknown> & {
   runnerVersion: string; runnerDigest: string;
   state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
@@ -4151,6 +4178,12 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_OPENCODE_PERMISSION_MODE",
   "PAPERCLIP_OPENCODE_RUNTIME_DIR",
   "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+  "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -4248,6 +4281,9 @@ export function spawnRunner(options: {
     sidecarScript: string;
     sidecarScriptSha256: string;
   };
+  cursorCloudLaunchProfile?: {
+    command: string; commandSha256: string; proxyScript: string; proxyScriptSha256: string;
+  };
   opencodeLaunchProfile?: {
     command: string;
     commandSha256: string;
@@ -4337,6 +4373,12 @@ export function spawnRunner(options: {
           ...(options.acpxLaunchProfile.candidateAdmission ? ["--acpx-candidate-admission-json", JSON.stringify(options.acpxLaunchProfile.candidateAdmission)] : []),
         ]
       : []),
+    ...(options.cursorCloudLaunchProfile ? [
+      "--cursor-cloud-proxy-command", options.cursorCloudLaunchProfile.command,
+      "--cursor-cloud-proxy-command-sha256", options.cursorCloudLaunchProfile.commandSha256,
+      "--cursor-cloud-proxy-script", options.cursorCloudLaunchProfile.proxyScript,
+      "--cursor-cloud-proxy-script-sha256", options.cursorCloudLaunchProfile.proxyScriptSha256,
+    ] : []),
     ...(options.opencodeLaunchProfile
       ? [
           "--opencode-proxy-command",
@@ -4407,7 +4449,7 @@ export function spawnRunner(options: {
           maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,
           maxRuntimeMs, maxLifetimeMs: lifetimeDeadline === undefined ? options.maxLifetimeMs : maxRuntimeMs,
           reconnectGraceMs: options.reconnectGraceMs, lifecyclePolicy: options.lifecyclePolicy,
-          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile,
+          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile, cursorCloudLaunchProfile: options.cursorCloudLaunchProfile,
           diagnosticsDirectory: options.diagnosticsDirectory,
         },
       }),

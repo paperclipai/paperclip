@@ -31,7 +31,8 @@ import {
   projects,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON, isUuidLike } from "@paperclipai/shared";
-import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
+import { withOperationAccountingTransaction } from "../../../services/accounting-transaction.js";
+import { lockBudgetAdmissionControls } from "../../../services/budget-admission-controls.js";
 import type { ActivityPublication } from "../../../services/activity-log.js";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
@@ -153,7 +154,7 @@ function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
-  if (retryReason === "native_safe_replacement" || retryReason === "native_provider_overloaded") return "native_safe_replacement";
+  if (["native_safe_replacement", "native_provider_overloaded", "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
   return "other";
 }
 
@@ -224,8 +225,9 @@ export function createPostgresRunDispatchAdapter(
     // that owns the issue lock and is waiting for the run.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const hint = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot, agentId: heartbeatRuns.agentId, projectId: budgetReservations.projectId })
         .from(heartbeatRuns)
+        .leftJoin(budgetReservations, and(eq(budgetReservations.runId, heartbeatRuns.id), eq(budgetReservations.companyId, heartbeatRuns.companyId)))
         .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!hint) return onMissing();
@@ -236,8 +238,13 @@ export function createPostgresRunDispatchAdapter(
         : readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
 
       const locked = async (typedTx: Db, publications: ActivityPublication[]) => {
-        // Recovery always takes coordinator before issue/run. Only the
-        // accounting phase acquires the company lock and evaluates budgets.
+        if (mode === "accounting") {
+          await lockBudgetAdmissionControls(typedTx, input.companyId, hint.projectId);
+          await typedTx.select({ id: agents.id }).from(agents)
+            .where(and(eq(agents.id, hint.agentId), eq(agents.companyId, input.companyId))).for("share");
+        }
+        // Recovery keeps coordinator -> issue -> run order after the shared
+        // dispatch-control fences. Settlement never uses these authority locks.
         await lockRunBudgetRecoveryOwnerInTransaction(typedTx, input.companyId, input.runId, input.recoveryLeaseOwner);
         if (hintedIssueId) {
           await typedTx
@@ -266,7 +273,7 @@ export function createPostgresRunDispatchAdapter(
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withAccountingTransaction(db, input.companyId, locked)
+        ? await withOperationAccountingTransaction(db, input.companyId, locked)
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();

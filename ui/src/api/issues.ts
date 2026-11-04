@@ -7,6 +7,7 @@ import type {
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -281,6 +282,11 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  inboxMine: (companyId: string, options?: RequestOptions) => {
+    const path = `/companies/${companyId}/inbox/mine`;
+    detachInflightGet(path);
+    return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
+  },
   summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();

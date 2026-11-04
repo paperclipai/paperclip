@@ -908,10 +908,10 @@ describe("persistent agent directories", () => {
   it("cleans up a staging failure before any provider starts", async () => {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture failure" });
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture failure", pid: null, startedAt: null });
     try {
       await expect(copies.prepare({ ...target(), runId, cwd: home, target: { kind: "remote", transport: "ssh", environmentId: randomUUID(), remoteCwd: "/fixture/task",
-        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task" } } })).rejects.toThrow("Could not exclude");
+        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task", remoteWorkspacePath: "/fixture/task", privateKey: null, knownHosts: null, strictHostKeyChecking: true } } })).rejects.toThrow("Could not exclude");
       const row = (await copies.get(companyId, runId))!;
       expect(row.state).toBe("unavailable");
       expect(row.receipt?.baseline).toBeUndefined();
@@ -1424,7 +1424,7 @@ describe("persistent agent directories", () => {
 
   it("stages SSH agent files at the registered root without a nested task workspace", async () => {
     const remoteCwd = path.join(home, "ssh-task");
-    const exclude = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const exclude = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockImplementation(async input => {
       await fs.mkdir(path.dirname(input.remoteDir), { recursive: true });
       await fs.cp(input.localDir, input.remoteDir, { recursive: true });
@@ -1436,7 +1436,7 @@ describe("persistent agent directories", () => {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
       const target = { kind: "remote" as const, transport: "ssh" as const, environmentId: randomUUID(), remoteCwd,
-        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd } };
+        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
       await db.insert(environments).values({ id: target.environmentId, name: "Fixture SSH", driver: "ssh" });
       // Legacy no-ID receipt: only the unique run/environment lease authorizes retrieval.
       await db.insert(environmentLeases).values({ companyId, environmentId: target.environmentId, heartbeatRunId: runId, provider: "ssh", providerLeaseId: "fixture-host" });
@@ -1606,8 +1606,8 @@ describe("persistent agent directories", () => {
     const { copy, lease } = await unavailableRemote({ state: "destroyed" });
     const remoteCwd = "/fixture/cleanup-task";
     const executionTarget = { kind: "remote" as const, transport: "ssh" as const, environmentId: lease.environmentId, leaseId: lease.id, remoteCwd,
-      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd } };
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockResolvedValue(undefined);
     let stopCommitted!: () => void, finishCleanup!: () => void;
     const committed = new Promise<void>(resolve => { stopCommitted = resolve; });
@@ -1728,7 +1728,7 @@ describe("persistent agent directories", () => {
     await db.insert(environmentLeases).values(lease);
     const execute = vi.fn(), restoreWorkspace = vi.fn(), cleanupWorkspaceSnapshot = vi.fn().mockResolvedValue(undefined);
     const executionTarget = { kind: "remote" as const, transport: "sandbox" as const, environmentId, leaseId, remoteCwd, runner: { execute } };
-    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({ target: executionTarget,
       workspaceRemoteDir: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, runId), runtimeRootDir: options.runtimeRootDir ?? null,
       assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace, cleanupWorkspaceSnapshot }));

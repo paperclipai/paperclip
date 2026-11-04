@@ -190,7 +190,7 @@ describe("buildPluginWorkerEnv", () => {
 
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
-      manifest: { capabilities: ["ui.slots.register"] },
+      manifest: { capabilities: ["ui.sidebar.register"] },
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
