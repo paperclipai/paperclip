@@ -50,6 +50,7 @@ import {
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
+import { nativeManualAdmissionHoldsExecution } from "../native-runtime/native-runner-ownership.js";
 import { validateNativeWorkspaceReconstruction } from "../native-runtime/native-workspace-reconstruction.js";
 import { isConversationAdapter } from "../conversation-continuation.js";
 import { recordExecutionWait } from "../execution-wait.js";
@@ -3493,9 +3494,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(eq(heartbeatRuns.id, issue.executionRunId))
                 .then((rows) => rows[0] ?? null)
             : null;
+          const manualExecutionHold = activeExecutionRun && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: issue.companyId, runId: activeExecutionRun.id, issueId: issue.id });
 
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
               activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
             )
@@ -3527,6 +3531,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // normally against the now-running holder.
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             activeExecutionRun.status !== "running" &&
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId

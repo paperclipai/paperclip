@@ -13,6 +13,7 @@ import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { readFileSync } from "node:fs";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -6702,12 +6703,17 @@ function leaseDb(
 }
 
 function cancellationDb(options?: {
+  runId?: string;
   coordinator?: {
     runId: string;
     assessmentId: string | null;
     decisionId?: string | null;
     phase?: string;
     failureCode?: string | null;
+    companyId?: string;
+    issueId?: string;
+    resultId?: string | null;
+    failureDetail?: Record<string, unknown> | null;
   } | null;
   status?: string;
   failResultJsonUpdateAt?: number;
@@ -6715,7 +6721,7 @@ function cancellationDb(options?: {
   resultJson?: Record<string, unknown>;
 }) {
   const initialRun = {
-    id: execution.binding.runId,
+    id: options?.runId ?? execution.binding.runId,
     agentId: execution.binding.agentId,
     companyId: execution.binding.companyId,
     nativeIssueId: execution.binding.issueId,
@@ -6743,7 +6749,7 @@ function cancellationDb(options?: {
   const coordinator =
     options && "coordinator" in options
       ? options.coordinator
-      : { runId: execution.binding.runId, assessmentId: null };
+      : { runId: initialRun.id, assessmentId: null };
   let forUpdateCount = 0;
   let resultJsonUpdateCount = 0;
   const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
@@ -6795,7 +6801,7 @@ function cancellationDb(options?: {
         result.returning = () =>
           shouldFail
             ? Promise.reject(new Error("post_dispatch_db_failure"))
-            : Promise.resolve([{ id: execution.binding.runId }]);
+            : Promise.resolve([{ id: initialRun.id }]);
         return result;
       },
     }),
@@ -8464,16 +8470,21 @@ describe("native session cancellation", () => {
     expect(state.cancel).not.toHaveBeenCalled();
   });
 
-  it("fences a failed retry at dispatch and preserves the same audited intent on replay", async () => {
+  it.each([false, true])("fences a failed retry at dispatch and preserves the same audited intent on replay (manual hold: %s)", async manualHold => {
     const id = "11111111-1111-4111-8111-111111111111";
-    const persistence = cancellationDb({ status: "failed",
-      coordinator: { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure" },
+    const runId = manualHold ? "22222222-2222-4222-8222-222222222222" : execution.binding.runId;
+    const policy = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(runId))!,
+      new SystemRecoveryFailure("source_binding_invalid", "user_action_required"));
+    const persistence = cancellationDb({ status: "failed", runId,
+      coordinator: { runId, assessmentId: null, phase: manualHold ? "terminal_failure" : "retryable_failure",
+        ...(manualHold ? { companyId: execution.binding.companyId, issueId: execution.binding.issueId, resultId: null,
+          failureCode: "native_restart_recovery_blocked", failureDetail: { systemRecovery: policy } } : {}) },
       resultJson: { startupCancellation: { cancellationRequestId: id, retryCancellation: true } } });
-    const first = await cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db, scope: "run", cancellationRequestId: id });
+    const first = await cancelNativeSession(runId, "operator Stop", { db: persistence.db, scope: "run", cancellationRequestId: id });
     expect(persistence.updates).toContainEqual(expect.objectContaining({ table: nativeRunFinalizations,
       values: expect.objectContaining({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null }) }));
     const writes = persistence.getResultJsonUpdateCount();
-    await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db,
+    await expect(cancelNativeSession(runId, "retry Stop", { db: persistence.db,
       scope: "run", cancellationRequestId: id })).resolves.toMatchObject({ auditId: first.auditId });
     expect(persistence.getResultJsonUpdateCount()).toBe(writes);
   });

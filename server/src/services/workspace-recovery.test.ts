@@ -38,7 +38,7 @@ import * as storageBackend from "../storage/index.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
-import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
@@ -1654,16 +1654,34 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(0);
   }, 30_000);
 
-  it.each(["HTTP Retry", "new comment", "automatic cleanup"] as const)("repairs an unregistered historical deadline failure through %s without admitting work before verified stop", async entry => {
+  it.each(["HTTP Retry", "manual admission Retry", "new comment", "automatic cleanup"] as const)("repairs a retained failure through %s without admitting work before verified stop", async entry => {
     const f = await seed("native", true, "keep_running");
     const source = await run(f.runId);
-    await db.update(heartbeatRuns).set({ resultJson: null, errorCode: "execution_finalization_deadline_exceeded" })
+    const manual = entry === "manual admission Retry";
+    await db.update(heartbeatRuns).set({ resultJson: null,
+      errorCode: manual ? "native_restart_recovery_blocked" : "execution_finalization_deadline_exceeded",
+      ...(manual ? { processPid: 1386, nativePhase: "terminal_failure" } : {}) })
       .where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ status: "active", leasePolicy: "reuse_by_environment",
       releasedAt: null, cleanupStatus: null, metadata: f.lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
-    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
-      cause: "execution_finalization_deadline_exceeded", evidence: { runId: f.runId, providerOwnership: "unverified",
-        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    if (manual) {
+      const systemRecovery = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(f.runId))!,
+        new SystemRecoveryFailure("allocation_ownership_ambiguous", "user_action_required"));
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", resultId: null,
+        failureCode: "native_restart_recovery_blocked", failureDetail: { recoveryMode: "exact_checkpoint_resume", systemRecovery } })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
+      await db.update(issueRecoveryActions).set({ status: "active", outcome: "blocked", cause: "native_restart_recovery_blocked",
+        fingerprint: `native-restart:${f.runId}`, returnOwnerAgentId: source.agentId, wakePolicy: null, maxAttempts: 3,
+        evidence: { runId: f.runId, automaticAdmissionExhausted: true, executorStopEvidence: "unverified",
+          providerPid: 1386, checkpointPreserved: true },
+        nextAction: "Automatic admission checks exhausted; original executor stop and state remain unverified" })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+    } else {
+      await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
+        cause: "execution_finalization_deadline_exceeded", evidence: { runId: f.runId, providerOwnership: "unverified",
+          automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    }
     // Leave admission observable without substituting a fake model turn.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
     let releaseStop!: () => void;
@@ -1685,7 +1703,9 @@ describe("automatic retained workspace recovery", () => {
       app.use(errorHandler);
       let requestId: string | undefined;
       let commentId: string | undefined;
-      if (entry === "HTTP Retry") {
+      if (manual) expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body.interruption)
+        .toMatchObject({ state: "failed", canRetry: true, observedRunId: f.runId });
+      if (entry === "HTTP Retry" || manual) {
         const body = { idempotencyKey: randomUUID(), observedRunId: f.runId };
         const retry = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202);
         requestId = retry.body.requestId;
@@ -1714,12 +1734,16 @@ describe("automatic retained workspace recovery", () => {
         if (entry === "automatic cleanup") await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0 });
       }
       await expect.poll(() => f.runtime.retryPendingSandboxTeardown.mock.calls.length, { timeout: 20_000 }).toBe(1);
-      if (requestId) await heartbeat.resumeTaskRetry(f.companyId, requestId);
-      else await heartbeat.resumeQueuedRuns();
+      if (!manual) {
+        if (requestId) await heartbeat.resumeTaskRetry(f.companyId, requestId);
+        else await heartbeat.resumeQueuedRuns();
+      }
       expect(await successors()).toHaveLength(0);
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].metadata)
         .not.toHaveProperty("remoteExecutionTermination");
+      if (manual) expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
       await expect(readFile(path.join(f.host, "saved.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       releaseStop();
       await expect.poll(async () => (await successors()).length, { timeout: 20_000 }).toBe(1);

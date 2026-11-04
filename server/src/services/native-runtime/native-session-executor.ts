@@ -266,6 +266,8 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
+  nativeManualAdmissionHoldMatches,
+  nativeManualAdmissionOwnerColumns,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
 } from "./native-runner-ownership.js";
@@ -7758,7 +7760,7 @@ async function performNativeCancellation(
       const retryCancellation = lockedRun.status === "failed"
         || record(record(lockedRun.resultJson).startupCancellation).retryCancellation === true;
       const coordinatorQuery = tx
-        .select({ runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+        .select(nativeManualAdmissionOwnerColumns)
         .from(nativeRunFinalizations)
         .where(
           and(
@@ -7785,8 +7787,11 @@ async function performNativeCancellation(
         runId, companyId: cancellationContext.companyId, issueId: cancellationContext.issueId,
         resultJson, requestId: requestedId, scope: options.scope ?? "run",
       }, coordinator)) throw conflict("Native retry is no longer cancellable");
+      const fenceManualAdmission = coordinator.failureCode === "native_restart_recovery_blocked" && nativeManualAdmissionHoldMatches({
+          companyId: cancellationContext.companyId, runId, issueId: cancellationContext.issueId,
+        }, coordinator);
       const fenceRetryCancellation = async () => {
-        if (coordinator.phase !== "retryable_failure") return;
+        if (coordinator.phase !== "retryable_failure" && !fenceManualAdmission) return;
         await tx
           .update(nativeRunFinalizations)
           .set({
@@ -7802,7 +7807,7 @@ async function performNativeCancellation(
             and(
               eq(nativeRunFinalizations.runId, runId),
               eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
-              eq(nativeRunFinalizations.phase, "retryable_failure"),
+              eq(nativeRunFinalizations.phase, coordinator.phase),
             ),
           );
       };
@@ -7829,7 +7834,7 @@ async function performNativeCancellation(
             : null;
         if (!existingAuditId)
           throw new Error("native_cancellation_intent_audit_missing");
-        if (retryCancellation && coordinator.phase === "retryable_failure") {
+        if (retryCancellation && (coordinator.phase === "retryable_failure" || fenceManualAdmission)) {
           await notifyNativeResultCommit(tx, { companyId: cancellationContext.companyId, runId });
           await fenceRetryCancellation();
         }

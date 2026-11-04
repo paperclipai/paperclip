@@ -1644,6 +1644,45 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+A due failed remote retry can retain its provider PID after heartbeat completion
+releases the task execution lock. Both remote workspace reference formats and
+exact company/task/run plugin task leases route that retry to remote restart
+recovery. Plugin leases do not require a workspace reference. A PID from another
+host is never checked or cleared through the local process table. Before remote inspection, recovery
+can reclaim the original task execution only for an explicit exact-checkpoint
+retry with a fenced previous controller, matching durable authority and ordinary
+resumption eligibility. A newer run for the task, another execution or checkout,
+Stop, pause, changed assignment or an unresolved dependency prevents the claim.
+The task lock, controller claim, run status and recovery event commit together.
+A new failed retry consumes the existing provider attempt budget; replacing an
+active controller does not. The claim permits only inspection and attachment to
+the recorded remote execution. Missing live provider evidence
+still prevents replay or replacement. Admission holds use the existing system
+recovery policy: five backoff retries within a 30-minute window, with persisted
+jitter and a budget separate from provider attempts. A newer source or an ended
+task cannot become eligible and exhausts this automatic policy immediately.
+Exhaustion gives the board a manual reconciliation action and stops retry
+deadlines. It preserves execution and checkout bindings, the provider PID and
+checkpoint, and does not request environment settlement or file preservation:
+none of those facts prove the old provider stopped. Live leases stay read-only
+until their own deadline. Stale-lock sweeps, terminal checkout cleanup, stale
+adoption and queue release share this manual ownership hold. Terminal status
+alone cannot clear it; the existing receipt contract must confirm every exact
+remote lease stopped before ordinary cleanup and checkout can progress. Missing
+lease records do not establish termination. An explicit Stop can still reserve
+and fence this exact held execution through the existing audited cancellation
+path. The hold survives that Stop's intent and acknowledgement until remote
+termination is confirmed. Normal Retry can register the exact source's existing
+stop-and-preserve recovery. It waits for verified termination and file recovery
+before admitting one continuation from the preserved workspace. The run log
+records a changed hold reason once instead
+of repeating the same warning on every sweep. A historical provider-budget-exhausted retry can
+release its task lock only after the same admission, controller fence and exact
+remote authority checks pass. Existing terminal recovery then preserves the
+provider evidence and gives the board a reconciliation action; it authorizes no
+new provider work. A completed turn without a semantic result retains its
+existing bounded disposition-only recovery policy.
+
 A bootstrap retry requires durable evidence that no provider session, provider
 event, or checkpoint exists. A runner report that `session.open` failed or was
 rejected qualifies, because that command runs before any prompt. An
