@@ -1650,8 +1650,10 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 A provider can report more usage after its run's charge was posted. That usage
 already happened, so it never fails a run or blocks a session. Codex usage totals
-are cumulative, so the Runner reports the exact increment and names its owning run
-when the provider turn proves the owner. Core posts the increment to that run as a
+are cumulative, so the Runner reports the exact increment above the known total and
+names its owning run when the provider turn proves the owner. A report at or below
+the known total was already counted by the run that saw it, and it adds nothing, so
+the sum across runs always equals the thread total. Core posts the increment to that run as a
 separate cost event and records `cost.late_usage_posted` in the activity log. If
 the owner is not proven, Core charges the session's last finished run and records
 the attribution as inferred. A late charge can put an agent over budget after later

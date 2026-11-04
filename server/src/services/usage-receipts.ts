@@ -342,6 +342,15 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
       JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
     return true;
   }
+  // Totals are cumulative, so an older receipt at or below the accepted totals
+  // from this source is already covered. Nothing is owed, whatever order they ran.
+  if (late && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId && late.sequence <= acceptedSequence && receipt?.usage
+    && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0))) {
+    await updateDebtState(true, false);
+    if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
+      JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
+    return true;
+  }
   if (!qualified) { await updateDebtState(false); return false; }
   // A receipt's money covers the whole run. Earlier late charges already hold
   // their share, so the original charge may only be corrected to the remainder.

@@ -303,7 +303,7 @@ describe("producer-owned native usage", () => {
       const owner = await finalizedSource();
       const current = await successor(owner);
       const report = lateReport(current, { runId: owner.input.runId, normalizedSessionId: sessionId });
-      (report.payload as Record<string, unknown>).runDelta = {};
+      (report.payload as Record<string, unknown>).runDelta = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, providerCostUsd: 0, requests: 0, activeSeconds: 0 };
       await (await createNativeUsageDelivery(db, current)).capture(report);
       expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, current.runId))).toHaveLength(1);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.input.runId)))[0].usageJson).not.toHaveProperty("accountingLateReceiptPending", true);

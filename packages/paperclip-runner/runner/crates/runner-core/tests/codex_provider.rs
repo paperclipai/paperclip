@@ -7255,10 +7255,12 @@ fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
             } else {
                 executor.poll_events().unwrap()
             };
-            if events
-                .iter()
-                .any(|event| event.event_type == "usage.reported")
-            {
+            // In "after-paid" the successor already counted past this total.
+            if events.iter().any(|event| {
+                event.event_type == "usage.reported"
+                    || (mode == "after-paid"
+                        && event.payload["code"] == "codex_resume_usage_snapshot")
+            }) {
                 break events;
             }
             executor.acknowledge_events(events.len()).unwrap();
@@ -7269,9 +7271,11 @@ fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
                 || event.payload["code"] == "codex_usage_accounting_integrity"));
         let reported = retained
             .iter()
-            .find(|event| event.event_type == "usage.reported")
-            .unwrap();
-        if handoff_first {
+            .find(|event| event.event_type == "usage.reported");
+        if mode == "after-paid" {
+            assert!(reported.is_none());
+        } else if handoff_first {
+            let reported = reported.unwrap();
             assert_eq!(reported.payload["runDeltaAvailable"], false);
             assert_eq!(reported.payload["runDelta"]["inputTokens"], 20);
             assert_eq!(
@@ -7283,7 +7287,7 @@ fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
                 "run-1"
             );
         } else {
-            assert_eq!(reported.payload["runDelta"]["inputTokens"], 120);
+            assert_eq!(reported.unwrap().payload["runDelta"]["inputTokens"], 120);
         }
         let saved: Value =
             serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())

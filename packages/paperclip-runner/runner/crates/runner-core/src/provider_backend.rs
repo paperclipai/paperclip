@@ -681,7 +681,7 @@ fn normalize_provider_notification(
                     .as_object()
                     .is_some_and(|late| late.values().all(|value| value.as_u64() == Some(0)))
                 {
-                    // A replay of usage already moved to its owner carries nothing.
+                    // Usage at or below the known total was already counted.
                     return Ok(normalize_codex_notification(
                         "paperclip/resumeUsageSnapshot",
                         params,

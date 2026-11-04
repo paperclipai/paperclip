@@ -86,8 +86,9 @@ async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
   if (!reconciliation || typeof reconciliation !== "object" || !isUuid(event.normalizedSessionId)) return false;
   const measured = { runDelta: payload.runDelta };
   const usage = normalizeNativeUsage(measured, { inputIncludesCacheReads: input.provider.kind === "codex" });
-  // An older Runner reports only an invalidation. It has no increment to move.
-  if (!usage) return false;
+  // An older Runner reports only an invalidation, with zero-filled counters.
+  // It has no increment to move and still belongs to the delivering run.
+  if (!usage || (usage.inputTokens + usage.outputTokens + (usage.cachedInputTokens ?? 0)) <= 0) return false;
   const prior = (reconciliation as Record<string, unknown>).priorOrigin as Record<string, unknown> | null | undefined;
   const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeSessionId, event.normalizedSessionId),

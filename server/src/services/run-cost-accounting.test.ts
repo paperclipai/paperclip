@@ -220,6 +220,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(false);
   });
 
+  it("clears an older growth receipt that a newer cumulative receipt already covers", async () => {
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    await persistUsageReceipt(db, receipt(owner, sourceId, 1, 1, 100));
+    await accountRunCost(db, owner.runId);
+    await persistUsageReceipt(db, receipt(owner, sourceId, 2, 1.2, 120));
+    await persistUsageReceipt(db, receipt(owner, sourceId, 3, 1.4, 140));
+    for (let attempt = 0; attempt < 3; attempt++) await accountRunCost(db, owner.runId);
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charges.reduce((sum, charge) => sum + charge.inputTokens, 0)).toBe(140);
+    expect(charges.reduce((sum, charge) => sum + charge.costCents, 0)).toBeCloseTo(140);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ accountingLateReceiptPending: false });
+    expect(run.costAccountingPending).toBe(false);
+    expect(run.accountingLastError).toBeNull();
+  });
+
   it("corrects authoritative same-token late money on the original charge", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
