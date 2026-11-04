@@ -41,7 +41,8 @@ function valid() {
     runs: [
       { id: "initial", status: "succeeded" },
       {
-        id: "worker",
+        id: "worker", companyId: "company", responsibleUserId: "person",
+        startedAt: "2026-11-04T00:00:00.000Z", finishedAt: "2026-11-04T00:00:10.000Z",
         status: "succeeded",
         agentId: "morgan",
         runtimeMode: "native",
@@ -76,6 +77,15 @@ function valid() {
       taskResponsibleUserId: "person",
       taskAfterStatus: "done",
       workerReceiptBound: true,
+      workerReceiptEvidence: {
+        task: { id: "task", companyId: "company", assigneeAgentId: "morgan", responsibleUserId: "person", status: "done" },
+        calls: [{ authorized: true, agentId: "", runId: "", method: "GET", pathname: "/publishing-check", status: 200,
+          createdAt: "2026-11-04T00:00:05.000Z", receiptId: "a".repeat(48) }],
+        events: [{ runId: "worker", companyId: "company", agentId: "morgan", seq: 1, eventType: "tool.execution.completed",
+          createdAt: "2026-11-04T00:00:06.000Z", payload: { prpEvent: { runId: "worker", eventType: "tool.execution.completed",
+            payload: { name: "bash", status: "completed", exitCode: 0, outputTruncated: false,
+              output: JSON.stringify({ ok: true, status: 200, check: "publishing endpoint", receiptId: "a".repeat(48) }) } } } }],
+      },
       workerRunId: "worker",
       morganId: "morgan",
       taskId: "task",
@@ -213,4 +223,11 @@ it("accepts secure-form guidance only when its excluded chat destination stays e
   for (const conjunction of ["but", "then", "however"]) {
     expect(personalSecretGuidance(`Enter your personal publishing credential in the secure form, not in chat ${conjunction} here.`)).toBe(false);
   }
+});
+
+it("rejects missing or mismatched endpoint receipts despite a copied successful-worker flag", () => {
+  const missing = valid(); missing.state.workerReceiptEvidence.calls = [];
+  expect(gradePersonalSecret(missing).passed).toBe(false);
+  const mismatch = valid(); mismatch.state.workerReceiptEvidence.calls[0]!.receiptId = "b".repeat(48);
+  expect(gradePersonalSecret(mismatch).passed).toBe(false);
 });
