@@ -1,3 +1,5 @@
+import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
@@ -8347,6 +8349,8 @@ export async function executePaperclipNativeSession(input: {
   };
   nativeSessionStartups.set(runId, startup);
   setNativeExecutionActive(runId, true);
+  const diagnosticLeases: NativeDiagnosticLease[] = [];
+  const ownDiagnosticLease = (lease: NativeDiagnosticLease) => { diagnosticLeases.push(lease); };
   let preparedInput: typeof input = input;
   let cleanupStagedAttachments: () => Promise<void> = async () => undefined;
   let sessionScopeId: string | null = null;
@@ -8382,7 +8386,7 @@ export async function executePaperclipNativeSession(input: {
       throw new Error(input.execution.provider.kind === "muse" ? "muse_cloud_requires_managed_runner" : "dot_cloud_requires_managed_runner");
     }
     if (!input.useRunnerd) {
-      return await executePaperclipNativeSessionWithinScope(input);
+      return await executePaperclipNativeSessionWithinScope(input, undefined, false, ownDiagnosticLease);
     }
     // The session scope is unaffected by appending server-staged attachment
     // descriptors. Claim it before any workspace scrub/write so a duplicate
@@ -8402,7 +8406,7 @@ export async function executePaperclipNativeSession(input: {
     await closingWarmNativeSessions.get(sessionScopeId);
 
     if (input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") {
-      return await executePaperclipNativeSessionWithinScope(input);
+      return await executePaperclipNativeSessionWithinScope(input, undefined, false, ownDiagnosticLease);
     }
     if (input.restartRecovery?.kind === "reattach_remote_runner"
       && input.restartRecovery.runId === input.execution.binding.runId
@@ -8412,7 +8416,7 @@ export async function executePaperclipNativeSession(input: {
         eq(heartbeatRuns.agentId, input.execution.binding.agentId), eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId),
       )).limit(1);
       if (stoppedRun && await readClaimedNativeStopRecovery(input.db, stoppedRun, input.leaseOwner)) {
-        return await executePaperclipNativeSessionWithinScope(input, undefined, true);
+        return await executePaperclipNativeSessionWithinScope(input, undefined, true, ownDiagnosticLease);
       }
     }
     const workspaceRoot = input.execution.workspace.cwd;
@@ -8469,8 +8473,8 @@ export async function executePaperclipNativeSession(input: {
       return preparedInput;
     };
     return needsWarmRetirement
-      ? await executePaperclipNativeSessionWithinScope(input, prepareAttachments)
-      : await executePaperclipNativeSessionWithinScope(await prepareAttachments());
+      ? await executePaperclipNativeSessionWithinScope(input, prepareAttachments, false, ownDiagnosticLease)
+      : await executePaperclipNativeSessionWithinScope(await prepareAttachments(), undefined, false, ownDiagnosticLease);
   } catch (error) {
     executionFailure = error;
     if (error instanceof NativeControllerRecoveryWaitingError) {
@@ -8492,6 +8496,7 @@ export async function executePaperclipNativeSession(input: {
     }
     throw error;
   } finally {
+    for (const lease of diagnosticLeases) lease.retire();
     let startupUnsettled = false;
     if (startup.executionContext) {
       if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
@@ -8556,6 +8561,7 @@ async function executePaperclipNativeSessionWithinScope(
   input: Parameters<typeof executePaperclipNativeSession>[0],
   prepareAfterClaim?: () => Promise<Parameters<typeof executePaperclipNativeSession>[0]>,
   cleanupOnly = false,
+  ownDiagnosticLease?: (lease: NativeDiagnosticLease) => void,
 ): Promise<AdapterExecutionResult> {
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
     const candidate = resolveAntigravityCandidateAdmission({
@@ -9823,6 +9829,7 @@ async function executePaperclipNativeSessionWithinScope(
         ? await timeController("backend_setup", () => {
           const create = () => createRunnerdBackend({
             ...input,
+            onDiagnosticLease: ownDiagnosticLease,
             providerPackAdmissionSource,
             recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
             executionContext,
@@ -9875,7 +9882,7 @@ async function executePaperclipNativeSessionWithinScope(
         persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution,
           nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote"), await recovered.session.snapshot());
         persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest!, "remote");
-        runnerdBackend = await createRunnerdBackend({ ...input, providerPackAdmissionSource, recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution", onAccountingEvent: producerUsage?.capture, runnerInstanceId: effectiveRunnerInstanceId,
+        runnerdBackend = await createRunnerdBackend({ ...input, onDiagnosticLease: ownDiagnosticLease, providerPackAdmissionSource, recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution", onAccountingEvent: producerUsage?.capture, runnerInstanceId: effectiveRunnerInstanceId,
           controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? { bootId: controller.bootId } : undefined,
           durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
       }
@@ -9902,6 +9909,7 @@ async function executePaperclipNativeSessionWithinScope(
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             onSessionAdmission: async () => {
+              if (existingWarmSession) runnerdBackend?.bindDiagnosticSession?.(existingWarmSession);
               // Invalidate prior stop evidence before a backend can spawn.
               await appendHeartbeatRunEvent(input.db, {
                 companyId: input.execution.binding.companyId,
@@ -10056,6 +10064,7 @@ async function executePaperclipNativeSessionWithinScope(
               );
             },
             onSession: async (session) => {
+              if (session) runnerdBackend?.bindDiagnosticSession?.(session);
               if (session && input.runnerExecutionTarget?.kind === "remote"
                 && input.runnerExecutionTarget.transport === "sandbox") {
                 rmSync(resolve(scopedRunnerdStateRoot(input.execution), "plugin-runner-state.json"), { force: true });
@@ -10835,8 +10844,6 @@ async function executePaperclipNativeSessionWithinScope(
     }
   } finally {
     releaseGitHubRun?.();
-    // A startup failure or onSession(null) must not leak a transport. A warm
-    // owner retains only the inactive broker until its normal retirement.
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
       await timeController("github_stop", () => githubAccess!.stop());
     }
@@ -12710,6 +12717,7 @@ export async function createRunnerdBackend(input: {
   trace?: NativeRunTrace;
   toolTrace?: NativeToolTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onDiagnosticLease?: (lease: NativeDiagnosticLease) => void;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   enqueueWakeup?: (
@@ -12900,6 +12908,7 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
 
 type ManagedRunnerdBackend = NativeSessionBackend & {
   bindManagedSession(session: NativeSession): NativeSession;
+  bindDiagnosticSession?(session: NativeSession): void;
   sessionCheckpointPersisted?(snapshot: PersistedNativeSession): void;
 };
 
@@ -14518,6 +14527,13 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
       runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
   }
+  const diagnosticOwner = { companyId: input.execution.binding.companyId,
+    runId: input.execution.binding.runId, sessionScope: nativeSessionScopeKey(input.execution) };
+  const diagnostics = new NativeSessionDiagnostics(diagnosticOwner, diagnosticOwner,
+    (owner, diagnosticKind) => logger.info({ companyId: owner.companyId, runId: owner.runId, diagnosticKind }, "Native session diagnostic without an active run recorder"),
+    owner => logger.warn({ companyId: owner.companyId, runId: owner.runId }, "Native session diagnostic recording failed"));
+  const diagnosticLease = diagnostics.activate(diagnosticOwner, input.onLog);
+  input.onDiagnosticLease?.(diagnosticLease);
   const backend = createNativeSessionBackend(runnerExecution, {
     retainedSystemInstructions,
     runnerInstanceId:
@@ -14716,12 +14732,9 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerProcessReconnectGraceMs: remoteTarget ? null : undefined,
         environment: effectiveRunnerEnvironment,
         observability: input.observability,
-        onDiagnostic: (message) => {
-          void input.onLog?.(
-            "stderr",
-            `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
-          );
-        },
+        onDiagnostic: message => diagnostics.record(
+          `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
+        ),
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:
           "runtimeContext" in input.execution
@@ -14991,6 +15004,13 @@ async function createRunnerdBackendWithinSessionClaim(
   };
   return {
     bindManagedSession: wrapManagedSession,
+    bindDiagnosticSession: session => {
+      const retained = nativeSessionDiagnostics(session);
+      if (retained && retained !== diagnostics) {
+        const lease = retained.activate(diagnosticOwner, input.onLog);
+        input.onDiagnosticLease?.(lease);
+      } else diagnostics.bind(session);
+    },
     sessionCheckpointPersisted: snapshot => {
       const staged = runnerControlPlane?.store.state.stagedRunAttachment;
       if (staged && snapshot.identity.runId === staged.targetIdentity.runId &&

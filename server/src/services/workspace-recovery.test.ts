@@ -44,7 +44,7 @@ import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -364,6 +364,10 @@ describe("automatic retained workspace recovery", () => {
   async function acceptedRemoteExport() {
     const f = await seed("native", false);
     const source = await run(f.runId), workspaceId = randomUUID();
+    const publishedRoot = path.join(path.dirname(f.remote), ".paperclip-workspaces", workspaceId);
+    await mkdir(path.dirname(publishedRoot), { recursive: true });
+    await rename(f.remote, publishedRoot);
+    f.remote = publishedRoot;
     const remoteCwd = await realpath(f.remote);
     const git = (args: string[], cwd = remoteCwd) => new Promise<string>((resolve, reject) =>
       execFile("git", args, { cwd }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));

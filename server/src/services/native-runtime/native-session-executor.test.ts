@@ -1,3 +1,4 @@
+import { activeNativeExecutionRunIds } from "./native-active-runs.js";
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
@@ -9984,6 +9985,119 @@ describe("native warm session supervision", () => {
       });
       return { base, next, run };
     }
+
+    it.each(["idle", "active", "stalled"] as const)("keeps diagnostic ownership across warm reuse and retirement (%s)", async mode => {
+      const activeClose = mode !== "idle";
+      let releaseDiagnostic!: () => void;
+      const diagnosticGate = new Promise<void>(resolve => { releaseDiagnostic = resolve; });
+      const actual = await vi.importActual<typeof import("../../vendor/paperclip-runner/index.js")>("../../vendor/paperclip-runner/index.js");
+      const { base } = fixture("diagnostic-owner");
+      const next = { ...base, binding: { ...base.binding, runId: "diagnostic-owner-second" } };
+      const firstLog = vi.fn(async () => undefined), secondLog = vi.fn(async () => { if (mode === "stalled") await diagnosticGate; });
+      let retainedTransport: ReturnType<typeof actual.createRunnerdCodexTransport>;
+      let session: { close: (input: { reason: string }) => Promise<void> };
+      state.createTransport.mockImplementationOnce(options => actual.createRunnerdCodexTransport({ ...options, stateDirectory: join(isolatedHome, "synthetic-diagnostic-transport") } as never));
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const transport = state.createTransport.mock.results.at(-1)!.value as ReturnType<typeof actual.createRunnerdCodexTransport>;
+        retainedTransport = transport;
+        const factory = state.createTransport.mock.calls.at(-1)![0];
+        const root = factory.stateDirectory!;
+        const identity = { ...factory.prpIdentity, normalizedSessionId: base.session.normalizedSessionId };
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+        await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(identity, "ready")));
+        session = { close: async ({ reason }) => { await transport.transport.close(reason); } };
+        await options.onSession?.(session);
+        return result;
+      }).mockImplementationOnce(async options => {
+        expect(options.existingSession).toBe(session);
+        await options.onSession?.(options.existingSession);
+        if (activeClose) await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ busy: 1 });
+        return result;
+      });
+      await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner", useRunnerd: true, onLog: firstLog });
+      const currentDb = leaseDb(next);
+      const nextDb = { ...currentDb, select: (columns?: Record<string, unknown>) => columns?.status && columns?.runnerProfileJson
+        ? { from: () => ({ where: () => ({ limit: () => Promise.resolve([
+          { status: "succeeded", runnerProfileJson: { nativeExecutionInput: base } },
+        ]) }) }) } : currentDb.select(columns as never) } as unknown as Db;
+      firstLog.mockClear();
+      const released = vi.fn();
+      const unsubscribe = onRetainedNativeSessionCleanupRelease(nextDb, released);
+      let completed = false;
+      const execution = executePaperclipNativeSession({ db: nextDb, execution: next, runnerInstanceId: "runner", useRunnerd: true, onLog: secondLog }).then(value => { completed = true; return value; });
+      try {
+        if (mode === "stalled") {
+          await vi.waitFor(() => expect(secondLog).toHaveBeenCalled());
+          await new Promise(resolve => setImmediate(resolve));
+          expect(completed).toBe(true);
+          expect(activeNativeExecutionRunIds.has(next.binding.runId)).toBe(false);
+          expect(released).toHaveBeenCalledWith(expect.objectContaining({ companyId: next.binding.companyId }),
+            expect.objectContaining({ runId: next.binding.runId }));
+          expect(await cancelNativeSession(next.binding.runId, "provider already retired")).toBe(false);
+        }
+      } finally {
+        releaseDiagnostic();
+        await execution;
+        unsubscribe();
+      }
+      expect(firstLog).not.toHaveBeenCalled();
+      if (activeClose) expect(secondLog).toHaveBeenCalledWith("stderr", expect.stringContaining("runner transport close requested"));
+      firstLog.mockClear(); secondLog.mockClear();
+      await closeIdleWarmNativeSessionsForRestart();
+      expect(retainedTransport!.evidence().diagnostics.some(message => message.includes("runner transport close requested"))).toBe(true);
+      expect(firstLog).not.toHaveBeenCalled();
+      expect(secondLog).not.toHaveBeenCalled();
+    });
+
+    it("attributes attachment-failure diagnostics to the incoming warm run before onSession", async () => {
+      const actual = await vi.importActual<typeof import("../../vendor/paperclip-runner/index.js")>("../../vendor/paperclip-runner/index.js");
+      const appendEvent = vi.spyOn(runEventWriter, "appendHeartbeatRunEvent").mockResolvedValue({
+        row: {} as never, disposition: "committed", highestContiguousSourceSeq: 0 });
+      onTestFinished(() => { appendEvent.mockRestore(); });
+      let attachmentFailure: unknown;
+      const { base } = fixture("diagnostic-attachment");
+      const next = { ...base, binding: { ...base.binding, runId: "diagnostic-attachment-second" } };
+      const firstLog = vi.fn(async () => undefined), nextLog = vi.fn(async () => undefined);
+      let session: { identity: () => unknown; attachRun: () => Promise<void>; close: (input: { reason: string }) => Promise<void> };
+      state.createTransport.mockImplementationOnce(options => actual.createRunnerdCodexTransport({ ...options,
+        stateDirectory: join(isolatedHome, "synthetic-attachment-transport") } as never));
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const transport = state.createTransport.mock.results.at(-1)!.value as ReturnType<typeof actual.createRunnerdCodexTransport>;
+        const factory = state.createTransport.mock.calls.at(-1)![0];
+        const identity = { ...factory.prpIdentity, normalizedSessionId: base.session.normalizedSessionId };
+        await mkdir(join(factory.stateDirectory!, "control-plane"), { recursive: true });
+        await mkdir(join(factory.stateDirectory!, "runner"), { recursive: true });
+        await writeFile(join(factory.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+        await writeFile(join(factory.stateDirectory!, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(identity, "ready")));
+        session = { identity: () => ({ ...base.binding, sessionId: base.session.normalizedSessionId }),
+          attachRun: async () => { await transport.transport.close("synthetic attachment failed before onSession"); throw new Error("synthetic attachment rejected"); },
+          close: async ({ reason }) => { await transport.transport.close(reason); } };
+        await options.onSession?.(session);
+        return result;
+      }).mockImplementationOnce(async options => {
+        expect(options.existingSession).toBe(session);
+        Object.assign(options.backend, { descriptor: () => ({ kind: "test", name: "synthetic attachment backend" }) });
+        try { return await actual.executeNativeSession(options as never); }
+        catch (error) { attachmentFailure = error; throw error; }
+      });
+      await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner", useRunnerd: true, onLog: firstLog });
+      const current = leaseDb(next);
+      const nextDb = { ...current, select: (columns?: Record<string, unknown>) => columns?.status && columns?.runnerProfileJson
+        ? { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ status: "succeeded", runnerProfileJson: { nativeExecutionInput: base } }]) }) }) }
+        : current.select(columns as never) } as unknown as Db;
+      firstLog.mockClear();
+      const failed = await executePaperclipNativeSession({ db: nextDb, execution: next, runnerInstanceId: "runner", useRunnerd: true,
+        onLog: nextLog }).catch(error => error);
+      expect(failed).toBeInstanceOf(Error);
+      expect(attachmentFailure).toBeInstanceOf(Error);
+      expect((attachmentFailure as Error).message).toBe("synthetic attachment rejected");
+      expect(firstLog).not.toHaveBeenCalled();
+      expect(nextLog).toHaveBeenCalledWith("stderr", expect.stringContaining("synthetic attachment failed before onSession"));
+    });
 
     it.each([false, true])("compares export process compatibility without changing conversation identity (changed: %s)", async changed => {
       const { base } = fixture(`observability-${changed}`);
