@@ -38,7 +38,7 @@ import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 const roots: string[]=[];
 afterEach(async()=>{vi.useRealTimers(); vi.restoreAllMocks(); persistenceFault.kind=null; persistenceFault.active=false; persistenceFault.latestReport=null; process.exitCode=0; await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 type Hook = "collect" | "release" | "stop" | "finalizeEvidence" | "checkpointEvidence";
-async function run(options:{search?:boolean;authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
+async function run(options:{search?:boolean;authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;cleanupCode?:string;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
   const root=await mkdtemp(path.join(os.tmpdir(),"journey-campaign-test-")); roots.push(root);
   const module=path.join(root,"provider.mjs");
   const proof = createConnectionProof();
@@ -52,7 +52,7 @@ async authenticate(){${options.authFailure ? "throw {outcome:'failed',code:'logi
 async onboard(evidence){${options.preAcceptanceFailure ? `evidence.onboardingPreAcceptance=${JSON.stringify(preAcceptanceEvidence)};throw {outcome:'failed',code:'onboarding_work_before_acceptance'};` : options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},
 async prepare(){throw Error('onboarding receipt was not reused')},
 async identity(){return {...identity,commit:'${(options.drift?"b":"a").repeat(40)}'}},
-async collect(){${options.collectionFailure ? "throw Error('private collection error');" : options.missingReceipt ? "return [];" : `return onboarded?[{journeyId:'cloud-onboarding',runIds:['run-1'],usage:{runs:[{runId:'run-1',usage:{costUsd:0.01}}]},operations:{campaignId:input.campaignId,attemptId:input.campaignId+':cloud-onboarding:1',modelCostUsd:0.01,setupCostUsd:0.005,requestCount:${options.zeroRequests ? 0 : 2},feedback:{collection:'complete',complaints:0,suggestions:0},traceIds:['a'.repeat(32)]}}]:[];`}}, async own(){}, async release(){${options.cleanupFailure ? "throw Error('private raw error');" : "return 'released';"}}, async stop(){}
+async collect(){${options.collectionFailure ? "throw Error('private collection error');" : options.missingReceipt ? "return [];" : `return onboarded?[{journeyId:'cloud-onboarding',runIds:['run-1'],usage:{runs:[{runId:'run-1',usage:{costUsd:0.01}}]},operations:{campaignId:input.campaignId,attemptId:input.campaignId+':cloud-onboarding:1',modelCostUsd:0.01,setupCostUsd:0.005,requestCount:${options.zeroRequests ? 0 : 2},feedback:{collection:'complete',complaints:0,suggestions:0},traceIds:['a'.repeat(32)]}}]:[];`}}, async own(){}, async release(){${options.cleanupFailure ? `throw Object.assign(Error('private raw error'),${JSON.stringify(options.cleanupCode ? { code: options.cleanupCode } : {})});` : "return 'released';"}}, async stop(){}
 , async finalizeEvidence(){
 const report=JSON.parse(await readFile(input.outputDir+'/normalized-results.json','utf8'));
 if(report.results.some(r=>r.cleanup==='not_started'))throw Error('final evidence preceded cleanup');
@@ -163,6 +163,18 @@ describe("product journey campaign boundary outcomes",()=>{
     const campaign=await run({cleanupFailure:true});
     expect(campaign.results.every((r:any)=>r.cleanup==="failed"&&r.status==="failed")).toBe(true);
     expect(JSON.stringify(campaign)).not.toContain("private raw error");
+  });
+  it("retains an identifier-shaped cleanup cause but never a free-form one",async()=>{
+    const traced=await run({cleanupFailure:true,cleanupCode:"fixture_cleanup_not_confirmed"});
+    for (const r of traced.results) {
+      expect(r.error).toBe("target_cleanup_failed");
+      expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"target_cleanup_failed"});
+      expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"cause.fixture_cleanup_not_confirmed"});
+    }
+    expect(JSON.stringify(traced)).not.toContain("private raw error");
+    const untraced=await run({cleanupFailure:true,cleanupCode:"private detail: tenant-42"});
+    expect(JSON.stringify(untraced)).not.toContain("tenant-42");
+    expect(untraced.results.every((r:any)=>!r.productJourney.phases.some((p:any)=>String(p.code).startsWith("cause.")))).toBe(true);
   });
   it("preserves failed authentication and blocked dependents when finalization also fails",async()=>{
     const campaign=await run({authFailure:true,collectionFailure:true,cleanupFailure:true});
