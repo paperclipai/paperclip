@@ -18,6 +18,7 @@ type OwnershipOptions = {
   discordGatewayOwnerships: Map<string, DiscordGatewayOwnership>;
   discordGatewayStopTasks: Set<Promise<void>>;
   isShuttingDown: () => boolean;
+  isRuntimeInitializing: (endpointId: string, context: RuntimeContext) => boolean;
   onStopped?: (endpointId: string) => void;
   readonly discordGatewayLeaseTtlMs?: number;
   readonly discordGatewayLeaseRenewalIntervalMs?: number;
@@ -116,19 +117,24 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     return ownership.stopPromise;
   }
 
-  async function renewDiscordGatewayOwnership(
-    ownership: DiscordGatewayOwnership,
-  ): Promise<boolean> {
+  function canRenewLocalOwnership(ownership: DiscordGatewayOwnership): boolean {
     if (
       options.isShuttingDown() ||
       ownership.stopping ||
       discordGatewayOwnerships.get(ownership.endpointId) !== ownership ||
-      ownership.context.discordGatewayOwned !== true ||
-      ownership.context.endpointRuntime === undefined ||
-      runtime.get(ownership.endpointId) !== ownership.context.endpointRuntime
+      ownership.context.discordGatewayOwned !== true
     ) {
       return false;
     }
+    return ownership.context.endpointRuntime === undefined
+      ? options.isRuntimeInitializing(ownership.endpointId, ownership.context)
+      : runtime.get(ownership.endpointId) === ownership.context.endpointRuntime;
+  }
+
+  async function renewDiscordGatewayOwnership(
+    ownership: DiscordGatewayOwnership,
+  ): Promise<boolean> {
+    if (!canRenewLocalOwnership(ownership)) return false;
     const proposedExpiresAt = new Date(
       Date.now() +
       (options.discordGatewayLeaseTtlMs ?? DISCORD_GATEWAY_LEASE_TTL_MS),
@@ -158,7 +164,8 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
         },
         ["verifying", "active", "attention"],
       );
-      if (!current || !leasedChatProvider(current.provider)) return false;
+      if (!current || current.companyId !== ownership.companyId || !leasedChatProvider(current.provider)
+          || !canRenewLocalOwnership(ownership)) return false;
       const expiresAt = new Date(
         now.getTime() +
         (options.discordGatewayLeaseTtlMs ?? DISCORD_GATEWAY_LEASE_TTL_MS),

@@ -26,6 +26,16 @@ connection and a known bot/application ID and guild ID. Attention plus failed
 connection health remains excluded. These are the old runtime discovery filters;
 company status and unrelated endpoint metadata do not add new policy.
 
+## Receiver construction and ownership
+
+The shared leased receiver owner may renew during construction only while the
+exact runtime context remains in the service's pending initialization map.
+Renewal still checks the company, endpoint, generation, credentials and original
+lease token. A missing listener alone grants no ownership. Once attached, the
+registered runtime must match that context. Token loss, pause, removal,
+replacement and shutdown retain their existing fences and listener stop order.
+This also applies to the Photon receiver through the same ownership module.
+
 ## Scheduling and lifecycle
 
 Startup reconstructs eligible state in UUID keyset pages of 100. Committed hints
