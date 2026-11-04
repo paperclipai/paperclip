@@ -9,11 +9,7 @@
  *     "mode": "cloud",
  *     "catalogVersion": "2026.720.0",
  *     "features": { "<feature-key>": true | false, ... },
- *     "plugins":  {
- *       "autoInstall": ["daytona", "kubernetes"],
- *       "workerEnv": { "daytona": ["PROVIDER_ORIGIN"] },
- *       "enabledCompanies": { "daytona": ["<company-uuid>"] }
- *     },
+ *     "plugins":  { "autoInstall": ["daytona", "kubernetes"] },
  *     "environments": [
  *       { "name": "Daytona", "provider": "daytona", "config": { "target": "us" } }
  *     ]
@@ -55,9 +51,7 @@ export interface ManagedInstanceConfig {
   features: Readonly<Partial<Record<ManagedExperimentalFeatureKey, boolean>>>;
   plugins: {
     readonly autoInstall: readonly string[];
-    /** Process variable names granted to a plugin's worker, by catalog key. Names only, never values. */
     readonly workerEnv?: Readonly<Record<string, readonly string[]>>;
-    /** Companies a plugin serves with no saved configuration, by catalog key. */
     readonly enabledCompanies?: Readonly<Record<string, readonly string[]>>;
   };
   /** Sandbox environments the control plane provisions at boot (empty when the section is absent). */
@@ -95,11 +89,6 @@ export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|passwor
 const WORKER_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const COMPANY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * Names a grant can never use, by shape: host credentials, and variables that
- * control how the worker process loads code. This is a guard against a mistake
- * in the document, not a list of every sensitive value on the host.
- */
 const WORKER_ENV_DENIED_NAME_PATTERN =
   /(^|_)(AWS|CREDENTIAL|CREDENTIALS|DATABASE|DSN|JWT|KEY|KEYS|PASSWORD|POSTGRES|PRIVATE|SECRET|SECRETS|SIGNING|TOKEN)(_|$)|^(DB|DYLD|LD|NODE)_|^(PATH|PAPERCLIP_MANAGED_CONFIG)$/;
 
@@ -268,14 +257,12 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     autoInstall.push(entry);
   }
 
-  // `plugins.workerEnv` is OPTIONAL: documents delivered before the section
-  // existed declare no grants. When present, it is validated fail-closed.
   let workerEnv: Record<string, readonly string[]> | undefined;
   if (doc.plugins.workerEnv !== undefined) {
     if (!isPlainObject(doc.plugins.workerEnv)) {
       fail(`"plugins.workerEnv" must be an object mapping plugin key → variable names (got ${describeJsonValue(doc.plugins.workerEnv)})`);
     }
-    workerEnv = {};
+    workerEnv = Object.create(null) as Record<string, readonly string[]>;
     for (const [key, names] of Object.entries(doc.plugins.workerEnv)) {
       if (!autoInstall.includes(key)) {
         fail(`"plugins.workerEnv" key "${key}" is not in "plugins.autoInstall"; a grant requires its plugin to be provisioned`);
@@ -300,15 +287,12 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     }
   }
 
-  // `plugins.enabledCompanies` is OPTIONAL and, like the rest of the document,
-  // never persisted. It names the companies a plugin may serve with no saved
-  // configuration. A company can still disable the plugin.
   let enabledCompanies: Record<string, readonly string[]> | undefined;
   if (doc.plugins.enabledCompanies !== undefined) {
     if (!isPlainObject(doc.plugins.enabledCompanies)) {
       fail(`"plugins.enabledCompanies" must be an object mapping plugin key → company ids (got ${describeJsonValue(doc.plugins.enabledCompanies)})`);
     }
-    enabledCompanies = {};
+    enabledCompanies = Object.create(null) as Record<string, readonly string[]>;
     for (const [key, ids] of Object.entries(doc.plugins.enabledCompanies)) {
       if (!autoInstall.includes(key)) {
         fail(`"plugins.enabledCompanies" key "${key}" is not in "plugins.autoInstall"; enabling a company requires its plugin to be provisioned`);

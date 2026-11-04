@@ -161,7 +161,6 @@ export function buildPluginWorkerEnv(input: {
   packagePath?: string | null;
   /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
   trustedLocalPluginRoots?: readonly string[];
-  /** Variable names the control plane grants to this plugin. */
   grantedEnvVars?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
@@ -2348,10 +2347,7 @@ export function pluginLoader(
           packageName: activePlugin.packageName,
           packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
           instanceInfo,
-          grantedEnvVars: managedPluginWorkerEnvGrant({
-            pluginKey: activePlugin.pluginKey,
-            packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
-          }),
+          grantedEnvVars: managedPluginWorkerEnvGrant(activePlugin.pluginKey),
         }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place

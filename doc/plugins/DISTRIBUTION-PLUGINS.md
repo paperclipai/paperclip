@@ -63,9 +63,9 @@ Each key must be in `autoInstall`. Startup fails if a name looks like a host
 credential, such as one with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `DATABASE` or
 `JWT` as a word, or if it controls how the worker loads code, such as
 `NODE_OPTIONS`. Give a granted variable a name for its own use, not a reused host
-variable. Only the plugin at the
-catalog path for that key receives the variables. Another install with the same
-plugin ID receives nothing.
+variable. Only the plugin with that catalog key receives the variables. A managed
+instance runs a selected plugin only from the current image, so an install from
+another source does not start.
 
 A grant does not give access to any company. To let a plugin serve a company with
 no saved configuration, name the company in `plugins.enabledCompanies`:

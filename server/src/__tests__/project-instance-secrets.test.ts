@@ -455,14 +455,13 @@ const support = await getEmbeddedPostgresTestSupport();
 describe("project instance secret patches", () => {
   it.skipIf(!support.supported)("requires a config row unless the managed config enables the plugin for this company", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "instance-secrets-managed-"));
-    const packagePath = path.join(root, "sandbox-providers/daytona");
-    await mkdir(packagePath, { recursive: true });
+    await mkdir(path.join(root, "sandbox-providers/daytona"), { recursive: true });
     const database = await startEmbeddedPostgresTestDatabase("paperclip-instance-secrets-managed-");
     const db = createDb(database.connectionString);
     try {
       const companyId = randomUUID(), pluginId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Managed credentials", issuePrefix: "MCI" });
-      await db.insert(plugins).values({ id: pluginId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
+      await db.insert(plugins).values({ id: pluginId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath: "/old/image/plugins/daytona",
         manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "projects.instance-secrets"] } as never });
       const [project] = await db.insert(projects).values({ companyId, name: "Credential owner" }).returning();
       await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "project", project.id));

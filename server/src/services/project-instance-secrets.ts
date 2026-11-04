@@ -83,7 +83,7 @@ export function projectInstanceSecretService(db: Db, pluginId: string) {
         ),
       );
     const [config] = await (lock ? configQuery.for("share") : configQuery);
-    if (!config && !managedPluginEnabledCompanies(plugin).includes(companyId))
+    if (!config && !managedPluginEnabledCompanies(plugin.pluginKey).includes(companyId))
       throw new Error("Project instance secrets require plugin configuration");
     const projectQuery = db
       .select()

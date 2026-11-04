@@ -29,7 +29,7 @@ export function registerPluginLifecycleDelivery(
   const retryMs = 30_000;
   async function managedTargets() {
     const ready = await db.select().from(plugins).where(eq(plugins.status, "ready"));
-    const targets = ready.flatMap(plugin => managedPluginEnabledCompanies(plugin).map(companyId => ({ plugin, companyId })));
+    const targets = ready.flatMap(plugin => managedPluginEnabledCompanies(plugin.pluginKey).map(companyId => ({ plugin, companyId })));
     if (!targets.length) return targets;
     const existing = await db.select({ id: companies.id }).from(companies)
       .where(inArray(companies.id, targets.map(target => target.companyId)));

@@ -7,64 +7,60 @@ import { distributionBundleDigest } from "../services/distribution-plugin-catalo
 import { MANAGED_CONFIG_ENV_KEY } from "../services/managed-config.js";
 import { managedPluginEnabledCompanies, managedPluginWorkerEnvGrant } from "../services/managed-plugin-worker-env.js";
 
-describe("managedPluginWorkerEnvGrant", () => {
+describe("managed plugin grants", () => {
   const pluginKey = "paperclip.daytona-sandbox-provider";
+  const companyId = "f0679247-e2be-5a76-adb6-6bd360e5a833";
   let root: string;
-  let packagePath: string;
-  const env = (keys: string[] = ["daytona"], workerEnv: Record<string, string[]> = { daytona: ["PROVIDER_ORIGIN"] }) => ({
+  const env = (plugins: Record<string, unknown>) => ({
     [BUNDLED_CATALOG_ROOT_ENV_VAR]: root,
-    [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {}, plugins: { autoInstall: keys, workerEnv } }),
+    [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {}, plugins }),
   });
-
-  beforeEach(async () => {
-    root = await mkdtemp(path.join(tmpdir(), "managed-worker-env-"));
-    packagePath = path.join(root, "sandbox-providers/daytona");
-    await mkdir(packagePath, { recursive: true });
-  });
-  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
-
-  it("grants variables to the plugin at its catalog path", () => {
-    expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, env())).toEqual(["PROVIDER_ORIGIN"]);
-  });
-
-  it("enables only the companies the document names, and only for the plugin at its catalog path", () => {
-    const companyId = "f0679247-e2be-5a76-adb6-6bd360e5a833";
-    const enabled = { ...env(), [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
-      plugins: { autoInstall: ["daytona"], enabledCompanies: { daytona: [companyId] } } }) };
-    expect(managedPluginEnabledCompanies({ pluginKey, packagePath }, enabled)).toEqual([companyId]);
-    expect(managedPluginEnabledCompanies({ pluginKey, packagePath: null }, enabled)).toEqual([]);
-    expect(managedPluginEnabledCompanies({ pluginKey, packagePath }, env())).toEqual([]);
-    expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, enabled)).toEqual([]);
-  });
-
-  it("grants nothing on a self-hosted instance or without a grant", () => {
-    expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, { [BUNDLED_CATALOG_ROOT_ENV_VAR]: root })).toEqual([]);
-    const { [MANAGED_CONFIG_ENV_KEY]: _unused, ...selfHosted } = env();
-    expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, selfHosted)).toEqual([]);
-  });
-
-  it("grants nothing to another install with the same plugin key", async () => {
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "managed-worker-env-other-"));
-    try {
-      expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath: elsewhere }, env())).toEqual([]);
-      expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath: null }, env())).toEqual([]);
-    } finally { await rm(elsewhere, { recursive: true, force: true }); }
-  });
-
-  it("grants nothing to another plugin at the catalog path", () => {
-    expect(managedPluginWorkerEnvGrant({ pluginKey: "example.other", packagePath }, env())).toEqual([]);
-  });
-
-  it("grants variables to a digest-verified distribution plugin", async () => {
-    const directory = path.join(root, "distribution/example-extension");
+  async function distributionPlugin(key: string, id: string) {
+    const directory = path.join(root, "distribution", key);
     await mkdir(path.join(directory, "dist"), { recursive: true });
     await writeFile(path.join(directory, "package.json"), JSON.stringify({ version: "1.0.0", paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
     await writeFile(path.join(directory, "dist/manifest.js"), "export default {};");
     await writeFile(path.join(directory, "dist/worker.js"), "export {};");
     await writeFile(path.join(root, "distribution/catalog.json"), JSON.stringify({ schemaVersion: 1, plugins: [{
-      key: "example-extension", pluginKey: "example.extension", version: "1.0.0", directory: "example-extension", digest: distributionBundleDigest(directory),
+      key, pluginKey: id, version: "1.0.0", directory: key, digest: distributionBundleDigest(directory),
     }] }));
-    const distribution = env(["example-extension"], { "example-extension": ["PROVIDER_ORIGIN"] });
-    expect(managedPluginWorkerEnvGrant({ pluginKey: "example.extension", packagePath: directory }, distribution)).toEqual(["PROVIDER_ORIGIN"]);
+  }
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "managed-worker-env-"));
+    await mkdir(path.join(root, "sandbox-providers/daytona"), { recursive: true });
+  });
+  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+  it("reads each section separately", () => {
+    const granted = env({ autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } });
+    expect(managedPluginWorkerEnvGrant(pluginKey, granted)).toEqual(["PROVIDER_ORIGIN"]);
+    expect(managedPluginEnabledCompanies(pluginKey, granted)).toEqual([]);
+    const enabled = env({ autoInstall: ["daytona"], enabledCompanies: { daytona: [companyId] } });
+    expect(managedPluginEnabledCompanies(pluginKey, enabled)).toEqual([companyId]);
+    expect(managedPluginWorkerEnvGrant(pluginKey, enabled)).toEqual([]);
+  });
+
+  it("gives nothing on a self-hosted instance or to another plugin", () => {
+    expect(managedPluginWorkerEnvGrant(pluginKey, { [BUNDLED_CATALOG_ROOT_ENV_VAR]: root })).toEqual([]);
+    const granted = env({ autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] }, enabledCompanies: { daytona: [companyId] } });
+    expect(managedPluginWorkerEnvGrant("example.other", granted)).toEqual([]);
+    expect(managedPluginEnabledCompanies("example.other", granted)).toEqual([]);
+  });
+
+  it("gives variables to a digest-verified distribution plugin", async () => {
+    await distributionPlugin("example-extension", "example.extension");
+    const granted = env({ autoInstall: ["example-extension"], workerEnv: { "example-extension": ["PROVIDER_ORIGIN"] } });
+    expect(managedPluginWorkerEnvGrant("example.extension", granted)).toEqual(["PROVIDER_ORIGIN"]);
+  });
+
+  it("does not read inherited properties for a catalog key named after one", async () => {
+    await distributionPlugin("constructor", "example.extension");
+    const granted = env({ autoInstall: ["constructor"], workerEnv: { constructor: ["PROVIDER_ORIGIN"] }, enabledCompanies: {} });
+    expect(managedPluginWorkerEnvGrant("example.extension", granted)).toEqual(["PROVIDER_ORIGIN"]);
+    expect(managedPluginEnabledCompanies("example.extension", granted)).toEqual([]);
+    const enabled = env({ autoInstall: ["constructor"], workerEnv: {}, enabledCompanies: { constructor: [companyId] } });
+    expect(managedPluginEnabledCompanies("example.extension", enabled)).toEqual([companyId]);
+    expect(managedPluginWorkerEnvGrant("example.extension", enabled)).toEqual([]);
   });
 });
