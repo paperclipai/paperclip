@@ -42,6 +42,16 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getStoredById: vi.fn(async (): Promise<unknown> => null),
+  reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
+}));
+
+vi.mock("../services/execution-workspaces.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/execution-workspaces.js")>(),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+}));
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
@@ -197,7 +207,7 @@ vi.mock("../services/index.js", () => ({
     remapOpenThreadsForDocument: async () => [],
   }),
   documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
@@ -405,6 +415,8 @@ describe("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockExecutionWorkspaceService.getStoredById.mockReset().mockResolvedValue(null);
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -585,6 +597,33 @@ describe("issue comment reopen routes", () => {
         };
       },
     );
+  });
+
+  it.each(["comment", "update"])("accepts an authorized cross-task %s without restoring the target's files", async operation => {
+    const issue = { ...makeIssue("done"), executionWorkspaceId: "33333333-3333-4333-8333-333333333333" };
+    const actor = { ...agentActor(), source: "agent_jwt", runId: "66666666-6666-4666-8666-666666666666" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo" });
+    mockHeartbeatService.getRun.mockResolvedValue({ id: actor.runId, agentId: actor.agentId,
+      companyId: issue.companyId, status: "running", runtimeMode: "native",
+      nativeIssueId: "55555555-5555-4555-8555-555555555555", contextSnapshot: {} });
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue({ id: issue.executionWorkspaceId,
+      companyId: issue.companyId, sourceIssueId: issue.id, mode: "isolated_workspace", status: "archived",
+      closedAt: new Date("2020-01-01T00:00:00Z"), cleanupReason: "issue_terminal" });
+    // A scanner's run may change this task, but cannot execute in its workspace.
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockRejectedValue(
+      new HttpError(403, "Task workspace run identity is unavailable"));
+    const app = request(await installActor(createApp(), actor));
+    const response = operation === "comment"
+      ? await app.post(`/api/issues/${issue.id}/comments`).send({ body: "New regression evidence", resume: true })
+      : await app.patch(`/api/issues/${issue.id}`).send({ comment: "New regression evidence", resume: true });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(operation === "comment" ? 201 : 200);
+    expect(mockIssueService.update.mock.calls[0]?.slice(0, 2))
+      .toEqual([issue.id, expect.objectContaining({ status: "todo" })]);
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(issue.assigneeAgentId,
+      expect.objectContaining({ payload: expect.objectContaining({ issueId: issue.id }) })));
   });
 
   it("finishes missing reference and activity writes for an accepted comment", async () => {
