@@ -48,6 +48,17 @@ export type ReviewParticipantFacts = {
   currentParticipant: Record<string, unknown> | null;
 };
 
+/**
+ * An interaction_pending wake asks the run's agent to answer an interaction
+ * addressed to it, which may be an agent other than the issue assignee. The
+ * caller verifies the interaction row immediately before dispatch.
+ */
+export type InteractionAddresseeFacts = {
+  interactionId: string | null;
+  /** True when that interaction is still pending and addressed to the run's agent. */
+  isPendingAddressee: boolean;
+};
+
 export type ScheduledRetryGateErrorCode =
   | "agent_not_invokable"
   | "heartbeat_wake_on_demand_disabled"
@@ -113,6 +124,7 @@ export type QueuedRunStalenessErrorCode =
   | "issue_dependencies_blocked"
   | "issue_not_found"
   | "issue_assignee_changed"
+  | "issue_interaction_not_pending"
   | "issue_terminal_status"
   | "issue_not_in_progress"
   | "issue_execution_lock_changed"
@@ -148,6 +160,8 @@ export type QueuedRunFacts = {
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
+  /** Present only for an interaction_pending wake. */
+  interactionAddressee?: InteractionAddresseeFacts | null;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
@@ -172,6 +186,7 @@ type OwnershipFacts = {
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
   isInteractionWake?: boolean;
+  isPendingInteractionAddressee?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
 };
@@ -187,6 +202,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
+  if (facts.isPendingInteractionAddressee) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   return "reassigned";
@@ -569,11 +585,14 @@ export function decideQueuedRunStaleness(
     };
   }
 
+  const isPendingInteractionAddressee =
+    facts.interactionAddressee?.isPendingAddressee === true;
   const ownership = decideIssueOwnership({
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
     isInteractionWake: facts.isInteractionWake,
+    isPendingInteractionAddressee,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.participantIsAgent &&
@@ -581,6 +600,22 @@ export function decideQueuedRunStaleness(
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
   });
   if (ownership === "reassigned") {
+    // An addressee wake is owned by the interaction, not the issue assignee:
+    // the addressee was never the owner, so nothing was reassigned and no
+    // other owner will be woken for the card.
+    if (facts.interactionAddressee) {
+      return {
+        stale: true,
+        errorCode: "issue_interaction_not_pending",
+        reason:
+          "Cancelled because the interaction that woke this agent is no longer pending for it before the queued run could start",
+        details: {
+          issueId: facts.issueId,
+          interactionId: facts.interactionAddressee.interactionId,
+          currentAssigneeAgentId: facts.issueAssigneeAgentId,
+        },
+      };
+    }
     return {
       stale: true,
       errorCode: "issue_assignee_changed",
@@ -669,7 +704,8 @@ export function decideQueuedRunStaleness(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
-    bypass: facts.wakeCommentIdPresent,
+    // A pending card names its own responder, whoever the review stage names.
+    bypass: facts.wakeCommentIdPresent || isPendingInteractionAddressee,
   });
   if (participantOutcome === "participant_changed") {
     return {
