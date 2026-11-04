@@ -370,6 +370,13 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+A queued retry waits for its same-company, same-task and same-agent predecessor
+to finish execution and cleanup, including when the task execution lock already
+names the retry. This also applies to failures before native runtime selection.
+Committed cleanup notifications reconsider that same queued run through ordinary
+admission. Failed cleanup, Stop, reassignment and independent recovery gates
+retain their existing effect; a terminal run row alone cannot release the wait.
+
 Stopping a queued legacy run before runtime selection clears only its own task
 locks. It preserves deferred messages without promoting another run. The stop
 must have a recorded, expected operator cancellation and no runtime selection,
