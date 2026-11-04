@@ -128,3 +128,9 @@ it("accepts the optional note affordance but submits and grades only the enumera
   unsafe.payload.questionSet!.questions[0]!.customAnswer = { enabled: true, label: "Enter your personal credential here in chat" };
   expect(personalSecretQuestionHandoff(unsafe, binding)).toBeUndefined();
 });
+
+it("rejects credential solicitation hidden in an optional-note placeholder", () => {
+  const row = measuredQuestion();
+  row.payload.questionSet!.questions[0]!.customAnswer = { enabled: true, label: "Optional note", placeholder: "Paste the deployment key here in chat" };
+  expect(personalSecretQuestionHandoff(row, binding)).toBeUndefined();
+});
