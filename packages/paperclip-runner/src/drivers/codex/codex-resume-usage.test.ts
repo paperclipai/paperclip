@@ -278,6 +278,7 @@ describe("Codex resume accounting through the production driver", () => {
     expect((await session.snapshot!()).codexUsageBaseline).toEqual({
       baseline: { inputTokens: 100, outputTokens: 10 },
       latest: { inputTokens: 100, outputTokens: 10 },
+      accounted: { inputTokens: 100, outputTokens: 10 },
     });
     second.turnStartResponse = Promise.resolve({
       turn: { id: "turn-2", status: "inProgress", items: [] },

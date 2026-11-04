@@ -134,7 +134,10 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        this.codexUsageBaseline = { baseline: { ...(this.codexUsageBaseline.accounted ?? this.codexUsageBaseline.latest) }, latest: { ...this.codexUsageBaseline.latest } };
+        // Keep the accounted total until a run reports usage, so a run with no
+        // report cannot absorb usage that was carried forward for the next one.
+        const { accounted, latest } = this.codexUsageBaseline;
+        this.codexUsageBaseline = { baseline: { ...(accounted ?? latest) }, latest: { ...latest }, ...(accounted ? { accounted: { ...accounted } } : {}) };
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;
