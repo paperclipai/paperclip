@@ -363,6 +363,40 @@ describe("resolveHeartbeatRunResponse", () => {
     },
   };
 
+  it("delivers the completed handoff after an explicit progress promise", () => {
+    const progress = "Handling the request to set your personal publishing credential. I will verify which piece is missing (definition vs. value) and direct you to the secure entry surface; personal secret values cannot be entered or read through chat.";
+    const summary = "Open Settings → Secrets → My secrets. Select the publishing definition and Set my value. Keep the value out of chat.";
+    const response = resolveHeartbeatRunResponse({
+      resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } },
+      existingComment: { id: "progress", body: progress },
+    });
+    expect(response).toMatchObject({ text: summary, decision: { chosenSource: "semantic_result_summary", commentAction: "create",
+      reasonCodes: ["accepted_semantic_result_summary", "completed_response_after_progress_promise"] } });
+  });
+
+  it.each([
+    "The credential is configured and the worker check passed.",
+    "The worker check failed. Keep the credential unchanged.",
+    "I will check again later. The current worker check failed.",
+    "I will verify it later, but the deployment failed with HTTP 403.",
+  ])("retains a substantive explicit outcome: %s", body => {
+    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "explicit", body } }))
+      .toMatchObject({ text: body, decision: { commentAction: "reuse", commentId: "explicit" } });
+  });
+
+  it("retains a progress promise when no completed response is available or the run yields", () => {
+    const existingComment = { id: "progress", body: "I will verify the configuration." };
+    for (const resultJson of [
+      {}, { summary: "Unqualified legacy summary" },
+      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Waiting for an answer" } },
+      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "failed", summary: "The provider failed" } },
+      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: existingComment.body } },
+    ]) {
+      expect(resolveHeartbeatRunResponse({ resultJson, existingComment }))
+        .toMatchObject({ text: existingComment.body, decision: { commentAction: "reuse" } });
+    }
+  });
+
   it("applies comment, explicit provider, adapter, terminal fallback, and semantic precedence", () => {
     const resultWithAdapterFinal = {
       ...resultJson,
