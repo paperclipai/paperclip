@@ -33,8 +33,8 @@ const inviteRoleOptions = [
   {
     value: "operator",
     label: "Operator",
-    description: "Recommended for people who need to help run work without managing access.",
-    gets: "Can assign tasks.",
+    description: "Can edit organization work and invite people.",
+    gets: "Full editing and audit access. Cannot approve join requests or manage member permissions.",
   },
   {
     value: "admin",

@@ -19,6 +19,7 @@ export type RunRetryStateSummary = {
 };
 
 const RETRY_REASON_LABELS: Record<string, string> = {
+  native_provider_overloaded: "Model at capacity",
   ai_connection_pool_wait: "Waiting for pool usage to recover",
   transient_failure: "Transient failure",
   missing_issue_comment: "Missing task comment",

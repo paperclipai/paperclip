@@ -13,7 +13,7 @@ import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -42,13 +42,14 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
-import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  buildCodexHomeRefreshProvision,
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel } from "./cli-version.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -203,8 +204,8 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Subscription-only inbound auth merge keeps the newer credential.
-        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Refresh managed config/auth while retaining remote conversation files.
+        provision: buildCodexHomeRefreshProvision({ mergeAuth: !apiKeyAuth }),
         // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
@@ -265,10 +266,19 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
+const CODEX_MODEL_CAPACITY_RE =
+  /\b(?:selected model is at capacity|model is at capacity|at capacity for this model|serverOverloaded|server overloaded)\b/i;
+
 export function classifyCodexTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  if (failure.category === "service") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CODEX_MODEL_CAPACITY_RE.test(text)
+      ? { errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" }
+      : null;
+  }
   // ACP's `limit` also covers context, turn, rate and configured budget limits.
   // Require explicit usage exhaustion; the CLI's broader capacity matcher would
   // also match a context/storage capacity limit and defer the wrong failure.
@@ -330,6 +340,8 @@ export function resolveCodexAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+  if (managedBilling) return managedBilling;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -644,6 +656,32 @@ export async function testCodexAcpEnvironment(
         hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
+  }
+
+  if (targetIsRemote && commandResolvable) {
+    // The ACP server spawns the shared `codex` installed in the environment.
+    // Models with a verified CLI floor are checked against that executable so
+    // a stale sandbox image is named here, before a run fails on every turn
+    // with the backend's "not supported when using Codex with a ChatGPT
+    // account" rejection. Models without a floor skip the probe.
+    //
+    // Remote ACP runs receive the adapter's string-valued env entries (see
+    // buildCodexAcpConfig), so the probe gets the same ones. An agent that
+    // selects its Codex install through PATH is then measured against that
+    // install rather than the image default.
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId: `codex-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      model: asString(config.model, ""),
+      command: "codex",
+      target,
+      cwd: resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd()),
+      env: probeEnv,
+    });
+    if (versionCheck) checks.push(versionCheck.check);
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

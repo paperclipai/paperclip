@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyWorkspaceRestoreFailure } from "./workspace-restore-merge.js";
 import {
-  getWorkspaceRestoreDiagnostic, preserveWorkspaceRestoreErrorDiagnostic, recordWorkspaceRestoreDiagnostic,
+  withWorkspaceRestoreDiagnosticCapture, getWorkspaceRestoreDiagnostic, preserveWorkspaceRestoreErrorDiagnostic, recordWorkspaceRestoreDiagnostic,
   sanitizeWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand,
   type WorkspaceRestoreDiagnostic,
 } from "./workspace-restore-diagnostics.js";
@@ -295,5 +295,35 @@ describe("Git integration diagnostic privacy and attribution", () => {
       gitFailureKind: "private-reason", stderr: "private-text", args: ["private-args"] })).toEqual({
       phase: "workspace", step: "git_integration", errorCode: "unknown", gitCommand: "log", gitFailureKind: "unknown",
     });
+  });
+});
+
+
+it("isolates wrapped transfer evidence across settlements reusing a frozen error", async () => {
+  const shared = Object.freeze(new Error("private-message"));
+  let resume!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const first = withWorkspaceRestoreDiagnosticCapture(async () => {
+    await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("workspace_transfer", async () => {
+      preserveWorkspaceRestoreErrorDiagnostic(shared, {}, { transferStep: "archive_create" });
+      started(); await gate; throw shared;
+    }))).rejects.toBe(shared);
+    return getWorkspaceRestoreDiagnostic(shared);
+  });
+  await ready;
+  const second = await withWorkspaceRestoreDiagnosticCapture(async () => {
+    await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("workspace_transfer", async () => {
+      throw preserveWorkspaceRestoreErrorDiagnostic(shared, {}, { transferStep: "archive_download" });
+    }))).rejects.toBe(shared);
+    return getWorkspaceRestoreDiagnostic(shared);
+  });
+  resume();
+  expect((await first)?.transferStep).toBe("archive_create");
+  expect(second?.transferStep).toBe("archive_download");
+  await withWorkspaceRestoreDiagnosticCapture(async () => {
+    await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("workspace_transfer", async () => { throw shared; }))).rejects.toBe(shared);
+    expect(getWorkspaceRestoreDiagnostic(shared)?.transferStep).toBeUndefined();
   });
 });

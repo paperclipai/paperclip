@@ -50,7 +50,7 @@ if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     // Never silently qualify a debug fallback or a caller-selected alternate runner.
     assert.match(
       runnerBinary,
-      /\/dist\/bin\/paperclip-runnerd$/u,
+      /\/dist\/bin\/(?:darwin-(?:arm64|x64)\/|linux-x64\/)?paperclip-runnerd$/u,
       "normal_staged_runner_required",
     );
     const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");

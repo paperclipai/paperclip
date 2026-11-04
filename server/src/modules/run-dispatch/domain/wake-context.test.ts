@@ -9,6 +9,13 @@ import {
 } from "./wake-context.js";
 
 describe("wake context", () => {
+  it("recognizes a retired available connection without accepting ordinary expiry", () => {
+    const context = { interactionId: "connection", interactionStatus: "expired", interactionKind: "connection_intent",
+      connectionIntentResolution: "existing_connection", mutation: "interaction", wakeReason: "issue_commented" };
+    expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, interactionKind: "request_confirmation" })).toBe(false);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, connectionIntentResolution: undefined })).toBe(false);
+  });
   it("requires the subscription-specific non-assignee receipt for a subscription wait", () => {
     expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_busy", {
       aiConnectionBusyDeferredWhileAssignee: false,

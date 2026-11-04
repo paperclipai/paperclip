@@ -27,9 +27,12 @@ pub(crate) fn with_terminal_outcome(
     provider_events: Vec<NormalizedProviderEvent>,
     outcome_events: Vec<NormalizedProviderEvent>,
 ) -> Vec<NormalizedProviderEvent> {
-    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events
-        .into_iter()
-        .partition(|event| event.event_type == "run.result.proposed");
+    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events.into_iter().partition(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "run.result.proposed" | "session.failed"
+        )
+    });
     results
         .into_iter()
         .chain(provider_events)
@@ -224,6 +227,12 @@ pub fn project_acpx_state_event(
                     ));
                 }
             }
+            let origin = match details.get("origin") {
+                Some(origin) => project_runtime_request_origin(Some(origin))?,
+                None => {
+                    json!({"adapter":"acpx-runtime-sidecar", "provider":"acpx", "method":"session/request_permission"})
+                }
+            };
             one(
                 "runtime_request.created",
                 EventPriority::P0,
@@ -232,11 +241,12 @@ pub fn project_acpx_state_event(
                     "requestId":request_id, "turnId":context.turn_id, "itemId":context.item_id,
                     "type":"permission", "status":"pending", "prompt":title, "choices":choices,
                     "details":details,
-                    "origin":{"adapter":"acpx-runtime-sidecar","provider":"acpx","method":"session/request_permission"},
+                    "origin":origin,
                 }}),
             )
         }
         AcpxProviderStateEvent::InputRequest {
+            tool_call_id,
             request_id,
             question_set,
             origin,
@@ -265,7 +275,7 @@ pub fn project_acpx_state_event(
                         "requestKind": "runtime",
                         "requestId": request_id,
                         "turnId": context.turn_id,
-                        "itemId": context.item_id,
+                        "itemId": tool_call_id.as_ref().map(|id| acpx_opaque_item_id(id, &context.item_id, "tool")).unwrap_or_else(|| context.item_id.to_owned()),
                         "type": "input",
                         "status": "pending",
                         "prompt": prompt,
@@ -276,6 +286,7 @@ pub fn project_acpx_state_event(
             )
         }
         AcpxProviderStateEvent::RuntimeRequestEnded {
+            tool_call_id,
             request_id,
             question_set,
             origin,
@@ -295,6 +306,7 @@ pub fn project_acpx_state_event(
                     context,
                     &AcpxProviderStateEvent::InputRequest {
                         request_id: request_id.clone(),
+                        tool_call_id: tool_call_id.clone(),
                         question_set: question_set.clone(),
                         origin: origin.clone(),
                     },
@@ -317,6 +329,7 @@ pub fn project_acpx_state_event(
                 "reason":reason, "replayAllowed":false, "adapter":"acpx-runtime-sidecar",
             });
             if let Some(request) = request {
+                payload["itemId"] = request["itemId"].clone();
                 payload["request"] = request;
             }
             one(
@@ -661,6 +674,27 @@ fn measurement(value: &Value) -> Value {
 
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
+fn provider_performance_spans(params: &Value) -> Vec<Value> {
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    params.get("spans").and_then(Value::as_array).into_iter().flatten().take(128).filter_map(|span| {
+        let name = span.get("name")?.as_str()?;
+        if !matches!(name,
+            "provider.context.environment" | "provider.context.instructions" | "provider.skills.discovery"
+            | "provider.tools.resolve" | "provider.model.resolve" | "provider.model.stream"
+            | "provider.workspace.snapshot.track" | "provider.workspace.snapshot.patch" | "provider.workspace.snapshot.diff"
+            | "provider.workspace.git.discover" | "provider.workspace.git.default_branch"
+            | "provider.dependencies.install" | "provider.plugins.initialize") { return None; }
+        let start = span.get("startedAtMs")?.as_f64()?;
+        let end = span.get("endedAtMs")?.as_f64()?;
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start || end - start > 86_400_000.0 { return None; }
+        let count = counts.entry(name).or_default();
+        if *count >= 16 { return None; }
+        *count += 1;
+        Some(json!({"name":name,"startedAtMs":start,"endedAtMs":end,
+            "outcome":if span.get("outcome").and_then(Value::as_str)==Some("failed") {"failed"} else {"ok"}}))
+    }).collect()
+}
+
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
     let mut events = Vec::new();
     let push = |events: &mut Vec<NormalizedProviderEvent>,
@@ -675,6 +709,17 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
     };
 
     match method {
+        "paperclip/providerPerformance" => {
+            let spans = provider_performance_spans(params);
+            if !spans.is_empty() {
+                push(
+                    &mut events,
+                    "harness.diagnostic",
+                    EventPriority::P1,
+                    json!({"code":"provider_performance_spans","spans":spans}),
+                );
+            }
+        }
         "thread/compacted" => push(
             &mut events,
             "context.compacted",
@@ -865,7 +910,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "text": bounded_text(string(params.get("delta")), MAX_TEXT_CHARS),
             }),
         ),
-        "item/started" | "item/completed" => {
+        "item/started" | "item/updated" | "item/completed" => {
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
@@ -873,12 +918,12 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let completed = method == "item/completed";
             if matches!(
                 item_type,
-                "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "builtinToolCall"
             ) {
                 let mut payload = json!({
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
-                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", _ => "process" },
+                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
                     "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "target": Value::Null,
@@ -903,6 +948,8 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     &mut events,
                     if completed {
                         "tool.execution.completed"
+                    } else if method == "item/updated" {
+                        "tool.execution.progressed"
                     } else {
                         "tool.execution.started"
                     },
@@ -1161,9 +1208,16 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
-        // session-cumulative. Keep those authorities separate so consumers do
-        // not add the same tokens twice or treat cumulative cost as a delta.
+        let turn_cost = payload.pointer("/cost/basis").and_then(Value::as_str) == Some("turn");
+        let provider_cost = if cost_is_usd {
+            payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1171,15 +1225,7 @@ fn normalize_acpx_status(
             "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": if cost_is_usd {
-                payload
-                    .pointer("/cost/amount")
-                    .and_then(Value::as_f64)
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            },
+            "providerCostUsd": if turn_cost { 0.0 } else { provider_cost },
         });
         let run_delta = json!({
             "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
@@ -1196,7 +1242,7 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -1451,6 +1497,62 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acpx_turn_cost_is_not_a_cumulative_session_price() {
+        let base = json!({"tag": "usage_update", "breakdown": {
+            "inputTokens": 30787, "outputTokens": 5763, "cachedReadTokens": 475008,
+            "cachedWriteTokens": 0, "thoughtTokens": 0
+        }, "cost": {"amount": 0.336842, "currency": "USD", "basis": "turn"}});
+        let first = normalize_acpx_status(&base, "item", "turn-1", 1);
+        assert_eq!(first[0].payload["runDeltaAvailable"], true);
+        assert_eq!(first[0].payload["runDelta"]["providerCostUsd"], 0.336842);
+        assert_eq!(first[0].payload["cumulative"]["providerCostUsd"], 0.0);
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 30787);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 5763);
+        let mut second = base.clone();
+        second["cost"]["amount"] = json!(0.001);
+        let next = normalize_acpx_status(&second, "next", "turn-2", 2);
+        assert_eq!(next[0].payload["runDelta"]["providerCostUsd"], 0.001);
+        second["cost"].as_object_mut().unwrap().remove("basis");
+        let cumulative = normalize_acpx_status(&second, "legacy", "turn-3", 3);
+        assert_eq!(
+            cumulative[0].payload["cumulative"]["providerCostUsd"],
+            0.001
+        );
+        assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn performance_diagnostics_keep_only_bounded_content_free_measurements() {
+        let mut spans = vec![json!({"name":"private prompt","startedAtMs":1,"endedAtMs":2})];
+        for _ in 0..200 {
+            spans.push(
+                json!({"name":"provider.model.stream","startedAtMs":1000,"endedAtMs":1010,
+                "outcome":"failed","authorization":"private","attributes":{"prompt":"private"}}),
+            );
+        }
+        let events =
+            normalize_codex_notification("paperclip/providerPerformance", &json!({"spans":spans}));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "harness.diagnostic");
+        assert_eq!(events[0].priority, EventPriority::P1);
+        let rows = events[0].payload["spans"].as_array().unwrap();
+        assert_eq!(rows.len(), 16);
+        assert_eq!(
+            rows[0],
+            json!({"name":"provider.model.stream","startedAtMs":1000.0,"endedAtMs":1010.0,"outcome":"failed"})
+        );
+        assert!(!events[0].payload.to_string().contains("private"));
+        assert!(normalize_codex_notification(
+            "paperclip/providerPerformance",
+            &json!({"spans":[
+                {"name":"provider.model.stream","startedAtMs":10,"endedAtMs":1},
+                {"name":"provider.model.stream","startedAtMs":0,"endedAtMs":86400001}
+            ]})
+        )
+        .is_empty());
+    }
 
     #[test]
     fn unrelated_information_retains_only_bounded_run_log_diagnostics() {
@@ -1740,6 +1842,36 @@ mod tests {
         assert_eq!(events[0].payload["outputTruncated"], true);
         assert_eq!(events[0].payload["outputBytes"], 32);
         assert!(!events[0].payload.to_string().contains("top-secret"));
+    }
+
+    #[test]
+    fn preserves_opencode_builtin_tool_activity_and_bounded_errors() {
+        for (method, event_type, status) in [
+            ("item/started", "tool.execution.started", "running"),
+            ("item/updated", "tool.execution.progressed", "running"),
+            ("item/completed", "tool.execution.completed", "failed"),
+        ] {
+            let events = normalize_codex_notification(
+                method,
+                &json!({
+                    "threadId": "session-1", "turnId": "turn-1", "item": {
+                        "id": "part-invalid", "type": "builtinToolCall", "tool": "invalid",
+                        "status": status, "output": "Tool not found: fixture_missing; token=top-secret",
+                    }
+                }),
+            );
+            assert_eq!(events[0].event_type, event_type);
+            assert_eq!(events[0].payload["executionId"], "part-invalid");
+            assert_eq!(events[0].payload["transport"], "builtin");
+            assert_eq!(events[0].payload["name"], "invalid");
+            assert_eq!(events[0].payload["status"], status);
+            assert!(events[0].payload["output"]
+                .as_str()
+                .unwrap()
+                .contains("fixture_missing"));
+            assert!(!events[0].payload.to_string().contains("top-secret"));
+            assert!(events[0].payload.get("callId").is_none());
+        }
     }
 
     #[test]

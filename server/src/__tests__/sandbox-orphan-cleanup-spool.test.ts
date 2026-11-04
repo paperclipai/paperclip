@@ -1,7 +1,8 @@
+import { promises as fs } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSandboxOrphanCleanupSpool,
   type DeferredOrphanCleanupRecord,
@@ -84,6 +85,21 @@ describe("createSandboxOrphanCleanupSpool", () => {
     const loaded = await spool.load();
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.providerLeaseId).toBe("sandbox://fake/lease-1");
+  });
+
+  it("distinguishes unread storage from empty storage without dropping readable records", async () => {
+    const spool = createSandboxOrphanCleanupSpool(dir);
+    const record = buildRecord();
+    await spool.append(record);
+    const denied = vi.spyOn(fs, "readdir").mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES" }));
+    try { expect(await spool.loadWithStatus!()).toEqual({ records: [], readFailed: true }); }
+    finally { denied.mockRestore(); }
+    await writeFile(path.join(dir, "broken.json"), "{ truncated");
+    expect(await spool.loadWithStatus!()).toEqual({ records: [record], readFailed: true });
+    await rm(path.join(dir, "broken.json"));
+    expect(await spool.loadWithStatus!()).toEqual({ records: [record], readFailed: false });
+    expect(await createSandboxOrphanCleanupSpool(path.join(dir, "missing")).loadWithStatus!())
+      .toEqual({ records: [], readFailed: false });
   });
 
   it("returns an empty list when the spool directory does not exist", async () => {

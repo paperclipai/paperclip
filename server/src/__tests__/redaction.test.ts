@@ -23,21 +23,82 @@ import {
   sanitizeRecord,
 } from "../redaction.js";
 
+import { createCopilotToolEvidence } from "../../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js";
+import { appendSemanticToolReceipt } from "../../../packages/paperclip-runner/src/drivers/semantic-tool-receipt.js";
+
+function receiptNotice(version: 1 | 2 = 1): Record<string, any> {
+  return {
+    schema: "paperclip.provider.notice.v1", noticeId: `copilot-evidence-${"a".repeat(24)}-1`,
+    severity: "info", category: `paperclip_semantic_tool_receipt_v${version}`, scope: "turn",
+    recoverable: true, userActionable: false, summary: "Paperclip returned a semantic tool result.",
+    provenance: { method: "paperclip/semantic_tool_result", eventType: "semantic_result", sessionId: "session", turnId: "turn" },
+    details: Object.entries({ stage: "semantic_result", schema: `paperclip.semantic_tool_receipt.v${version}`,
+      operationId: "finish_task", callIdentitySha256: "a".repeat(64), inputSha256: "b".repeat(64),
+      resultSha256: "c".repeat(64), outcome: "returned", ...(version === 2 ? { normalizedInputSha256: "d".repeat(64) } : {}),
+    }).map(([name, value]) => ({ name, value })),
+  };
+}
+const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find((detail: any) => detail.name === "schema").value;
+
 describe("redaction", () => {
-  it("preserves credential-related prose, metadata, and dotted filenames", () => {
-    const input = {
-      body: "Keep the private key in a secret manager. Document credential handling and token permissions. Use bearer tokens for authentication. Prefer bearer authentication.",
-      tokenPolicy: "least privilege",
-      secretStorage: "vault",
-      credentialHandling: "harness",
-      authorizationRequired: true,
-      path: "deployment.credentials.example.md",
-    };
-    expect(sanitizeRecord(input)).toEqual(input);
-    expect(redactSensitiveText(input.body)).toBe(input.body);
-    expect(sanitizeRecord({ credentials: { provider: "opaque-value" }, passwordValue: "opaque-value", authorization_code: "opaque-value" }))
-      .toEqual({ credentials: REDACTED_EVENT_VALUE, passwordValue: REDACTED_EVENT_VALUE, authorization_code: REDACTED_EVENT_VALUE });
-    expect(redactSensitiveText("--token-budget 4000 SECRET_STORAGE=vault")).toBe("--token-budget 4000 SECRET_STORAGE=vault");
+  it.each([1, 2, 3] as const)("preserves structured panel activation and redacts adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "runtime.activity.recorded", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, apiKey: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, apiKey: REDACTED_EVENT_VALUE } } });
+  });
+  it.each([1, 2, 3] as const)("preserves credential update metadata and masks adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "auth.credentials.updated", payload: { schema: "paperclip.auth.credentials.updated.v1",
+        provider: "codex", bindingId: "harness-auth", revision: 1, detection: "credential_store" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: REDACTED_EVENT_VALUE } } });
+  });
+
+  it("preserves the actual Copilot receipt producer discriminator through nested durable redaction", () => {
+    const events: Array<Record<string, any>> = [];
+    const projector = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace",
+      active: () => true, emit: event => events.push(event) });
+    const receipt = appendSemanticToolReceipt({ tool: "finish_task", callId: "call", arguments: {} },
+      { content: [{ type: "text", text: "accepted" }] }).receipt;
+    expect(receipt.schema).toBe("paperclip.semantic_tool_receipt.v2");
+    projector.captureSemanticReceipt()!(receipt);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.category).toBe("paperclip_semantic_tool_receipt_v2");
+    expect(events[0]!.payload.details).toHaveLength(8);
+    const input = { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1,
+      eventType: "provider.notice.recorded", payload: events[0]!.payload } };
+    expect(redactEventPayload(input)).toEqual(input);
+    expect(redactEventPayload(redactEventPayload(input))).toEqual(input);
+  });
+
+  it.each([1, 2] as const)("preserves public v%s receipt identifiers as text", version => {
+    const notice = receiptNotice(version);
+    expect(redactEventPayload(notice)).toEqual(notice);
+    // Master's JWT detector recognizes encoded headers, so a dotted public
+    // identifier needs no receipt-shaped exemption to survive redaction.
+    expect(redactEventPayload({ value: `paperclip.semantic_tool_receipt.v${version}` }))
+      .toEqual({ value: `paperclip.semantic_tool_receipt.v${version}` });
+  });
+
+  it("redacts credentials in receipt-shaped data and every adjacent field", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345678";
+    const notice = receiptNotice();
+    notice.details.find((d: any) => d.name === "operationId").value = jwt;
+    notice.provenance.sessionId = jwt;
+    const redacted = redactEventPayload(notice)! as Record<string, any>;
+    expect(receiptSchemaValue(redacted)).toBe("paperclip.semantic_tool_receipt.v1");
+    expect(redacted.details.find((d: any) => d.name === "operationId").value).toBe(REDACTED_EVENT_VALUE);
+    expect(redacted.provenance.sessionId).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload({ notice, password: "canary", arbitrary: jwt }))
+      .toMatchObject({ password: REDACTED_EVENT_VALUE, arbitrary: REDACTED_EVENT_VALUE });
+    notice.details.find((d: any) => d.name === "schema").value = jwt;
+    notice.summary = "Authorization: Bearer canary-token";
+    const hostile = redactEventPayload(notice)!;
+    expect(receiptSchemaValue(hostile)).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(hostile)).not.toContain("canary-token");
   });
 
   it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {
@@ -257,6 +318,11 @@ describe("redaction", () => {
         providerValue: input.nested.providerValue,
       },
     });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v9" })).toEqual({ schema: "paperclip.native-execution-input.v9" });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v7", runtimeSchema: "paperclip.native-execution-input.v8" })).toEqual({
+      schema: "paperclip.native-execution-input.v7",
+      runtimeSchema: "paperclip.native-execution-input.v8",
+    });
     expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v4", runtimeSchema: "paperclip.native-model-envelope.v2" })).toEqual({
       schema: "paperclip.native-execution-input.v4",
       runtimeSchema: "paperclip.native-model-envelope.v2",
@@ -335,6 +401,10 @@ describe("redaction", () => {
       "runner.session.bootstrap",
       "runner.turn.submit",
       "runner.session.startup",
+      "provider_pack.select",
+      "provider_pack.discover",
+      "provider_pack.verify_uploaded",
+      "provider_pack.upload",
       "provider.turn.queue",
       "question_response.to_run_created",
       "native.session.execute",
@@ -827,5 +897,75 @@ second-line\" status=401`,
       command: "pnpm agent:run",
       apiKey: REDACTED_EVENT_VALUE,
     });
+  });
+});
+
+describe("redaction of long letter/digit runs", () => {
+  const typescriptSource = [
+    "export function compactRunLogChunk(chunk: string, maxChars = 65536) {",
+    "  const normalized = redactSensitiveText(chunk);",
+    "  if (normalized.length <= maxChars) return normalized;",
+    "  return normalized.slice(0, maxChars);",
+    "}",
+    "",
+  ].join("\n");
+
+  function base64OfTypeScriptSource(length: number) {
+    const repeatedSource = typescriptSource.repeat(Math.ceil(length / typescriptSource.length));
+    return Buffer.from(repeatedSource).toString("base64").slice(0, length);
+  }
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactSensitiveText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("redacts secret field names that carry a prefix in plain and escaped JSON", () => {
+    const cases = [
+      [`{"myApiKey": "plain-prefixed-secret"}`, `{"myApiKey": "${REDACTED_EVENT_VALUE}"}`],
+      [`{"x_auth_token":"snake-prefixed-secret","status":"ok"}`, `{"x_auth_token":"${REDACTED_EVENT_VALUE}","status":"ok"}`],
+      [`GITHUB_TOKEN: "upper-prefixed-secret"`, `GITHUB_TOKEN: "${REDACTED_EVENT_VALUE}"`],
+      [`{'db_password': 'single-quoted-secret'}`, `{'db_password': '${REDACTED_EVENT_VALUE}'}`],
+      [`text"apiKey":"glued-quote-secret"`, `text"apiKey":"${REDACTED_EVENT_VALUE}"`],
+      [`aGVsbG8apiKey:"glued-run-secret"`, `aGVsbG8apiKey:"${REDACTED_EVENT_VALUE}"`],
+      [String.raw`{\"myApiKey\":\"escaped-prefixed-secret\"}`, String.raw`{\"myApiKey\":\"${REDACTED_EVENT_VALUE}\"}`],
+      [
+        String.raw`{\"x_auth_token\":\"escaped-snake-secret\",\"status\":\"ok\"}`,
+        String.raw`{\"x_auth_token\":\"${REDACTED_EVENT_VALUE}\",\"status\":\"ok\"}`,
+      ],
+      [String.raw`aGVsbG8\"GITHUB_TOKEN\":\"escaped-glued-secret\"`, String.raw`aGVsbG8\"GITHUB_TOKEN\":\"${REDACTED_EVENT_VALUE}\"`],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactSensitiveText(input)).toBe(expected);
+      expect(redactSensitiveText(expected)).toBe(expected);
+    }
+  });
+
+  it("keeps base64 of source text intact and fast while redacting a secret glued to its end", () => {
+    const blob = base64OfTypeScriptSource(48 * 1024);
+    expect(blob).toMatch(/^[A-Za-z0-9]+$/);
+
+    const shellCommand = `printf '%s' '${blob}' | base64 -d > src/compact.ts`;
+    expect(redactWithinTimeBudget(shellCommand)).toBe(shellCommand);
+
+    const toolCallLine = JSON.stringify({ type: "tool_use", input: { command: shellCommand } });
+    expect(redactWithinTimeBudget(toolCallLine)).toBe(toolCallLine);
+    const serializedToolCallLine = JSON.stringify(toolCallLine);
+    expect(redactWithinTimeBudget(serializedToolCallLine)).toBe(serializedToolCallLine);
+
+    const gluedSecret = redactWithinTimeBudget(`${blob}apiKey:"run-glued-secret"`);
+    expect(gluedSecret).toBe(`${blob}apiKey:"${REDACTED_EVENT_VALUE}"`);
+  });
+
+  it("scans long dash-separated runs in linear time", () => {
+    for (const run of ["a-".repeat(60_000), "a--".repeat(40_000)]) {
+      expect(redactWithinTimeBudget(`${run} Authorization: Bearer dash-run-secret`))
+        .toBe(`${run} Authorization: ${REDACTED_EVENT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}Authorization: Bearer glued-run-secret`))
+        .toBe(`${run}Authorization: ${REDACTED_EVENT_VALUE}`);
+    }
   });
 });

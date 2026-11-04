@@ -90,7 +90,7 @@ or plugin-SDK upgrade.
 
 ### Migrating from `job` to `sandbox-cr`
 
-1. Install a controller compatible with the v1alpha1 Sandbox CRD (verify the controller version and CRD before making cluster changes; do not assume the latest release still serves v1alpha1).
+1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/sandbox.yaml`
 2. Update your environment config to set `backend: "sandbox-cr"` (or remove `backend` since `sandbox-cr` is the default)
 3. New leases will use the Sandbox CR backend. Existing leases created with `job` mode continue to use job semantics until they are released.
 

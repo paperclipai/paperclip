@@ -1,14 +1,64 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
-import { TaskChatBubble } from "./TaskChatBubble";
+import { MemoryRouter, useLocation } from "@/lib/router";
+import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
+import { paperclipHumanAvatarUrl } from "@/lib/issue-chat-human-author";
 import type { TaskChatMessageItem } from "./task-chat-model";
+
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/context/CompanyContext")>(),
+  useCompany: () => ({ selectedCompany: { issuePrefix: "TES" } }),
+}));
+
+function CurrentPath() {
+  return <output>{useLocation().pathname}</output>;
+}
+
+describe("chat author navigation", () => {
+  it.each(["name", "avatar"])("opens the responding agent's company-scoped overview from its %s", async (target) => {
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(
+        <MemoryRouter initialEntries={["/TES/chats/conversation-agent"]}>
+          <TaskChatAgentIdentity agentName="Responding agent" agent={{ id: "responding-agent" }} />
+          <CurrentPath />
+        </MemoryRouter>,
+      ));
+      const identity = container.querySelector('[data-testid="task-chat-agent-identity"]')!;
+      const clickTarget = target === "avatar"
+        ? identity.querySelector('[data-testid="task-chat-agent-avatar"]')!
+        : [...identity.querySelectorAll("span")].find(node => node.textContent === "Responding agent")!;
+      await act(async () => {
+        clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+      });
+      expect(container.querySelector("output")?.textContent).toBe("/TES/agents/responding-agent/overview");
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("keeps an identity without an agent ID readable and unlinked", () => {
+    const container = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(<TaskChatAgentIdentity agentName="Unknown agent" agent={{ name: "Unknown agent" }} />));
+      expect(container.textContent).toBe("Unknown agent");
+      expect(container.querySelector("a")).toBeNull();
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+    }
+  });
+});
 
 describe("TaskChatBubble attachment chips", () => {
   let container: HTMLDivElement;
@@ -40,6 +90,46 @@ describe("TaskChatBubble attachment chips", () => {
       ),
     );
   }
+
+  it("renders another human on the left like an agent, and moves them right when they become the viewer", () => {
+    const item: TaskChatMessageItem = {
+      id: "sam-comment", kind: "message", author: "human", text: "I still see the old task title.",
+      authorUserId: "sam", authorName: "Sam Rivera", isCurrentUser: false,
+    };
+    const render = (isCurrentUser: boolean) => flushSync(() => root!.render(
+      <ThemeProvider><TaskChatBubble item={{ ...item, isCurrentUser }} /></ThemeProvider>,
+    ));
+    render(false);
+    const identity = container.querySelector('[data-testid="task-chat-human-identity"]');
+    expect(identity?.textContent).toContain("Sam Rivera");
+    expect(identity?.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("SR");
+    expect(identity?.getAttribute("data-author-user-id")).toBe("sam");
+    expect(container.querySelector('[data-testid="task-chat-human-bubble"]')?.parentElement?.classList.contains("items-start")).toBe(true);
+    const bubble = container.querySelector('[data-testid="task-chat-human-bubble"]');
+    expect(bubble?.className).toContain("bg-transparent");
+    expect(bubble?.className).not.toContain("bg-(--liveness-blue)");
+    expect(bubble?.querySelector(".paperclip-markdown")?.className).not.toContain("paperclip-markdown-on-accent");
+    render(true);
+    expect(bubble?.parentElement?.classList.contains("items-end")).toBe(true);
+    expect(bubble?.className).toContain("bg-(--liveness-blue)");
+    expect(container.querySelector('[data-testid="task-chat-human-identity"]')).toBeNull();
+    expect(container.textContent).toContain("I still see the old task title.");
+  });
+
+  it("uses initials instead of loading an external human avatar", () => {
+    flushSync(() => root!.render(
+      <ThemeProvider><TaskChatBubble item={{
+        id: "external-avatar", kind: "message", author: "human", text: "Please check this.",
+        authorName: "Sam Rivera", authorAvatarUrl: "https://example.com/track.png", isCurrentUser: false,
+      }} /></ThemeProvider>,
+    ));
+    const identity = container.querySelector('[data-testid="task-chat-human-identity"]');
+    expect(identity?.querySelector("img")).toBeNull();
+    expect(identity?.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("SR");
+    expect(paperclipHumanAvatarUrl("/api/assets/sam/content")).toBe("/api/assets/sam/content");
+    expect(paperclipHumanAvatarUrl("https://example.com/track.png")).toBeNull();
+    expect(paperclipHumanAvatarUrl("//example.com/track.png")).toBeNull();
+  });
 
   it("shows persistent iMessage attribution only on inbound human bubbles", () => {
     for (const author of ["human", "agent"] as const) {
@@ -295,8 +385,8 @@ describe("TaskChatBubble accent-bubble text color", () => {
     );
   }
 
-  it("marks the human bubble's markdown as on-accent so prose text follows text-white", () => {
-    render({ id: "m1", kind: "message", author: "human", text: "when a new task is created…" });
+  it("marks the own-message markdown as on-accent so prose text follows text-white", () => {
+    render({ id: "m1", kind: "message", author: "human", isCurrentUser: true, text: "when a new task is created…" });
     const body = container.querySelector(".paperclip-markdown");
     expect(body).not.toBeNull();
     // Without this class the light-mode prose body color reads as black on blue.

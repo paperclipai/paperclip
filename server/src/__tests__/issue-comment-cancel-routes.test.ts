@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LogActivityInput } from "../services/activity-log.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -12,17 +13,20 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(async ({ action }: { action: string }) => ({
+    action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+  })),
   canUser: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
 }));
 const mockAuthoritativeQueueWakes = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(async () => []),
   saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
@@ -46,7 +50,7 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 const mockDocumentAnnotationService = vi.hoisted(() => ({
-  cleanupForIssueCommentDeletion: vi.fn(async () => ({ deletedCommentIds: [], resolvedThreadIds: [] })),
+  cleanupForIssueCommentDeletion: vi.fn(async () => ({ deletedCommentIds: [] as string[], resolvedThreadIds: [] as string[] })),
   remapOpenThreadsForDocument: vi.fn(async () => []),
 }));
 const mockDecisionTrainingService = vi.hoisted(() => ({
@@ -191,7 +195,7 @@ function makeComment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe.sequential("issue comment cancel routes", () => {
+describe("issue comment cancel routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
     const [{ issueRoutes }, { errorHandler }] = await Promise.all([
       vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),

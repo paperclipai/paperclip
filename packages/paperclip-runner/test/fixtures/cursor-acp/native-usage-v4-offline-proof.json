@@ -1,0 +1,59 @@
+{
+  "schema": "paperclip.cursor.native-usage-offline-proof.v1",
+  "providerCalls": 0,
+  "standardUsageEmitted": false,
+  "boundary": "digest-pinned handlePrompt, native invocation, child creation/reuse and child update methods; surrounding session/transport doubled",
+  "platforms": [
+    {
+      "platform": "darwin-arm64",
+      "vendorSha256": "7784c8b16d4e639814c13b12be2a687f5dc2cd98cbf29ed0a10820778ab1bf62",
+      "candidateSha256": "35c5bf13b261ea884bb0e7b26ae7bd4c4999b0b4b08ab338bc22f2ccce2b8108",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "vendor_child_creation_and_reuse",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    },
+    {
+      "platform": "darwin-x64",
+      "vendorSha256": "3c0aaf6ecc4fceb0f95e1731deec75384984570d14d0871cecec11972b948ac4",
+      "candidateSha256": "5b2510248429febe1c9aead6ad43d35d89cdedc4dd057d4f07495efa33c7da55",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "vendor_child_creation_and_reuse",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    },
+    {
+      "platform": "linux-x64",
+      "vendorSha256": "2de420f1b31e70ca74b083a1ce5b519c2abffa5789d71cc06e84d2c38acb7c07",
+      "candidateSha256": "38fe96fa71463372bffdd9efa3e5608293ff075d079149fe20a1625783c4eb39",
+      "checks": [
+        "exact_parent_invocation_capture",
+        "separate_followups",
+        "no_standard_usage",
+        "warm_prompt_isolation",
+        "vendor_child_creation_and_reuse",
+        "child_run_attribution",
+        "history_and_late_child_isolation",
+        "overlapping_cancellation",
+        "late_parent_callback_isolation",
+        "exception_cleanup"
+      ]
+    }
+  ]
+}

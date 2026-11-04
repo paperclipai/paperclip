@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { workAssessments } from "@paperclipai/db";
-import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
+import { completionContracts, nativeRunResults, workAssessments } from "@paperclipai/db";
+import { classifyNativeEvidence, type NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { nativeSha256 } from "./canonical.js";
+import type { NativeMonitorDelivery, NativePreservedMonitorWait } from "./native-monitor-delivery.js";
 
 export async function recordNativeWorkAssessment(input: {
   db: Db;
@@ -21,9 +22,19 @@ export async function recordNativeWorkAssessment(input: {
   assessment: NativeEvidenceAssessment;
   /** Workspace repair changes the status decision even when work evidence is unchanged. */
   workspaceFinalizeStatus?: "succeeded" | "failed";
+  /** Timer delivery can settle an old wait without changing the work evidence. */
+  monitorDelivery?: NativeMonitorDelivery | null;
+  /** A persisted schedule can regain settlement authority after a policy repair. */
+  monitorWaitAt?: string | null;
+  preservedMonitorWait?: NativePreservedMonitorWait | null;
   supersedesAssessmentId?: string | null;
 }) {
-  const assessmentJson = input.assessment as unknown as Record<string, unknown>;
+  const assessmentJson = {
+    ...input.assessment,
+    ...(input.monitorDelivery ? { monitorDelivery: input.monitorDelivery } : {}),
+    ...(input.monitorWaitAt ? { monitorWaitAt: input.monitorWaitAt } : {}),
+    ...(input.preservedMonitorWait ? { preservedMonitorWait: input.preservedMonitorWait } : {}),
+  } as unknown as Record<string, unknown>;
   const inputDigest = nativeSha256({
     contractId: input.contractId,
     contractCanonicalSha256: input.contractCanonicalSha256,
@@ -132,4 +143,34 @@ export async function recordNativeAttentionAssessment(input: {
   }).returning();
   if (!row) throw new Error("native_attention_assessment_not_persisted");
   return row;
+}
+
+
+
+export async function lockCurrentNativeWorkAssessmentEvidence(db: Db, input: {
+  companyId: string;
+  issueId: string;
+  runId: string;
+  resultId: string;
+  assessmentId: string;
+}): Promise<boolean> {
+  const [row] = await db.select({
+    assessment: workAssessments.assessmentJson,
+    contract: completionContracts.contractJson,
+    envelope: nativeRunResults.resultJson,
+  }).from(workAssessments)
+    .innerJoin(completionContracts, and(eq(completionContracts.id, workAssessments.contractId),
+      eq(completionContracts.companyId, input.companyId), eq(completionContracts.issueId, input.issueId)))
+    .innerJoin(nativeRunResults, and(eq(nativeRunResults.id, workAssessments.resultId),
+      eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, input.issueId),
+      eq(nativeRunResults.runId, input.runId)))
+    .where(and(eq(workAssessments.id, input.assessmentId), eq(workAssessments.companyId, input.companyId),
+      eq(workAssessments.issueId, input.issueId), eq(workAssessments.runId, input.runId),
+      eq(workAssessments.resultId, input.resultId)))
+    .limit(1).for("share", { noWait: true });
+  if (!row) return false;
+  const current = await classifyNativeEvidence({ db, companyId: input.companyId,
+    issueId: input.issueId, runId: input.runId, contract: row.contract,
+    result: row.envelope.result as Record<string, unknown>, lockSources: true });
+  return nativeSha256(current) === nativeSha256(row.assessment);
 }

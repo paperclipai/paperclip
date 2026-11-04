@@ -218,7 +218,6 @@ export function UserProfile() {
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const { hidden: hiddenSettings } = useHiddenSettings();
   const canEditProfile =
@@ -238,7 +237,7 @@ export function UserProfile() {
     () =>
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
-        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
+        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "Paperclip services"),
         sublabel: "Task-linked usage",
         costCents: row.costCents,
         inputTokens: row.inputTokens,
@@ -343,7 +342,7 @@ export function UserProfile() {
                     <span className="font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                     <span className="truncate text-sm">{issue.title}</span>
                     <span className="flex items-center gap-3 sm:justify-end">
-                      <IssueStatusBadge status={issue.status} />
+                      <IssueStatusBadge status={issue.status} displayStatus={issue.displayStatus} />
                       <span className="text-xs tabular-nums text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
                     </span>
                   </Link>

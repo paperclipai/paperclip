@@ -1,4 +1,5 @@
-import { budgetService } from "../services/budgets.js";
+import { budgetService, computeObservedSpend, flushBudgetEvaluationWork } from "../services/budgets.js";
+import * as costAccounting from "../services/costs.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import express from "express";
@@ -13,6 +14,7 @@ import {
   agents,
   approvals,
   toolActionRequests,
+  toolInvocations,
   toolPolicies,
   companies,
   companyMemberships,
@@ -20,20 +22,27 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  projects,
   toolConnections,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolProfiles,
   toolProfileBindings,
+  toolProfileEntries,
   browserUseSessions,
   browserUseRuns,
   browserUseBrowsers,
   costEvents,
   financeEvents,
+  budgetPolicies,
+  budgetReservations,
 } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { browserUseViewports } from "../services/browser-use-viewport.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerBrowserUseCleanup } from "../services/browser-use-work.js";
 import { browserUseService } from "../services/browser-use.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../services/connector-runtime.js";
 import { registerAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
@@ -81,6 +90,8 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         providerBrowser = randomUUID();
       let providerRun = randomUUID();
       let acceptedTask = "", loseReply = false, rejectCode = 0, recoveryPages = 0;
+      let createGate: (() => Promise<void>) | undefined;
+      let totalCostUsd = "0.15";
       let status = "running",
         stopped = false,
         browserReady = false,
@@ -109,6 +120,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         if (path === "/runs" && init.method === "POST" && failCreate)
           throw new Error("lost create response");
         if (path === "/runs" && init.method === "POST") {
+          await createGate?.();
           providerRun = randomUUID();
           status = "running";
           acceptedTask = JSON.parse(String(init.body)).task;
@@ -153,7 +165,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
           return Response.json({
             status,
             result: "Finished https://live.browser-use.com/canary",
-            totalCostUsd: "0.15",
+            totalCostUsd,
             model: "fixture",
           });
         if (path === "/browsers")
@@ -277,7 +289,8 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
           .update(browserUseSessions)
           .set({ nextPollAt: new Date(0) })
           .where(eq(browserUseSessions.companyId, company.id));
-        await service.sweep();
+        await service.sweep(connection.connectionId);
+        await flushBudgetEvaluationWork(db, { companyId: company.id });
       };
       return {
         company,
@@ -308,11 +321,54 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         loseReply: () => { loseReply = true; },
         reject: (code: number) => { rejectCode = code; },
         recoveryPages: (count: number) => { recoveryPages = count; },
+        delayCreate: (gate: () => Promise<void>) => { createGate = gate; },
+        usage: (value: string) => { totalCostUsd = value; },
         paginate: () => {
           paginatedEvents = true;
         },
       };
     }
+    it("wakes the app worker from request-service commits and restores durable poll and lease deadlines", async () => {
+      const f = await fixture();
+      const background = browserUseService(db, f.request);
+      const sweep = vi.spyOn(background, "sweep");
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await registerBrowserUseCleanup(coordinator, background, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(await background.nextSweepAt()).toBeNull();
+        const started = await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Read example.com" }) as { sessionId: string };
+        await vi.waitFor(() => expect(sweep.mock.calls.length).toBeGreaterThan(1));
+        await coordinator.stop();
+        expect(onError).not.toHaveBeenCalled();
+
+        const poll = new Date(Date.now() + 60_000);
+        const lease = new Date(Date.now() + 180_000);
+        await db.update(browserUseSessions).set({ nextPollAt: poll, leaseUntil: lease })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(lease.getTime());
+        const restarted = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        try {
+          await registerBrowserUseCleanup(restarted, browserUseService(db, f.request), () => true).ready;
+          expect(restarted.nextWakeAt()).toBe(lease.getTime());
+        } finally { await restarted.stop(); }
+        await db.update(browserUseSessions).set({ leaseUntil: new Date(0) })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(poll.getTime());
+        await db.update(browserUseSessions).set({ leaseUntil: null })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(poll.getTime());
+        const [session] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.id, started.sessionId));
+        await f.service.control(session, "end");
+        expect(await background.nextSweepAt()).toBeLessThan(poll.getTime());
+        await db.update(browserUseSessions).set({ status: "closed" }).where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBeNull();
+      } finally {
+        await coordinator.stop();
+        await db.update(browserUseSessions).set({ status: "closed" }).where(eq(browserUseSessions.companyId, f.company.id));
+      }
+    });
     it("keeps Cloud instructions out of universal skills and unassigned runtime overlays", async () => {
       const skills = await listPaperclipSkillEntries(fileURLToPath(new URL("../", import.meta.url)), [fileURLToPath(new URL("../../../skills", import.meta.url))]);
       expect(skills.some(skill => skill.runtimeName === "paperclip")).toBe(true);
@@ -363,6 +419,71 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(revoked.paperclipRuntimeSkills).toEqual([]);
       expect(revoked.paperclipConnectorSkillDigest).toBeNull();
       expect((await prepareConnectorSkillDelivery(revoked, "cursor_local")).instructions).toBe("");
+    });
+    it.each([false, true])("skips tool discovery without an active company Browser Use connection (foreign: %s)", async foreign => {
+      const f = await fixture();
+      await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.connectionId));
+      if (foreign) await fixture();
+      f.request.mockClear();
+      const discovery = vi.spyOn(db, "transaction");
+      try {
+        expect(await f.gateway.browserUseResources(f.binding)).toEqual([]);
+        expect(discovery).not.toHaveBeenCalled();
+        expect(f.request).not.toHaveBeenCalled();
+      } finally { discovery.mockRestore(); }
+    });
+    it("resolves only the Browser Use catalog even while full discovery is saturated", async () => {
+      const f = await fixture();
+      const [application] = await db.insert(toolApplications).values({
+        companyId: f.company.id, name: "Unrelated MCP", type: "mcp_http", status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: f.company.id, applicationId: application.id, name: "Unrelated MCP",
+        uid: randomUUID(), transport: "mcp_remote", status: "active", enabled: true, healthStatus: "ok",
+      }).returning();
+      await db.insert(toolCatalogEntries).values(Array.from({ length: 500 }, (_, i) => ({
+        companyId: f.company.id, applicationId: application.id, connectionId: connection.id,
+        entryKind: "tool" as const, name: `unrelated_${i}`, toolName: `unrelated_${i}`,
+        inputSchema: { type: "object" }, riskLevel: "read" as const, status: "active" as const,
+        versionHash: "fixture", schemaHash: "fixture",
+      })));
+      const { recordingDb } = await import("./helpers/tool-gateway-listing-fixture.js");
+      const { toolDiscoveryScheduler } = await import("../services/tool-discovery-scheduler.js");
+      const releases: Array<() => void> = [];
+      const blockers = [0, 1].map(() => toolDiscoveryScheduler.run(() => new Promise<void>(resolve => releases.push(resolve))));
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      const recorded = recordingDb(db);
+      const gateway = createToolGatewayService(recorded.db);
+      const pending = gateway.browserUseResources(f.binding);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const resources = await Promise.race([pending, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("Assignment waited for unrelated discovery")), 5_000);
+        })]);
+        expect(resources).toEqual([{ id: f.connection.connectionId, connectionId: f.connection.connectionId, label: "Browser Use Cloud" }]);
+        const catalogReads = recorded.statements.flatMap((query, index) =>
+          query.includes('from "tool_catalog_entries"') && query.includes('inner join "tool_connections"') ? [recorded.statementParams[index]] : []);
+        expect(catalogReads).toHaveLength(1);
+        expect(catalogReads[0]).toContain(f.connection.connectionId);
+        expect(catalogReads[0]).not.toContain(connection.id);
+        expect(recorded.statements.some(query => query.includes('from "chat_endpoints"'))).toBe(false);
+      } finally {
+        clearTimeout(timeout);
+        releases.forEach(release => release());
+        await Promise.all(blockers);
+        await pending;
+      }
+    });
+    it.each(["policy", "catalog", "grant"])("rechecks Browser Use %s revocation without a cached assignment", async kind => {
+      const f = await fixture();
+      expect(await f.gateway.browserUseResources(f.binding)).toHaveLength(1);
+      if (kind === "policy") await db.insert(toolPolicies).values({
+        companyId: f.company.id, name: "Revoke Browser Use", policyType: "block",
+        selectors: { connectionId: f.connection.connectionId }, priority: 100,
+      });
+      if (kind === "catalog") await db.update(toolCatalogEntries).set({ quarantinedAt: new Date() }).where(eq(toolCatalogEntries.connectionId, f.connection.connectionId));
+      if (kind === "grant") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+      expect(await f.gateway.browserUseResources(f.binding)).toEqual([]);
     });
     it("withholds Cloud instructions when connection tools are disabled", async () => {
       const f = await fixture();
@@ -1046,10 +1167,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       const resizePath = path.replace("/viewer", "/viewport");
       const resizeSpy = vi
         .spyOn(browserUseViewports, "resize")
-        .mockResolvedValue({ preset: "phone" });
+        .mockResolvedValue({ preset: "phone", applied: true });
       expect(
         (await http(app).post(resizePath).send({ preset: "phone" })).body,
-      ).toEqual({ preset: "phone" });
+      ).toEqual({ preset: "phone", applied: true });
       expect(resizeSpy).toHaveBeenCalledTimes(1);
       const viewerId = randomUUID();
       resizeSpy.mockResolvedValueOnce({
@@ -1280,6 +1401,376 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         )[0].status,
       ).toBe("closed");
     });
+    it("counts browser holds with parent reservations while provider work is delayed", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      await db.insert(budgetReservations).values({ companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, amountCents: "40" });
+      let release!: () => void, started!: () => void;
+      const providerEntered = new Promise<void>(resolve => { started = resolve; });
+      const providerRelease = new Promise<void>(resolve => { release = resolve; });
+      f.delayCreate(async () => { started(); await providerRelease; });
+      const first = f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Read", maxCostUsd: 0.8 });
+      // Attach the rejection handler before waiting for the controlled POST.
+      await Promise.race([providerEntered, first.then(() => undefined)]);
+      try {
+        await expect(f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Concurrent" })).rejects.toThrow("reserved");
+        const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+        expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "0.0000000", effectiveHeldCents: "100.0000000" });
+        expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(1);
+        const call = f.request.mock.calls.find(([url, init]) => url.endsWith("/runs") && init.method === "POST")!;
+        expect(JSON.parse(String(call[1].body)).maxCostUsd).toBe(0.6);
+        // Accounting lock is not held while the hosted browser is waiting.
+        expect(await db.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id))).toHaveLength(1);
+      } finally { release(); await first; }
+    });
+    it("keeps manual Stop authoritative when a paid create response arrives later", async () => {
+      const f = await fixture();
+      let release!: () => void, entered!: () => void;
+      const accepted = new Promise<void>(resolve => { entered = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      f.delayCreate(async () => { entered(); await barrier; });
+      const starting = f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Stop during dispatch" });
+      await accepted;
+      try {
+        const [session] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id));
+        await f.service.control(session, "end");
+      } finally { release(); }
+      await expect(starting).resolves.toMatchObject({ status: "stopping" });
+      await f.tick();
+      expect((await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id)))[0].status).toBe("closed");
+      expect(f.request.mock.calls.filter(([url]) => url.endsWith("/cancel"))).toHaveLength(1);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+    });
+    it("replays simultaneous invocation retries without submitting another paid create", async () => {
+      const f = await fixture();
+      const invocation = randomUUID();
+      const another = browserUseService(db, f.request);
+      const results = await Promise.all([f.service, another].map(service =>
+        service.execute(f.binding, f.grant, invocation, "browser_start", { task: "One invocation" })));
+      expect((results[0] as { sessionId: string }).sessionId).toBe((results[1] as { sessionId: string }).sessionId);
+      expect(await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation))).toHaveLength(1);
+      expect(await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id))).toHaveLength(1);
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(1);
+    });
+    it.each([
+      { scope: "company", phase: "initial" }, { scope: "project", phase: "initial" },
+      { scope: "company", phase: "handoff" }, { scope: "project", phase: "handoff" },
+    ])("honors a $scope pause committed after the $phase admission snapshot", async ({ scope, phase }) => {
+      const f = await fixture();
+      const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Browser authority" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+      const invocation = randomUUID();
+      const transaction = db.transaction.bind(db);
+      let injected = false;
+      const race = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+        const intercept = !injected && config?.isolationLevel === "repeatable read" && config.accessMode !== "read only"
+          && (phase === "initial" ? !run : run?.status === "creating");
+        return transaction(async tx => {
+          if (intercept) {
+            injected = true;
+            // Establish the real RR snapshot before the independent operator
+            // transaction commits. An unfenced read would keep seeing active.
+            await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id));
+            if (scope === "company") await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+              .where(eq(companies.id, f.company.id));
+            else await db.update(projects).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(projects.id, project.id));
+          }
+          return callback(tx);
+        }, config);
+      });
+      try {
+        await expect(f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Stopped authority" })).rejects.toThrow();
+      } finally { race.mockRestore(); }
+      expect(injected).toBe(true);
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+      const rows = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      if (phase === "initial") expect(rows).toHaveLength(0);
+      else expect(rows[0]).toMatchObject({ status: "failed", eventsDrained: 1, result: { paperclipBudgetHold: { state: "released" } } });
+    });
+    it.each(["reduction", "new_policy", "config", "charge", "cancel", "session_end", "policy_deny"])("rechecks %s at the actual provider handoff", async race => {
+      const f = await fixture();
+      if (race === "reduction" || race === "charge") await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      const invocationId = randomUUID();
+      const transaction = db.transaction.bind(db);
+      let injected = false;
+      const barrier = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+        const result = await transaction(callback, config);
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocationId));
+        if (!injected && run?.status === "creating" && !(run.result as { paperclipBudgetHold?: { dispatchCommittedAt?: string } })?.paperclipBudgetHold?.dispatchCommittedAt) {
+          injected = true;
+          if (race === "reduction" || race === "new_policy") await budgetService(db).upsertPolicy(f.company.id,
+            { scopeType: "company", scopeId: f.company.id, amount: race === "new_policy" ? 100 : 10, hardStopEnabled: true }, actor.actorId);
+          else if (race === "config") await f.service.saveSettings(f.company.id, f.grant.id, actor.actorId, { allowedProfileIds: [], maxCostUsd: 0.1 });
+          else if (race === "charge") {
+            const { costService } = await import("../services/costs.js");
+            await costService(db).createEvent(f.company.id, { agentId: f.agent.id, provider: "fixture", model: "fixture", costCents: 20, occurredAt: new Date() });
+          } else if (race === "policy_deny") await db.insert(toolPolicies).values({ companyId: f.company.id,
+            name: "Deny before browser handoff", policyType: "block", selectors: { connectionId: f.connection.connectionId }, priority: 0 });
+          else if (race === "session_end") await db.update(browserUseSessions).set({ status: "stopping", stopRequested: "end" }).where(eq(browserUseSessions.id, run.sessionId));
+          else await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.run.id));
+        }
+        return result;
+      });
+      try {
+        await expect(f.service.execute(f.binding, f.grant, invocationId, "browser_start", { task: "Must not start" })).rejects.toThrow();
+      } finally { barrier.mockRestore(); }
+      expect(injected).toBe(true);
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+      const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocationId));
+      expect(run).toMatchObject({ status: "failed", eventsDrained: 1, result: { paperclipBudgetHold: { state: "released" } } });
+    });
+    it.each(["default_allow", "tool_name"])("retains valid %s profile authorization at browser admission", async selector => {
+      const f = await fixture();
+      await db.update(toolProfiles).set({ status: "disabled" }).where(eq(toolProfiles.companyId, f.company.id));
+      const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, name: "Scoped browser access",
+        profileKey: randomUUID(), defaultAction: selector === "default_allow" ? "allow" : "deny" }).returning();
+      await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
+      if (selector === "tool_name") await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: profile.id,
+        selectorType: "tool_name", toolName: "browser_start", effect: "include" });
+      await expect(f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Allowed by profile" })).resolves.toMatchObject({ status: "running" });
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(1);
+    });
+    it("checks the gateway invocation's namespaced tool identity for explicit denial", async () => {
+      const f = await fixture();
+      const invocationId = randomUUID(), toolName = "app.browser-fixture:browser-start";
+      const [entry] = await db.select().from(toolCatalogEntries).where(and(eq(toolCatalogEntries.connectionId, f.connection.connectionId), eq(toolCatalogEntries.toolName, "browser_start")));
+      await db.insert(toolInvocations).values({ id: invocationId, companyId: f.company.id, agentId: f.agent.id,
+        runId: f.run.id, issueId: f.issue.id, actorType: "agent", actorId: f.agent.id,
+        connectionId: f.connection.connectionId, applicationId: entry.applicationId, catalogEntryId: entry.id,
+        toolName, upstreamToolName: "browser_start", policyDecision: "allow", status: "executing" });
+      await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Block namespaced invocation",
+        policyType: "block", selectors: { toolName }, priority: 0 });
+      await expect(f.service.execute(f.binding, f.grant, invocationId, "browser_start", { task: "Denied" })).rejects.toThrow("blocked");
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+    });
+    it("releases a crashed reservation that never reached provider dispatch authority", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "agent", scopeId: f.agent.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      const [session] = await db.insert(browserUseSessions).values({ companyId: f.company.id, issueId: f.issue.id,
+        agentId: f.agent.id, connectionId: f.connection.connectionId, grantId: f.grant.id, status: "starting" }).returning();
+      const invocationId = randomUUID();
+      const [run] = await db.insert(browserUseRuns).values({ companyId: f.company.id, sessionId: session.id,
+        heartbeatRunId: f.run.id, invocationId, createdAt: new Date(Date.now() - 61_000),
+        result: { paperclipBudgetHold: { invocationId, amountCents: "50.0000000", state: "held", projectId: null } } }).returning();
+      f.request.mockClear();
+      await f.tick();
+      const [policyRow] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+      expect((await computeObservedSpend(db, policyRow)).effectiveHeldCents).toBe("0.0000000");
+      expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0]).toMatchObject({ status: "failed", eventsDrained: 1, result: { paperclipBudgetHold: { state: "released" } } });
+      expect((await db.select().from(browserUseSessions).where(eq(browserUseSessions.id, session.id)))[0].status).toBe("failed");
+      expect(f.request.mock.calls.some(([url]) => new URL(url).pathname === "/api/v4/runs")).toBe(false);
+    });
+    it("releases a definitively rejected browser hold without inventing a charge", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "agent", scopeId: f.agent.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      f.reject(409);
+      await expect(f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Rejected", maxCostUsd: 0.5 })).rejects.toThrow("busy");
+      const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+      expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "0.0000000", effectiveHeldCents: "0.0000000" });
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(0);
+      await db.update(browserUseRuns).set({ result: null }).where(eq(browserUseRuns.companyId, f.company.id));
+      expect((await computeObservedSpend(db, row)).unknownBrowserRunCount).toBe(0);
+    });
+    it.each(["company", "agent", "project"] as const)("treats a running uncapped browser as unknown when a %s budget is introduced", async scopeType => {
+      for (const legacy of [false, true]) {
+        const f = await fixture();
+        const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Browser project" }).returning();
+        const [otherProject] = await db.insert(projects).values({ companyId: f.company.id, name: "Unrelated project" }).returning();
+        await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+        const invocation = randomUUID();
+        await expect(f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Uncapped running work" })).resolves.toMatchObject({ status: "running" });
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+        expect(run.result).toMatchObject({ paperclipBudgetHold: { amountCents: "0.0000000", uncapped: true } });
+        expect(JSON.parse(String(f.request.mock.calls.find(([url, init]) => url.endsWith("/runs") && init.method === "POST")![1].body))).not.toHaveProperty("maxCostUsd");
+        if (legacy) await db.update(browserUseRuns).set({ result: null }).where(eq(browserUseRuns.id, run.id));
+        const scopeId = scopeType === "company" ? f.company.id : scopeType === "agent" ? f.agent.id : project.id;
+        const policy = await budgetService(db).upsertPolicy(f.company.id,
+          { scopeType, scopeId, amount: 100, hardStopEnabled: true }, actor.actorId);
+        const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+        expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "0.0000000", effectiveHeldCents: "0.0000000", unknownBrowserRunCount: 1 });
+        expect((await computeObservedSpend(db, { ...row, scopeType: "project", scopeId: otherProject.id })).unknownBrowserRunCount).toBe(0);
+        expect(await budgetService(db).getInvocationBlock(f.company.id, f.agent.id, { projectId: project.id })).not.toBeNull();
+        f.request.mockClear();
+        await expect(f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Must wait for priced work" })).rejects.toThrow();
+        expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+        await budgetService(db).upsertPolicy(f.company.id,
+          { scopeType, scopeId, amount: 100, hardStopEnabled: true, unpricedUsagePolicy: "allow" }, actor.actorId);
+        expect(await budgetService(db).getInvocationBlock(f.company.id, f.agent.id, { projectId: project.id })).toBeNull();
+        f.complete(); await f.tick();
+        expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "15.0000000", effectiveHeldCents: "0.0000000", unknownBrowserRunCount: 0 });
+      }
+    });
+    it.each([
+      { label: "explicit capped zero", uncapped: false, state: "held", dispatched: true, status: "running", expected: 0 },
+      { label: "legacy zero cap without a flag", uncapped: undefined, state: "held", dispatched: true, status: "running", expected: 1 },
+      { label: "uncapped before dispatch", uncapped: true, state: "held", dispatched: false, status: "creating", expected: 0 },
+      { label: "failed before dispatch", uncapped: true, state: "released", dispatched: false, status: "failed", expected: 0 },
+    ])("distinguishes $label from unfinished uncapped spending", async item => {
+      const f = await fixture();
+      const [session] = await db.insert(browserUseSessions).values({ companyId: f.company.id, issueId: f.issue.id,
+        agentId: f.agent.id, connectionId: f.connection.connectionId, grantId: f.grant.id, status: "running" }).returning();
+      const invocationId = randomUUID();
+      await db.insert(browserUseRuns).values({ companyId: f.company.id, sessionId: session.id, heartbeatRunId: f.run.id,
+        invocationId, status: item.status, providerRunId: item.dispatched ? randomUUID() : null, eventsDrained: item.status === "failed" ? 1 : 0,
+        result: { paperclipBudgetHold: { invocationId, amountCents: "0.0000000", projectId: null, state: item.state,
+          ...(item.uncapped === undefined ? {} : { uncapped: item.uncapped }),
+          ...(item.dispatched ? { dispatchCommittedAt: new Date().toISOString() } : {}) } } });
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+      expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "0.0000000", effectiveHeldCents: "0.0000000", unknownBrowserRunCount: item.expected });
+      const block = await budgetService(db).getInvocationBlock(f.company.id, f.agent.id);
+      expect(Boolean(block)).toBe(item.expected > 0);
+    });
+    it("blocks new budgeted work after an uncapped browser POST becomes uncertain", async () => {
+      const f = await fixture();
+      f.loseReply();
+      const uncertain = randomUUID();
+      await expect(f.service.execute(f.binding, f.grant, uncertain, "browser_start", { task: "Uncapped" })).rejects.toThrow("could not be confirmed");
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+      expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "0.0000000", effectiveHeldCents: "0.0000000", unknownBrowserRunCount: 1 });
+      f.request.mockClear();
+      await expect(f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Must wait" })).rejects.toThrow();
+      expect(f.request.mock.calls.filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")).toHaveLength(0);
+      // The existing unpriced-usage policy remains the explicit operator override.
+      await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true, unpricedUsagePolicy: "allow" }, actor.actorId);
+      expect(await budgetService(db).getInvocationBlock(f.company.id, f.agent.id)).toBeNull();
+      f.usage("0.15");
+      await f.tick();
+      expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "15.0000000", unknownBrowserRunCount: 0 });
+    });
+    it("retains unknown browser holds and settles exact terminal usage without exposing internal metadata", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      f.loseReply();
+      const invocation = randomUUID();
+      await expect(f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Read", maxCostUsd: 0.5 })).rejects.toThrow("could not be confirmed");
+      const [row] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId));
+      expect((await computeObservedSpend(db, row)).effectiveHeldCents).toBe("50.0000000");
+      f.usage("0.150000001");
+      await f.tick();
+      expect(await computeObservedSpend(db, row)).toMatchObject({ ledgerCents: "15.0000001", effectiveHeldCents: "0.0000000" });
+      const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      expect(run.result).toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000001" } });
+      const replay = await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Read" });
+      expect(JSON.stringify(replay)).not.toContain("paperclipBudgetHold");
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+    });
+    it("settles while company, agent and policy rows are held by unrelated writers", async () => {
+      const f = await fixture();
+      const policy = await budgetService(db).upsertPolicy(f.company.id,
+        { scopeType: "company", scopeId: f.company.id, amount: 100, hardStopEnabled: true }, actor.actorId);
+      await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Independent settlement" });
+      f.complete();
+      await db.update(browserUseSessions).set({ nextPollAt: new Date(0) }).where(eq(browserUseSessions.companyId, f.company.id));
+      let release!: () => void, locked!: () => void;
+      const held = new Promise<void>(resolve => { locked = resolve; });
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const blocker = db.transaction(async tx => {
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, f.company.id)).for("no key update");
+        await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agent.id)).for("no key update");
+        await tx.select({ id: budgetPolicies.id }).from(budgetPolicies).where(eq(budgetPolicies.id, policy.policyId)).for("no key update");
+        locked();
+        await barrier;
+      });
+      await held;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const settlement = f.service.sweep(f.connection.connectionId);
+      try {
+        await Promise.race([settlement, new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("Browser settlement waited for a shared accounting row")), 3000);
+        })]);
+        const [event] = await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id));
+        expect(event).toMatchObject({ provider: "browser-use-cloud", costCents: 15 });
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id));
+        expect(run).toMatchObject({ eventsDrained: 1, result: { paperclipBudgetHold: { state: "settled" } } });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await blocker;
+        await settlement;
+      }
+    });
+    it("replays a captured terminal receipt after ledger failure without refetching or moving its attribution", async () => {
+      const f = await fixture();
+      const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Original browser project" }).returning();
+      const [laterProject] = await db.insert(projects).values({ companyId: f.company.id, name: "Later task project" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+      const invocation = randomUUID();
+      await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Capture once" });
+      f.usage("0.150000001"); f.complete();
+      const failedLedger = vi.spyOn(costAccounting, "createCostEventInTransaction").mockRejectedValueOnce(new Error("Accounting unavailable"));
+      try { await f.tick(); } finally { failedLedger.mockRestore(); }
+      const [pending] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      const receipt = (pending.result as { paperclipBudgetHold: { receipt: { occurredAt: string } } }).paperclipBudgetHold.receipt;
+      expect(pending.eventsDrained).toBe(0);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(0);
+      await db.update(issues).set({ projectId: laterProject.id }).where(eq(issues.id, f.issue.id));
+      f.usage("0.99"); f.request.mockClear();
+      await f.tick();
+      const [event] = await db.select({ projectId: costEvents.projectId, occurredAt: costEvents.occurredAt,
+        cents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(eq(costEvents.companyId, f.company.id));
+      expect(event).toMatchObject({ projectId: project.id, cents: "15.0000001" });
+      expect(event.occurredAt.toISOString()).toBe(receipt.occurredAt);
+      expect(f.request.mock.calls.some(([url]) => /\/runs\/[^/]+$/.test(new URL(url).pathname))).toBe(false);
+      expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(1);
+    });
+    it("retains exact cumulative accounting when an older browser row has no hold projection", async () => {
+      const f = await fixture();
+      const invocation = randomUUID();
+      await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Legacy result" });
+      const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+      await db.update(browserUseRuns).set({ result: null }).where(eq(browserUseRuns.id, run.id));
+      f.usage("0.150000001"); f.complete(); await f.tick();
+      await db.update(browserUseRuns).set({ eventsDrained: 0 }).where(eq(browserUseRuns.id, run.id));
+      f.usage("0.150000002"); await f.tick();
+      const [total] = await db.select({ cents: sql<string>`sum(${costEvents.costCents})::text` }).from(costEvents).where(eq(costEvents.companyId, f.company.id));
+      expect(total.cents).toBe("15.0000002");
+      expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0].result)
+        .toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000002" } });
+      await db.update(browserUseRuns).set({ eventsDrained: 0 }).where(eq(browserUseRuns.id, run.id));
+      f.usage("0.10"); await f.tick();
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(2);
+      expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0].result)
+        .toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000002" } });
+    });
+    it("dates a new cumulative delta in its capture month and keeps that receipt's retry time stable", async () => {
+      const f = await fixture();
+      const before = new Date("2026-11-30T23:59:59.900Z"), after = new Date("2026-12-01T00:00:00.100Z");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(before);
+        const invocation = randomUUID();
+        await f.service.execute(f.binding, f.grant, invocation, "browser_start", { task: "Cumulative usage across UTC rollover" });
+        f.usage("0.15"); f.complete(); await f.tick();
+        const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.invocationId, invocation));
+        await db.update(browserUseRuns).set({ eventsDrained: 0 }).where(eq(browserUseRuns.id, run.id));
+        vi.setSystemTime(after);
+        f.usage("0.20");
+        const failed = vi.spyOn(costAccounting, "createCostEventInTransaction").mockRejectedValueOnce(new Error("Retry this receipt"));
+        try { await f.tick(); } finally { failed.mockRestore(); }
+        const [captured] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id));
+        expect(captured).toMatchObject({ eventsDrained: 0, result: { paperclipBudgetHold: {
+          accountedCentsExact: "15.0000000", receipt: { totalCentsExact: "20.0000000", occurredAt: after.toISOString() },
+        } } });
+        vi.setSystemTime(new Date("2026-12-01T00:00:05.100Z"));
+        f.usage("0.99");
+        await f.tick(); await f.tick();
+        const events = await db.select({ cents: sql<string>`${costEvents.costCents}::text`, occurredAt: costEvents.occurredAt })
+          .from(costEvents).where(eq(costEvents.companyId, f.company.id)).orderBy(costEvents.occurredAt);
+        expect(events).toEqual([{ cents: "15.0000000", occurredAt: before }, { cents: "5.0000000", occurredAt: after }]);
+        expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(2);
+      } finally { vi.useRealTimers(); }
+    });
     it("caps paid work at the remaining hard budget and enforces reported spend", async () => {
       const f = await fixture();
       await budgetService(db).upsertPolicy(
@@ -1316,7 +1807,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       await f.tick();
       expect(
         (await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0],
-      ).toMatchObject({ status: "paused", spentMonthlyCents: 15 });
+      ).toMatchObject({ status: "paused" });
+      const [charged] = await db.select({ cents: sql<string>`sum(${costEvents.costCents})::text` }).from(costEvents)
+        .where(eq(costEvents.companyId, f.company.id));
+      expect(charged.cents).toBe("15.0000000");
       expect(
         (
           await db

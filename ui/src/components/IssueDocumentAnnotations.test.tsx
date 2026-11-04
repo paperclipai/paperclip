@@ -484,6 +484,46 @@ describe("IssueDocumentAnnotations", () => {
     });
   });
 
+  it("opens a resolved orphaned deep-link target after revision and fresh reload without changing history", async () => {
+    const originalBody = "Original review detail that must remain readable after its selection was removed. ".repeat(5)
+      + "The complete first comment ends here.";
+    const target = makeThread({ id: "orphan-target", status: "resolved", anchorState: "orphaned",
+      currentRevisionId: "rev-5", currentRevisionNumber: 5, resolvedByUserId: "user-1", resolvedAt: new Date() });
+    target.comments = [{ ...target.comments[0]!, body: originalBody },
+      { ...target.comments[0]!, id: "resolution-note", body: "The saved policy addresses this review." }];
+    mockAnnotationsApi.list.mockResolvedValue([target,
+      makeThread({ id: "unrelated-orphan", status: "resolved", anchorState: "orphaned" }),
+      makeThread({ id: "remaining-thread", anchorState: "stale" })]);
+    const doc = makeDoc({ latestRevisionId: "rev-5", latestRevisionNumber: 5, body: "# Updated policy\n\nThe original selection is gone." });
+    for (let mount = 0; mount < 2; mount++) {
+      const root = createRoot(container);
+      const queryClient = makeQueryClient();
+      const render = (locationHash: string) => root.render(
+        <QueryClientProvider client={queryClient}><Harness doc={doc} locationHash={locationHash} /></QueryClientProvider>,
+      );
+      await act(() => render("#document-plan&thread=orphan-target&comment=comment-1"));
+      await waitFor(() => {
+        const card = container.querySelector('[data-thread-id="orphan-target"][data-focused]');
+        expect(card).not.toBeNull();
+        expect(card!.getAttribute("data-anchor-state")).toBe("orphaned");
+        expect(card!.getAttribute("data-status")).toBe("resolved");
+        expect(card!.textContent).toContain(originalBody);
+        expect(card!.textContent).toContain("The saved policy addresses this review.");
+      });
+      expect(container.querySelector('[data-thread-id="unrelated-orphan"]')).toBeNull();
+      expect(mockAnnotationsApi.create).not.toHaveBeenCalled();
+      expect(mockAnnotationsApi.addComment).not.toHaveBeenCalled();
+      expect(mockAnnotationsApi.updateStatus).not.toHaveBeenCalled();
+      await act(() => render("#document-plan&thread=remaining-thread"));
+      await waitFor(() => {
+        expect(container.querySelector('[data-thread-id="remaining-thread"][data-focused]')).not.toBeNull();
+        expect(container.querySelector('[data-thread-id="orphan-target"]')).toBeNull();
+      });
+      await unmountActiveRoots();
+      queryClient.clear();
+    }
+  });
+
   it("shows a disabled reason in the panel when the draft is dirty", async () => {
     mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
     const root = createRoot(container);
