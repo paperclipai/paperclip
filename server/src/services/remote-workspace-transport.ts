@@ -208,7 +208,7 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
    // A failed write can leave partial bytes. Remove only the temporary file this run created.
    try{await fs.writeFile(temp,Buffer.from(body,'base64'),{mode:0o600,flag:'wx'});await fs.rename(temp,file);}
    catch(e){if(e?.code!=='EEXIST')await fs.rm(temp,{force:true}).catch(()=>{});throw e;}
-  })().catch(error=>{process.stderr.write(diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}:captureFailure(error)??'remote_workspace_archive_helper_failed');process.exitCode=1});`;
+  })().catch(error=>{const message=diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}:captureFailure(error);if(message)process.stderr.write(message);process.exitCode=1});`;
   await command(target, "archive_helper", ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
   return { directory, helper, archive: path.posix.join(directory, "workspace.pcws"), receipt: path.posix.join(directory, "receipt.json") };
 }

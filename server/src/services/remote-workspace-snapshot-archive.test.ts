@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
@@ -53,6 +53,19 @@ describe("portable remote workspace archives", () => {
     }
     return JSON.stringify(entries);
   }
+  it("keeps every serialized capture validation reason in the closed diagnostic contract", () => {
+    const script = remoteWorkspaceArchiveScript(), start = script.indexOf("const archive = ");
+    const restore = script.indexOf("if (!input.targetDir", start);
+    expect(start).toBeGreaterThan(-1); expect(restore).toBeGreaterThan(start);
+    const reasons = new Set([...script.slice(start, restore).matchAll(/\bfail\(([^)]*)\)/gu)]
+      .map(call => JSON.parse(call[1]!) as string));
+    expect(reasons.size).toBeGreaterThan(0);
+    for (const reason of reasons) {
+      expect(typeof reason).toBe("string");
+      const message = `remote_workspace_archive_${reason}`;
+      expect(remoteWorkspaceCaptureFailureMessage({ message }), reason).toBe(message);
+    }
+  });
   it("restores binary files, empty entries, executable modes and confined symlinks without its source", async () => {
     const cwd = await source();
     await fs.mkdir(path.join(cwd, "empty")); await fs.writeFile(path.join(cwd, "empty-file"), "");
