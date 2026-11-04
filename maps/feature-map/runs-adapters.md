@@ -40,15 +40,6 @@ The agent header has one Run now action. Administrators can enable
 Capture raw provider traces under the agent configuration’s Debugging section
 for future runs. The header shows Raw tracing on while that setting is enabled.
 
-For segmented object logs, hold an upload until a pre-completion diagnostic waits
-for bounded admission, then finish the run and release storage. Verify the
-pre-existing diagnostic survives finalization and that new producers are rejected.
-A valid final hash alone proves the stored prefix, not every produced chunk.
-The [completion regression](../../server/src/services/heartbeat/run-completion.test.ts)
-and [storage controls](../../server/src/services/object-run-log-store.test.ts)
-exercise this path with PostgreSQL and controlled storage, including Stop and
-storage failure. They do not attribute a hosted warning or qualify a live provider.
-
 For latency diagnosis with an operator OTLP endpoint, search the hashed run ID
 without restricting the root span name. Compare workspace preparation with its
 `workspace_<step>` intervals. Measure controller readiness separately through
