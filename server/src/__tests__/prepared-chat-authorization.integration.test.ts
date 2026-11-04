@@ -56,15 +56,19 @@ describe("prepared bound-chat authorization", () => {
   });
 
   it("rechecks setup generation and credential fences on a reused template", async () => {
-    const startedAt = new Date(Date.now() - 10_000);
+    const startedAt = new Date("2026-11-01T00:00:00.000Z");
     await db.update(chatEndpoints).set({ status: "verifying", setup: sql`${JSON.stringify({
       step: "test", testStartedAt: startedAt.toISOString(), runtimeGeneration: 7,
     })}::jsonb` }).where(eq(chatEndpoints.id, endpointId));
     try {
       await expect(authorize()).rejects.toThrow(denied);
-      await db.update(chatDeliveries).set({ normalizedEvent: { runtimeContext: {
-        generation: 7, credentialFingerprint: "a".repeat(64),
-      } } }).where(eq(chatDeliveries.id, deliveryId));
+      await db.update(chatDeliveries).set({
+        receivedAt: new Date(startedAt.getTime() + 1_000),
+        processedAt: new Date(startedAt.getTime() + 2_000),
+        normalizedEvent: { runtimeContext: {
+          generation: 7, credentialFingerprint: "a".repeat(64),
+        } },
+      }).where(eq(chatDeliveries.id, deliveryId));
       await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
       await db.update(chatDeliveries).set({ normalizedEvent: { runtimeContext: {
         generation: 8, credentialFingerprint: "a".repeat(64),
