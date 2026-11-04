@@ -29,7 +29,7 @@ import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemot
 import { nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
-import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
+import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
@@ -330,6 +330,8 @@ type NativeSessionStartup = {
   priorRestartDetach?: symbol;
   leaseOwner?: string;
   executionLeaseRenewal?: NativeExecutionLeaseRenewal;
+  /** A fresh claim whose preparation failed before any provider turn. */
+  unstartedClaim?: { leaseOwner: string; attempt: number };
   executionContext?: NativeExecutionContext;
   settled: Promise<void>;
   settle: () => void;
@@ -8580,6 +8582,12 @@ export async function executePaperclipNativeSession(input: {
     // Remove the settled startup before yielding, so detachment cannot reacquire
     // its old resolved session while renewal cleanup drains.
     await startup.executionLeaseRenewal?.stop().catch(() => undefined);
+    if (startup.unstartedClaim && !nativeRunsDetachingForRestart.has(runId)) {
+      await releaseUnstartedNativeExecutionClaim({ db: input.db, runId, companyId: input.execution.binding.companyId,
+        issueId: input.execution.binding.issueId, ...startup.unstartedClaim }).catch(error => {
+        logger.warn({ err: error, runId }, "Native preparation claim release failed; the control deadline will settle it");
+      });
+    }
     try {
       await cleanupStagedAttachments();
     } catch (cleanupError) {
@@ -8811,6 +8819,7 @@ async function executePaperclipNativeSessionWithinScope(
   let providerPackAdmissionSource: NativeProviderPackAdmissionSource | undefined;
   let confirmedLeaseDeadline = 0;
   let claimedStartupContext: NativeExecutionContext | undefined;
+  let freshClaimAttempt: number | undefined;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
@@ -9034,6 +9043,7 @@ async function executePaperclipNativeSessionWithinScope(
           const startup = nativeSessionStartups.get(input.execution.binding.runId);
           if (!startup) throw new Error("native_session_startup_owner_missing");
           startup.leaseOwner = leaseOwner;
+          if (!input.restartRecovery) freshClaimAttempt = claimedAttempt;
           // Own renewal as soon as the claim commits, including slow tracing,
           // accounting history and retained-session cleanup before dispatch.
           startup.executionLeaseRenewal = startNativeSessionExecutionLeaseRenewal({
@@ -9079,6 +9089,17 @@ async function executePaperclipNativeSessionWithinScope(
   } catch (error) {
     await trace.end(taskPrepareScope, { outcome: "failed" });
     await trace.finish("failed");
+    // No provider turn started under this fresh claim. Leaving it held makes
+    // failure settlement treat this finished attempt as a live owner, so the
+    // run waits for the control deadline. The startup owner releases only this
+    // exact claim after renewal stops; a restart claim, startup cleanup, Stop or
+    // restart detach keeps its owner.
+    const startup = nativeSessionStartups.get(input.execution.binding.runId);
+    if (startup && freshClaimAttempt !== undefined && !claimedStartupContext
+      && !(error instanceof NativeCancellationPendingRecoveryError)
+      && !(error instanceof NativeControllerDetachedForRestartError)) {
+      startup.unstartedClaim = { leaseOwner, attempt: freshClaimAttempt };
+    }
     throw error;
   }
   const controlPlaneInstanceId = `${effectiveRunnerInstanceId}:control`;

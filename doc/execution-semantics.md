@@ -1953,6 +1953,14 @@ ordinary Retry can continue. Finalized workspaces, mismatched sources and
 accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
 
+The deadline is a backstop, not the normal failure path. When native task
+preparation fails after a fresh controller claim and before any provider turn,
+the controller stops renewal and releases only that exact claim. Ordinary
+failure settlement then retains the source and fails the run with its original
+error, as it does for a failure before the claim. A restart-recovery claim,
+startup cleanup, Stop, restart detach, accepted result or different owner keeps
+its existing owner and settlement path.
+
 For older failed native runs that lack this bookkeeping, a deliberate Retry
 registers preservation from the exact prepared workspace descriptor and assigns
 the existing bounded maintenance owner. A live finalization owner or mismatched

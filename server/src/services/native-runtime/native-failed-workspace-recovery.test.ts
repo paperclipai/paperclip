@@ -15,6 +15,7 @@ import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-s
 import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace, registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
+import { releaseUnstartedNativeExecutionClaim } from "./native-execution-lease.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 
@@ -777,6 +778,33 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await readLease(f.lease.id)).toMatchObject({ status: "active" });
     expect(await actions(f.issueId)).toHaveLength(0);
     expect(await readRun(f.runId)).toMatchObject({ status: "running", nativePhase: "observed" });
+  });
+
+  it.each(["own", "foreign", "attempt", "accepted"])("retains files after an unstarted preparation claim is released: %s", async kind => {
+    const f = await seed();
+    const leaseOwner = randomUUID();
+    await db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", errorCode: null })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed", attempt: 1, leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    // The heartbeat cannot tell a finished preparation claim from a live owner.
+    await expect(preserveNativeFailedWorkspace(db, await readRun(f.runId), { allowPreterminal: true }))
+      .rejects.toBeInstanceOf(NativeWorkspaceFinalizationBusyError);
+    if (kind === "accepted") await db.update(nativeRunFinalizations).set({ phase: "result_accepted" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const released = await releaseUnstartedNativeExecutionClaim({ db, runId: f.runId, companyId: f.companyId, issueId: f.issueId,
+      leaseOwner: kind === "foreign" ? randomUUID() : leaseOwner, attempt: kind === "attempt" ? 2 : 1 });
+    expect(released).toBe(kind === "own");
+    if (kind !== "own") {
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseOwner).toBe(leaseOwner);
+      expect(await readLease(f.lease.id)).toMatchObject({ status: "active" });
+      return;
+    }
+    await preserveNativeFailedWorkspace(db, await readRun(f.runId), { allowPreterminal: true });
+    expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))
+      .toMatchObject([{ phase: "terminal_failure", leaseOwner: null, recoveryState: "blocked" }]);
+    expect(await readRun(f.runId)).toMatchObject({ status: "running", nativePhase: "terminal_failure",
+      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { leaseIds: [f.lease.id] } } });
+    expect(await readLease(f.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
   });
 
   it("refuses cleanup when another execution still owns the coordinator", async () => {

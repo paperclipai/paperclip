@@ -11791,6 +11791,43 @@ describe("native session bounded recovery", () => {
     } finally { release(); await running; renew.mockRestore(); }
   });
 
+  it.each([false, true])("releases only a fresh claim after preparation fails before provider work (restart claim: %s)", async restarted => {
+    const fresh = { ...structuredClone(execution), provider: { kind: "acpx", agent: "claude",
+      model: "claude-sonnet-4-6", profile: QUALIFIED_ACPX_PROFILES.claude } } as NativeExecutionInput;
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    const restartRecovery = restarted ? { kind: "reattach_remote_runner", runId: fresh.binding.runId, leaseOwner: "restart-owner",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+      remote: { providerLeaseId: "fresh-provider-lease", remoteCwd: "/workspace" } } as const : undefined;
+    const db = leaseDb(fresh, restarted ? { leaseOwner: "restart-owner", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 0 } : {}, {}, updates);
+    // Fails inside task preparation, after the claim commits and renewal starts.
+    const failure = new Error("native_harness_storage_owner_missing");
+    const order: string[] = [];
+    const stop = vi.fn(async () => { order.push("stop"); });
+    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop, remainingMs: () => 60_000 });
+    const release = vi.spyOn(nativeLeaseRenewal, "releaseUnstartedNativeExecutionClaim")
+      .mockImplementation(async () => { order.push("release"); return true; });
+    try {
+      await expect(executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "fresh-runner",
+        onExecutionLeaseAcquired: async () => { throw failure; },
+        ...(restartRecovery ? { leaseOwner: restartRecovery.leaseOwner, restartRecovery } : {}),
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "fresh-environment", leaseId: "fresh-lease" },
+      })).rejects.toBe(failure);
+      expect(updates.some(update => update.table === nativeRunFinalizations && "phase" in update.values
+        && update.values.phase !== "observed")).toBe(false);
+      if (restarted) {
+        // A restart claim keeps its exact recovery fence for the heartbeat's retention check.
+        expect(release).not.toHaveBeenCalled();
+      } else {
+        expect(release).toHaveBeenCalledExactlyOnceWith({ db, runId: fresh.binding.runId, companyId: fresh.binding.companyId,
+          issueId: fresh.binding.issueId, leaseOwner: expect.stringMatching(/^fresh-runner:/), attempt: 1 });
+        expect(order).toEqual(["stop", "release"]);
+      }
+    } finally { renew.mockRestore(); release.mockRestore(); }
+  });
+
   it("persists closed remote recovery evidence without replacing saved run results", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const onEvent = vi.fn(async () => undefined);
