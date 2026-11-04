@@ -6,7 +6,7 @@ import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { nativeSha256 } from "./canonical.js";
-import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/domain/wake-context.js";
+import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED } from "./native-workspace-finalization-recovery-state.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
