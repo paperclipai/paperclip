@@ -47,7 +47,7 @@ export const secureKeyExternalCases = [definition("connection-setup.secure-api-k
     return { serverUrl: provider.url, personId: factualContextAttachment.createdByUserId, factualContextAttachment, setupPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/byo` };
   } catch (error) { fixtures.delete(ctx); await provider.close(); throw error; }
 }, gradeSecureKey, {
-  oracleVersion: "paperclip.chat-catalog.external.v2", authentication: "human-session",
+  oracleVersion: "paperclip.chat-catalog.external.v3", authentication: "human-session",
   queryAttachments: [{ stateKey: "factualContextAttachment", filename: "provider-account.md" }],
   attemptTimeoutMs: 420_000,
   sourceFiles: ["chat-catalog-domains/external-secure-key.ts", "chat-query-attachments.ts", "../../ui/src/App.tsx", "../../ui/src/pages/apps/app-connect-policy.ts", "../../ui/src/features/connections/ConnectionSetupFlow.tsx", "chat-catalog-domains/external-private-browser.ts", "chat-catalog-domains/external-private-browser-worker.ts", "chat-catalog-domains/external-credential-language.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "run-observations.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/connection-setup.yaml"],
