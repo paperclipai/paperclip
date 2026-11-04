@@ -4168,6 +4168,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(workspaceOperations);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -4761,6 +4762,98 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
     },
   );
+
+  it("releases dependents once the done blocker's last workspace run is terminal without a workspace_finalize", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "running",
+    });
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      heartbeatRunId: runId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({ id: dependentId, blockerIssueIds: [blockerId] }),
+    ]);
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+    });
+  });
+
+  it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "QA",
+      role: "qa",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Manual done blocker", status: "done", priority: "medium" },
+      {
+        id: dependentId,
+        companyId,
+        title: "Dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({
+        id: dependentId,
+        assigneeAgentId,
+        blockerIssueIds: [blockerId],
+      }),
+    ]);
+  });
 
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();
