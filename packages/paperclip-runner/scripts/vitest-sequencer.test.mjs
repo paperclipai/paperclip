@@ -52,3 +52,10 @@ test("recognizes Windows paths", async () => {
   const deadline = { ...files[4], moduleId: "C:\\repo\\src\\live\\runnerd-codex-transport-deadlines.test.ts" };
   assert.deepEqual(await new RunnerSequencer(ctx).sort([files[0], deadline]), [deadline, files[0]]);
 });
+
+test("starts measured slow provider files before short files without adding work", async () => {
+  const streaming = { ...files[0], moduleId: "/repo/src/live/runnerd-opencode-streaming-tools.test.ts" };
+  const launch = { ...files[0], moduleId: "/repo/src/control-plane/cursor-cloud-runner-launch.test.ts" };
+  assert.deepEqual(await new RunnerSequencer(ctx).sort([files[0], streaming, files[4], launch]),
+    [launch, files[4], streaming, files[0]]);
+});

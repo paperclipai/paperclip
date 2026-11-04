@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,7 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
       : {}),
     environment: "node",
+    ...(process.env.GITHUB_ACTIONS === "true" ? { maxWorkers: Math.min(4, availableParallelism()) } : {}),
     sequence: { sequencer: RunnerSequencer },
     include: [
       "src/**/*.test.ts",

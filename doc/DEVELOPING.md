@@ -1098,10 +1098,13 @@ For normal issue work, start with the smallest targeted check that proves the ch
 The Runner transport suite keeps attachment recovery, warm attachment, live
 adoption, and suspension in separate test files. Vitest can schedule these
 independent fixtures on its existing file workers; cases within each file stay
-serial. The package sequencer schedules the main transport, deadline, and
-settlement files first so their long waits overlap the remaining tests, including
-on fresh CI runners without timing history. Vitest's file selection and shard
-membership are unchanged. Real lease/deadline waits and assertions are unchanged. Run the complete
+serial. The package sequencer starts the ten files measured above 50 seconds in
+the November 4, 2026 AWS run first, ordered by approximate duration. This includes
+transport deadlines, settlement, provider launch, recovery, and streaming waits,
+so fresh CI runners do not have to infer duration from file size. Package CI uses
+up to four workers, bounded by available CPUs; local runs retain Vitest defaults.
+Vitest's file selection and shard membership are unchanged. Real lease/deadline
+waits and assertions are unchanged. Run the complete
 family, including the separate deadline and settlement regressions, with:
 
 ```sh
