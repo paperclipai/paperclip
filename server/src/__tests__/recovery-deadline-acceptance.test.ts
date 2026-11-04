@@ -22,7 +22,6 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
 import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 
-// External-only: this suite must never silently start an embedded cluster.
 const fixtureUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_DEADLINES_TEST_DATABASE_URL");
 const adminUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_DEADLINES_TEST_ADMIN_DATABASE_URL");
 const connectionFields = ["hostname", "port", "pathname"] as const;
@@ -49,9 +48,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
   beforeAll(async () => {
     await applyPendingMigrations(adminUrl!);
     db = createDb(fixtureUrl!, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
-    // Controlled agent: run the real local process, then use the ordinary task
-    // comment/completion services under that admitted run's identity. Stdout
-    // alone is not a task disposition and correctly triggers repair work.
     registerServerAdapter({ ...processAdapter, type: "recovery_deadline_process", execute: async context => {
       const result = await processAdapter.execute(context);
       if (result.exitCode === 0 && !result.timedOut && !result.errorCode) {
@@ -146,7 +142,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       monitor: monitorWorker?.reconciliationSnapshot(), watchdog: recoveryWorker?.watchdogs.reconciliationSnapshot(), next: coordinator?.nextWakeAt() };
     const report = await readIdleSleepSafety(db, () => ({ ownerId, draining: true, startedAt: holdStartedAt,
       expiresAt: holdExpiresAt, activeRuns: 0, pendingWakes: 0 }), () => at, ownerId,
-    // This is a domain/DB proof test, not filesystem or deployed host qualification.
     async () => "none", undefined, undefined, true, true,
     { deadlineCapability: { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities, deadlineOwners: owners,
       collectDiagnostics: true });
@@ -176,8 +171,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(worker!.retries.reconciliationSnapshot().reconciled).toBe(false);
     expect((await proof()).backgroundWork).not.toBe("none");
     heartbeat = heartbeatService(db);
-    // The real-clock worker restores the exact saved deadline. PostgreSQL's
-    // controller lease and local process therefore share the same wall clock.
     await start(); await settled();
     expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
     expect(Date.now()).toBeLessThan(scheduled.dueAt.getTime());
@@ -260,8 +253,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     const [saved] = await db.select({ policy: issues.executionPolicy, at: issues.monitorNextCheckAt }).from(issues).where(eq(issues.id, f.issue.id));
     expect(saved.at).toEqual(reset);
     expect(saved.policy?.monitor).toMatchObject({ serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: f.source.id });
-    // The producer also wakes queued-run reconciliation. A ready monitor is
-    // not proof that its admitted coalesced sibling has released its hold.
     await settled();
     const report = await proof();
     expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
@@ -280,7 +271,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(final.scheduledWake).toBeUndefined();
     const afterReset = await readIdleQuotaSchedule(db, reset.getTime() + 1, monitorWorker!.reconciliationSnapshot);
     expect(afterReset).toMatchObject({ blocked: false, deadlines: [] });
-    // Fault states stay blocked independently of the global run/wake checks.
     for (const kind of ["run", "wake"] as const) {
       const rollback = new Error(`terminal quota ${kind} rollback`);
       await expect(db.transaction(async tx => {
@@ -315,9 +305,6 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     process.stderr.write(`watchdog review settlement audit ${JSON.stringify({ registeredAt, now: Date.now(), pending,
       next: coordinator!.nextWakeAt(), local: idleWorkSnapshot() })}\n`);
     if (!pending.reconciled) expect((await proof()).backgroundWork).not.toBe("none");
-    // Company invalidations are intentionally throttled by the existing 30s
-    // scoped reconstruction duty. It must finish, not be exported as a timer
-    // certificate or confused with the separate 15s first-run grace.
     await vi.waitFor(() => {
       expect(recoveryWorker!.watchdogs.reconciliationSnapshot().reconciled).toBe(true);
       expect(idleWorkSnapshot().active).toBe(0);

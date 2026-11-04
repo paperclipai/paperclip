@@ -30,7 +30,6 @@ export function createIdleDeadlineInspectionBudget(now: number, expiresAt: numbe
 export type IdleDeadlineProof = {
   blocked: boolean;
   generation?: string;
-  /** Exact normalized owner snapshot accepted into this internal proof. */
   mcp?: IdleDeadlineSnapshot;
   scheduledWake?: DomainScheduledWake;
   owners?: Readonly<Record<string, IdleDeadlineOwnerInspection>>;

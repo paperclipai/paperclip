@@ -6,8 +6,6 @@ export type IdleExternalObjectRow = {
   refreshStartedAt: Date | null; refreshToken: string | null;
 };
 
-/** Eligibility is selected by the actual registered resolver owner. Provider
- * protocols and terminal exceptions do not belong to shared sleep code. */
 export function projectIdleExternalObjectSchedule(rows: IdleExternalObjectRow[], now: number,
   enabled: boolean | null): IdleDeadlineSnapshot {
   const state = { enabled, rows };
@@ -15,7 +13,6 @@ export function projectIdleExternalObjectSchedule(rows: IdleExternalObjectRow[],
   const blocked = () => ({ blocked: true, state, deadlines: [] });
   if (enabled === null || !Number.isFinite(now) || rows.length > idleDeadlineRowLimit) return blocked();
   for (const object of rows) {
-    // Do not mistake removal of a mention/resolver for completed provider work.
     if (object.refreshStartedAt || object.refreshToken) return blocked();
     if (enabled && !["active", "paused", "archived"].includes(object.companyStatus)) return blocked();
     if (!enabled || object.eligible === false) continue;

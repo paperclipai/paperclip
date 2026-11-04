@@ -1728,7 +1728,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   return {
-    // Reuse this owner's classifier against the owned repeatable-read snapshot.
     readIdleSchedule: async (tx: Pick<Db, "select" | "execute">, now: number,
       owner: () => DeadlineReconciliationSnapshot, checkBudget: () => void = () => {}): Promise<IdleDeadlineSnapshot> => {
       const before = owner();

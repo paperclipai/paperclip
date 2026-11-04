@@ -8,8 +8,6 @@ import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
 export interface IdleQuotaSchedule extends IdleDeadlineSnapshot { issueWaits: IdleIssueWait[] }
 
-/** The reserved monitor belongs to legacy recovery, including its current
- * reviewer target. Native recovery and an already claimed monitor stay awake. */
 export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
   owner: () => DeadlineReconciliationSnapshot): Promise<IdleQuotaSchedule> {
   const before = owner();
@@ -45,8 +43,6 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
     const parsedPolicy = issueExecutionPolicySchema.safeParse(issue.executionPolicy);
     if (!parsedPolicy.success || (issue.executionState !== null && !execution)) return blocked();
     if (["done", "cancelled"].includes(issue.status)) {
-      // Status disarms the scheduler; normal completion intentionally retains
-      // its policy and timestamp. A terminal label alone is not settlement.
       if (!policy.success || issue.monitorWakeRequestedAt || issue.executionRunId || issue.checkoutRunId || issue.conversationAgentId
         || (execution && (execution.status !== "idle" || execution.currentStageId !== null
           || execution.currentStageType !== null || execution.currentStageIndex !== null || execution.currentParticipant !== null))
@@ -85,7 +81,6 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
   if (terminal.length) {
     const ids = terminal.map(row => row.issueId), companyIds = [...new Set(terminal.map(row => row.companyId))];
     const sourceIds = terminal.map(row => row.sourceId);
-    // Batch the absence proof instead of one history scan per retained task.
     const pendingRuns = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       inArray(heartbeatRuns.companyId, companyIds),
       or(inArray(heartbeatRuns.issueId, ids), inArray(heartbeatRuns.nativeIssueId, ids), inArray(heartbeatRuns.id, sourceIds),
@@ -113,7 +108,6 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
   return { blocked: false, state, deadlines, issueWaits };
 }
 function andSource() {
-  // Compare text; malformed externalRef cannot become an unsafe UUID cast.
   return sql`${heartbeatRuns.id}::text = ${issues.executionPolicy}#>>'{monitor,externalRef}'
     AND ${heartbeatRuns.companyId} = ${issues.companyId}`;
 }

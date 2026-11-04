@@ -18,8 +18,6 @@ export interface IdleDeadlineSnapshot {
 export const idleDeadlineRowLimit = 10_000;
 export const isFutureIdleDeadline = (at: number, now: number) => Number.isFinite(at) && at > now;
 
-/** Process-local owner bindings are supplied by index, never reconstructed by
- * a GET route. Replacement checks remain domain-owned and are not wire data. */
 export interface IdleDeadlineOwnerInspection {
   snapshot: IdleDeadlineSnapshot;
   current(): boolean;

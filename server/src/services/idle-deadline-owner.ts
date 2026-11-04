@@ -2,8 +2,6 @@ import type { Db } from "@paperclipai/db";
 import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import type { IdleDeadlineOwnerInspection, IdleDeadlineOwnerReader, IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 
-/** Bind one registered owner for the entire owned inspection, including the
- * final post-backup check. A read succeeding cannot consume a dirty revision. */
 export function bindIdleDeadlineOwner<T extends IdleDeadlineSnapshot>(
   owner: () => DeadlineReconciliationSnapshot,
   read: (tx: Pick<Db, "select" | "execute">, now: number, owner: () => DeadlineReconciliationSnapshot,

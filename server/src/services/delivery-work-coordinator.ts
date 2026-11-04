@@ -28,7 +28,6 @@ export function createDeliveryWorkCoordinator(input: {
       hasPending: () => Promise<boolean>;
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
       onSettled?: (hints?: ReadonlySet<string>) => void;
-      // Invalidate owner snapshots before shutdown awaits active work.
       onStop?: () => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;

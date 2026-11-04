@@ -323,7 +323,6 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
     if (shutdown.signal.aborted) return Promise.resolve({ imported: 0, checked: 0 });
     if (running) return running;
     revision++;
-    // A direct tick does not finish scheduler deadline reconstruction.
     requested++;
     running = sweep(now).finally(() => {
       running = null; revision++;
@@ -342,7 +341,6 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
       async run() {
         reconciling = true; revision++;
         try {
-          // tick increments requested for direct callers as well.
           const pending = tick();
           const generation = requested;
           await pending;

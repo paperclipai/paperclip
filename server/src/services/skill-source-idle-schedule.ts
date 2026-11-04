@@ -7,7 +7,6 @@ import { MAX_COMPANY_PENDING_SKILL_IMPORTS, MAX_PROJECT_PENDING_SKILL_IMPORTS, S
 type Binding = Pick<typeof projectSkillSources.$inferSelect, 'id' | 'companyId' | 'projectId' | 'workspaceId' | 'active' | 'status' | 'lastError' | 'nextSyncAt' | 'leaseToken' | 'leaseExpiresAt'>;
 type Source = Pick<typeof companySkillSources.$inferSelect, 'id' | 'companyId' | 'revision' | 'accessScope' | 'nextSyncAt' | 'leaseToken' | 'leaseExpiresAt'>;
 
-/** Pure interpretation of the same durable owners used by the sync worker. */
 export function skillSourceIdleSchedule(bindings: Binding[], sources: Source[], now: number): IdleDeadlineSnapshot {
   let blocked = !Number.isFinite(now) || bindings.length > idleDeadlineRowLimit || sources.length > idleDeadlineRowLimit;
   const deadlines: number[] = [];
@@ -25,8 +24,6 @@ export function skillSourceIdleSchedule(bindings: Binding[], sources: Source[], 
     if (!['pending', 'error'].includes(binding.status)) blocked = true;
     if (binding.active) deadline(binding);
     else {
-      // Waiting admission has no independent timer. Only a full queue with
-      // represented active work can safely defer it to that work's next wake.
       if (!binding.workspaceId || binding.status !== 'pending' || binding.lastError !== SKILL_IMPORT_CAPACITY_WAIT
         || binding.leaseToken !== null || binding.leaseExpiresAt !== null) blocked = true;
       const peers = active.filter(row => row.companyId === binding.companyId);
@@ -41,7 +38,6 @@ export function skillSourceIdleSchedule(bindings: Binding[], sources: Source[], 
   return { blocked, state: { bindings, sources }, deadlines };
 }
 
-/** Caller supplies its owned repeatable-read transaction; no provider reads. */
 export async function readIdleSkillSourceSchedule(db: Pick<Db, 'select'>, now: number,
   reconciliationSnapshot: () => DeadlineReconciliationSnapshot): Promise<IdleDeadlineSnapshot> {
   const before = reconciliationSnapshot();

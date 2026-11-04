@@ -11,8 +11,6 @@ export type IdleStatusCardRow = {
   pendingChangeCount: number; compiled: boolean;
 };
 
-/** Only reconciled automatic policy creates future work. Generation/ledger
- * ownership remains unfinished even when the card is disabled or archived. */
 export function projectIdleStatusCardSchedule(rows: IdleStatusCardRow[], now: number, enabled: boolean | null): IdleDeadlineSnapshot {
   const state = { enabled, rows };
   const deadlines: number[] = [];
@@ -28,7 +26,6 @@ export function projectIdleStatusCardSchedule(rows: IdleStatusCardRow[], now: nu
       const at = card.nextEvalAt.getTime();
       if (!isFutureIdleDeadline(at, now)
         || (card.nextEvalReason !== null && !["membership", "policy", "retry", "refresh"].includes(card.nextEvalReason))) return blocked();
-      // Saved legacy retry leases remain their original responsibility.
       deadlines.push(at);
     } else if (card.nextEvalReason !== null || card.state === "compiling"
       || (policy.data.mode !== "manual" && card.state !== "error"

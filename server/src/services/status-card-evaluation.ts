@@ -25,8 +25,6 @@ export function statusCardEvaluationService(db: Db, heartbeat: IssueAssignmentWa
 
   return {
     async readIdleSchedule(tx: Pick<Db, "select">, now: number, owner: () => DeadlineReconciliationSnapshot) {
-      // A successful sweep can defer a company whose advisory lock is busy.
-      // That catch-up duty is local until the next sweep saves a card deadline.
       if (enabled !== false && (reconstructReactive || allChanges || changes.size > 0 || retryAt !== null)) {
         return { blocked: true, state: { enabled, reconstructReactive, allChanges,
           changes: [...changes].sort(), retryAt }, deadlines: [] };
