@@ -120,15 +120,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       .rejects.toThrow("active_execution_requires_drain");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
-  it.each(["startedAt", "processPid", "processStartedAt", "runnerInstanceId", "nativeSessionId", "nativePhase", "controllerLeaseExpiresAt", "finalizer", "lease"])("keeps queued execution with %s as an offline blocker", async evidence => {
+  it.each(["startedAt", "runtimeModeResolvedAt", "processPid", "processStartedAt", "runnerInstanceId", "nativeSessionId", "nativePhase", "controllerLeaseExpiresAt", "executionStage", "checkpoint", "finalizer", "lease"])("keeps queued execution with %s as an offline blocker", async evidence => {
     const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Retained execution" }).returning();
     const patch = evidence.endsWith("At") ? { [evidence]: new Date() }
       : evidence === "processPid" ? { processPid: 123 }
       : evidence.endsWith("Id") ? { [evidence]: randomUUID() }
-      : evidence === "nativePhase" ? { nativePhase: "observed" } : {};
+      : evidence === "nativePhase" ? { nativePhase: "observed" }
+      : evidence === "executionStage" ? { executionStage: "dispatch" }
+      : evidence === "checkpoint" ? { runnerProfileJson: { sessionCheckpoint: {} } } : {};
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id,
-      nativeIssueId: f.issueId, status: "queued", ...patch }).returning();
+      nativeIssueId: evidence === "finalizer" ? f.issueId : null, status: "queued", ...patch }).returning();
     if (evidence === "finalizer") await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
       issueId: f.issueId, runId: run!.id, phase: "observed" });
     if (evidence === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run!.id });

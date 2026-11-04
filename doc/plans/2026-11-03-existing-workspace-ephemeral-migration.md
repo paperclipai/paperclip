@@ -120,4 +120,8 @@ is not evidence that old deployments have stopped; Cloud owns that provider fenc
 PostgreSQL/S3 tests cover queued turns and wake payloads surviving migration and
 loss of the predecessor filesystem, plus queued execution evidence that must
 remain blocked. The packaged maintenance entry must also retain an unstarted
-queued turn while it archives historical run output.
+queued turn while it archives historical run output. The assembled heartbeat
+test resumes that same queued run after deleting the old disk, verifies saved
+workspace bytes and instructions at provider dispatch, and checks one result and
+one wake consumption even after a second queue sweep. Its sandbox transport and
+provider session are scripted; database, S3, admission and restoration are real.

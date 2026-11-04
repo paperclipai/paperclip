@@ -36,7 +36,9 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await db.execute(sql.raw(`set search_path=${schema}`));
     await db.execute(sql`create table heartbeat_runs (id uuid primary key, company_id uuid not null, agent_id uuid not null,
       status text not null, runtime_mode text default 'legacy', log_store text, log_ref text, log_bytes bigint, log_sha256 text, last_output_seq int not null default 0, controller_lease_expires_at timestamptz, started_at timestamptz, process_pid int, process_started_at timestamptz,
-      runner_instance_id uuid, native_session_id uuid, native_phase text)`);
+      runner_instance_id uuid, native_session_id uuid, native_phase text, runtime_mode_resolved_at timestamptz,
+      process_group_id int, native_issue_id uuid, session_id_after text, controller_boot_id uuid,
+      execution_stage text, result_json jsonb, runner_profile_json jsonb)`);
     await db.execute(sql`create table environment_leases(company_id uuid, heartbeat_run_id uuid)`);
     await db.execute(
       sql`create table native_run_finalizations(run_id uuid, company_id uuid, lease_expires_at timestamptz)`,
