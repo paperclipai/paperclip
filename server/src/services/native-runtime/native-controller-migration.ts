@@ -43,15 +43,15 @@ async function confirmedOlderSuccessfulSnapshot(db: Db, selected: Selected,
       eq(heartbeatRuns.agentId, selected.agentId), eq(heartbeatRuns.nativeIssueId, selected.issueId),
       eq(heartbeatRuns.nativeSessionId, selected.sessionId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "succeeded")));
   const priorSnapshot = record(prior?.snapshot), priorIdentity = record(priorSnapshot.identity);
-  if (!prior?.finishedAt || prior.createdAt >= source.createdAt || prior.finishedAt > source.createdAt
+  if (!prior?.finishedAt || prior.createdAt >= source.createdAt
     || !source.runnerInstanceId || prior.runnerInstanceId !== source.runnerInstanceId
     || priorIdentity.runId !== olderRunId || Object.entries(scope).some(([key, value]) => priorIdentity[key] !== value)
     || priorSnapshot.sessionId !== snapshot.sessionId || priorSnapshot.backendKind !== snapshot.backendKind) return null;
-  const [failed] = await db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+  const [failed] = await db.select({ finishedAt: heartbeatRuns.finishedAt, startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.agentId, selected.agentId),
     eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.nativeSessionId, selected.sessionId),
     eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed")));
-  return failed?.finishedAt ? priorSnapshot : null;
+  return failed?.finishedAt && prior.finishedAt <= (failed.startedAt ?? source.createdAt) ? priorSnapshot : null;
 }
 
 async function hasConfirmedOlderSupervisor(db: Db, selected: Selected,

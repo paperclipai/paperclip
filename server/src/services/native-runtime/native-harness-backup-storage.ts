@@ -99,7 +99,7 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     if (!owner.writersStopped) fail("offline_writers_required");
     const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
     if (active) fail("offline_writers_required");
-    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, owner.runId), eq(heartbeatRuns.companyId, owner.companyId),
       eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
     const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner,
@@ -116,7 +116,7 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
       if (coordinator.phase !== "terminal_failure") {
         // Evidence archival does not settle or resume this stale coordinator.
         // Lease expiry alone is insufficient: every remote writer needs its
-        // exact host-owned stop receipt, recorded after the failed finish.
+        // exact host-owned stop receipt, recorded after execution began.
         if (coordinator.phase !== "observed" || coordinator.resultId || coordinator.nextAttemptAt
           || task.executionRunId === owner.runId) fail("offline_owner_unsettled");
         const leases = await tx.select().from(environmentLeases).where(and(
@@ -125,7 +125,7 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
           const receipt = lease.metadata?.remoteExecutionTermination as { confirmedAt?: unknown } | undefined;
           const confirmedAt = Date.parse(String(receipt?.confirmedAt));
           return lease.issueId !== owner.issueId || !hasRemoteTerminationReceipt(lease)
-            || !Number.isFinite(confirmedAt) || confirmedAt < run.finishedAt!.getTime() || confirmedAt > new Date(clock.now).getTime();
+            || !Number.isFinite(confirmedAt) || confirmedAt < (run.startedAt ?? run.createdAt).getTime() || confirmedAt > new Date(clock.now).getTime();
         })) fail("offline_owner_unsettled");
       }
     }

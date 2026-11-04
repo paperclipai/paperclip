@@ -148,6 +148,11 @@ executable recovery authority. Foreign, invalid and active sources remain blocke
 For a finished failed source with a stale observed coordinator, evidence archival
 also requires an expired controller lease, no accepted result or retry deadline,
 and no current task ownership. Every remote lease must carry the exact host-owned
-termination receipt, confirmed after the failed finish. Recheck those receipts
+termination receipt, confirmed after execution started. Recheck those receipts
 before publication. Preserve the coordinator as recorded; this proof permits
 evidence storage, not execution or a claim that the coordinator has settled.
+
+Compare retained turn completion to the follow-up execution start, not its queue
+creation time. A queued follow-up can predate the prior turn completion. A remote
+stop can also predate a later logical failure caused by recovery timeout. These
+proofs use the recorded execution start and never rewrite lifecycle timestamps.

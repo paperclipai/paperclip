@@ -22,9 +22,9 @@ import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
-  "stale_confirmed", "stale_foreign", "stale_changed", "stale_success", "stale_busy", "stale_durable",
+  "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
-  "controller_observed_stopped", "controller_observed_missing", "controller_observed_foreign",
+  "controller_observed_stopped", "controller_observed_stop_before_finish", "controller_observed_missing", "controller_observed_foreign",
   "controller_observed_live", "controller_observed_result", "controller_observed_retry", "controller_observed_task", "controller_observed_old_receipt", "controller_observed_revoked"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
@@ -253,6 +253,12 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
       nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId, runnerInstanceId: f.native.runnerInstanceId,
       runtimeMode: "native", status: "succeeded", createdAt: new Date(Date.now() - 60_000),
       finishedAt: new Date(Date.now() - 50_000), runnerProfileJson: priorProfile });
+    if (scenario === "stale_queued" || scenario === "stale_overlap") {
+      const now = Date.now();
+      await f.db.update(heartbeatRuns).set({ createdAt: new Date(now - 45_000),
+        startedAt: new Date(now - (scenario === "stale_queued" ? 30_000 : 43_000)) }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(heartbeatRuns).set({ finishedAt: new Date(now - 40_000) }).where(eq(heartbeatRuns.id, priorId));
+    }
     const supervisor = JSON.stringify({ schema: "paperclip.native-session-supervisor.v1",
       configDigest: f.paths.configDigest, snapshot: priorSnapshot });
     await mkdir(dirname(f.paths.supervisorPath), { recursive: true });
@@ -274,7 +280,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     const [originalOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
     const options = { storage, writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
-    if (scenario !== "stale_confirmed") {
+    if (!["stale_confirmed", "stale_queued"].includes(scenario)) {
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
       expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
       expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(true);
@@ -344,6 +350,13 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
         const lease = { id: randomUUID(), companyId: f.companyId, heartbeatRunId: f.runId, issueId: f.issueId,
           provider: "daytona", providerLeaseId: randomUUID(), status: "released", cleanupStatus: "success", releasedAt: new Date() };
         const receipt = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" })!;
+        if (scenario === "controller_observed_stop_before_finish") {
+          const now = Date.now();
+          await f.db.update(heartbeatRuns).set({ createdAt: new Date(now - 40_000), startedAt: new Date(now - 30_000) })
+            .where(eq(heartbeatRuns.id, f.runId));
+          receipt.confirmedAt = new Date(now - 10_000).toISOString();
+          lease.releasedAt = new Date(now - 10_000);
+        }
         if (scenario === "controller_observed_foreign") receipt.runId = randomUUID();
         if (scenario === "controller_observed_old_receipt") receipt.confirmedAt = new Date(0).toISOString();
         await f.db.insert(environmentLeases).values({ ...lease, metadata: { remoteExecutionTermination: receipt } });
@@ -363,7 +376,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     }
     if (scenario === "controller_durable") {
       expect(await migrateNativeControllers(f.db, options)).toMatchObject({ unchanged: 1, archivedFailed: 0 });
-    } else if (!["controller_confirmed", "controller_observed_stopped"].includes(scenario)) {
+    } else if (!["controller_confirmed", "controller_observed_stopped", "controller_observed_stop_before_finish"].includes(scenario)) {
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
       const archives = await f.db.select().from(nativeHarnessBackups);
       if (scenario === "controller_observed_revoked") {
