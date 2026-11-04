@@ -4209,7 +4209,7 @@
       "chat-rendered-links.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v3",
+    "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v4",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
