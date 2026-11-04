@@ -202,3 +202,23 @@ it("keeps historical failure disclosure and a generic reconciliation reply valid
   o.phaseReplies[1]!.body = "Launch Checklist was blocked before; it is now fixed. Launch Checklist is not missing. Launch Checklist is installed despite a blocked local slug. The same team already exists.";
   expect(gradeTeamConditions(o).passed).toBe(true);
 });
+
+it.each([0, 1])("accepts reported historical noninstallation followed by supported current recovery in phase %s", phase => {
+  const { o } = recovered();
+  const history = "Launch Checklist was previously not installed, but is now installed under a separate slug.";
+  o.phaseReplies[phase]!.body = phase === 0 ? `The existing CTO was preserved and the new role renamed CTO 2. ${history}` : history;
+  expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(true);
+});
+it("rejects an explicit current noninstallation claim after historical failure in either phase", () => {
+  for (const phase of [0, 1]) {
+    const { o } = recovered();
+    const wrong = "Launch Checklist was previously not installed and is still not installed.";
+    o.phaseReplies[phase]!.body = phase === 0 ? `The existing CTO was preserved and the new role renamed CTO 2. ${wrong}` : wrong;
+    expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
+  }
+});
+it("does not treat a historical negative alone as an asserted initial recovery", () => {
+  const { o } = recovered();
+  o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist was previously not installed.";
+  expect(gradeTeamConditions(o, "initial").passed).toBe(false);
+});
