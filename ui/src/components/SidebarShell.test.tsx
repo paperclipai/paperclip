@@ -109,6 +109,31 @@ describe("SidebarShell", () => {
     expect(indicator?.className).toContain("group-focus-visible:bg-ring");
   });
 
+  it("restores and persists the default width on double-click, then resizes from that width", () => {
+    window.localStorage.setItem("test.sidebar.width", "320");
+    window.localStorage.setItem("other.sidebar.width", "400");
+    act(() => {
+      root.render(<SidebarShell open resizable storageKey="test.sidebar.width"><div>Sidebar</div></SidebarShell>);
+    });
+    const separator = handle()!;
+    separator.setPointerCapture = vi.fn();
+    act(() => {
+      separator.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(spacer().style.width).toBe("240px");
+    expect(panel().style.width).toBe("240px");
+    expect(separator.getAttribute("aria-valuenow")).toBe("240");
+    expect(window.localStorage.getItem("test.sidebar.width")).toBe("240");
+    expect(window.localStorage.getItem("other.sidebar.width")).toBe("400");
+    act(() => {
+      separator.dispatchEvent(pointerEvent("pointerdown", 240));
+      separator.dispatchEvent(pointerEvent("pointermove", 272));
+      separator.dispatchEvent(pointerEvent("pointerup", 272));
+    });
+    expect(panel().style.width).toBe("272px");
+    expect(window.localStorage.getItem("test.sidebar.width")).toBe("272");
+  });
+
   it("supports keyboard resizing and clamps to the configured bounds", () => {
     act(() => {
       root.render(

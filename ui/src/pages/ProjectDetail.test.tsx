@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { ApiError } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import type { ReactNode } from "react";
@@ -17,6 +19,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listAll: vi.fn(),
   update: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
@@ -83,7 +86,7 @@ vi.mock("@/plugins/slots", () => ({
 }));
 vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
 vi.mock("../components/ProjectProperties", () => ({
-  ProjectProperties: () => <div data-testid="project-properties"><input aria-label="Unsaved project field" /></div>,
+  ProjectProperties: ({ onFieldUpdate }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button></div>,
 }));
 vi.mock("../components/BudgetPolicyCard", () => ({
   BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
@@ -113,6 +116,10 @@ vi.mock("../components/IssuesList", () => ({
     return <div data-testid="issues-list" />;
   },
 }));
+
+async function settle() {
+  for (let i = 0; i < 8; i++) { await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {}); }
+}
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -189,6 +196,7 @@ describe("ProjectDetail", () => {
     mockProjectsApi.get.mockResolvedValue(project());
     mockProjectsApi.list.mockResolvedValue([project()]);
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listAll.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
@@ -239,6 +247,38 @@ describe("ProjectDetail", () => {
       expect(after).toBeNull();
     }
     await act(() => queryClient.clear());
+  });
+
+  it("refreshes cached task audiences when visibility is saved through the field autosave path", async () => {
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.update.mockResolvedValue(project({ visibility: "open" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = queryKeys.issues.accessGrants("cached-task");
+    queryClient.setQueryData(key, [{ source: "project" }]);
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>));
+    await settle();
+    await act(() => [...container.querySelectorAll("button")].find(button => button.textContent === "Open project through autosave")!.click());
+    await settle();
+    expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { visibility: "open" }, "company-1");
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    queryClient.clear();
+  });
+
+  it.each(["issues", "plugin-operations"])("removes cached %s after a real task-list denial", async tab => {
+    mockLocation.pathname = `/projects/project-1/${tab}`;
+    const read = tab === "issues" ? mockIssuesApi.listAll : mockIssuesApi.list;
+    read.mockResolvedValue([{ id: "private-task", companyId: "company-1" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    try {
+      await act(() => root!.render(<QueryClientProvider client={client}><ProjectDetail /></QueryClientProvider>));
+      await vi.waitFor(() => expect(mockIssuesList.mock.calls.at(-1)?.[0]).toMatchObject({ issues: [{ id: "private-task" }] }));
+      read.mockRejectedValue(new ApiError("forbidden", 403, null));
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.list("company-1") }); });
+      await vi.waitFor(() => expect(container.textContent).toContain("You don’t have permission to do that."));
+      expect(container.querySelector('[data-testid="issues-list"]')).toBeNull();
+    } finally { client.clear(); }
   });
 
   it("shows managed plugin affordances and filters the operations tab by plugin origin", async () => {

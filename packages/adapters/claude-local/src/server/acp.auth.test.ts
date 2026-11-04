@@ -197,7 +197,7 @@ describe("probeClaudeAcpSandboxLogin", () => {
 
     // The parsed result is a success, so no login gate and no probe-unavailable
     // check appears.
-    expect(checks).toEqual([]);
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
   });
 
   it("keeps a non-auth failed probe with a token phrase on the probe-unavailable path", async () => {
@@ -256,7 +256,7 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(authRequired?.hint).toBe("Run `claude login` in this environment, then retry the probe.");
   });
 
-  it("emits no checks when the sandbox probe reports a healthy login", async () => {
+  it("records a successful probe when the sandbox reports a healthy login", async () => {
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
     const checks = await probeClaudeAcpSandboxLogin({
@@ -264,7 +264,13 @@ describe("probeClaudeAcpSandboxLogin", () => {
       target: sandboxTarget,
     });
 
-    expect(checks).toEqual([]);
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
+  });
+
+  it("does not record success for an empty probe result", async () => {
+    probeResult.value = { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    const checks = await probeClaudeAcpSandboxLogin({ config: { engine: "acp" }, target: sandboxTarget });
+    expect(checks).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", level: "warn" })]);
   });
 
   it("emits a distinct warn check, not a silent pass, when the probe cannot run", async () => {
@@ -552,6 +558,8 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(result.checks).toContainEqual(expect.objectContaining({
       code: "claude_acp_anthropic_api_key_detected", level: "warn",
     }));
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" }));
     // The host key value never enters a check.
     expect(JSON.stringify(result.checks)).not.toContain("sk-ant-host-key");
   });

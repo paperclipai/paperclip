@@ -1,0 +1,203 @@
+{
+  "schema": "paperclip.antigravity.native-evidence.v1",
+  "date": "2026-10-28",
+  "sourceBaseline": "dce004259394486f6361d0c0dd5a33a5272acc0a",
+  "runnerBuildInputsDigest": "c62057227b92",
+  "platform": "darwin-arm64",
+  "patchVersion": "1.4.3-paperclip.4",
+  "acpxVersion": "0.13.1",
+  "qualification": "pending",
+  "productE2E": "not_run",
+  "accountAuthentication": "user-selected saved personal Google runtime connection",
+  "catalogModels": [
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low"
+  ],
+  "promptRequestsSent": 1,
+  "providerMonetaryCostUsd": null,
+  "billingCoverage": "unavailable; context usage is not an input/output token or price receipt",
+  "attempts": [
+    {
+      "mode": "admission-only",
+      "selectedModel": "gemini-3.8-flash-low",
+      "startedAt": "2026-10-28T14:44:03.803Z",
+      "finishedAt": "2026-10-28T14:44:10.327Z",
+      "requests": {
+        "initialize": 1,
+        "new": 1,
+        "load": 0,
+        "modelSetter": 1,
+        "prompt": 0,
+        "cancel": 0,
+        "close": 0
+      },
+      "instructionBinding": {
+        "digest": "sha256:c8104d8f48056bab41a5a64aff3c16891538177127c28c1afd2c438c143b27b3",
+        "byteLength": 112
+      },
+      "admissionGuardDigest": "sha256:d6f427afae003db83e2942706fc4926c54abcedba1d421f1f41de292564eb557",
+      "runtimeClosure": "sha256:05ed2a3e39c95fc813abeb664a78a295d1dcbfd4098f28cbc17d30d710a1ea92",
+      "nativeSessionStarted": false,
+      "promptSent": false,
+      "admissionVerified": false,
+      "physicalRetirementVerified": true,
+      "leaseReleased": true,
+      "failure": {
+        "name": "Error",
+        "messageDigest": "sha256:8b6480a8eac6d058877054700dbd69654955e6061f961d23c8eddbbefc349818"
+      },
+      "eventCounts": {
+        "usage_update": 1,
+        "available_commands_update": 1
+      },
+      "status": "failed",
+      "classification": "product_defect_model_selector_projection",
+      "managedCredentialCleanup": true,
+      "databaseClientsClosed": true
+    },
+    {
+      "mode": "admission-only",
+      "selectedModel": "gemini-3.8-flash-low",
+      "startedAt": "2026-10-28T14:49:40.091Z",
+      "finishedAt": "2026-10-28T14:49:47.924Z",
+      "requests": {
+        "initialize": 1,
+        "new": 1,
+        "load": 0,
+        "modelSetter": 0,
+        "prompt": 0,
+        "cancel": 0,
+        "close": 0
+      },
+      "instructionBinding": {
+        "digest": "sha256:90be316d38e1158284c4e9d88d3624e9d7e3fca30d03c993da7a7bfa9e080704",
+        "byteLength": 112
+      },
+      "admissionGuardDigest": "sha256:31b9dd005c7452b61e61f3a29c77f74d7f16b20511d1e0f9eff10dfb649dca4b",
+      "runtimeClosure": "sha256:05ed2a3e39c95fc813abeb664a78a295d1dcbfd4098f28cbc17d30d710a1ea92",
+      "nativeSessionStarted": true,
+      "promptSent": false,
+      "admissionVerified": true,
+      "physicalRetirementVerified": true,
+      "leaseReleased": true,
+      "eventCounts": {
+        "usage_update": 1,
+        "available_commands_update": 1
+      },
+      "status": "passed",
+      "classification": "native_admission_only",
+      "managedCredentialCleanup": true,
+      "databaseClientsClosed": true
+    },
+    {
+      "mode": "prompt",
+      "selectedModel": "gemini-3.8-flash-low",
+      "startedAt": "2026-10-28T15:00:07.367Z",
+      "finishedAt": "2026-10-28T15:00:34.155Z",
+      "requests": {
+        "initialize": 1,
+        "new": 1,
+        "load": 0,
+        "modelSetter": 0,
+        "prompt": 1,
+        "cancel": 0,
+        "close": 0
+      },
+      "instructionBinding": {
+        "digest": "sha256:9cfa6fda4f2135354bf87b2e68a781afa4348ac86a6c59c542345c71081a0794",
+        "byteLength": 650
+      },
+      "admissionGuardDigest": "sha256:31b9dd005c7452b61e61f3a29c77f74d7f16b20511d1e0f9eff10dfb649dca4b",
+      "runtimeClosure": "sha256:05ed2a3e39c95fc813abeb664a78a295d1dcbfd4098f28cbc17d30d710a1ea92",
+      "nativeSessionStarted": true,
+      "promptSent": true,
+      "admissionVerified": true,
+      "physicalRetirementVerified": true,
+      "leaseReleased": true,
+      "eventCounts": {
+        "usage_update": 4,
+        "available_commands_update": 1,
+        "tool_call": 2,
+        "tool_call_update": 3,
+        "agent_message_chunk": 5
+      },
+      "toolEvents": [
+        {
+          "tag": "tool_call",
+          "idHash": "sha256:6274c2f18aca82ccf069e6905297f7a6ae84aab405642af9536f2ca1c3420cd7",
+          "status": "pending",
+          "kind": "edit"
+        },
+        {
+          "tag": "tool_call_update",
+          "idHash": "sha256:6274c2f18aca82ccf069e6905297f7a6ae84aab405642af9536f2ca1c3420cd7",
+          "status": "in_progress",
+          "kind": "edit"
+        },
+        {
+          "tag": "tool_call",
+          "idHash": "sha256:9d9bcb0687bfffd32d7e3c008f6ab55a6ef828d58cc7cb8b6a703054c6182a85",
+          "status": "in_progress",
+          "kind": "read"
+        },
+        {
+          "tag": "tool_call_update",
+          "idHash": "sha256:6274c2f18aca82ccf069e6905297f7a6ae84aab405642af9536f2ca1c3420cd7",
+          "status": "completed"
+        },
+        {
+          "tag": "tool_call_update",
+          "idHash": "sha256:9d9bcb0687bfffd32d7e3c008f6ab55a6ef828d58cc7cb8b6a703054c6182a85",
+          "status": "completed"
+        }
+      ],
+      "clientOperations": {
+        "fs/write_text_file:running": 1,
+        "fs/write_text_file:completed": 1,
+        "fs/read_text_file:running": 1,
+        "fs/read_text_file:completed": 1
+      },
+      "permissions": {
+        "allowed": 1,
+        "denied": 0
+      },
+      "builtinToolAllowlist": [
+        "finish"
+      ],
+      "stream": {
+        "events": 19,
+        "outputChunks": 5,
+        "outputBytes": 253,
+        "thoughtChunks": 0,
+        "outputSha256": "sha256:f34b143b56dbb6da47c6ca4361e46c21144316cc8f9ff98494c75416ac7e5fde"
+      },
+      "usage": {
+        "used": 5866,
+        "size": 1048576
+      },
+      "turnResult": {
+        "status": "completed",
+        "stopReason": "end_turn"
+      },
+      "independentOutput": {
+        "byteLength": 40,
+        "sha256": "sha256:79c8d4304612d981c7d8946b523e29af4bbc58b18cca8bc128d284e9a50d651e",
+        "expectedSha256": "sha256:79c8d4304612d981c7d8946b523e29af4bbc58b18cca8bc128d284e9a50d651e",
+        "equal": true
+      },
+      "status": "passed",
+      "classification": "native_file_tools_and_instruction_behavior",
+      "managedCredentialCleanup": true,
+      "databaseClientsClosed": true
+    }
+  ],
+  "remainingRequired": [
+    "ordinary_product_task_and_artifact",
+    "scoped_semantic_MCP_tools",
+    "native_question_and_permission_round_trips",
+    "stop_and_spontaneous_child_loss",
+    "loaded_session_instruction_behavior",
+    "normal_agent_setup_Test_reconnect_revoke"
+  ]
+}

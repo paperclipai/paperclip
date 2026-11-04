@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -96,15 +96,17 @@ export function dashboardService(db: Db) {
           and(
             eq(costEvents.companyId, companyId),
             gte(costEvents.occurredAt, monthStart),
+            lte(costEvents.occurredAt, now),
           ),
         ));
 
       const monthSpendCents = Number(monthSpend);
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
-      // restart-killed run whose retry succeeded is pulled out of the headline
-      // failed count. error_code is carried through so a failure spike can be
-      // attributed to an error class (e.g. process_lost, provider_quota).
+      // restart-killed or shutdown-interrupted run whose retry succeeded is
+      // pulled out of the headline failure count. error_code is carried through
+      // so a failure spike can be attributed to an error class (e.g. process_lost,
+      // provider_quota).
       // Both recursive arms are bounded to the chart window: a retry is always
       // created after the run it retries, so ancestors of an out-of-window
       // child are themselves out of window and invisible to the membership
@@ -165,7 +167,11 @@ export function dashboardService(db: Db) {
         const recovered = row.recovered === true || row.recovered === "t" || row.recovered === "true";
         if (status === "succeeded") {
           bucket.succeeded += count;
-        } else if (status === "failed" || status === "timed_out") {
+        } else if (
+          status === "failed" ||
+          status === "timed_out" ||
+          (recovered && status === "interrupted")
+        ) {
           if (recovered) {
             bucket.recovered += count;
           } else {

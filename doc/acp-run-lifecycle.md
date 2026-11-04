@@ -58,6 +58,15 @@ removes it if startup fails. The child's environment values remain unchanged.
 If the launch shell fails before the wrapper emits a protocol event, the run
 log retains the shell's stderr alongside the exit code.
 
+The process-session bridge also writes one bounded terminal diagnostic to the
+run's stderr. It distinguishes a remote event, input delivery failure, output
+poll failure, output stream failure, and unexpected authenticated proxy closure.
+Exit codes and signals are validated; unavailable values are `unknown`. The line
+contains no raw error message, command, path, or environment value. It records
+the first observed terminal event, not proof of remote shutdown. An error frame
+drains to the local proxy before the connection closes, and a failed or stalled
+diagnostic write does not delay failure delivery or teardown.
+
 The settlement sequence is the one live cleanup owner for every settled path. It
 claims the ledger once, makes the pure reuse decision, then runs the ordered
 steps:

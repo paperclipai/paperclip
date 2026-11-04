@@ -29,15 +29,19 @@ export const createTaskAction = {
   },
   "documentation": {
     "title": "Create task",
-    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
     "note": null
   },
   "examples": {
     "call": {
       "operationId": "create_task",
       "input": {
-        "idempotencyKey": "example",
-        "title": "example"
+        "idempotencyKey": "delegate-api-change-v1",
+        "title": "Implement the approved API change",
+        "description": "Implement the agreed API change in this project. Run the relevant tests and report the result.",
+        "assigneeActorId": "example-agent",
+        "projectId": "example-project",
+        "initialPlan": "1. Implement the agreed change.\n2. Run the relevant tests.\n3. Report the verified result."
       }
     },
     "scenarioCall": {
@@ -77,7 +81,7 @@ export const createTaskAction = {
       "operationId": "create_task",
       "version": 1,
       "title": "Create task",
-      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -106,15 +110,16 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Child task description.",
+            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets.",
             "maxLength": 20000
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional agent assignee. Omit to assign the current agent.",
+            "description": "Existing company agent ID from list_agents. Set the requested teammate here during creation. Omit or use null to assign the current agent; a todo task can start that agent before a later reassignment. Mutually exclusive with assigneeUserId.",
             "maxLength": 20000
           },
           "status": {
@@ -131,7 +136,7 @@ export const createTaskAction = {
           },
           "blockedByTaskIds": {
             "type": "array",
-            "description": "Initial blocker task ids.",
+            "description": "Tasks that must finish before this new task can execute. Parent-child linkage is not a blocker; do not list a parent that is waiting for this child.",
             "items": {
               "type": "string",
               "minLength": 1
@@ -144,7 +149,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Project ID for the task."
+            "description": "Project ID from list_projects. Set the requested project in this creation call so the task does not inherit a different project."
           },
           "initialPlan": {
             "type": [
@@ -225,7 +230,8 @@ export const createTaskAction = {
                 "type": "string",
                 "minLength": 1
               },
-              "assigneeActorId": {
+              "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
+          "assigneeActorId": {
                 "type": [
                   "string",
                   "null"
@@ -269,8 +275,10 @@ export const createTaskAction = {
             "minLength": 1
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets."
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
             "type": "string"
           },
@@ -283,6 +291,7 @@ export const createTaskAction = {
           },
           "blockedByTaskIds": {
             "type": "array",
+            "description": "Tasks that must finish before this new task can execute. Parent-child linkage is not a blocker; do not list a parent that is waiting for this child.",
             "items": {
               "type": "string"
             }
