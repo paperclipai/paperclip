@@ -3,6 +3,9 @@ import { createHmac, createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { verifySlackSignature } from "@chat-adapter/slack/webhook";
 import { createChatSdkEndpointRuntime } from "../../chat-sdk-runtime.js";
+import type { Db } from "@paperclipai/db";
+import type { EndpointRow } from "../runtime-types.js";
+import { createSlackWebhookCallbacks } from "./webhook-callbacks.js";
 import { receiveSlackCloudEvent, slackCloudAcceptedAt, type CurrentSlackCloudBinding, type SlackCloudEvent } from "./cloud-event.js";
 
 const acceptedAt = Date.parse("2099-01-01T00:00:00Z");
@@ -79,10 +82,29 @@ describe("authenticated Slack Cloud receipt consumer", () => {
 
   it("retains current work on signature/body/receipt-time failure and on failed durable admission", async () => {
     const f = fixture(), handler = vi.fn(async () => new Response(null, { status: 503 }));
-    await expect(receiveSlackCloudEvent(f.event, f.binding, handler, acceptedAt)).rejects.toThrow("not been durably accepted");
-    await expect(receiveSlackCloudEvent(f.event, { ...f.binding, signingSecret: "rotated" }, handler, acceptedAt)).rejects.toThrow("signature");
-    await expect(receiveSlackCloudEvent({ ...f.event, createdAt: new Date(acceptedAt + 600_000).toISOString() }, f.binding, handler, acceptedAt)).rejects.toThrow("acceptance time");
-    await expect(receiveSlackCloudEvent(f.event, f.binding, handler, acceptedAt + 31 * 24 * 60 * 60_000)).rejects.toThrow("acceptance time");
+    await expect(receiveSlackCloudEvent(f.event, f.binding, handler, acceptedAt)).rejects.toThrow("callback_unaccepted");
+    await expect(receiveSlackCloudEvent(f.event, { ...f.binding, signingSecret: "rotated" }, handler, acceptedAt)).rejects.toThrow("original_authentication_failed");
+    await expect(receiveSlackCloudEvent({ ...f.event, createdAt: new Date(acceptedAt + 600_000).toISOString() }, f.binding, handler, acceptedAt)).rejects.toThrow("invalid_acceptance_time");
+    await expect(receiveSlackCloudEvent(f.event, f.binding, handler, acceptedAt + 31 * 24 * 60 * 60_000)).rejects.toThrow("invalid_acceptance_time");
     expect(handler).toHaveBeenCalledTimes(1);
   });
+});
+
+it("private replay preserves canonical Slack callback evidence while ordinary external observation remains active", async () => {
+  const f = fixture();
+  const transaction = vi.fn(async () => { throw new Error("external callback observation"); });
+  const db = { transaction } as unknown as Db;
+  const callbacks = createSlackWebhookCallbacks(db, { resolveCredentials: async () => ({}), runtimeCallbackEndpoint: async () => null,
+    getWebhookPublicBaseUrl: () => "https://canonical.example", scheduleMessageProcessing: () => {}, slackRegistration: { notifyVerified: async () => {} } });
+  const endpoint = { setup: { slackCallbackSurfaces: { events: { url: "https://canonical.example/slack", observedAt: "2099-01-01T00:00:00Z" } } } } as unknown as EndpointRow;
+  const before = structuredClone(endpoint.setup);
+  const context = { credentialFingerprint: "fixture", generation: 1, localEpoch: 1, version: "fixture" };
+  await receiveSlackCloudEvent(f.event, f.binding, async request => {
+    await callbacks.recordSlackWebhookCallback(endpoint, request, request.clone(), context);
+    return new Response(null, { status: 200 });
+  }, acceptedAt);
+  expect(endpoint.setup).toEqual(before); expect(transaction).not.toHaveBeenCalled();
+  const external = new Request("https://canonical.example/slack", { method: "POST", headers: { "content-type": "application/json" }, body: new Uint8Array(f.rawBody) });
+  await expect(callbacks.recordSlackWebhookCallback(endpoint, external, external.clone(), context)).rejects.toThrow("external callback observation");
+  expect(transaction).toHaveBeenCalledOnce();
 });

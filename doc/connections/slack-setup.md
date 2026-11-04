@@ -194,8 +194,22 @@ Registration metadata and receipts contain no plaintext credentials. An unchange
 credential/endpoint identity reuses its immutable vault ref across generations;
 rotation and current registration authority remain separately fenced. Removal
 retires exact queue membership and prevents an old generation from reenrolling.
-The app saves only the confirmed nonsecret binding descriptor and signals the
-existing connection-events owner in that same transaction.
+The local configuration transaction first saves nonsecret enrollment or
+retirement intent and signals the existing connection-events owner. Configure,
+pause and removal can complete locally while Cloud is unavailable. The owner
+retries only retained due intent and reconstructs it after restart, including
+removal for archived endpoints after credential cleanup. Confirmation replaces
+only the same current intent and generation; a completed remote call with a
+lost response remains pending. Current authorization errors retain visible
+attention debt instead of claiming registration succeeded.
+
+Retirement sends the original responsible subject and the exact instance,
+company, endpoint, public ID, connection and monotonic generation. Cloud can
+publish a nonreceiving generation floor without a signing key, live descriptor
+or previously returned binding ID. This fences delayed enrollment after local
+removal. Normal current broker authority still applies; the subject alone does
+not authorize an operation. No Cloud configuration creates no new intent or
+background retry. Unsupported capability retains bounded retry responsibility.
 
 Only authenticated `event_callback` messages use this durable lane. The sealed
 queue retains original bytes, signature, timestamp and acceptance time. The app
@@ -204,10 +218,18 @@ original freshness at Cloud acceptance; ordinary external requests still use
 current time. The credential snapshot lease releases before normal lifecycle
 callbacks reacquire their own leases.
 
+Private replay provenance prevents internal replay URLs from replacing saved
+external callback verification evidence. The normal transactional chat delivery
+ledger remains the message admission authority. An ambiguous callback or ACK
+failure retains its receipt; malformed receipts rejected before useful admission
+can be explicitly ignored with bounded diagnostics. Credential-authentication
+uncertainty requires attention and is not silently acknowledged. The broker's
+existing retention horizon remains the disclosed recovery boundary.
+
 This does not qualify a complete Slack endpoint for sleep. Slash commands,
 interactive actions, modal validation and challenges still need their full
-synchronous response semantics. The endpoint blocker remains. The paired
-PostgreSQL producer/SDK test proves synthetic-provider signed enrollment,
-sealed draining, acknowledgment and generation/removal behavior. It does not
-prove live Slack, complete configuration UI, domain task admission or a deployed
-stop/restart/wake journey.
+synchronous response semantics. The endpoint blocker remains. Qualification
+must cover normal signed enrollment, durable retry after removal, sealed drain,
+the actual event worker and SDK, lost-ACK redelivery and one domain effect,
+generation changes, and callback evidence. Synthetic protocol coverage does not
+prove live Slack, complete configuration UI or a deployed stop/restart/wake journey.

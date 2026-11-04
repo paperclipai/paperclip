@@ -1,3 +1,5 @@
+import { SlackCloudReceiptError } from "./chat-channels/slack/cloud-event.js";
+import { reconcilePendingSlackCloudEnrollments } from "./chat-channels/slack/cloud-enrollment.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
@@ -225,6 +227,8 @@ export function githubConnectionEventService(
 ) {
   const now = options.now ?? (() => new Date());
   let nextPollAt = 0;
+  let nextEnrollmentAt: number | null = null;
+  const slackDiagnostics = new Map<string, number>();
   let configuredConnector: {
     config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
     connector: PaperclipCloudConnector;
@@ -504,6 +508,7 @@ export function githubConnectionEventService(
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
+    nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
     const bindings = await activeBindings();
     const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
     const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
@@ -548,7 +553,19 @@ export function githubConnectionEventService(
     for (const event of lease.events) {
       if (event.provider === "slack") {
         try { await dispatchSlackCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
-        catch { result.failed += 1; }
+        catch (error) {
+          const code = error instanceof SlackCloudReceiptError ? error.code : "owner_or_admission_unavailable";
+          const disposition = error instanceof SlackCloudReceiptError ? error.disposition : "retry";
+          const time = now().getTime();
+          if (time - (slackDiagnostics.get(event.id) ?? Number.NEGATIVE_INFINITY) >= 300_000) {
+            if (slackDiagnostics.size >= 1000) slackDiagnostics.delete(slackDiagnostics.keys().next().value!);
+            slackDiagnostics.set(event.id, time);
+            logger.warn({ deliveryId: event.id.slice(0, 200), reason: code, disposition,
+              recoveryExpiresAt: Number.isFinite(Date.parse(event.createdAt)) ? new Date(Date.parse(event.createdAt) + 30 * 24 * 60 * 60_000).toISOString() : null }, "Slack connector receipt requires attention");
+          }
+          if (disposition === "invalid") { acknowledge.push(event.id); result.ignored += 1; }
+          else result.failed += 1;
+        }
         continue;
       }
       if (event.payload.githubApp !== undefined) {
@@ -591,14 +608,14 @@ export function githubConnectionEventService(
   }
 
   return {
-    nextPollAt: () => Number.isFinite(nextPollAt) ? nextPollAt : null,
+    nextPollAt: () => { const next = Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY); return Number.isFinite(next) ? next : null; },
     pollOnce(input: { forSetup?: boolean; forDelivery?: boolean } = {}): Promise<GitHubConnectionEventPollResult> {
       // A manager actively awaiting a dedicated App's signed ping must not
       // inherit a personal connection's old empty-queue backoff. This is a
       // bounded readiness probe, not an additional background polling loop.
       if (inFlight) return inFlight;
       const time = now().getTime();
-      if (!input.forDelivery && time < (input.forSetup ? nextSetupPollAt : nextPollAt)) {
+      if (!input.forDelivery && time < (input.forSetup ? nextSetupPollAt : Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY))) {
         return Promise.resolve({ leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 });
       }
       nextSetupPollAt = time + 5_000;

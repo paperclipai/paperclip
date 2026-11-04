@@ -1,6 +1,6 @@
 import { githubReviewCheckService } from "./chat-github-checks.js";
 import { createSlackCloudEventIngress } from "./chat-channels/slack/cloud-ingress.js";
-import { createSlackCloudEnrollment } from "./chat-channels/slack/cloud-enrollment.js";
+import { createSlackCloudEnrollment, stageSlackCloudEnrollmentIntent, registerSlackCloudEnrollmentOwner } from "./chat-channels/slack/cloud-enrollment.js";
 import { leasedChatProvider } from "./chat-channels/runtime/receiver-policy.js";
 import { chatReceiverSchedule } from "./chat-channels/runtime/receiver-schedule.js";
 import { registerChatReceiverWork } from "./chat-channels/runtime/receiver-work.js";
@@ -3414,8 +3414,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
   }
 
+  const slackCloudEnrollment = createSlackCloudEnrollment(db, { resolveCredentials, runtimeGeneration });
+  const unregisterSlackCloudEnrollment = registerSlackCloudEnrollmentOwner(db, async endpointId => {
+    const record = await endpointRecord(endpointId);
+    if (!record) throw new Error("Slack enrollment endpoint is absent");
+    await withCredentialMutationLease(record.endpoint, lease => slackCloudEnrollment(endpointId, undefined, lease));
+  });
   const { configure, configureWithCredentialLease, runtimeConfig } = createChatConfiguration(db, {
-    onConfigurationSettled: createSlackCloudEnrollment(db, { resolveCredentials, runtimeGeneration }),
+    onConfigurationCommitted: stageSlackCloudEnrollmentIntent,
+    onConfigurationSettled: async (endpointId, actor, lease) => {
+      await slackCloudEnrollment(endpointId, actor, lease).catch(() => {
+        logger.warn({ endpointId, reason: "slack_enrollment_retry_pending" }, "Slack enrollment responsibility retained");
+      });
+    },
     endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime,
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,
@@ -3624,6 +3635,7 @@ return {
       voice.unregisterAgentTools();
       unregisterGitHubCloudIngress();
       unregisterSlackCloudIngress();
+      unregisterSlackCloudEnrollment();
       unregisterCommittedResponseAuthority();
       await Promise.allSettled([...publicationEndpointTasks.values()]);
       await Promise.allSettled([...backgroundMessageTasks]);

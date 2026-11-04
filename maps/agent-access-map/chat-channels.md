@@ -19,14 +19,6 @@ but do not claim an individually executed HTTP test.
 
 Capability ID: `chat-channels/providers`.
 
-The optional Slack async Cloud enrollment remains a signed runtime-to-broker
-operation after normal configuration authorization; it adds no agent credential
-entry or general provider ingress authority. The current child app key,
-company/endpoint/connection and runtime generation are bound privately. Paired
-SQL/SDK fixtures cover synthetic event enrollment/drain/ACK and removal; full
-configuration, task admission, live provider and synchronous lanes remain not-run.
-See [Cloud Events scope](../../doc/connections/slack-setup.md#durable-cloud-events-api-delivery).
-
 Review: `operation-reviewed`.
 
 ### `get-companies-chat-endpoints`

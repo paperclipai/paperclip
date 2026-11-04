@@ -11,7 +11,7 @@ import { resolveExternalTestDatabaseUrl } from "../../../lib/dedicated-test-data
 import { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../../paperclip-cloud-connector.js";
 import { createChatSdkEndpointRuntime } from "../../chat-sdk-runtime.js";
-import { createSlackCloudEnrollment } from "./cloud-enrollment.js";
+import { createSlackCloudEnrollment, stageSlackCloudEnrollmentIntent } from "./cloud-enrollment.js";
 import { createSlackCloudEventIngress, dispatchSlackCloudEvent } from "./cloud-ingress.js";
 import type { InternalSetupState } from "../runtime-types.js";
 
@@ -93,6 +93,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     const produce = createSlackCloudEnrollment(db, { resolveCredentials,
       runtimeGeneration: setup => Number(setup.runtimeGeneration ?? 0) });
     const endpoint = async () => (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId)))[0]!;
+    await db.transaction(tx => stageSlackCloudEnrollmentIntent(tx as unknown as typeof db, endpointId, "actor"));
     await withLease(await endpoint(), lease => produce(endpointId, "actor", lease));
     const saved = (await endpoint()).setup as InternalSetupState;
     expect(saved.slackCloudEvents?.runtimeGeneration).toBe(1);
@@ -102,9 +103,11 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     const timestamp = String(Math.floor(Date.now() / 1000));
     const request = { rawBody, timestamp, signature: `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(rawBody).digest("hex")}` };
     const current = await broker.slackEvents.current(instanceId, publicId);
+    await expect(broker.slackEvents.receive(current, request)).rejects.toThrow("SLACK_DURABLE_WAKE_UNAVAILABLE");
+    const connector = createPaperclipCloudConnector({ config: paperclipCloudConnectorConfigFromEnv()! });
+    expect(await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 })).toBeNull();
     expect(await broker.slackEvents.receive(current, request)).toEqual({ status: 200, duplicate: false });
     await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
-    const connector = createPaperclipCloudConnector({ config: paperclipCloudConnectorConfigFromEnv()! });
     const leased = await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 });
     expect(leased?.failedEventIds).toBeUndefined(); expect(leased?.events).toHaveLength(1);
     const event = leased!.events[0]!; deliveryIds.push(event.id);
@@ -134,10 +137,12 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     await db.update(chatEndpoints).set({ setup: { ...saved, runtimeGeneration: 2 } as InternalSetupState }).where(eq(chatEndpoints.id, endpointId));
     await dispatchSlackCloudEvent(db, event);
     expect(onMessage).toHaveBeenCalledOnce();
+    await db.transaction(tx => stageSlackCloudEnrollmentIntent(tx as unknown as typeof db, endpointId, "actor"));
     await withLease(await endpoint(), lease => produce(endpointId, "actor", lease));
     const replacement = ((await endpoint()).setup as InternalSetupState).slackCloudEvents!;
     expect(replacement.runtimeGeneration).toBe(2); expect(replacement.bindingId).not.toBe(saved.slackCloudEvents!.bindingId);
     await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, endpointId));
+    await db.transaction(tx => stageSlackCloudEnrollmentIntent(tx as unknown as typeof db, endpointId, "actor"));
     await withLease(await endpoint(), lease => produce(endpointId, "actor", lease));
     expect(await broker.slackEvents.current(instanceId, publicId)).toBeUndefined();
   } finally {

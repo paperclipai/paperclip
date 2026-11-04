@@ -119,6 +119,7 @@ type ConnectorResponse = {
   githubApps?: { version: number };
   slackEvents?: { version: number };
   enrollment?: unknown;
+  retirement?: unknown;
   eventWakeVersion?: unknown;
 };
 
@@ -392,7 +393,7 @@ export function createPaperclipCloudConnector(input: {
     },
     async slackEventEnrollment(values: { subject: string; companyId: string; enrollment: Record<string, unknown> }) {
       const response = await call("slack-events", values, { field: "enrollment", value: JSON.stringify(values.enrollment) });
-      return response.enrollment;
+      return values.enrollment.active === false ? response.retirement : response.enrollment;
     },
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
