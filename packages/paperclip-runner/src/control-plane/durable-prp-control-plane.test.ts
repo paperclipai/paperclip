@@ -72,6 +72,7 @@ it("recognizes a complete unclaimed bootstrap through cold checkpoint restoratio
     const proof = inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity);
     expect(proof).toEqual({ fingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest });
+    expect(core.unclaimedBootstrapCheckpoint()).toEqual(proof);
     expect(inspectUnclaimedBootstrapCheckpoint(decodeDurablePrpCheckpoint(checkpoint.records).records, identity)).toEqual(proof);
     for (const field of Object.keys(identity) as Array<keyof DurableRecoveryIdentity>) {
       expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, { ...identity, [field]: "foreign" })).toBeNull();
@@ -96,6 +97,7 @@ it("recognizes a complete unclaimed bootstrap through cold checkpoint restoratio
       expect(inspectUnclaimedBootstrapCheckpoint(changed, identity)).toBeNull();
     }
     core.queueCommand("turn.start", { prompt: "must not be treated as unused" });
+    expect(core.unclaimedBootstrapCheckpoint()).toBeNull();
     await core.flushCheckpoint();
     expect(inspectUnclaimedBootstrapCheckpoint(checkpoint.records, identity)).toBeNull();
   } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
@@ -112,6 +114,7 @@ it("retains ever-issued bootstrap history after credential pruning and cold rest
     core.queueCommand("run.prepare", template);
     core.queueCommand("session.open", { reuse: "same_session" });
     core.issueBootstrapTicket();
+    expect(core.unclaimedBootstrapCheckpoint()).toBeNull();
     await core.flushCheckpoint();
     const records = new Map(checkpoint.records), header = JSON.parse(records.get("header")!);
     expect(header.state.freshBootstraps).toBe(1);

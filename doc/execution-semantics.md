@@ -1754,6 +1754,14 @@ from a zero-usage proof. A terminal failed run with that proof can settle its
 usage as zero through the existing accounting owner. This does not establish
 physical termination, release a workspace hold, or create a semantic result.
 
+The automatic next attempt can admit absent remote Runner state only after it
+rechecks that proof against both the encrypted checkpoint and its complete local
+projection under the exact current claim. The frozen execution envelope must
+still match. It keeps the original pending `run.prepare` and `session.open`
+command IDs. A proved unused Codex home can rematerialize its sealed skills for
+that attempt. Provider progress, issued credentials, legacy state, Stop and
+configuration changes retain the normal state-identity hold.
+
 A failed, unowned native sandbox retry can outlive an explicit Retry that already
 completed successfully. Startup recovery and ordinary retry admission retire that
 old retry only with the same company, task and agent, a linked completed successor,

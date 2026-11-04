@@ -75,6 +75,7 @@ import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
+import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -5271,6 +5272,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   restartRecovery?: NativeRestartRecoveryClaim;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
+  bootstrapRetryLeaseOwner?: string;
 }): Promise<VerifiedWarmTransitionBinding | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   await restoreWarmRunnerdController(input);
@@ -5368,6 +5370,13 @@ async function migrateRunnerdStateRootForExecution(input: {
       return;
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
+      if (!input.restartRecovery && !input.retainedWarmOwnerRunId && input.bootstrapRetryLeaseOwner
+        && input.runnerExecutionTarget?.kind === "remote"
+        && runnerdAuthorityLifecycle(scoped, identity) === "absent"
+        && await admitUnclaimedNativeBootstrapRetry({ db: input.db, execution: input.execution,
+          leaseOwner: input.bootstrapRetryLeaseOwner, preparedExecutionAdmission: input.preparedExecutionAdmission,
+          localStateContents: readBoundedNativeFile(resolve(scoped, "control-plane", "control-plane-state.json"),
+            8 * 1024 * 1024, "native_runner_checkpoint_invalid").toString("utf8") })) return;
       if (
         runnerdAuthorityLifecycleWithVerifiedBackup({
           root: scoped,
@@ -8742,6 +8751,7 @@ async function executePaperclipNativeSessionWithinScope(
       onLog: input.onLog,
       restartRecovery: input.restartRecovery,
       runnerExecutionTarget: input.runnerExecutionTarget,
+      bootstrapRetryLeaseOwner: input.leaseOwner,
     });
   }
   const durableRunnerBinding = input.useRunnerd

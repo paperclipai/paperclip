@@ -5131,6 +5131,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
     if (provider === "codex" && this.options.homeMode !== "preconfigured") {
+      if (this.#core?.unclaimedBootstrapCheckpoint()) {
+        await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
+      }
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
@@ -5348,6 +5351,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         mode: 0o700,
       });
     }
+    const unclaimedBootstrap = core.unclaimedBootstrapCheckpoint();
     const prepared = await this.#prepareLaunch(params, identity, dynamicTools);
     const { runAttachTemplate } = prepared;
     // Preserve the first generation's provider attachment seed independently
@@ -5355,8 +5359,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // continuation; the control-plane copy serves a controller/runner resume.
     this.#runAttachTemplate = structuredClone(runAttachTemplate);
     core.persistRunAttachTemplate(runAttachTemplate);
-    core.queueCommand("run.prepare", runAttachTemplate);
-    core.queueCommand("session.open", { reuse: "same_session" });
+    if (!unclaimedBootstrap) {
+      core.queueCommand("run.prepare", runAttachTemplate);
+      core.queueCommand("session.open", { reuse: "same_session" });
+    }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
       : null;

@@ -2518,6 +2518,16 @@ export class DurablePrpControlPlane {
     this.#store.save();
   }
 
+  unclaimedBootstrapCheckpoint() {
+    const history = this.#store.state.bootstrapHistory;
+    if (this.#store.state.commands.length !== 2 || this.#store.state.committedEvents.length !== 0
+      || history?.credentialsIssued !== 0 || history.adopted !== false) return null;
+    return inspectUnclaimedBootstrapCheckpoint(
+      captureCheckpoint(this.#store.state, this.#expectedRunnerVersion, this.#expectedRunnerDigest).records,
+      this.#identity,
+    );
+  }
+
   issueBootstrapTicket(ttlMs = 5_000): string {
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
