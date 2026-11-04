@@ -7,7 +7,7 @@ import {
   hasPendingBudgetEnforcement,
   nextBudgetReconciliationAt,
   reconcileDueBudgetPolicies,
-  flushBudgetEvaluationWork,
+  flushBudgetEvaluationWorkPage,
   type BudgetServiceHooks,
 } from "./budgets.js";
 import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
@@ -28,7 +28,9 @@ export function wakeCostAccountingWork(db: Db): void {
 export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, hooks: BudgetServiceHooks) {
   let startup = true;
   let reconciliationCursor: string | null = null;
+  let evaluationCursor: string | null = null;
   let reconciling = false;
+  let reconciliationFailed = false;
   let nextDeadline: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
@@ -39,11 +41,13 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
       if (startup || reconciling || (nextDeadline !== null && nextDeadline <= Date.now())) {
         const page = await reconcileDueBudgetPolicies(db, { startup, ...(reconciliationCursor ? { cursor: reconciliationCursor } : {}) });
         reconciliationCursor = page.nextCursor;
+        reconciliationFailed ||= Boolean(page.hadFailures);
         reconciling = reconciliationCursor !== null;
-        if (!reconciling) startup = false;
+        if (!reconciling) { startup = reconciliationFailed; reconciliationFailed = false; }
       }
       if (signal.aborted) return;
-      await flushBudgetEvaluationWork(db);
+      const evaluation = await flushBudgetEvaluationWorkPage(db, { ...(evaluationCursor ? { cursor: evaluationCursor } : {}) });
+      evaluationCursor = evaluation.nextCursor;
       if (signal.aborted) return;
       await withBudgetSpan("budget.enforcement.deliver", () => deliverBudgetEnforcement(db, hooks));
     },
@@ -52,7 +56,7 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
         hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db), hasPendingBudgetEvaluation(db),
       ]);
       nextDeadline = next?.getTime() ?? null;
-      return pending || evaluation || reconciling;
+      return pending || evaluation || reconciling || startup || evaluationCursor !== null;
     },
     nextRunAt: () => nextDeadline,
   });

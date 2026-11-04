@@ -1244,50 +1244,64 @@ async function fenceBudgetPolicies(tx: Db, companyId: string, extra?: { scopeTyp
 /** Consume selected committed IDs only. Earlier allocated IDs that commit
  * later remain discoverable; no company high-water mark is written. */
 export async function flushBudgetEvaluationWork(db: Db, options: { companyId?: string } = {}): Promise<number> {
-  const pending = await db.select({ companyId: budgetEvaluationWork.companyId }).from(budgetEvaluationWork)
-    .where(options.companyId ? eq(budgetEvaluationWork.companyId, options.companyId) : undefined)
-    .orderBy(budgetEvaluationWork.createdAt, budgetEvaluationWork.id).limit(100);
+  return (await flushBudgetEvaluationWorkPage(db, options)).consumed;
+}
+
+/** The cursor rotates bounded company pages; it is a scheduling hint only.
+ * Pending inputs remain durable across retries, lower-ID arrivals and restart. */
+export async function flushBudgetEvaluationWorkPage(db: Db, options: { companyId?: string; cursor?: string | null } = {}): Promise<{ consumed: number; nextCursor: string | null }> {
+  const pending = await db.selectDistinct({ companyId: budgetEvaluationWork.companyId }).from(budgetEvaluationWork)
+    .where(and(options.companyId ? eq(budgetEvaluationWork.companyId, options.companyId) : undefined,
+      options.cursor ? sql`${budgetEvaluationWork.companyId} > ${options.cursor}::uuid` : undefined))
+    .orderBy(budgetEvaluationWork.companyId).limit(100);
   let consumed = 0;
-  for (const companyId of new Set(pending.map(row => row.companyId))) {
-    consumed += await withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
-      const now = new Date();
-      const inputs = await tx.select().from(budgetEvaluationWork).where(eq(budgetEvaluationWork.companyId, companyId))
-        .orderBy(budgetEvaluationWork.createdAt, budgetEvaluationWork.id).limit(500);
-      if (!inputs.length) return 0;
-      const agents = new Set(inputs.map(input => input.agentId));
-      const projects = new Set(inputs.map(input => input.projectId));
-      const policies = (await fenceBudgetPolicies(tx, companyId)).filter(policy => policy.scopeType === "company"
-        || (policy.scopeType === "agent" ? agents : projects).has(policy.scopeId));
-      const existing: PolicyRow[] = [];
-      const scopes = new Map<string, ScopeRecord>();
-      for (const policy of policies) {
-        const key = `${policy.scopeType}:${policy.scopeId}`;
-        try {
-          if (!scopes.has(key)) scopes.set(key, await resolveScopeRecord(tx, policy.scopeType as BudgetScopeType, policy.scopeId));
-          existing.push(policy);
-        } catch (error) {
-          if (!(error instanceof HttpError) || error.status !== 404) throw error;
-          // Archived charges outlive deleted scope resources; they still affect
-          // the company policy, without resurrecting the deleted scope.
+  for (const { companyId } of pending) {
+    try {
+      consumed += await withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
+        const now = new Date();
+        const inputs = await tx.select().from(budgetEvaluationWork).where(eq(budgetEvaluationWork.companyId, companyId))
+          .orderBy(budgetEvaluationWork.createdAt, budgetEvaluationWork.id).limit(500);
+        if (!inputs.length) return 0;
+        const agents = new Set(inputs.map(input => input.agentId));
+        const projects = new Set(inputs.map(input => input.projectId));
+        const policies = (await fenceBudgetPolicies(tx, companyId)).filter(policy => policy.scopeType === "company"
+          || (policy.scopeType === "agent" ? agents : projects).has(policy.scopeId));
+        const existing: PolicyRow[] = [];
+        const scopes = new Map<string, ScopeRecord>();
+        for (const policy of policies) {
+          const key = `${policy.scopeType}:${policy.scopeId}`;
+          try {
+            if (!scopes.has(key)) scopes.set(key, await resolveScopeRecord(tx, policy.scopeType as BudgetScopeType, policy.scopeId));
+            existing.push(policy);
+          } catch (error) {
+            if (!(error instanceof HttpError) || error.status !== 404) throw error;
+            // Archived charges outlive deleted scope resources; they still affect
+            // the company policy, without resurrecting the deleted scope.
+          }
         }
-      }
-      const observations = await computeObservedSpends(tx, existing, now);
-      const service = budgetServiceInTransaction(tx, publications, { evaluate: true, now });
-      await service.evaluateAffectedScopes(companyId, null, null, { policies: existing, observations });
-      for (const [key, scope] of scopes) {
-        const scoped = existing.map((policy, index) => ({ policy, observed: observations[index] }))
-          .filter(({ policy }) => `${policy.scopeType}:${policy.scopeId}` === key);
-        if (!scoped.length) continue;
-        await service.reconcileScope(companyId, scoped[0].policy.scopeType as BudgetScopeType, scoped[0].policy.scopeId,
-          { scope, policies: scoped.map(row => row.policy), observations: scoped.map(row => row.observed) });
-      }
-      if (existing.some(policy => policy.windowKind === "calendar_month_utc") && Date.now() >= currentUtcMonthWindow(now).end.getTime())
-        throw Object.assign(new Error("Budget window changed during evaluation"), { code: "40001" });
-      await tx.delete(budgetEvaluationWork).where(inArray(budgetEvaluationWork.id, inputs.map(input => input.id)));
-      return inputs.length;
-    });
+        const observations = await computeObservedSpends(tx, existing, now);
+        const service = budgetServiceInTransaction(tx, publications, { evaluate: true, now });
+        await service.evaluateAffectedScopes(companyId, null, null, { policies: existing, observations });
+        for (const [key, scope] of scopes) {
+          const scoped = existing.map((policy, index) => ({ policy, observed: observations[index] }))
+            .filter(({ policy }) => `${policy.scopeType}:${policy.scopeId}` === key);
+          if (!scoped.length) continue;
+          await service.reconcileScope(companyId, scoped[0].policy.scopeType as BudgetScopeType, scoped[0].policy.scopeId,
+            { scope, policies: scoped.map(row => row.policy), observations: scoped.map(row => row.observed) });
+        }
+        if (existing.some(policy => policy.windowKind === "calendar_month_utc") && Date.now() >= currentUtcMonthWindow(now).end.getTime())
+          throw Object.assign(new Error("Budget window changed during evaluation"), { code: "40001" });
+        await tx.delete(budgetEvaluationWork).where(inArray(budgetEvaluationWork.id, inputs.map(input => input.id)));
+        return inputs.length;
+      });
+    } catch (error) {
+      // One company's control contention or malformed retained input must not
+      // suppress another company's evaluations or already-committed Stops.
+      // The rolled-back input IDs stay pending for the coordinator's retry.
+      logger.warn({ err: error, companyId }, "Budget evaluation remains pending");
+    }
   }
-  return consumed;
+  return { consumed, nextCursor: pending.length === 100 ? pending[pending.length - 1].companyId : null };
 }
 
 const budgetOwnedScope = or(
@@ -1312,7 +1326,7 @@ export async function nextBudgetReconciliationAt(db: Db): Promise<Date | null> {
 
 /** Startup repairs configured policy scopes, not every agent. Afterwards only
  * held monthly scopes owe a timed reevaluation; writes reconcile their own scopes. */
-export async function reconcileDueBudgetPolicies(db: Db, options: { startup?: boolean; cursor?: string | null } = {}): Promise<{ nextCursor: string | null }> {
+export async function reconcileDueBudgetPolicies(db: Db, options: { startup?: boolean; cursor?: string | null } = {}): Promise<{ nextCursor: string | null; hadFailures?: boolean }> {
   const actionable = options.startup ? or(budgetOwnedScope, openIncidentScope,
     sql`${budgetPolicies.enforcementVersion} > ${budgetPolicies.enforcementDeliveredVersion}`,
     and(eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true), sql`${budgetPolicies.amount} > 0`, unfinishedRunScope))
@@ -1321,6 +1335,7 @@ export async function reconcileDueBudgetPolicies(db: Db, options: { startup?: bo
     .from(budgetPolicies).where(and(actionable, options.cursor ? sql`${budgetPolicies.id} > ${options.cursor}::uuid` : undefined))
     .orderBy(budgetPolicies.id).limit(100);
   const scopes = new Map(rows.map(scope => [`${scope.companyId}:${scope.scopeType}:${scope.scopeId}`, scope]));
+  let hadFailures = false;
   for (const scope of scopes.values()) {
     try {
       await withOperationAccountingTransaction(db, scope.companyId, async (tx, publications) => {
@@ -1334,10 +1349,11 @@ export async function reconcileDueBudgetPolicies(db: Db, options: { startup?: bo
       });
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) continue;
-      throw error;
+      hadFailures = true;
+      logger.warn({ err: error, companyId: scope.companyId, policyId: scope.id }, "Budget scope reconciliation remains pending");
     }
   }
-  return { nextCursor: rows.length === 100 ? rows[rows.length - 1].id : null };
+  return { nextCursor: rows.length === 100 ? rows[rows.length - 1].id : null, ...(hadFailures ? { hadFailures: true } : {}) };
 }
 
 export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {

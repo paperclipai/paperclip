@@ -14,7 +14,7 @@ vi.mock("../services/budgets.js", () => ({
   hasPendingBudgetEnforcement: work.pending,
   nextBudgetReconciliationAt: work.next,
   reconcileDueBudgetPolicies: work.reconcile,
-  flushBudgetEvaluationWork: work.evaluate,
+  flushBudgetEvaluationWorkPage: work.evaluate,
 }));
 vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
@@ -29,7 +29,7 @@ beforeEach(() => {
   work.next.mockResolvedValue(null);
   work.reconcile.mockResolvedValue({ nextCursor: null });
   work.accounting.mockResolvedValue({ pending: false, nextRunAt: null });
-  work.evaluate.mockResolvedValue(0);
+  work.evaluate.mockResolvedValue({ consumed: 0, nextCursor: null });
   work.evaluationPending.mockResolvedValue(false);
 });
 afterEach(async () => {
@@ -49,6 +49,28 @@ function setup() {
 }
 
 describe("budget accounting delivery", () => {
+  it("continues cancellation delivery and retries a failed startup reconciliation", async () => {
+    const s = setup();
+    work.reconcile.mockResolvedValueOnce({ nextCursor: null, hadFailures: true });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
+    expect(work.deliver).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(work.reconcile).toHaveBeenLastCalledWith(s.db, { startup: true });
+    expect(work.deliver).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+
+  it("rotates evaluation pages past failed companies before revisiting the first page", async () => {
+    const s = setup();
+    work.evaluate.mockResolvedValueOnce({ consumed: 0, nextCursor: "failed-company" });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
+    expect(work.deliver).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(work.evaluate).toHaveBeenLastCalledWith(s.db, { cursor: "failed-company" });
+    expect(work.deliver).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+
   it("recovers at startup, then leaves unchanged budget history completely quiet", async () => {
     const s = setup();
     await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;

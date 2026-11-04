@@ -6,6 +6,8 @@ import { budgetService, budgetServiceInTransaction, flushBudgetEvaluationWork } 
 import { costService, createCostEventInTransaction } from "../services/costs.js";
 import { withAccountingTransaction, withOperationAccountingTransaction } from "../services/accounting-transaction.js";
 import { computeObservedSpends, type SpendPolicy } from "../services/budget-exposure.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerBudgetEnforcementWork } from "../services/budget-enforcement-worker.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -181,5 +183,32 @@ postgres("independent accounting and deferred budget decisions", () => {
       await flushBudgetEvaluationWork(db, f);
       expect((await db.select().from(projects).where(eq(projects.id, projectId)))[0].pauseReason).toBe("budget");
     } finally { release(); await policy; }
+  });
+
+  it("delivers another company's Stop when a busy company has more than a page of old inputs", async () => {
+    const busy = await fixture(), healthy = await fixture();
+    await costService(db).createEvent(busy.companyId, charge(busy.agentId, randomUUID(), 120));
+    await costService(db).createEvent(healthy.companyId, charge(healthy.agentId, randomUUID(), 120));
+    await db.insert(budgetEvaluationWork).values(Array.from({ length: 150 }, () => ({
+      companyId: busy.companyId, agentId: busy.agentId, createdAt: new Date(Date.now() - 20_000),
+    })));
+    let release!: () => void, locked!: () => void;
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, busy.companyId)).for("no key update");
+      locked(); await gate;
+    });
+    const errors: unknown[] = [], delivered: string[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    try {
+      await ready;
+      await registerBudgetEnforcementWork(db, coordinator, { cancelWorkForScope: async scope => { delivered.push(scope.companyId); } }).ready;
+      expect(errors).toHaveLength(0);
+      expect(delivered).toContain(healthy.companyId);
+      expect((await db.select().from(companies).where(eq(companies.id, healthy.companyId)))[0].pauseReason).toBe("budget");
+      expect(await pending(healthy.companyId)).toHaveLength(0);
+      expect((await pending(busy.companyId)).length).toBeGreaterThan(100);
+    } finally { release(); await holding; await coordinator.stop(); }
   });
 });

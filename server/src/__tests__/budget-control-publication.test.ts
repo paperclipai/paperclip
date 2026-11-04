@@ -59,7 +59,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await ready;
     const evaluation = flushBudgetEvaluationWork(db, f).then(value => ({ value }), error => ({ error }));
     try {
-      expect(await bounded(evaluation)).toMatchObject({ error: { code: "40001" } });
+      expect(await bounded(evaluation)).toMatchObject({ value: 0 });
       expect((await pending(f.companyId)).length).toBeGreaterThan(0);
     } finally { release(); await control; await evaluation; }
     await flushBudgetEvaluationWork(db, f);
@@ -95,7 +95,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }, options);
     });
     try {
-      await expect(flushBudgetEvaluationWork(db, f)).rejects.toMatchObject({ code: "40001" });
+      expect(await flushBudgetEvaluationWork(db, f)).toBe(0);
     } finally { boundary.mockRestore(); }
     expect(crossed).toBeGreaterThan(0);
     expect((await pending(f.companyId)).map(row => row.id)).toEqual(inputIds);
