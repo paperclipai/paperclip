@@ -16,8 +16,43 @@ import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
+import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date };
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function hasConfirmedOlderSupervisor(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  paths: Awaited<ReturnType<typeof localPaths>>, supervisor: unknown) {
+  const snapshot = record(source.runnerProfileJson.sessionCheckpoint), identity = record(snapshot.identity);
+  const olderSnapshot = record(record(supervisor).snapshot), olderIdentity = record(olderSnapshot.identity);
+  const scope = { companyId: selected.companyId, agentId: selected.agentId, issueId: selected.issueId, sessionId: selected.sessionId };
+  if (source.status !== "failed" || identity.runId !== source.id
+    || Object.entries(scope).some(([key, value]) => identity[key] !== value || olderIdentity[key] !== value)
+    || paths.execution.binding.runId !== source.id || paths.execution.binding.companyId !== selected.companyId
+    || paths.execution.binding.agentId !== selected.agentId || paths.execution.binding.issueId !== selected.issueId
+    || paths.execution.session.normalizedSessionId !== selected.sessionId
+    || typeof snapshot.sessionId !== "string" || !snapshot.sessionId.trim()
+    || snapshot.sessionId !== olderSnapshot.sessionId || snapshot.backendKind !== olderSnapshot.backendKind
+    || typeof olderIdentity.runId !== "string" || olderIdentity.runId === source.id
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(olderIdentity.runId)) return false;
+  const [prior] = await db.select({ createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt,
+    runnerInstanceId: heartbeatRuns.runnerInstanceId, snapshot: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, olderIdentity.runId), eq(heartbeatRuns.companyId, selected.companyId),
+      eq(heartbeatRuns.agentId, selected.agentId), eq(heartbeatRuns.nativeIssueId, selected.issueId),
+      eq(heartbeatRuns.nativeSessionId, selected.sessionId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "succeeded")));
+  if (!prior?.finishedAt || prior.createdAt >= source.createdAt || prior.finishedAt > source.createdAt
+    || !source.runnerInstanceId || prior.runnerInstanceId !== source.runnerInstanceId
+    || nativeSha256(prior.snapshot) !== nativeSha256(redactRunnerApiPayloads(olderSnapshot))) return false;
+  const [failed] = await db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, source.id), eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.agentId, selected.agentId),
+    eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.nativeSessionId, selected.sessionId),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed")));
+  return Boolean(failed?.finishedAt);
+}
 
 async function* retainedSources(db: Db, signal?: AbortSignal) {
   let after: string | undefined;
@@ -165,6 +200,17 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
       continue;
     }
     if (result.kind !== "imported" && result.kind !== "unchanged") {
+      if (result.kind === "missing_evidence" && result.reason === "stale_supervisor_snapshot"
+        && legacyControllerState !== undefined && supervisor !== undefined
+        && await hasConfirmedOlderSupervisor(db, selected, source, paths, JSON.parse(supervisor))) {
+        const storage = input.storage ?? durableNativeHarnessStorage();
+        if (storage) {
+          await archiveFailedLegacyNativeController(db, { ...binding, storage, controller: legacyControllerState, supervisor,
+            writersStopped: true, signal: input.signal });
+          counts.archivedFailed++;
+          continue;
+        }
+      }
       throw new Error(`native_controller_migration_blocked:${source.id}:${"reason" in result ? result.reason : result.kind}`);
     }
     counts[result.kind]++;
