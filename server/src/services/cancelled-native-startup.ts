@@ -1,6 +1,7 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -8,6 +9,7 @@ import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
@@ -26,15 +28,57 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
     || recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false
     || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
     || run.nativeIssueId || run.nativeSessionId || run.runnerProfileJson?.nativeExecutionInput != null
-    || run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null
+    || run.runnerProfileJson?.nativeWorkspaceSync != null
     || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
-  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+  const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-  )).limit(1);
+  ));
   const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
     eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
   )).limit(1);
-  return !lease && !result && !await nativeStartupHasExecutionEvidence(db, run);
+  if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
+  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return true;
+  const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
+    && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
+    && await hasSettledFailedPreparationEvidence(db, run)
+    && await hasVerifiedWorkspaceRepair(db, run);
+}
+
+async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<boolean> {
+  const [source] = await db.select({ agentId: heartbeatRuns.agentId,
+    runtimeModeResolverVersion: heartbeatRuns.runtimeModeResolverVersion, runtimeModeReason: heartbeatRuns.runtimeModeReason,
+    runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
+    driverKind: heartbeatRuns.driverKind, driverVersion: heartbeatRuns.driverVersion,
+    completionContractId: heartbeatRuns.completionContractId, completionContractSha256: heartbeatRuns.completionContractSha256,
+    sessionIdBefore: heartbeatRuns.sessionIdBefore, externalRunId: heartbeatRuns.externalRunId,
+    logStore: heartbeatRuns.logStore, logRef: heartbeatRuns.logRef, logBytes: heartbeatRuns.logBytes,
+    logSha256: heartbeatRuns.logSha256, logCompressed: heartbeatRuns.logCompressed,
+    stdoutExcerpt: heartbeatRuns.stdoutExcerpt, stderrExcerpt: heartbeatRuns.stderrExcerpt,
+    lastOutputAt: heartbeatRuns.lastOutputAt, lastOutputSeq: heartbeatRuns.lastOutputSeq,
+    lastOutputStream: heartbeatRuns.lastOutputStream, lastOutputBytes: heartbeatRuns.lastOutputBytes,
+    usageJson: heartbeatRuns.usageJson, exitCode: heartbeatRuns.exitCode, signal: heartbeatRuns.signal,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+  if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
+    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) && value !== null)
+    || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
+    || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
+      "chatControlRecoveryAdmission"].includes(key))
+    || run.resultJson?.stopReason !== "adapter_failed"
+    || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
+      "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
+      "workspaceRestoreRecovery"].includes(key))) return false;
+  return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }));
+}
+
+function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): boolean {
+  if (usage === null) return true;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)
+    || Object.keys(usage).length !== 1 || !Object.hasOwn(usage, "ledgerScope")) return false;
+  const scope = (usage as Record<string, unknown>).ledgerScope as Record<string, unknown> | null;
+  return Boolean(scope && typeof scope === "object" && !Array.isArray(scope) && Object.keys(scope).length === 3
+    && scope.issueId === issueId && (scope.projectId === null || typeof scope.projectId === "string" && isUuidLike(scope.projectId))
+    && (scope.billingCode === null || typeof scope.billingCode === "string"));
 }
 
 /** Candidate state only. Admission must also verify ownership, execution records,
