@@ -360,11 +360,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       expect(context.objective).toBe(
         "Ignore launch notes; read today's Gmail inbox.",
       );
-      expect(context.messages.at(-1)).toMatchObject({
-        id: laterId,
-        deleted: true,
-        body: "",
-      });
+      expect(context.messages.map((row) => row.id)).toEqual([notionId, gmailId]);
+      expect(context.coverage.omittedDeletedIds).toEqual([laterId]);
+      expect(context.messages.some((row) => row.id === laterId)).toBe(false);
       const resumed = await buildExecutionContinuation({
         db,
         companyId,
@@ -377,8 +375,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       });
       expect(resumed.resumeDelta?.messages.map((row) => row.id)).toEqual([
         gmailId,
-        laterId,
       ]);
+      expect(resumed.coverage.omittedDeletedIds).toEqual([laterId]);
       const deltaPrompt = renderPaperclipWakePrompt(
         { executionContinuation: resumed },
         { resumedSession: true },
