@@ -3298,6 +3298,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     attemptedSessionAt?: number;
     confirmed: boolean;
   } | null>(null);
+  const pendingReadReceiptsRef = useRef(new Map<string, NonNullable<typeof readReceiptRef.current>>());
+  const [readReceiptRevision, setReadReceiptRevision] = useState(0);
   const lastScrollIssueIdRef = useRef<string | undefined>(undefined);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
   const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
@@ -4531,6 +4533,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKey: queryKeys.sidebarBadges(selectedCompanyId),
         });
       }
+    },
+    onFinished: (receipt) => {
+      pendingReadReceiptsRef.current.delete(receipt.issueId);
+      // An older read can settle after navigation has changed the mutation observer.
+      if (readReceiptRef.current === receipt) setReadReceiptRevision(revision => revision + 1);
     },
   });
 
@@ -6121,13 +6128,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     if (issue.conversationAgentId) return;
     const receipt = readReceiptRef.current?.issueId === issue.id
       ? readReceiptRef.current
-      : (readReceiptRef.current = { issueId: issue.id, account: bindAccount(queryClient), confirmed: false });
-    if (receipt.confirmed || markIssueRead.isPending || !receipt.account.isCurrentScope()) return;
+      : (readReceiptRef.current = pendingReadReceiptsRef.current.get(issue.id)
+        ?? { issueId: issue.id, account: bindAccount(queryClient), confirmed: false });
+    if (receipt.confirmed || pendingReadReceiptsRef.current.has(issue.id) || !receipt.account.isCurrentScope()) return;
     // Retry after a successful session read, without looping on a failed check.
     if (receipt.attemptedSessionAt === sessionUpdatedAt) return;
     receipt.attemptedSessionAt = sessionUpdatedAt;
+    pendingReadReceiptsRef.current.set(issue.id, receipt);
     markIssueRead.mutate(receipt);
-  }, [issueId, issue?.id, issue?.conversationAgentId, sessionUpdatedAt, markIssueRead.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [issueId, issue?.id, issue?.conversationAgentId, sessionUpdatedAt, readReceiptRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
     const items: GalleryMediaItem[] = [];

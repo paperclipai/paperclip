@@ -1675,6 +1675,83 @@ describe("IssueDetail", () => {
     } finally { cache.dispose(); }
   });
 
+  it.each(["success", "failure"] as const)("marks every opened cached task before an earlier read finishes with %s", async outcome => {
+    const tasks = [createIssue(), createIssue({ id: "second-task", identifier: "TASK-2" }), createIssue({ id: "third-task", identifier: "TASK-3" })];
+    const reads = tasks.map(() => createDeferred<{ id: string; lastReadAt: string }>());
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockImplementation(async ref => tasks.find(task => task.id === ref || task.identifier === ref)!);
+    mockIssuesApi.markRead.mockReset().mockImplementation(id => reads[tasks.findIndex(task => task.id === id)].promise);
+    try {
+      for (const [index, task] of tasks.entries()) {
+        queryClient.setQueryData(queryKeys.issues.detail(task.id), task);
+        queryClient.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
+        mockRouteParams.issueId = task.id;
+        mockLocation.pathname = `/issues/${task.id}`;
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(index + 1, task.id));
+      }
+      expect(queryClient.isMutating()).toBe(3);
+      await act(async () => root.unmount());
+      await act(async () => {
+        if (outcome === "failure") reads[0].reject(new ApiError("Try again later", 429, {}));
+        else reads[0].resolve({ id: tasks[0].id, lastReadAt: new Date().toISOString() });
+        for (let index = 1; index < reads.length; index++) reads[index].resolve({ id: tasks[index].id, lastReadAt: new Date().toISOString() });
+      });
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+    } finally {
+      reads.forEach((read, index) => read.resolve({ id: tasks[index].id, lastReadAt: new Date().toISOString() }));
+      await flushReact();
+    }
+  });
+
+  it("reuses an earlier task's pending read and recovers it independently of a later task's read", async () => {
+    const first = createIssue();
+    const second = createIssue({ id: "second-task", identifier: "TASK-2" });
+    const firstRead = createDeferred<{ id: string; lastReadAt: string }>();
+    const secondRead = createDeferred<{ id: string; lastReadAt: string }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockImplementation(async ref => ref === second.id ? second : first);
+    mockIssuesApi.markRead.mockReset()
+      .mockReturnValueOnce(firstRead.promise)
+      .mockReturnValueOnce(secondRead.promise)
+      .mockResolvedValue({ id: first.id, lastReadAt: new Date().toISOString() });
+    const openTask = async (task: Issue) => {
+      queryClient.setQueryData(queryKeys.issues.detail(task.id), task);
+      queryClient.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
+      mockRouteParams.issueId = task.id;
+      mockLocation.pathname = `/issues/${task.id}`;
+      await act(async () => renderIssueView());
+    };
+    try {
+      await openTask(first);
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(1, first.id));
+      await openTask(second);
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(2, second.id));
+      await openTask(first);
+      await flushReact();
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+      });
+      await flushReact();
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2);
+      await act(async () => firstRead.reject(new ApiError("Try again later", 429, {})));
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenNthCalledWith(3, first.id));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(1));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+      await act(async () => secondRead.resolve({ id: second.id, lastReadAt: new Date().toISOString() }));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(3);
+    } finally {
+      firstRead.resolve({ id: first.id, lastReadAt: new Date().toISOString() });
+      secondRead.resolve({ id: second.id, lastReadAt: new Date().toISOString() });
+      await flushReact();
+    }
+  });
+
   it("does not loop a failed read receipt and retries it after a new successful session read", async () => {
     const issue = createIssue();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
