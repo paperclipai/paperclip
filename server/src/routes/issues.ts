@@ -1,3 +1,4 @@
+import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -24,6 +25,7 @@ import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssu
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import {
+  childCreatedByRequest,
   loadCreationSourceAgent,
   loadRunBoundIssue,
   resolveIssueCreationSource,
@@ -13209,6 +13211,7 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           parentId: parent.id,
+          createdByRequest: childCreatedByRequest(issueId, issue.id),
           identifier: issue.identifier,
           title: issue.title,
           ...buildCreateIssueActivityStatusDetails(issue, res),
@@ -13489,6 +13492,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             parentId: sourceIssue.id,
+            createdByRequest: true,
             identifier: issue.identifier,
             title: issue.title,
             inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
@@ -16343,6 +16347,7 @@ export function issueRoutes(
     for (const attachment of attachments) {
       try {
         await storage.deleteObject(attachment.companyId, attachment.objectKey);
+        await recordMcpAttachmentCleanup(db, await confirmMcpAttachmentCleanup(db, storage, attachment));
       } catch (err) {
         logger.warn(
           { err, issueId: id, attachmentId: attachment.id },
@@ -20227,8 +20232,10 @@ export function issueRoutes(
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
 
+    let mcpCleanup: McpAttachmentCleanup | null = null;
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      mcpCleanup = await confirmMcpAttachmentCleanup(db, storage, attachment);
     } catch (err) {
       logger.warn(
         { err, attachmentId },
@@ -20236,7 +20243,7 @@ export function issueRoutes(
       );
     }
 
-    const removed = await svc.removeAttachment(attachmentId);
+    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup });
     if (!removed) {
       res.status(404).json({ error: "Attachment not found" });
       return;

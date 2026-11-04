@@ -10,6 +10,7 @@ import { voiceCallReports } from "../services/voice/voice-call-reports.js";
 import type { SpekoCallReport } from "../services/voice/speko-call-report.js";
 import { notifyVoiceReports } from "../services/voice/voice-report-notifications.js";
 import { withVoiceSessionChange } from "../services/voice/voice-recovery-notifications.js";
+import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_VOICE_REPORT_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -37,7 +38,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(issues).values({ id: issueId, companyId, title: "Voice", assigneeAgentId: agentId, status: "in_progress" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Voice", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Voice", uid: connectionId, transport: "voice", connectionPurpose: "channel", enabled: true, status: "active" });
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "speko", status: "active", setup: { step: "complete", runtimeGeneration: 1 } });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "speko", status: "active", setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: conversationId, externalThreadId: conversationId, externalLabel: "Voice", isDirectMessage: true });
     return { companyId, endpointId, assignedAgentId: agentId, issueId, conversationId };
   }

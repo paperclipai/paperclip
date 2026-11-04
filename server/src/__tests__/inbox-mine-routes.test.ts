@@ -170,7 +170,7 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     await request(appFor(null)).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
     await request(appFor(null, {}, { type: "agent", agentId: runAgents[0]!.id, companyId: f.companyId, source: "agent_key" }))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
-    await request(appFor(null, {}, { ...f.actor, userId: undefined }))
+    await request(appFor(null, {}, { ...f.actor, userId: undefined } as Express.Request["actor"]))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(401);
     await ctx.db.update(companyMemberships).set({ status: "archived" }).where(eq(companyMemberships.principalId, f.userId));
     await request(app).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
@@ -285,11 +285,14 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
       if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
-      await request(app).get(snapshotPath).expect(200);
-      const computesBeforeFreshRead = started.mock.calls.length;
-      const fresh = await request(app).get(snapshotPath).expect(200);
+      // The aborted snapshot can outlive the seven ordinary reads. A coalesced
+      // response waits for that compute to settle before we require a fresh one.
+      const settled = await request(app).get(snapshotPath).expect(200);
+      const fresh = settled.headers["x-paperclip-request-cache"] === "coalesced"
+        ? await request(app).get(snapshotPath).expect(200)
+        : settled;
       expect(fresh.headers["x-paperclip-request-cache"]).toBe("miss");
-      expect(started).toHaveBeenCalledTimes(computesBeforeFreshRead + 1);
+      expect(started).toHaveBeenCalledTimes(9);
     } finally {
       release();
       await aborted;

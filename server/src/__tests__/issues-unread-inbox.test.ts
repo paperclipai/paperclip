@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql, type SQL } from "drizzle-orm";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { activityLog, issueComments, issueInboxArchives, issueReadStates, issues, issueThreadInteractions, issueAccessGrants, projectAccessMembers, projects } from "@paperclipai/db";
@@ -24,7 +24,7 @@ describeEmbeddedPostgres("Mine unread badge", () => {
     await ctx.db.insert(issueReadStates).values(ids.slice(30).map(issueId => ({ companyId, issueId, userId, lastReadAt: newer })));
     const svc = issueService(ctx.db);
     expect(await svc.unreadInboxIssueIds(companyId, userId, readable)).toEqual([]);
-    expect((await svc.unreadInboxIssueIds(companyId, userId, inArray(issues.id, ids.slice(0, 30)))).sort()).toEqual(ids.slice(0, 30));
+    expect((await svc.unreadInboxIssueIds(companyId, userId, inArray(issues.id, ids.slice(0, 30)) as SQL<boolean>)).sort()).toEqual(ids.slice(0, 30));
     await ctx.db.insert(activityLog).values({ companyId, entityType: "issue", entityId: ids[0]!, actorType: "agent", actorId: "worker", action: "issue.updated", createdAt: newer });
     expect(await svc.unreadInboxIssueIds(companyId, userId, readable)).toEqual([ids[0]]);
     await ctx.db.insert(activityLog).values([
@@ -86,7 +86,7 @@ describeEmbeddedPostgres("Mine unread badge", () => {
     await ctx.db.insert(issues).values([{ id: visible, companyId, title: "Visible", createdByUserId: userId, createdAt: old, updatedAt: old }, { id: denied, companyId, title: "Denied", createdByUserId: userId, createdAt: old, updatedAt: newer }]);
     await ctx.db.insert(issueComments).values([visible, denied].map(issueId => ({ companyId, issueId, body: "External", createdAt: commentAt })));
     const svc = issueService(ctx.db);
-    expect(await svc.unreadInboxIssueIds(companyId, userId, eq(issues.id, visible))).toEqual([visible]);
+    expect(await svc.unreadInboxIssueIds(companyId, userId, eq(issues.id, visible) as SQL<boolean>)).toEqual([visible]);
     expect(await svc.unreadInboxIssueIds(companyId, userId, sql<boolean>`false`)).toEqual([]);
     const app = routeApp(ctx.db, actor, sidebarBadgeRoutes), url = `/api/companies/${companyId}/sidebar-badges`;
     expect((await request(app).get(url).expect(200)).body.unreadIssueIds.sort()).toEqual([visible, denied].sort());

@@ -209,33 +209,14 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     await db.delete(companies);
   }
 
-  async function waitForRunToLeaveActiveStates(runId: string, timeoutMs = 10_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const run = await heartbeat.getRun(runId);
-      if (run && !["queued", "running"].includes(run.status)) return run;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return await heartbeat.getRun(runId);
+  async function waitForRunToLeaveActiveStates(runId: string) {
+    await heartbeat.drainActiveRunExecutions();
+    return heartbeat.getRun(runId);
   }
 
-  // A deferral does two writes in order: first it cancels the original run,
-  // then it inserts the scheduled-retry row. waitForRunToLeaveActiveStates
-  // returns after the first write, so a read of the retry row can land before
-  // the second write and find nothing. Poll until the retry row exists so the
-  // retry-row assertions never observe the gap between the two writes.
-  async function waitForRetryRun(originalRunId: string, timeoutMs = 10_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const retryRun = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.retryOfRunId, originalRunId))
-        .then((rows) => rows[0] ?? null);
-      if (retryRun) return retryRun;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return await db
+  async function waitForRetryRun(originalRunId: string) {
+    await heartbeat.drainActiveRunExecutions();
+    return db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, originalRunId))
@@ -320,7 +301,6 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     if (agentEnvironmentId) {
       await db.insert(environments).values({
         id: agentEnvironmentId,
-        companyId,
         name: `Workspace busy ${agentEnvironmentDriver} ${agentEnvironmentId}`,
         driver: agentEnvironmentDriver,
         status: "active",
@@ -506,7 +486,6 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     });
     await db.insert(environments).values({
       id: randomUUID(),
-      companyId: fixture.companyId,
       name: `Managed Kubernetes ${fixture.companyId}`,
       driver: "sandbox",
       status: "active",

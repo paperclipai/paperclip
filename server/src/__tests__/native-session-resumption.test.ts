@@ -724,6 +724,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         identifier: "NRR-1",
         title: "Recover one native heartbeat",
         description: null,
+        prompt: "Recover one native heartbeat",
         workMode: "standard",
       },
       workspace: {
@@ -736,6 +737,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         normalizedSessionId: sessionId,
         driverKind: "codex_app_server",
         protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       },
       provider: { kind: "codex", model: null },
       completionContract: {
@@ -1063,7 +1065,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         const freshIdentity = {
           ...checkpoint.identity,
           runId: freshRunId,
-          sessionId: executionInput.session.normalizedSessionId,
+          sessionId: executionInput.session.normalizedSessionId!,
         };
         let releaseStart!: () => void;
         const started = new Promise<void>((resolve) => {
@@ -1563,7 +1565,7 @@ describe("goal-less native task-session publication", () => {
       const currentProviderSessionId = `provider-${execution.session.normalizedSessionId}`;
       providerSessionId ??= currentProviderSessionId;
       const turnId = `turn-${currentRunId}`;
-      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId };
+      const identity = { companyId, agentId, issueId, runId: currentRunId, sessionId: execution.session.normalizedSessionId! };
       const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
       result.completionClaim.contractRevision = execution.completionContract.contract.revision;
       result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({

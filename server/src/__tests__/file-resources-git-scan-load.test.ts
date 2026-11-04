@@ -45,6 +45,7 @@ function availableList(input: { mode?: "all" | "recent" | "changed" | null } = {
       mode: input.mode ?? "changed",
       q: null,
       limit: 25,
+      offset: 0,
     },
     items: [],
     scannedCount: 0,

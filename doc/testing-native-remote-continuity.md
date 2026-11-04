@@ -19,6 +19,14 @@ same Runner and provider history through another healthy follow-up. This is a
 controlled cache fault, not a reconstruction of a historical incident.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
+The `warm-suspended` case suspends the first turn, resumes the second turn,
+then keeps that controller warm for the third turn. It must retire the first
+turn's local suspension receipt so the third turn can reuse the resumed Runner
+and provider history without a second process or repeated turn.
+The `finalizer-wait` case gives the completed predecessor a live finalization
+lease. The next run must wait without starting a provider turn or consuming an
+attempt. After lease release, one durable resumption claim continues that same
+run and preserves provider history through the third turn.
 The same-server case also starts preparation lease renewal during recovery and
 holds instruction collection open past a renewal tick after coordinator release.
 The executor must acquire renewal before preparation releases its reference, then
@@ -41,8 +49,13 @@ They do not qualify distinct application releases or complete webserver disk los
 
 `native-controller-recovery.integration.test.ts` separately verifies encrypted
 database discovery, one-source import, idempotency, live-owner waiting, corrupt
-bindings and paginated inventory. `native-session-resume-projection.test.ts`
-retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+bindings and paginated inventory. `native-recovered-owner-followup.test.ts`
+admits a per-turn follow-up after recovery committed an owner that never saved
+a suspension receipt, and keeps unsettled or ambiguous owners held. It also
+retries from that owner after an earlier follow-up failed before provider work,
+and keeps any follow-up with provider or controller evidence as the source.
+`native-session-resume-projection.test.ts` retains the 32-candidate and
+newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
 tests; incomplete-publication retention is exercised by the expiration tests.
 

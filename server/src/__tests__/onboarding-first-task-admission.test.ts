@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { eq } from "drizzle-orm";
 import { agentWakeupRequests, authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
@@ -16,7 +16,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 
-async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId = randomUUID()) {
+async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId: string = randomUUID()) {
   const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
   const recipes = [...skill.matchAll(/^ {0,3}```json\n([\s\S]*?)^ {0,3}```/gm)].map(match => JSON.parse(match[1]!) as Record<string, unknown>);
   const matches = recipes.filter(recipe => recipe.interactionKind === kind);
@@ -337,7 +337,7 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
         idempotencyKey: "ordinary-parent-blocker", blockedByTaskIds: [f.issueId],
       } })).resolves.toMatchObject({ disposition: "applied" });
     } else {
-      const headers = actor === "board"
+      const headers: Record<string, string> = actor === "board"
         ? { Cookie: await server.humanSession(f.responsibleUserId!), "Content-Type": "application/json", Origin: server.apiUrl }
         : { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
       const response = await fetch(`${server.apiUrl}/api/issues/${childId}`, {
@@ -442,7 +442,7 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       expect(interaction.kind).toBe(kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation");
       await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
       const selectedOptionIds = kind === "checkbox" ? ((args.payload as { options: { id: string }[] }).options.map(option => option.id)) : undefined;
-      await issueThreadInteractionService(server.db).acceptInteraction({ id: f.issueId, companyId: f.companyId }, interaction.id,
+      await issueThreadInteractionService(server.db).acceptInteraction({ id: f.issueId, companyId: f.companyId, projectId: null, goalId: null }, interaction.id,
         selectedOptionIds ? { selectedOptionIds } : {}, actor === "human" ? { userId: f.responsibleUserId! } : { agentId: f.agentId, runId: f.runId });
       if (actor === "human") await expect(create(f)).resolves.toMatchObject({ task: { parentId: f.issueId } });
       else await expect(create(f)).rejects.toThrow(/proposal.*accept/i);

@@ -7,6 +7,10 @@ import { issueRoutes } from "../routes/issues.js";
 import { deriveIssueUserContext, issueService } from "../services/issues.js";
 import { describeEmbeddedPostgres, resetCompanyIssueFixtures, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 
+// list() adds the user's read fields when a user filter is present. The
+// declared return type collapses that union to the base row.
+type IssueRowForUser = Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & ReturnType<typeof deriveIssueUserContext>;
+
 describeEmbeddedPostgres("human assignee unread comments", () => {
   const ctx = useEmbeddedPostgres("paperclip-assignee-unread-", {
     resetEach: async db => {
@@ -85,7 +89,7 @@ describeEmbeddedPostgres("human assignee unread comments", () => {
     const first = await svc.addComment(issue.id, "Keep this live update", { userId: authorId });
     const second = await svc.addComment(issue.id, "Remove this later update", { userId: authorId });
     const observation = async () => {
-      const [row] = await svc.list(companyId, { touchedByUserId: userId });
+      const [row] = await svc.list(companyId, { touchedByUserId: userId }) as IssueRowForUser[];
       return { row, count: await svc.countUnreadTouchedByUser(companyId, userId) };
     };
     await svc.tombstoneComment(second.id, { actorType: "user", userId });

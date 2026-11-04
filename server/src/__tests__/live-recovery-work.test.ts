@@ -32,8 +32,14 @@ import { terminalizeLegacyExecution } from "../services/legacy-execution-recover
 import { issueService } from "../services/issues.js";
 import { nativeRetryCancellationEligible, pendingFailedNativeRetryCancellationCondition } from "../services/native-runtime/native-cancellation-request.js";
 import { requestNativeQuestionRunCancellation } from "../services/native-runtime/native-question-bridge.js";
-import { readNativeLocalProcessStop } from "../services/native-local-process-stop.js";
+import { readNativeLocalProcessStop, releaseSettledNativeRunProcess, settleNativeRunProcess } from "../services/native-local-process-stop.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
+import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
+import * as nativeStopEvidence from "../services/acknowledged-native-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -295,6 +301,115 @@ describe("residual recovery production matrix", () => {
     }, { timeout: 45_000 });
     await competing.stop(); extraStops.pop(); await quiet();
   });
+  it.each(["confirmed", "already_retired", "missing_terminal", "unproven_terminal", "ack_failure", "late_terminal"] as const)(
+    "settles an API-only Stop after deferred controller retirement without inventing proof: %s", async mode => {
+      const f = await fixture(), runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
+      const statusEvents: LiveEvent[] = [];
+      const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => {
+        if (event.type === "heartbeat.run.status" && event.payload.runId === runId) statusEvents.push(event);
+      });
+      extraStops.push(async () => { unsubscribe(); });
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      await once(child, "spawn");
+      const stopChild = async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
+      };
+      extraStops.push(stopChild);
+      const recordedAt = new Date().toISOString();
+      const nativeExecutionInput = buildNativeExecutionInput({ companyId: f.companyId, agentId: f.agent.id, runId,
+        provider: "cursor_cloud", model: "explicit-model", cursorCloud: { schema: "paperclip.cursor-cloud.config.v1",
+          repos: [{ url: "https://github.com/example/qualification" }] },
+        issue: { id: f.issue.id, identifier: "API-1", title: f.issue.title, description: null, workMode: "standard" },
+        taskPrompt: "Stop the foreground command", normalizedSessionId: sessionId,
+        workspace: { id: randomUUID(), cwd: "/private/controller", repoUrl: null, repoRef: null, branchName: null },
+        completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+          contract: { revision: "1", objective: "Stop the foreground command", criteria: [{ id: "stop", requirement: "Stop the foreground command" }] } },
+        runtimeContext: nativeRuntimeContextFixture(),
+      });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agent.id,
+        runtimeMode: "native", driverKind: "cursor_cloud_api", nativeIssueId: f.issue.id, nativeSessionId: sessionId,
+        runnerInstanceId: runnerId, status: "cancelled", finishedAt: new Date(),
+        runnerProfileJson: { backend: "cursor_cloud_api", nativeExecutionInput, sessionCheckpoint: { providerSessionId: "cloud-agent" },
+          executionPlacement: { kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" } },
+        resultJson: { executionCancellation: { state: "requested", requestedAt: recordedAt },
+          cancelledByActorType: "user", cancelledByUserId: f.actorId, nativeCancellation: {
+            schema: "paperclip.native-cancellation.v1", companyId: f.companyId, runId, issueId: f.issue.id,
+            scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+            effects: ["release_run_resources"], recordedAt, acknowledgedAt: recordedAt,
+            intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID() } } });
+      await persistHeartbeatRunProcessMetadata(db, runId, { pid: child.pid!, processGroupId: child.pid!, startedAt: recordedAt, targetKind: "local" });
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId, phase: "committed" });
+      const appendTerminal = async (target: typeof db = db) => {
+        const terminal = { schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "turn.interrupted",
+          sourceKind: "runner", sourceInstanceId: runnerId, sourceEventId: `${runnerId}:${runId}:1`, sourceSeq: 1,
+          runId, turnId: "stopped-turn", normalizedSessionId: sessionId, emittedAt: new Date().toISOString(), priority: 1,
+          payload: { status: "interrupted", error: null, ...(mode === "unproven_terminal" ? { providerTerminalObserved: false } : {}) } };
+        await appendHeartbeatRunEvent(target, { companyId: f.companyId, agentId: f.agent.id, runId,
+          eventType: terminal.eventType, payload: { prpEvent: terminal }, nativeSource: {
+            sourceInstanceId: runnerId, sourceEventId: terminal.sourceEventId, sourceSeq: 1,
+            protocolSchemaVersion: 1, canonicalPayload: terminal } });
+      };
+      if (mode !== "missing_terminal" && mode !== "late_terminal") await appendTerminal();
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId))).toEqual([]);
+      expect(await settleNativeRunProcess(db, runId)).toBe("pending");
+      expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+      expect(statusEvents).toEqual([]);
+      if (mode === "already_retired") { await stopChild(); expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released"); }
+      await start();
+      if (mode !== "already_retired") {
+        await vi.waitFor(() => expect(deadlines.get(DELIVERY_QUEUES.settledNativeProcesses)?.()).toBeGreaterThan(Date.now()));
+        expect((await getRun(runId)).processPid).toBe(child.pid);
+        await stopChild();
+      }
+      const failure = new Error("synthetic Stop proof read failure after controller retirement");
+      if (mode === "ack_failure") vi.spyOn(nativeStopEvidence, "acknowledgedNativeApiStopExecutionHasStopped").mockRejectedValueOnce(failure);
+      await advance(31_000);
+      if (mode === "ack_failure") {
+        expect((await getRun(runId)).processPid).toBeNull();
+        expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(AggregateError);
+        expect((errors[0] as AggregateError).errors).toEqual([failure]); errors.length = 0;
+        expect(statusEvents).toEqual([]);
+        await advance(31_000);
+      }
+      const stopped = await getRun(runId);
+      expect(stopped).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+      expect(await readNativeLocalProcessStop(db, f.companyId, runId)).toMatchObject({ processPid: child.pid, processGroupId: child.pid });
+      expect(stopped.resultJson?.executionCancellation).toMatchObject(["missing_terminal", "unproven_terminal", "late_terminal"].includes(mode)
+        ? { state: "requested" } : { state: "acknowledged", proof: "provider_api_stop_receipt" });
+      expect(statusEvents).toHaveLength(["missing_terminal", "unproven_terminal", "late_terminal"].includes(mode) ? 0 : 1);
+      await quiet();
+      if (mode === "late_terminal") {
+        const rollback = new Error("rollback the uncommitted terminal receipt");
+        await expect(db.transaction(async tx => { await appendTerminal(tx as unknown as typeof db); throw rollback; })).rejects.toBe(rollback);
+        await advance(1_000);
+        expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+        expect(statusEvents).toEqual([]);
+        await quiet();
+        let commit!: () => void, entered!: () => void;
+        const gate = new Promise<void>(resolve => { commit = resolve; });
+        const recorded = new Promise<void>(resolve => { entered = resolve; });
+        const transaction = db.transaction(async tx => { await appendTerminal(tx as unknown as typeof db); entered(); await gate; });
+        await recorded;
+        try {
+          await vi.advanceTimersByTimeAsync(500); await immediate();
+          expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+          expect(statusEvents).toEqual([]);
+          expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
+            eq(heartbeatRunEvents.eventType, "turn.interrupted")))).toEqual([]);
+        } finally { commit(); await transaction; }
+        await vi.waitFor(async () => expect((await getRun(runId)).resultJson?.executionCancellation)
+          .toMatchObject({ state: "acknowledged", proof: "provider_api_stop_receipt" }));
+        await quiet();
+        expect(statusEvents).toHaveLength(1);
+        expect(statusEvents[0]).toMatchObject({ companyId: f.companyId, type: "heartbeat.run.status",
+          payload: { runId, agentId: f.agent.id, status: "cancelled" } });
+        expect(statusEvents[0]!.payload).not.toHaveProperty("resultJson");
+      }
+    },
+  );
   it("releases a settled native process only after matching host and birth evidence arrives", async () => {
     const f = await fixture(), startedAt = new Date();
     const child = spawn(process.execPath, ["-e", "console.log('identity-proof')"], { stdio: "ignore" });

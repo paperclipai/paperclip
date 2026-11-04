@@ -223,6 +223,8 @@ pnpm test:run
 pnpm build
 ```
 
+If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
+
 If anything cannot be run, explicitly report what was not run and why.
 
 ## 8. API and Auth Expectations

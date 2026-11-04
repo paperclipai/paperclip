@@ -97,7 +97,7 @@ const {
     run: (signal?: AbortSignal) => Promise<unknown>;
     hasPending?: () => Promise<boolean>;
   }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn(), stop: vi.fn(async () => {}) }));
-  const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
+  const createAppMock = vi.fn(async (_db: unknown, _options: unknown) => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
       deliveryWork: {
@@ -129,8 +129,8 @@ const {
     })),
   }) as never);
   const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
-  const deriveAuthTrustedOriginsMock = vi.fn(() => []);
-  const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
+  const deriveAuthTrustedOriginsMock = vi.fn((_config: { port: number; authPublicBaseUrl?: string }, _opts?: { listenPort?: number }): string[] => []);
+  const resolveHeartbeatSchedulingSuppressionMock = vi.fn((): { suppressed: boolean; reason: string | null } => ({
     suppressed: false,
     reason: null,
   }));
@@ -160,7 +160,7 @@ const {
     registerExternalConversationSettlementWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerNativeRecoveryNoticeWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerNativeRunProjectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
-    registerNativeEnvironmentSettlementWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeEnvironmentSettlementWork: vi.fn((_coordinator: unknown, _canRun: () => boolean): { ready: Promise<void>; stop?: () => void } => ({ ready: Promise.resolve() })),
     registerNativeStatusReassessmentWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerNativeReviewResponseWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerNativeResponsePresentationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
@@ -410,7 +410,7 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
-    child: vi.fn(function child() {
+    child: vi.fn(function child(this: unknown) {
       return this;
     }),
     info: vi.fn(),
@@ -1063,8 +1063,8 @@ describe("startServer feedback export wiring", () => {
       const service = vi.mocked(approvalQueueSeedingService).mock.results.at(-1)!.value;
       await registration![1].run(new AbortController().signal);
       expect(service.sweep).toHaveBeenCalled();
-      expect(registration![1].nextRunAt()).toBeNull();
-      expect(await registration![1].hasPending()).toBe(false);
+      expect(registration![1].nextRunAt!()).toBeNull();
+      expect(await registration![1].hasPending!()).toBe(false);
       expect(service.next).toHaveBeenCalled();
     }
   });
@@ -1121,7 +1121,7 @@ describe("startServer feedback export wiring", () => {
       expect(retention.nextArchiveNotificationAt).toHaveBeenCalledOnce();
       const db = createDbMock.mock.results[0]!.value as Db;
       const companyReads = () => vi.mocked(db.select).mock.results.filter(({ value }) =>
-        vi.mocked(value.from).mock.calls.some(([table]) => table === companies)).length;
+        vi.mocked(value.from).mock.calls.some(([table]: unknown[]) => table === companies)).length;
       const before = companyReads();
       expect(before).toBe(0); expect(tick).toBeUndefined();
       await settleStartupHousekeeping();

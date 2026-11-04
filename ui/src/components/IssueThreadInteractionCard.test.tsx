@@ -665,6 +665,34 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("No reason provided.");
   });
 
+  it.each([
+    ["confirmation", "default"],
+    ["confirmation", "coordinator-decision"],
+    ["checkbox", "default"],
+    ["checkbox", "coordinator-decision"],
+  ] as const)("renders Markdown in %s prompts in the %s view", (kind, presentationVariant) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? pendingRequestConfirmationInteraction
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    const host = renderCard({ interaction, presentationVariant });
+
+    const link = host.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
+  });
+
   it("requires a revision note when the request confirmation payload asks for one", async () => {
     const onRejectInteraction = vi.fn(async () => undefined);
     const host = renderCard({

@@ -10,7 +10,7 @@ const errors: unknown[] = [];
 const entry = { id: "run", companyId: "company", routineId: "routine", issueId: "issue" };
 beforeEach(() => {
   vi.useFakeTimers(); canRun = true; errors.length = 0;
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => canRun, canReconcile: () => true,
     onError: error => errors.push(error) });
 });

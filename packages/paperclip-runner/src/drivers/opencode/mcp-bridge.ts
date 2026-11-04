@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
@@ -35,6 +35,7 @@ export interface OpenCodeMcpBridgeOptions {
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
   secret?: string;
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface OpenCodeMcpBridge {
@@ -42,6 +43,12 @@ export interface OpenCodeMcpBridge {
   secret: string;
   close(): Promise<void>;
 }
+
+type FinishInputRejection = {
+  input: unknown;
+  callId: string;
+  validationCategory: "root" | "continuation" | "other";
+};
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
@@ -66,6 +73,25 @@ export async function startOpenCodeMcpBridge(
   const privateTools = normalizeTools(options.privateTools ?? [], false);
   const admittedTools = [...tools, ...privateTools.filter((candidate) => !tools.some((tool) => tool.name === candidate.name))];
   const validators = compileValidators(admittedTools);
+  const finishSchema = admittedTools.find(tool => tool.name === PRP_COMPLETION_TOOL_NAME)?.inputSchema;
+  const finishSchemaSha256 = finishSchema && options.onDiagnostic
+    ? createHash("sha256").update(JSON.stringify(finishSchema)).digest("hex") : undefined;
+  let rejectionDiagnostics = 0;
+  const diagnoseFinishInput = (rejection?: FinishInputRejection) => {
+    if (!finishSchemaSha256 || !options.onDiagnostic) return;
+    if (rejection && rejectionDiagnostics++ >= 8) return;
+    const diagnostic = {
+      schema: "paperclip.opencode.finish-input-diagnostic/v1",
+      stage: rejection ? "input_rejected" : "offered", schemaSha256: finishSchemaSha256,
+      ...(rejection ? {
+        callIdSha256: createHash("sha256").update(rejection.callId).digest("hex"),
+        validationCategory: rejection.validationCategory,
+        rootShape: inputShape(rejection.input),
+        continuationShape: inputShape(isRecord(rejection.input) ? rejection.input.continuation : undefined),
+      } : {}),
+    };
+    try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
   const calls = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
   const controllers = new Map<string, AbortController>();
   const server = createServer((request, response) => {
@@ -77,6 +103,7 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
+      diagnoseFinishInput,
       timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
@@ -95,6 +122,7 @@ export async function startOpenCodeMcpBridge(
     await closeServer(server);
     throw new Error("OpenCode MCP bridge failed to bind a loopback port");
   }
+  diagnoseFinishInput();
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     secret,
@@ -103,6 +131,17 @@ export async function startOpenCodeMcpBridge(
       await closeServer(server);
     },
   };
+}
+
+function inputShape(input: unknown): "omitted" | "null" | "array" | "object" | "string" | "number" | "boolean" | "other" {
+  if (input === undefined) return "omitted";
+  if (input === null) return "null";
+  if (Array.isArray(input)) return "array";
+  if (typeof input === "object") return "object";
+  if (typeof input === "string") return "string";
+  if (typeof input === "number") return "number";
+  if (typeof input === "boolean") return "boolean";
+  return "other";
 }
 
 function normalizeTools(
@@ -151,6 +190,7 @@ async function handleRequest(
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
+    diagnoseFinishInput: (rejection?: FinishInputRejection) => void;
   },
 ): Promise<void> {
   setSecurityHeaders(response);
@@ -236,6 +276,12 @@ async function handleRequest(
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
+    if (tool === PRP_COMPLETION_TOOL_NAME) {
+      const errors = validator?.errors ?? [];
+      const validationCategory = errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
+        ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
+      context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
+    }
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
     writeRpc(response, id, {
       isError: true,

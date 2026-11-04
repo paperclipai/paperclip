@@ -213,7 +213,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
     it("delivers reviewed REST actions through native assignments without admitting unsupported or inactive connections", async () => {
       vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3100");
-      onTestFinished(() => vi.unstubAllEnvs());
+      onTestFinished(() => { vi.unstubAllEnvs(); });
       const f = await fixture(provider, true);
       await f.service.putConnectionInstalls(f.connected.connectionId, {
         installs: [{ targetType: "agent", targetId: f.agent.id }],

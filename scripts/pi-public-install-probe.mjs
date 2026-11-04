@@ -86,10 +86,11 @@ try {
   settledMs = Math.round(performance.now() - started);
   await bundle.transport.close();
   assert.match(failure ?? '', /session\.open failed/);
-  assert.match(commandFailure?.result?.message ?? '', /retryable=false, classification=session_ensure_failed/);
+  assert.match(commandFailure?.result?.message ?? '', /retryable=false, classification=provider_authentication/);
   assert.equal(commandFailure?.result?.providerFailure?.schema, 'paperclip.provider-failure.v1');
   assert.equal(commandFailure.result.providerFailure.provider, 'pi');
   assert.equal(commandFailure.result.providerFailure.phase, 'startup');
+  assert.equal(commandFailure.result.providerFailure.category, 'authentication');
   assert.doesNotMatch(failure, /timed out/);
   assert.ok(settledMs < 60_000, `Pi admission took ${settledMs} ms`);
   assert.ok(evidence.some(item => item.runnerExited === true && item.runnerExitCode === 0));

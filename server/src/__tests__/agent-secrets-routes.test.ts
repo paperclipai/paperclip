@@ -160,7 +160,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
       targetType: "agent",
       targetId: fixture.agentId,
       configPath: "access.API_ONLY_KEY",
-      projectionClass: "class_2_runtime_only",
+      projectionClass: "unclassified",
     });
     const projectBinding = await svc.createBinding({
       companyId: fixture.companyId,
@@ -184,7 +184,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
     const list = await request(createApp(fixture)).get("/api/agents/me/secrets");
     expect(list.status).toBe(200);
     expect(list.body.secrets).toEqual([
-      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "class_2_runtime_only" }),
+      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "unclassified" }),
       expect.objectContaining({ key: "env_only_key", delivery: "env" }),
       expect.objectContaining({ key: "project_key", delivery: "env" }),
     ]);

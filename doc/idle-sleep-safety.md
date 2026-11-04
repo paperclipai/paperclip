@@ -97,6 +97,90 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Retained completion history
+
+The retained chat, tool-review, browser, decision, transfer, public-MCP and
+external-agent families use their owning domain's completion receipts. Inspection
+does not delete history, expire credentials, cancel work or shorten retention.
+A terminal label alone is insufficient. Missing, contradictory, malformed or
+foreign company/task/run/binding references keep the instance awake.
+
+Chat input can remain work after processing because its exact wake still owns
+the conversation head. Publications retain provider ambiguity, endpoint leases
+and file-transfer obligations. Tool reviews retain invocation completion,
+interaction projection and continuation delivery. Browser runs require drained
+events and settled/released accounting; a stopped browser must belong to the
+same closed session. Decision success requires the selected option's full effect
+manifest, matching ordinal/type/target receipts and audit records. The owning
+dismissal, explicit recovery stop and reviewed archive paths have separate proofs.
+Their continuation and archive-notification outboxes remain independent barriers.
+Failed company transfers remain resumable. Completed transfers require their
+recorded manifest, exact part receipts and matching counts. Completed/cancelled
+transfers still block while their registered local spool contains cleanup work.
+
+Chat control tokens can remain issued or become expired after another actor
+resolves their canonical interaction. Their exact interaction, publication and
+conversation receipts establish completion; a token status alone does not.
+Provider submission receipts do not exempt pending source wakes or publications.
+Photon attachment provenance remains immutable history after ordinary attachment
+removal, but any surviving metadata must agree with its recorded identities and
+hashes. This proof establishes completed registration, not storage cleanup.
+
+Public-MCP upload cleanup requires both the existing cleanup stamp and a new
+verified-cleanup stamp. Ordinary attachment and issue removal write this proof
+only after successful object deletion and an absence readback. Legacy cleanup
+stamps are not backfilled: the existing bounded opportunistic sweep can verify
+expired or orphaned uploads. Reissuing an uncommitted upload clears both stamps;
+a committed/deleted request replay preserves them. An expired or cleaned upload
+cannot accept a still-valid old transport ticket.
+
+Voice report refresh remains work for the owner's full 24-hour window after a
+provider session ends, even when the report is available. Live session recovery,
+unconfirmed inbound cleanup and ambiguous reply submission still block. A
+completed provider submission does not prove spoken playback. Speko setup also
+requires the existing successful whole-configuration receipt after its individual
+tool and webhook writes. Discord command registration retains its own future
+check; a completed command invocation does not retire that deadline.
+
+Waiting agent conversations can be passive containers under both ordinary and
+scheduled inspection. The same narrow proof requires the exact conversation
+agent/company/user, waiting state, no checkout, active run, accounting, monitor
+or pending delivery, and a finished wake for every accepted user-comment outbox
+entry. An idle presentation state does not exempt an ordinary runnable task.
+
+Sandbox creation records in `pending` or `needs_reconciliation` remain blockers,
+including manual uncertainty after company deletion. The pending-only catalog
+omission predates the new startup-cleanup recovery path; no complete-instance
+unsafe sleep outcome has been demonstrated. A late identified resource transfers
+its obligation to the exact cleanup lease, and only the owning successful cleanup
+can resolve that creation. Settled startup cancellations without a committed
+native result manifest remain conservatively blocked by native finalization;
+their cleanup marker alone is not a history exemption.
+
+Workspace runtime inspection also reads the owner's process-local resource
+state. Startup reconstruction must succeed before that probe becomes quiet.
+Adopted/live services, provisioning/control/replacement work, live allocation
+claims and quarantined exposure ports remain barriers alongside durable rows.
+Reset, failed reconstruction and unresolved desired-state restart cannot reuse an
+earlier quiet proof. The probe performs no SQL, network request or cleanup and
+adds no timer. A stopped row cannot hide a surviving registered process.
+
+MCP completion receipts do not exempt their downstream task, subscription or
+upload cleanup. Active grants/subscriptions and Dot/Muse bindings/credentials
+retain their transport/deadline blockers. Revoked or expired credential history
+does not grant authority on the next request. A fenced external assignment is
+not worker termination proof, and Muse transport notification is not input
+consumption. Released Muse holds require their actual settlement/attestation
+path. Dot stop holds remain unsupported because that owner has no completed
+worker-stop receipt. Grok Bot shares Dot tables but has independent routine and
+dispatch/recovery obligations; even revoked Grok bindings retain their blocker.
+
+Action/provider variants without an established receipt proof remain blocked.
+This includes Photon notice lineage and unqualified legacy action results,
+adapter-managed runtime resources, and active persistent transports. These
+limits are not evidence of deployed wake support. Existing hosting admission,
+generation, accounting, finalization and resource-cleanup checks still apply.
+
 ## Native reply recovery
 
 Committed native replies use the shared delivery coordinator and its persisted
@@ -518,8 +602,9 @@ operation by itself. Multiple replicas require shared fencing. The protocol
 does not make existing in-memory-only debt survive an unplanned process crash.
 
 Related public PR #13413 adds runtime-service controller requirements and uses
-the same `purpose: "idle"` / `ownerId` vocabulary. This report conservatively
-blocks all retained runtime-service state instead of approving such services.
+the same `purpose: "idle"` / `ownerId` vocabulary. Retained stopped local-process
+rows use the domain and process-reconstruction proof described above; live,
+uncertain and adapter-managed runtime resources remain blockers.
 
 ## Muse maintenance
 
@@ -559,3 +644,13 @@ retry dates and package/object/native-asset retention timestamps are earliest
 maintenance eligibility, not promised delivery deadlines. Workers reconstruct persisted rows and filesystem
 access leases on startup, and use the existing coordinator's drain/standby/shutdown
 controls. No external Cloud alarm or provider suspension is established by these tests.
+
+
+## Negotiated incoming work
+
+A signed, stack/owner-scoped Cloud incoming-wake capability can produce a version-3
+safety report for saved API keys and exactly bound brokered GitHub bot endpoints.
+Tenant authorization still runs after wake. Personal GitHub credential continuity
+and unsupported transports retain their blockers. See [authenticated incoming
+wake proof](idle-incoming-wake.md) for scope, HTTP versus durable-event guarantees,
+rate/availability bounds, compatibility and remaining transport dependencies.

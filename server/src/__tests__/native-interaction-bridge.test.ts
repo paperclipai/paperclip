@@ -28,6 +28,10 @@ import {
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 
+// seedAuditRun fills companyId and issueId unless a row sets them.
+type AuditInteraction = Omit<typeof issueThreadInteractions.$inferInsert, "companyId" | "issueId">
+  & Partial<Pick<typeof issueThreadInteractions.$inferInsert, "companyId" | "issueId">>;
+
 describe("P6-19 native interaction bridge", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -525,7 +529,7 @@ describe("P6-19 native interaction bridge", () => {
     const seedAuditRun = async (input: {
       label: string;
       requests: Record<string, unknown>[];
-      interactions: Array<typeof issueThreadInteractions.$inferInsert>;
+      interactions: AuditInteraction[];
     }) => {
       const localIssueId = randomUUID();
       const localRunId = randomUUID();
@@ -651,7 +655,7 @@ describe("P6-19 native interaction bridge", () => {
       const requests = label === "duplicate"
         ? [duplicateRequest]
         : label === "stale" ? [staleRequest] : [duplicateRequest, staleRequest];
-      const interactions: Array<typeof issueThreadInteractions.$inferInsert> = [];
+      const interactions: AuditInteraction[] = [];
       if (label !== "stale") {
         interactions.push(
           {

@@ -177,12 +177,12 @@ describePostgres("agent action audit routes", () => {
   it("denies agents and board users without the audit permission", async () => {
     const { company, agent } = await seed();
     const agentResponse = await request(await createApp(db, {
-      type: "agent", agentId: agent.id, companyId: company.id, runId: null, source: "agent_jwt",
+      type: "agent", agentId: agent.id, companyId: company.id, source: "agent_jwt",
     })).get(`/api/companies/${company.id}/audit/agent-actions`);
     expect(agentResponse.status).toBe(403);
 
     const agentAllActorsResponse = await request(await createApp(db, {
-      type: "agent", agentId: agent.id, companyId: company.id, runId: null, source: "agent_jwt",
+      type: "agent", agentId: agent.id, companyId: company.id, source: "agent_jwt",
     })).get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all`);
     expect(agentAllActorsResponse.status, JSON.stringify(agentAllActorsResponse.body)).toBe(200);
     expect(agentAllActorsResponse.body.items).toHaveLength(3);

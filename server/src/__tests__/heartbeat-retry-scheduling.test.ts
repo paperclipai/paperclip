@@ -456,7 +456,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "failed",
       error: "Maximum turns reached",
       errorCode: "adapter_failed",
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input?.scheduledRetryAttempt ? MAX_TURN_CONTINUATION_RETRY_REASON : null,
@@ -493,6 +492,47 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
     return { companyId, agentId, issueId, runId, now };
   }
+
+  it.each(["resume", "paused", "Stop", "dependency"] as const)("bounds fresh remote workspace retries across restart and honors %s", async action => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
+      .where(eq(agents.id, agentId));
+    const resultJson = { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+    await db.update(heartbeatRuns).set({ errorCode: "remote_workspace_prepare_timeout", resultJson }).where(eq(heartbeatRuns.id, runId));
+    let predecessor = runId;
+    for (const attempt of [1, 2]) {
+      const restarted = heartbeatService(db);
+      const outcomes = await Promise.all([
+        restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+        heartbeat.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+      ]);
+      expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
+      const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
+      expect(children).toHaveLength(1);
+      const child = children[0]!;
+      expect(child).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: attempt, scheduledRetryReason: "transient_failure" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.executionRunId).toBe(child.id);
+      if (action !== "resume") {
+        if (action === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+        if (action === "Stop") await restarted.cancelRun(child.id);
+        if (action === "dependency") {
+          const [blocker] = await db.insert(issues).values({ companyId, title: "Required dependency", status: "todo" }).returning();
+          await db.insert(issueRelations).values({ companyId, issueId: blocker.id, relatedIssueId: issueId, type: "blocks" });
+        }
+        const promotion = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({ companyId, runId: child.id,
+          now: new Date(now.getTime() + 120_000) });
+        expect(promotion.outcome).not.toBe("promoted");
+        expect((await restarted.getRun(child.id))?.status).toBe("cancelled");
+        return;
+      }
+      predecessor = child.id;
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_prepare_timeout", resultJson, finishedAt: now })
+        .where(eq(heartbeatRuns.id, predecessor));
+    }
+    expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now })).toMatchObject({ outcome: "retry_exhausted" });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+  });
 
   it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {
     const { companyId, issueId, runId, now } = await seedMaxTurnFixture();

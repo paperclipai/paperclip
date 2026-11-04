@@ -147,7 +147,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, receipt.conversationId)).for("update");
       ready(pid); await release;
     });
@@ -263,7 +263,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agentId)).for("update");
       ready(pid);
       await release;
