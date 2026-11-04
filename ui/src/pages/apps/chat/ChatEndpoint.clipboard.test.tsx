@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   createLinkIntent: vi.fn(),
   confirmIdentityLink: vi.fn(),
   pushToast: vi.fn(),
+  navigate: vi.fn(),
   setBreadcrumbs: vi.fn(),
   search: "",
   setParams: vi.fn(),
@@ -58,7 +59,7 @@ vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mocks.navigate,
   useLocation: () => ({ state: null }),
   useParams: () => ({ endpointId: "endpoint-a", tab: mocks.tab }),
   useSearchParams: () => [new URLSearchParams(mocks.search), mocks.setParams],
@@ -551,6 +552,47 @@ describe("chat setup and identity-link clipboard actions", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><ChatSetupSidebarProvider><ChatSetupSidebar /><ChatEndpointSetup /></ChatSetupSidebarProvider></TooltipProvider></QueryClientProvider>));
     await settle();
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("4Send a message");
+  });
+
+  it.each(
+    (["managed", "automatic", "manual"] as const).flatMap(method =>
+      (["active", "paused"] as const).map(status => ({ method, status }))),
+  )("opens settings when Done resumes a completed $method Slack connection that is $status", async ({ method, status }) => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status, providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "complete", slackSetupMethod: method,
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockRejectedValue(new Error("This connection is not waiting for a setup test"));
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).not.toHaveBeenCalled();
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
+    expect(mocks.pushToast).not.toHaveBeenCalled();
+  });
+
+  it.each(["managed", "automatic"] as const)("still finalizes an unfinished %s Slack setup before opening settings", async method => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status: "verifying", providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "test", slackSetupMethod: method,
+      webhookVerifiedAt: "2026-01-01T00:00:00Z",
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockResolvedValue({ ...saved, status: "active", setup: { ...saved.setup, step: "complete" } });
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).toHaveBeenCalledExactlyOnceWith("endpoint-a");
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
   });
 
   it("keeps settings focused on channel access and the test-message action", async () => {

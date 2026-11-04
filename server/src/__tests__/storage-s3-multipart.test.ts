@@ -67,8 +67,8 @@ describe("streamed S3 multipart uploads", () => {
       if (command instanceof UploadPartCommand) {
         const chunks: Buffer[] = [];
         for await (const chunk of command.input.Body as Readable) chunks.push(chunk);
-        received.set(command.input.PartNumber, Buffer.concat(chunks));
-        await new Promise<void>(resolve => acknowledgements.set(command.input.PartNumber, resolve));
+        received.set(command.input.PartNumber!, Buffer.concat(chunks));
+        await new Promise<void>(resolve => acknowledgements.set(command.input.PartNumber!, resolve));
         return { ETag: `part-${command.input.PartNumber}` };
       }
       expect(command).toBeInstanceOf(CompleteMultipartUploadCommand);
@@ -221,7 +221,7 @@ describe("streamed S3 multipart uploads", () => {
       if (kind === "source error") throw new Error("source unavailable");
     })());
     try {
-      await expect(putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream", contentLength: 17 * 1024 * 1024, body })).rejects.toThrow(expected[kind]);
+      await expect(putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream", contentLength: 17 * 1024 * 1024, body })).rejects.toThrow(expected[kind as keyof typeof expected]);
       expect(aborted).toBe(true);
       expect(body.destroyed).toBe(true);
     } finally { send.mockRestore(); client.destroy(); }

@@ -61,6 +61,39 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
     "the registry-only manifest merge does not need a Docker Hub mirror");
 });
 
+test("source proof gates publication without occupying a publication runner", () => {
+  const workflow = readWorkflow("docker.yml");
+  const observer = workflow.split("  source_verification:\n")[1].split("  reuse_canary_image:")[0];
+  const gate = workflow.split("  publication_verification:\n")[1].split("  merge-and-push:")[0];
+  const publisher = workflow.split("  merge-and-push:\n")[1].split("  promote_canary_channel:")[0];
+  assert.match(observer, /verified: \$\{\{ steps.watch.outputs.verified \}\}/);
+  assert.match(gate, /run: node scripts\/watch-release-source.mjs --require-proof/);
+  assert.match(gate, /actions: write # restart only exact-source producers deferred before admission/);
+  assert.match(gate, /needs: \[build-and-push, source_verification\]/);
+  assert.match(publisher, /needs: \[build-and-push, source_verification, publication_verification\]/);
+  assert.doesNotMatch(publisher, /--require-proof|actions: write/);
+  assert.ok(publisher.indexOf("run: node scripts/watch-release-source.mjs --check-proof") < publisher.indexOf("- name: Create manifest list and push"));
+  assert.match(publisher, /actions: read/);
+  assert.match(publisher, /timeout-minutes: 20/);
+  const expression = publisher.match(/^    if: \$\{\{ (.+) \}\}$/m)[1].replaceAll("needs.build-and-push", "needs.build");
+  for (const [ref, observed, fallback, expected, repository = "paperclipai/paperclip", repository_id = "1170821064"] of [
+    ["refs/heads/master", "true", "skipped", true],
+    ["refs/heads/master", "false", "skipped", false],
+    ["refs/heads/master", undefined, "skipped", false],
+    ["refs/heads/master", "false", "success", true],
+    ["refs/heads/master", "false", "failure", false],
+    ["refs/tags/v1", undefined, "skipped", true],
+    ["refs/heads/master", undefined, "skipped", true, "fork/paperclip", "123"],
+    ["refs/heads/master", undefined, "skipped", true, "paperclipai/paperclip", "123"],
+  ]) {
+    const canonical = repository === "paperclipai/paperclip" && repository_id === "1170821064" && ref === "refs/heads/master";
+    assert.equal(runInNewContext(expression, { cancelled: () => false, github: { ref, repository, repository_id }, needs: {
+      build: { result: "success" }, source_verification: { result: canonical ? "success" : "skipped", outputs: { verified: observed } },
+      publication_verification: { result: fallback },
+    } }), expected);
+  }
+});
+
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
   const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
@@ -82,11 +115,11 @@ test("chaos verification isolates callers that verify the same source commit", (
   assert.match(chaosWorkflow, /cancel-in-progress: true/);
 });
 
-test("canary reuses exact-source proof while stable keeps full verification", () => {
+test("canary can admit deferred exact-source checks while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
   const canary = releaseWorkflow.match(/  verify_canary:\n[\s\S]*?(?=\n  [a-z_]+:)/)[0];
-  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
-  assert.match(canary, /actions: read/);
+  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.repository_id == '1170821064' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(canary, /actions: write # restart only an exact-source push deferred before admission/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
@@ -845,7 +878,7 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
   const script = workflow.slice(start, end) + '\nprintf "%s" "$MAX_PARALLEL"\n';
   for (const [requested, expected] of [["", "8"], ["2", "2"], ["8", "8"], ["1", null], ["9", null], ["0", null], ["-1", null], ["2.5", null], ["garbage", null], ["9999999999999999999999", null]]) {
     const result = spawnSync("bash", ["-eu", "-c", script], {
-      env: { ...process.env, MAX_PARALLEL: "8", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
+      env: { ...process.env, MAX_PARALLEL: "8", MAX_PARALLEL_LIMIT: "57", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
@@ -933,7 +966,9 @@ test('native dependency caches are target-bound and unmerged master callers cann
   const cache = producer.split('      - name: Cache native Rust dependencies\n')[1].split('\n      - ')[0];
   assert.match(cache, /Swatinem\/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6/);
   assert.match(cache, /workspaces: \$\{\{ steps.native_rust_workspace.outputs.path \}\} -> target/);
-  assert.match(cache, /shared-key: release-native-v2-\$\{\{ matrix.host \}\}-\$\{\{ matrix.target \}\}-\$\{\{ hashFiles\('packages\/paperclip-runner\/protocol\/\*\*', 'packages\/paperclip-runner\/src\/\*\*', 'packages\/paperclip-runner\/\*.json'\) \}\}/);
+  const key = cache.match(/^\s*shared-key: (.+)$/m)?.[1];
+  assert.ok(key?.startsWith("release-native-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', "));
+  assert.ok(key?.endsWith("-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}"));
   for (const option of ['cache-workspace-crates', 'cache-bin', 'cache-on-failure']) {
     assert.match(cache, new RegExp(option + ': false'));
   }

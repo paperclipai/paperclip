@@ -579,7 +579,10 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       const states = () => db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status }).from(heartbeatRuns)
         .where(inArray(heartbeatRuns.id, work.map(row => row.id)));
       clock();
-      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let completeFirstPass!: (result: { error: unknown } | undefined) => void;
+      const firstPassCompleted = new Promise<{ error: unknown } | undefined>(resolve => { completeFirstPass = resolve; });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => { completeFirstPass({ error }); throw error; } });
       const register = coordinator.register.bind(coordinator);
       let initial: Awaited<ReturnType<typeof states>> | undefined;
       let releaseFirstPass!: () => void;
@@ -592,6 +595,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
           const cancelled = (await states()).filter(row => row.status === "cancelled");
           if (cancelled.length === 0) return result;
           initial = cancelled;
+          completeFirstPass(undefined);
           await firstPassHeld;
           return result;
         },
@@ -603,7 +607,8 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         work.push({ id: earlierId });
         await writeIntent({ companyId: a.companyId, retryRunId: earlierId });
         await vi.advanceTimersByTimeAsync(1000);
-        await expect.poll(() => initial).toBeDefined();
+        const firstPass = await firstPassCompleted;
+        if (firstPass) throw firstPass.error;
         expect(initial).toHaveLength(20);
         expect(new Set(initial!.map(row => row.companyId)).size).toBe(2);
         releaseFirstPass();

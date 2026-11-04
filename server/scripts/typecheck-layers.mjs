@@ -11,6 +11,7 @@
 //   cycle  the largest import cycle, reading `below` as declarations
 //   above  files that depend on the cycle, reading both as declarations
 //   tests  test files, reading all three as declarations
+//   test-tree-N  src/__tests__, in shards, reading the source layers as declarations
 //
 // The layers come from the import graph on every run, so nothing has to move
 // and no list can go stale. The import scan does not have to be perfect: if it
@@ -22,21 +23,26 @@
 //
 // Projects outside the server read the source layers as declarations through a
 // `tsconfig.layers.json` that references tsconfig.declarations.json in the output
-// directory. --declarations-only builds those layers and skips the tests layer.
+// directory. --declarations-only builds those layers and skips the test layers.
 //
 // Usage: node scripts/typecheck-layers.mjs [--declarations-only]
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32 } from "node:zlib";
 import { runTsc } from "../../scripts/run-tsc.mjs";
 
 const IMPORT_SPECIFIER = /(?:from\s+|import\s*\(\s*|import\s+)["'](\.[^"']+)["']/g;
 const OUTPUT_DIRECTORY = path.join("node_modules", ".cache", "paperclip-typecheck");
+// One program over this tree peaks at 3.9 GiB on one thread. Three peak at 2.5 GiB.
+const TEST_TREE_SHARDS = 3;
 
 export const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
-// tsconfig.json excludes this tree. A test reaches its helpers through imports.
-const isExcludedFromProgram = (file) => file.startsWith("src/__tests__/");
+// tsconfig.json excludes this tree, so the test-tree layers check it.
+const isTestTreeFile = (file) => file.startsWith("src/__tests__/");
+// Test layers emit nothing, so other projects cannot read them as declarations.
+const emitsDeclarations = (layer) => layer.name !== "tests" && !layer.testTree;
 
 export function listSourceFiles(serverRoot) {
   const files = [];
@@ -174,7 +180,12 @@ export function planLayers(files) {
   const dependents = reachableFrom(cycle, reversed);
   const above = [...dependents].filter((file) => !cycle.has(file));
   const below = [...graph.keys()].filter((file) => !dependents.has(file));
-  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isExcludedFromProgram(file));
+  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isTestTreeFile(file));
+  // A hash keeps each file in its shard when other files are added or removed.
+  const testTree = Array.from({ length: TEST_TREE_SHARDS }, () => []);
+  for (const file of candidates.keys()) {
+    if (isTestTreeFile(file)) testTree[crc32(file) % TEST_TREE_SHARDS].push(file);
+  }
 
   const layer = (name, members, references) => {
     const sorted = [...members].sort();
@@ -186,6 +197,10 @@ export function planLayers(files) {
     layer("cycle", cycle, ["below"]),
     layer("above", above, ["below", "cycle"]),
     layer("tests", tests, ["below", "cycle", "above"]),
+    ...testTree.map((shard, index) => ({
+      ...layer(`test-tree-${index}`, shard, ["below", "cycle", "above"]),
+      testTree: true,
+    })),
   ].filter((candidate) => candidate.sourceFiles.length > 0);
 }
 
@@ -195,6 +210,15 @@ export function layerConfig(layer, { emptyLayers = new Set() } = {}) {
   const references = layer.references
     .filter((name) => !emptyLayers.has(name))
     .map((name) => ({ path: `./tsconfig.${name}.json` }));
+  // Editors read the same options from this file.
+  if (layer.testTree) {
+    return {
+      extends: fromOutput("src/__tests__/tsconfig.json"),
+      files: layer.files.map(fromOutput),
+      include: [],
+      references,
+    };
+  }
   const output =
     layer.name === "tests"
       ? { composite: false, declaration: false, declarationMap: false, sourceMap: false, noEmit: true }
@@ -222,7 +246,7 @@ export function declarationsConfig(layers) {
     compilerOptions: { composite: true },
     files: [],
     references: layers
-      .filter((layer) => layer.name !== "tests")
+      .filter(emitsDeclarations)
       .map((layer) => ({ path: `./tsconfig.${layer.name}.json` })),
   };
 }
@@ -259,7 +283,7 @@ export function typecheckLayers({
 
   let exitCode = 0;
   for (const layer of layers) {
-    if (declarationsOnly && layer.name === "tests") continue;
+    if (declarationsOnly && !emitsDeclarations(layer)) continue;
     log(`typecheck:layers: ${layer.name} (${layer.sourceFiles.length} files)`);
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
     const { status, signal } = run(["-p", config], { cwd: serverRoot });

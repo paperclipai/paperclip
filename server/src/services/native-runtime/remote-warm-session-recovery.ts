@@ -14,11 +14,23 @@ export type RemoteWarmSessionRecovery = {
   revalidate: (leaseOwner: string) => Promise<void>;
 };
 
-/** A goal read can publish an idle snapshot after the terminal. It carries no
- * new work; every other suffix still requires reconciliation before handoff. */
-export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, string>): boolean {
-  const record = (value: unknown): Record<string, unknown> =>
-    value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** Protocol events that mean work started and may still be live or waiting. */
+const POST_TERMINAL_LIVE_WORK = new Set(["turn.started", "turn.accepted", "run.attached", "tool.execution.started",
+  "semantic_tool.input", "runtime_request.created"]);
+
+const record = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+function postTerminalEvents(control: Record<string, unknown>): unknown[] {
+  const events = Array.isArray(control.committedEvents) ? control.committedEvents : [];
+  const terminalIndex = events.findLastIndex(event => record(event).eventType === "run.terminal");
+  return terminalIndex < 0 ? [] : events.slice(terminalIndex + 1);
+}
+
+/** A session is settled when its commands finished and nothing is live or waiting.
+ * Events after the terminal describe the past, so refusing cannot undo them: they
+ * are reported instead. Every event must still authenticate as this session's. */
+export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const commands = control.commands;
   const events = control.committedEvents;
   if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
@@ -34,14 +46,37 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
     const envelope = record(record(event).envelope);
     const notification = record(envelope.payload);
     const payload = record(notification.payload);
-    return record(event).eventType === "session.goal.snapshot" && matchesSession(event) &&
+    const eventType = record(event).eventType;
+    // An active goal keeps a run going, and its next turn can start at any moment.
+    const live = (typeof eventType === "string" && POST_TERMINAL_LIVE_WORK.has(eventType)) ||
+      ((eventType === "session.goal.snapshot" || eventType === "session.goal.updated") &&
+        (payload.workingNow !== false || record(payload.goal).status === "active"));
+    return !live && matchesSession(event) &&
       Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
       (notification.schema === "paperclip.prp.event.v1" || notification.schema === "paperclip.prp.event.v2") &&
-      notification.eventType === "session.goal.snapshot" &&
+      notification.eventType === eventType &&
       notification.sourceInstanceId === identity.runnerInstanceId && notification.sourceKind === "runner" &&
-      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId &&
-      payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false;
+      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId;
   });
+}
+
+/** Event types recorded after the prior run's terminal, for the next run's log. */
+export function summarizePostTerminalEvents(control: Record<string, unknown>): string | null {
+  const counts = new Map<string, number>();
+  for (const event of postTerminalEvents(control)) {
+    const type = String(record(event).eventType);
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  return counts.size === 0 ? null : [...counts].map(([type, count]) => `${type} x${count}`).join(", ");
+}
+
+/** A failed attachment suspends the Runner under the attaching run while the journal
+ * still names its predecessor. A same-run retry cannot prove either owner, so report
+ * the failure that caused this state rather than the resulting identity mismatch. */
+export function describeOwnFailedAttachment(recoveryHistory: unknown): string {
+  const history = Array.isArray(recoveryHistory) ? recoveryHistory : [];
+  const cause = record(history.at(-1)).stderrTail;
+  return `runner_state_identity_mismatch: prior_attach_failed: ${typeof cause === "string" && cause ? cause : "unknown"}`;
 }
 
 export async function inspectRemoteWarmSessionRecovery(input: {

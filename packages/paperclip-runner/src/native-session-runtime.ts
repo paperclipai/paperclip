@@ -19,8 +19,9 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
+import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
@@ -1001,7 +1002,11 @@ async function consumeTurn(
             || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
             || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
           if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
-            const receipt = await controlPlane.appendEvent(trailing, { signal: drainAbort.signal });
+            const receipt = await controlPlane.appendEvent(trailing, {
+              signal: drainAbort.signal,
+              ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
+                ? { deferPostCommitObservers: true as const } : {}),
+            });
             if (drainAbort.signal.aborted) return;
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
@@ -2164,6 +2169,9 @@ export async function executeNativeSession(
           };
     if (!recovery.recovered || !recovery.session) {
       if (!replacementAllowed) {
+        if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
+          throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+        }
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );

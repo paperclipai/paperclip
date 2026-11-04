@@ -1881,7 +1881,7 @@ describe("NewIssueDialog", () => {
     } finally { storage?.mockRestore(); act(() => root.unmount()); queryClient.clear(); }
   });
 
-  it.each(["image/png", "", "application/octet-stream"])("shows staged images above text with MIME '%s' and uploads only retained files", async (type) => {
+  it.each([["image/png", "picker"], ["", "picker"], ["application/octet-stream", "picker"], ["image/png", "screen drop"]])("shows staged images with MIME '%s' from %s and uploads only retained files", async (type, source) => {
     dialogState.newIssueDefaults = { title: "Review image references" };
     mockIssuesApi.create.mockResolvedValue({ id: "image-task", identifier: "PAP-1", companyId: "company-1" });
     mockIssuesApi.uploadAttachment.mockResolvedValue({});
@@ -1892,9 +1892,16 @@ describe("NewIssueDialog", () => {
       await typeTextareaValue(editor, "Keep this caption");
       const retained = new File(["image"], "reference.png", { type });
       const removed = new File(["other"], "removed.png", { type: "image/png" });
-      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
-      Object.defineProperty(input, "files", { configurable: true, value: [retained, removed] });
-      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      if (source === "screen drop") {
+        const event = new Event("drop", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [retained, removed] } });
+        await act(async () => { document.body.dispatchEvent(event); });
+        expect(event.defaultPrevented).toBe(true);
+      } else {
+        const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+        Object.defineProperty(input, "files", { configurable: true, value: [retained, removed] });
+        await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      }
       await flush();
       const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
       expect(row.querySelectorAll("img")).toHaveLength(2);

@@ -1,10 +1,24 @@
+import { promises as fs } from "node:fs";
+import { createDurableRunLogStore } from "../run-log-store.js";
+import { createServer } from "node:http";
+import { registerLocalRuntimeApiServer } from "../../runtime-api.js";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart } from "../native-runtime/native-session-executor.js";
+import { createHeartbeatRunOutput } from "./run-output.js";
+import { createHeartbeatRunControl } from "./run-control.js";
+import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.js";
+import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as usageReceipts from "../usage-receipts.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -26,6 +40,37 @@ import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
+
+const diagnosticNativeFixture = vi.hoisted(() => ({
+  enabled: false,
+  retireWarm: false,
+  backendOptions: undefined as Parameters<typeof import("../../vendor/paperclip-runner/index.js").createNativeSessionBackend>[1],
+}));
+vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
+  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+});
+vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
+  return { ...actual,
+    createNativeSessionBackend: (...args: Parameters<typeof actual.createNativeSessionBackend>) => {
+      if (!diagnosticNativeFixture.enabled) return actual.createNativeSessionBackend(...args);
+      diagnosticNativeFixture.backendOptions = args[1];
+      return { descriptor: () => ({ kind: "test" }) };
+    },
+    executeNativeSession: async (options: Parameters<typeof actual.executeNativeSession>[0]) => {
+      if (!diagnosticNativeFixture.enabled) return actual.executeNativeSession(options);
+      const transport = diagnosticNativeFixture.backendOptions!.codexTransportFactory!();
+      const session = { close: async ({ reason }: { reason: string }) => { await transport.close(reason); } };
+      await options.onSession?.(session as never);
+      if (diagnosticNativeFixture.retireWarm) await closeIdleWarmNativeSessionsForRestart();
+      return { result: { summary: "accepted result" }, terminal: { runTerminalState: "succeeded" }, turnId: "test-turn",
+        normalizedSessionId: options.input.session.normalizedSessionId, providerSessionId: "synthetic-provider",
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    },
+  };
+});
+
 
 type Dependencies = HeartbeatRunCompletionDependencies;
 function callbacks(db: Db) {
@@ -127,6 +172,123 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it.each([false, true])("finishes accepted output before ordinary lease teardown without writing to a retired recorder (stalled append=%s)", async stalledAppend => {
+    const f = await fixture({ runtimeMode: "native",
+      resultJson: { durable: "accepted result" } });
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "diagnostic-completion-")));
+    onTestFinished(() => rm(workspace, { recursive: true, force: true }));
+    const store = stalledAppend ? createDurableRunLogStore({ basePath: join(workspace, "run-logs") }) : objectLogFixture();
+    let releaseAppend!: () => void, observeAppend!: () => void;
+    const appendGate = new Promise<void>(resolve => { releaseAppend = resolve; });
+    const appendStarted = new Promise<void>(resolve => { observeAppend = resolve; });
+    const originalAppend = fs.appendFile.bind(fs);
+    const append = vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+      if (stalledAppend && String(args[1]).includes("runnerd diagnostic")) { observeAppend(); await appendGate; }
+      return originalAppend(...args);
+    });
+    const warning = vi.spyOn(console, "warn");
+    onTestFinished(() => { releaseAppend(); append.mockRestore(); warning.mockRestore(); });
+    const output = createHeartbeatRunOutput(db, { run: f.run, runId: f.run.id, issueId: null, runLogStore: store,
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: f.deps.appendRunEvent, getCurrentUserRedactionOptions: async () => ({ enabled: false }) });
+    const handlers = await output.begin(f.run);
+    await handlers.onLog("stdout", "accepted output for this exact run\n");
+    const { execution, issue } = await admitNativeExecution(f);
+    await db.update(issues).set({ assigneeAgentId: f.run.agentId, executionRunId: f.run.id, status: "in_progress" }).where(eq(issues.id, issue.id));
+    vi.stubEnv("PAPERCLIP_HOME", join(workspace, "synthetic-controller-home"));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    execution.workspace.cwd = workspace;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.run.id));
+    Object.assign(execution.session, { lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60000 } });
+    await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+    const api = createServer((_req, response) => { response.writeHead(404).end(); });
+    registerLocalRuntimeApiServer(api);
+    await new Promise<void>((resolve, reject) => { api.once("error", reject); api.listen(0, "127.0.0.1", resolve); });
+    onTestFinished(() => new Promise<void>(resolve => api.close(() => resolve())));
+    diagnosticNativeFixture.enabled = true;
+    diagnosticNativeFixture.retireWarm = stalledAppend;
+    let completed = false;
+    const diagnosticWrites: Promise<void>[] = [];
+    const finishing = (async () => {
+      const adapter = await executePaperclipNativeSession({ db, execution: execution as never,
+        runnerInstanceId: "synthetic-controller", useRunnerd: true, onLog: (stream, chunk) => {
+          const write = handlers.onLog(stream, chunk);
+          if (chunk.includes("runnerd diagnostic")) diagnosticWrites.push(write);
+          return write;
+        },
+        runnerEnvironment: { HOME: workspace, CODEX_HOME: join(workspace, "synthetic-codex-home") } });
+      const event: PrpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1,
+        sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1, sourceKind: "runner",
+        runId: f.run.id, normalizedSessionId: execution.session.normalizedSessionId,
+        eventType: "item.delta", priority: 2, emittedAt: new Date().toISOString(), payload: { text: "canonical accepted output 再開" } };
+      const persisted = await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+        agentId: f.run.agentId, eventType: event.eventType, payload: { prpEvent: event },
+        nativeSource: { sourceInstanceId: event.sourceInstanceId, sourceEventId: event.sourceEventId,
+          sourceSeq: event.sourceSeq, protocolSchemaVersion: 1, canonicalPayload: event as unknown as Record<string, unknown> } });
+      if (!stalledAppend) await handlers.onPersistedNativeLog!(persisted.row.seq, formatNativeRunLogEvent(event));
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      Object.assign(f.run, await read(f.run.id));
+      f.agent.adapterType = "paperclip_runner";
+      f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+      f.input.adapterResult = adapter;
+      const completionDeps: Dependencies = { ...f.deps, runLogStore: store };
+      f.input.output = output;
+      f.input.onLog = handlers.onLog;
+      await createHeartbeatRunCompletion(db, completionDeps).completeRun(f.input);
+      completed = true;
+      return { persisted, event };
+    })();
+    void finishing.catch(() => undefined);
+    try {
+      if (stalledAppend) {
+        await appendStarted;
+        await vi.waitFor(() => expect(completed).toBe(true), { timeout: 10_000 });
+      }
+      const { persisted, event } = await finishing;
+      const before = await store.read(output.handle!, { limitBytes: 65536 });
+      expect(before.content).toContain("accepted output for this exact run");
+      const settled = await read(f.run.id);
+      expect(settled).toMatchObject({ companyId: f.run.companyId, status: "succeeded", resultJson: { durable: "accepted result" } });
+      expect(settled).toMatchObject({ costAccountingPending: true, costAccountedAt: null, usageJson: { accountingReceiptReady: false } });
+      expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), expect.any(Object));
+      if (stalledAppend) {
+        expect(settled).toMatchObject({ logBytes: null, logSha256: null });
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining("final log size and hash are unknown"));
+      } else {
+        const chunks = before.content.trimEnd().split("\n").map(line => JSON.parse(line).chunk);
+        expect(chunks).toContain(formatNativeRunLogEvent(event));
+        expect(settled).toMatchObject({ logBytes: Buffer.byteLength(before.content),
+          logSha256: createHash("sha256").update(before.content).digest("hex") });
+      }
+      const deps = controlCallbacks(db);
+      deps.options.closeWarmNativeSessionsForRun.mockImplementation(async ({ runId }) => {
+        expect(runId).toBe(f.run.id);
+        await closeIdleWarmNativeSessionsForRestart();
+        return { closed: 1, busy: 0, failed: 0 };
+      });
+      await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId: f.run.id, companyId: f.run.companyId,
+        agentId: f.run.agentId, status: "succeeded", providerResourceDisposition: "destroy" });
+      expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledOnce();
+      const after = await store.read(output.handle!, { limitBytes: 65536 });
+      expect(after.content).toBe(before.content);
+      if (!stalledAppend) {
+        const coverage = createNativeRunLogCoverageVerifier(db, f.run.companyId, f.run.id, { redactChunks: chunk => [chunk] });
+        await coverage.write(Buffer.from(after.content));
+        expect(await coverage.finish()).toBe(persisted.row.seq);
+      }
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.filter(event => (event.payload as { reason?: string } | null)?.reason === "object_log_persistence_failed")).toEqual([]);
+    } finally {
+      releaseAppend();
+      await Promise.allSettled(diagnosticWrites);
+      await finishing;
+      if (stalledAppend) expect(await read(f.run.id)).toMatchObject({ logBytes: null, logSha256: null });
+      await closeIdleWarmNativeSessionsForRestart();
+      diagnosticNativeFixture.enabled = false;
+      diagnosticNativeFixture.retireWarm = false;
+    }
+  });
 
   async function admitNativeExecution(f: Awaited<ReturnType<typeof fixture>>) {
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));

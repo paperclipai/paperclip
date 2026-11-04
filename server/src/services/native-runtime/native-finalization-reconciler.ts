@@ -1,5 +1,4 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { nativeStatusReassessmentSourceIsSuperseded, reassessNativeStatusFromSource } from "./native-status-reassessment.js";
@@ -15,10 +14,9 @@ import { dismissAutomaticCompletionReviews } from "./automatic-completion-review
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  agents,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
@@ -57,11 +55,7 @@ import {
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
 
-import { getNativeReviewAssignment } from "./native-review-participant.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { isAutomaticRecoverySuppressedByPauseHold } from "../recovery/pause-hold-guard.js";
-import { readRunCancellation } from "../run-cancellation.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 
@@ -180,37 +174,13 @@ export async function claimNativeSessionResumptions(input: {
       )
         return false;
 
-      if ((issue.executionRunId && issue.executionRunId !== run.id) ||
-          (issue.checkoutRunId && issue.checkoutRunId !== run.id)) return false;
-      const [agent] = await tx.select().from(agents).where(and(
-        eq(agents.companyId, candidate.companyId), eq(agents.id, run.agentId),
-      )).limit(1);
-      if (!agent || !(await evaluateAgentInvokabilityFromDb(tx as unknown as Db, agent)).invokable) return false;
-      if (issue.assigneeAgentId !== run.agentId && !await getNativeReviewAssignment(tx as unknown as Db, {
-        companyId: run.companyId, issueId: issue.id, agentId: run.agentId,
-        contextSnapshot: run.contextSnapshot,
-      })) return false;
-      if (await isAutomaticRecoverySuppressedByPauseHold(tx as unknown as Db, run.companyId, issue.id)) return false;
-      if (!(await issueService(tx as unknown as Db).getDependencyReadiness(issue.id, tx)).isDependencyReady) return false;
-      const [competing] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, run.companyId), ne(heartbeatRuns.id, run.id),
-        inArray(heartbeatRuns.status, issue.executionRunId === run.id
-          ? ["running", "scheduled_retry"] : ["queued", "running", "scheduled_retry"]),
-        or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id),
-          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
-      )).limit(1);
-      if (competing) return false;
+      const agent = await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run, coordinator });
+      if (!agent) return false;
 
       const profile = row.run.runnerProfileJson ?? {};
       const persistedInput = profile.nativeExecutionInput;
       const checkpoint = profile.sessionCheckpoint;
       const failureDetail = record(row.coordinator.failureDetail);
-      const cancellation = readRunCancellation(run.resultJson);
-      const nativeCancellation = record(record(run.resultJson).nativeCancellation);
-      if ((cancellation?.source === "operator" && cancellation.expected) ||
-          (["run", "issue"].includes(String(nativeCancellation.scope)) &&
-            ["pending", "acknowledged"].includes(String(nativeCancellation.dispatchState))) ||
-          typeof failureDetail.successorRunId === "string") return false;
       const originalFailureCode =
         typeof failureDetail.originalFailureCode === "string"
           ? failureDetail.originalFailureCode
@@ -345,19 +315,7 @@ export async function claimNativeSessionResumptions(input: {
         nativePhaseUpdatedAt: now,
         updatedAt: now,
       }).where(eq(heartbeatRuns.id, row.run.id));
-      await notifyStatusCardIssueChange(tx, run.companyId);
-      await tx.update(issues).set({
-        executionRunId: run.id,
-        executionAgentNameKey: agent.name.trim().toLowerCase() || null,
-        executionLockedAt: now,
-        updatedAt: now,
-      }).where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
-      if (issue.executionRunId !== run.id) await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: run.companyId, runId: run.id, agentId: run.agentId,
-        eventType: "native.recovery.execution_reclaimed", stream: "system", level: "info",
-        message: "Reclaimed the original task execution for native session recovery.",
-        payload: { issueId: issue.id },
-      });
+      await restoreNativeSessionExecution(tx as unknown as Db, { issue, run, agentName: agent.name, now });
       return true;
     }).catch((error: unknown) => {
       claimFailed = true;
