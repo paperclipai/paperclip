@@ -53,7 +53,8 @@ export const RUNNER_PRP_PROTOCOL_MAX = 3;
 const protocolVersion = RUNNER_PRP_PROTOCOL_MAX;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const legacyCoreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const coreStateSchema = "paperclip.runner.durable.control-plane-state.v2";
 const stagedCoreStateSchema = "paperclip.runner.durable.control-plane-state.staged-attachment.v1";
 const externalCoreStateSchema = "paperclip.runner.external-control-plane-state.v1";
 const transitionCoreStateSchema =
@@ -150,11 +151,17 @@ export interface StagedRunAttachment {
 }
 
 interface StoredCoreState {
-  schema: typeof coreStateSchema | typeof transitionCoreStateSchema | typeof stagedCoreStateSchema;
+  schema: typeof coreStateSchema | typeof legacyCoreStateSchema | typeof transitionCoreStateSchema | typeof stagedCoreStateSchema;
   stagedRunAttachment?: Omit<StagedRunAttachment, "runAttachTemplate"> & { runAttachTemplate?: Record<string, unknown> };
   identity: DurableRecoveryIdentity;
   /** External checkpoints contain control state, not a duplicate output log. */
   checkpointEventPolicy?: "control-v1";
+  bootstrapHistory?: {
+    schema: "paperclip.runner.bootstrap-history.v1";
+    originIdentity: DurableRecoveryIdentity;
+    credentialsIssued: number;
+    adopted: boolean;
+  };
   warmTransition?: {
     receipt: DurableWarmRunTransition;
     phase: "awaiting_result" | "prepared" | "activated";
@@ -439,7 +446,7 @@ export function inspectDurablePrpCheckpointHeader(contents: string): DurableReco
     const header = parseCheckpointHeader(contents);
     if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
       || header.state.checkpointEventPolicy !== "control-v1"
-      || ![coreStateSchema, transitionCoreStateSchema, stagedCoreStateSchema].includes(String(header.state.schema))
+      || ![coreStateSchema, legacyCoreStateSchema, transitionCoreStateSchema, stagedCoreStateSchema].includes(String(header.state.schema))
       || (header.state.schema === stagedCoreStateSchema && !validStagedRunAttachment(header.state as unknown as StoredCoreState, true))) return null;
     return { ...header.state.identity };
   } catch { return null; }
@@ -521,6 +528,33 @@ export function decodeDurablePrpCheckpoint(records: ReadonlyMap<string, string>)
     if (error instanceof SyntaxError) throw new Error("native_runner_checkpoint_invalid", { cause: error });
     throw error;
   }
+}
+
+export function inspectUnclaimedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: DurableRecoveryIdentity,
+): { fingerprint: string; runnerVersion: string; runnerDigest: string } | null {
+  try {
+    if (records.size !== 4 || [...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return null;
+    const { state, runnerVersion, runnerDigest } = checkpointState(records);
+    const history = state.bootstrapHistory;
+    if (state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || canonicalJson(state.identity) !== canonicalJson(expected)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(expected)
+      || history.credentialsIssued !== 0 || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || state.freshBootstraps !== 0 || Object.keys(state.tickets).length !== 0
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || Object.keys(state.commandDeliveryCounts).length !== 0 || state.replayDeliveries !== 0
+      || state.duplicateCommandResults !== 0 || state.malformedFrames !== 0
+      || state.commands.length !== 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null)
+      || !state.runAttachTemplate || canonicalJson(state.commands[0].payload) !== canonicalJson(state.runAttachTemplate)) return null;
+    return { runnerVersion, runnerDigest, fingerprint: `sha256:${createHash("sha256")
+      .update(canonicalJson([...records].sort(([left], [right]) => left.localeCompare(right)))).digest("hex")}` };
+  } catch { return null; }
 }
 
 export interface RunnerProcessResult {
@@ -762,7 +796,7 @@ function warmTransitionReceipt(
 
 function validStoredWarmTransition(state: StoredCoreState): boolean {
   const transition = state.warmTransition;
-  if (!transition) return state.schema === coreStateSchema || (state.schema === stagedCoreStateSchema && validStagedRunAttachment(state));
+  if (!transition) return state.schema === coreStateSchema || state.schema === legacyCoreStateSchema || (state.schema === stagedCoreStateSchema && validStagedRunAttachment(state));
   if (
     (state.schema !== transitionCoreStateSchema && state.schema !== stagedCoreStateSchema) ||
     !["awaiting_result", "prepared", "activated"].includes(transition.phase) ||
@@ -979,7 +1013,7 @@ function isStoredCoreState(
   const commands = value.commands;
   const events = value.committedEvents;
   if (
-    (value.schema !== coreStateSchema &&
+    (value.schema !== coreStateSchema && value.schema !== legacyCoreStateSchema &&
       value.schema !== transitionCoreStateSchema && value.schema !== stagedCoreStateSchema) ||
     canonicalJson(value.identity) !== canonicalJson(identity) ||
     (value.checkpointEventPolicy !== undefined && value.checkpointEventPolicy !== "control-v1") ||
@@ -998,6 +1032,16 @@ function isStoredCoreState(
     return false;
   }
   if (!validStagedRunAttachment(value as unknown as StoredCoreState)) return false;
+  if (value.bootstrapHistory !== undefined) {
+    const history = value.bootstrapHistory;
+    if (!isRecord(history)) return false;
+    const origin = history.originIdentity;
+    if (history.schema !== "paperclip.runner.bootstrap-history.v1" || !isRecord(origin)
+      || !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"]
+        .every(key => typeof origin[key] === "string" && stableIdPattern.test(origin[key]))
+      || !Number.isSafeInteger(history.credentialsIssued) || (history.credentialsIssued as number) < 0
+      || typeof history.adopted !== "boolean") return false;
+  }
   if (!validStoredWarmTransition(value as unknown as StoredCoreState))
     return false;
   if (value.completedWarmTransition !== undefined) {
@@ -1429,6 +1473,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: structuredClone(identity), credentialsIssued: 0, adopted: false },
     runAttachTemplate: null,
     tickets: {},
     leases: {},
@@ -2415,6 +2460,8 @@ export class DurablePrpControlPlane {
       ]),
     );
     Object.assign(this.#store.state, initialCoreState(identity), {
+      bootstrapHistory: this.#store.state.bootstrapHistory
+        ? { ...structuredClone(this.#store.state.bootstrapHistory), adopted: true } : undefined,
       leases,
       runAttachTemplate:
         runAttachTemplate === undefined
@@ -2497,6 +2544,7 @@ export class DurablePrpControlPlane {
       usedAt: null,
     };
     this.#store.state.freshBootstraps += 1;
+    if (this.#store.state.bootstrapHistory) this.#store.state.bootstrapHistory.credentialsIssued += 1;
     this.#store.save();
     return ticket;
   }
@@ -2571,6 +2619,10 @@ export class DurablePrpControlPlane {
       warmTransitionId: transition.receipt.transitionId,
     };
     candidate.freshBootstraps += 1;
+    if (candidate.bootstrapHistory) {
+      candidate.bootstrapHistory.credentialsIssued += 1;
+      candidate.bootstrapHistory.adopted = true;
+    }
     this.#store.commit(candidate);
     return ticket;
   }
@@ -3455,6 +3507,8 @@ export class DurablePrpControlPlane {
       }
       if (transition.phase === "prepared") {
         const candidate = initialCoreState(transition.receipt.newIdentity);
+        candidate.bootstrapHistory = this.#store.state.bootstrapHistory
+          ? { ...structuredClone(this.#store.state.bootstrapHistory), adopted: true } : undefined;
         candidate.stagedRunAttachment = structuredClone(this.#store.state.stagedRunAttachment);
         candidate.preparedLaunchConfigurations = structuredClone(this.#store.state.preparedLaunchConfigurations);
         candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;

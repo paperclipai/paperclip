@@ -54,6 +54,16 @@ If you are authoring a plugin for others to deploy, treat npm-packaged installat
 
 ## Worker quick start
 
+Environment providers can throw `PluginEnvironmentRunnerIngressError` from
+`onEnvironmentRunnerIngressEndpoint` with a validated SDK HTTP status and one
+closed phase: `sandbox_lookup`, `sandbox_start`, `sandbox_refresh` or
+`private_preview`. The worker forwards only this closed status/phase envelope.
+It omits response bodies, URLs, headers and causes. The host independently
+validates it with `readEnvironmentRunnerIngressFailure`. Do not derive a status
+from error text. Unknown and configuration failures keep their normal errors.
+The envelope alone grants no retry, accounting or cleanup authority; native
+execution also requires its complete, current controller checkpoint proof.
+
 ```ts
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 

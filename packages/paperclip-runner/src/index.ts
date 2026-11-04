@@ -48,6 +48,7 @@ export {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectUnclaimedBootstrapCheckpoint,
   type PrpWireConnection,
   type PrpWireAttachment,
   type TransportCloseReason,

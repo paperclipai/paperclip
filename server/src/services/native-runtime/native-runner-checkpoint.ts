@@ -1,7 +1,7 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { inspectDurablePrpCheckpointHeader, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
@@ -222,6 +222,22 @@ export async function loadNativeRunnerCheckpoint(db: Pick<Db, "select">, binding
   const checkpoint = decodeDurablePrpCheckpoint(parts);
   if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
   return checkpoint;
+}
+
+export async function loadNativeUnclaimedBootstrapCheckpoint(
+  db: Pick<Db, "select">, binding: Binding, identity: DurableRecoveryIdentity,
+) {
+  try {
+    if (binding.runId !== identity.runId) return null;
+    const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(5);
+    if (rows.length !== 4 || rows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row.material)), 0)
+      > 2 * NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES) return null;
+    const cipher = createLocalEncryptedCipher("read");
+    const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
+    return inspectUnclaimedBootstrapCheckpoint(records, identity);
+  } catch { return null; }
 }
 
 export async function restoreNativeRunnerCheckpoint(db: Db, binding: Binding, root: string, normalizedSessionId?: string) {
