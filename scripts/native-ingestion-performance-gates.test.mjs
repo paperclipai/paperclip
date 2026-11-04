@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { H5_MODE, H5_PROTOCOL, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, originalTerminal } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
+import { H5_MODE, H5_PROTOCOL, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, originalTerminal, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -198,6 +198,17 @@ function h5Report(revision, loadedLatency) {
   }
   return report;
 }
+
+test("H5 assessor retains an original SLA failure assessed before its nominal streaming deadline", () => {
+  const report = h5Report("B0", 180000), streaming = report.cases[3].h5.streaming.original;
+  streaming.assessedAtMs = streaming.deadlineMs - 750;
+  streaming.lastObservedAtMs = streaming.assessedAtMs - 1;
+  const outcome = assessH5Arm(report, { status: "passed", retry: 0, errors: [], timeoutMs: H5_LIMITS.fullInvocationMs,
+    startedAt: "2026-11-03T00:00:00.000Z", durationMs: 500000 });
+  assert.equal(outcome.originalSlaPassed, false);
+  assert.deepEqual(outcome.misses, ["burst512:streaming120"]);
+  assert.throws(() => requireH5Candidate("final-b2", outcome, outcome), /every original SLA/);
+});
 
 test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "native-ingestion-h5-gates-"));

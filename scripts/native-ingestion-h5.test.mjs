@@ -20,6 +20,25 @@ test('real frozen Playwright tiny poll exposes the matcher deadline shape used b
   // claim runtime qualification of H5's extended application path.
 });
 
+test('real frozen Playwright can report its configured timeout before the nominal deadline', async context => {
+  const require = createRequire(import.meta.url), { expect } = require('@playwright/test');
+  assert.equal(require('@playwright/test/package.json').version, '1.62.1');
+  const timeoutMs = 1200, intervalMs = 1500, startedAtMs = Date.now(), started = performance.now();
+  let observations = 0, failure;
+  try {
+    await expect.poll(async () => { observations++; return 0; }, { timeout: timeoutMs, intervals: [intervalMs] }).toBeGreaterThanOrEqual(1);
+  } catch (error) { failure = error; }
+  const assessedAtMs = Date.now(), elapsedMs = performance.now() - started;
+  assert.equal(failure?.matcherResult?.name, 'toBeGreaterThanOrEqual');
+  assert.equal(failure.matcherResult.pass, false);
+  assert.ok(failure.message.includes(`Timeout ${timeoutMs}ms exceeded while waiting on the predicate`));
+  assert.equal(observations, 1);
+  assert.ok(assessedAtMs < startedAtMs + timeoutMs, 'The real poll ends before its nominal deadline when its next interval would cross it');
+  context.diagnostic(JSON.stringify({ scope: 'Small real-library poll only; no app or120s runtime qualification',
+    playwrightVersion: '1.62.1', timeoutMs, intervalMs, startedAtMs, nominalDeadlineMs: startedAtMs + timeoutMs,
+    assessedAtMs, elapsedMs, observations, matcherName: failure.matcherResult.name, matcherPassed: failure.matcherResult.pass }));
+});
+
 test('H5 requires explicit mode and leaves default H4c selected', () => {
   assert.equal(h5Enabled(undefined), false); assert.equal(h5Enabled(H5_MODE), true);
   assert.throws(() => h5Enabled('almost-h5'));
@@ -33,19 +52,20 @@ test('first successful observation uses only the original wait with no collectio
   assert.equal(value.observation.complete, true); assert.equal(value.observation.completedAtMs, 1000);
 });
 
-test('known120s miss remains failed while the same observation finishes before600s', async () => {
+test('known120s miss assessed before its nominal deadline stays failed and uses only the remaining600s observation', async () => {
   let clock = 1000, count = 30; const calls = [], records = [];
   const value = await observeStreaming({ readCount: async () => count, target: 512, now: () => clock,
     onOutcome: value => records.push(structuredClone(value)),
     poll: async (read, milliseconds) => {
       calls.push(milliseconds); await read();
-      if (calls.length === 1) { clock += milliseconds; throw timeout(milliseconds); }
+      if (calls.length === 1) { clock += milliseconds - 750; throw timeout(milliseconds); }
       count = 512; clock += 90000; await read();
     } });
-  assert.deepEqual(calls, [120000, 480000]);
+  assert.deepEqual(calls, [120000, 480750]);
   assert.equal(value.original.status, 'failed'); assert.equal(value.original.lastObservedCount, 30);
   assert.equal(value.original.lastObservedAtMs, 1000); assert.equal(value.original.deadlineMs, 121000);
-  assert.equal(value.observation.completedAtMs, 211000); assert.equal(records[0].observation.complete, false);
+  assert.equal(value.original.assessedAtMs, 120250); assert.ok(value.original.assessedAtMs < value.original.deadlineMs);
+  assert.equal(value.observation.completedAtMs, 210250); assert.equal(records[0].observation.complete, false);
   assert.equal(value.original.reason, 'original_streaming_deadline');
 });
 

@@ -45,14 +45,22 @@ is added. Fake-plugin streaming remains separate from real-cloud Stop proof.
 The first120s poll is the original matcher. Only that exact known matcher
 deadline can extend observation. Page/API errors, other assertions, terminal
 failures and cleanup failures never become an allowed SLA miss. There is no
-collection wait when markers are available. The600s ceiling is absolute, so a
-120s miss leaves at most480s additional observation, not another600s.
+collection wait when markers are available. The600s ceiling is absolute from
+the original wait start; continued observation uses only its remaining budget.
 
 Record the original wait start/deadline, actual last count and its observation
 time, assessment time and error before continuing. Keep the original failure
 after completion. The original120s clock starts before the common source epoch;
 it is not silently rebased to epoch+120s. Derive a separate paint-deadline count
 from retained2RAF timestamps; do not mislabel it as the original poll's count.
+
+The recorded `deadlineMs` is the nominal configured boundary and
+`assessedAtMs` is the actual matcher return time. Frozen Playwright1.62.1 can
+report its timeout before that nominal boundary when the next polling interval
+would cross it. Its original matcher outcome, known timeout error and incomplete
+count establish the original failure; timestamp ordering against the nominal
+deadline does not change that outcome. Retain both raw times and continue only
+until the unchanged absolute600s observation ceiling.
 
 If120s fails, original terminal processing was **not reached**. Later180s
 terminal observations are separately labeled and cannot make the original

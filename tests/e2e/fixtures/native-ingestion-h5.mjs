@@ -58,6 +58,8 @@ export async function observeStreaming({ readCount, poll, target, now = Date.now
     deadlineError = error;
   }
   if (readError) throw readError;
+  // deadlineMs is the nominal configured boundary. Playwright can report its
+  // timeout earlier when its next polling interval would cross that boundary.
   const original = { status: deadlineError ? 'failed' : 'passed', reason: deadlineError ? 'original_streaming_deadline' : null,
     startedAtMs, deadlineMs: startedAtMs + ORIGINAL_BUDGETS.streamingMs, assessedAtMs: now(),
     target, lastObservedCount, lastObservedAtMs, error: deadlineError?.message ?? null };
@@ -119,7 +121,8 @@ export function assessH5Arm(report, owner) {
     if (streaming.status === 'failed') {
       assert.equal(streaming.reason, 'original_streaming_deadline');
       assert.ok(streaming.lastObservedCount < streaming.target);
-      assert.ok(streaming.assessedAtMs >= streaming.deadlineMs);
+      // The original matcher outcome is authoritative; assessedAtMs retains
+      // the actual return time even when it precedes the nominal deadlineMs.
       assert.equal(item.stop, false, 'Control readiness cannot inherit a streaming SLA miss');
       assert.ok(streaming.error.includes('Timeout 120000ms exceeded while waiting on the predicate'));
       assert.equal(value.terminalOriginal.status, 'not-reached');
