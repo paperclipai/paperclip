@@ -50,3 +50,21 @@ it.each(["wrong user", "missing audit", "duplicate audit", "foreign issue", "unr
   if (fault === "extra successor") value.runs.push({ ...value.runs[1]!, id: "extra" });
   expect(verifyChatCatalogHumanQuestionAnswer(value)).toBeUndefined();
 });
+
+it.each(["anyone", "human_only"] as const)("independently verifies current-human answered %s questions", policy => {
+  const raw = answerEvidence();
+  const value = { ...raw, interactions: raw.interactions.map(row => ({ ...row, resolverPolicy: policy, requestedResolverPolicy: policy, effectiveResolverPolicy: policy })) };
+  expect(verifyChatCatalogHumanQuestionAnswer(value)).toBeDefined();
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...value, interactions: value.interactions.map(row => ({ ...row, addresseeUserId: "other" })) })).toBeUndefined();
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...value, interactions: value.interactions.map(row => ({ ...row, resolvedByUserId: undefined, resolvedByAgentId: "ceo" })) })).toBeUndefined();
+});
+
+it("rejects unknown or agent-only policies and submitted text in independent accounting", () => {
+  const raw = answerEvidence();
+  for (const effectiveResolverPolicy of ["unknown", "agent_only"] as const) {
+    expect(verifyChatCatalogHumanQuestionAnswer({ ...raw, interactions: raw.interactions.map(row => ({ ...row,
+      effectiveResolverPolicy: effectiveResolverPolicy as unknown as typeof row.resolverPolicy })) })).toBeUndefined();
+  }
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...raw, interactions: raw.interactions.map(row => ({ ...row,
+    result: { ...row.result, answers: [{ ...row.result.answers[0]!, otherText: "Do not submit a note" }] } })) })).toBeUndefined();
+});
