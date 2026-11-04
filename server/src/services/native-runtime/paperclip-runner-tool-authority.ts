@@ -97,6 +97,7 @@ import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { readPersistedConfirmationDecision } from "../confirmation-decision.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { logActivity, persistActivity, publishActivity } from "../activity-log.js";
@@ -2505,16 +2506,18 @@ export class PaperclipRunnerToolAuthority {
   }
 
   async #latestAcceptedPlanRevisionId(): Promise<string | null> {
-    const rows = await this.db.select({ payload: issueThreadInteractions.payload })
+    const rows = await this.db.select({ payload: issueThreadInteractions.payload, kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status, result: issueThreadInteractions.result, resolvedAt: issueThreadInteractions.resolvedAt })
       .from(issueThreadInteractions)
       .where(and(
         eq(issueThreadInteractions.companyId, this.binding.companyId),
         eq(issueThreadInteractions.issueId, this.binding.issueId),
-        eq(issueThreadInteractions.kind, "request_confirmation"),
+        inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
         eq(issueThreadInteractions.status, "accepted"),
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
     for (const row of rows) {
+      if (!readPersistedConfirmationDecision(row)) continue;
       const target = record(record(row.payload).target);
       if (
         target.type === "issue_document"
