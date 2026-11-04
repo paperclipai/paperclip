@@ -1,0 +1,3 @@
+START service-b1-b2 2026-11-04T02:17:41.755Z; log=/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-b1-b2.log
+END service-b1-b2 code=0 signal=none
+COMPLETE service-b1-b2

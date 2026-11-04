@@ -1,0 +1,73 @@
+{
+  "status": "ready_for_root_review_and_publication",
+  "testedAppRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "actualExecutedPublicHelperSha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9",
+  "newLinuxRunnerSha256": "6873b6325850a0f9eeedb43eca83413ac2379e7e804dee0ef614aa87c57859c8",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 4151,
+      "sha256": "68aed06dd4ec51a18eec6489cadb9c78016583e43e64f52c0765cc78b235fead"
+    },
+    {
+      "path": "after-stop-reload.png",
+      "bytes": 143426,
+      "sha256": "82706973e619d190416fc9bdd41728ca9eafb5d14c0cedeb6b409f1f6a6de252"
+    },
+    {
+      "path": "before-stop.png",
+      "bytes": 202012,
+      "sha256": "d61feac74c943a88cbbda6f0f4882b62f51e57a9a3ae2c86bf3038ab73c5123a"
+    },
+    {
+      "path": "cleanup-and-scan.json",
+      "bytes": 1998,
+      "sha256": "7742a55d584790adad7c2e4ccd724f4108e57420535eef13420b281e6738512d"
+    },
+    {
+      "path": "database-proof.json",
+      "bytes": 1122,
+      "sha256": "97ec00424c34b9dbe40b4c78711370d01683709dcaa1a6e849b2f5be778f32a3"
+    },
+    {
+      "path": "executed-helpers.json",
+      "bytes": 1665,
+      "sha256": "fef09f42ecade5751f2e92dfb703c98d2132893ea4e38a6e602e6d9246d41200"
+    },
+    {
+      "path": "normalized-marker-db.json",
+      "bytes": 387,
+      "sha256": "14364a2df301cb83caecd125e3c3194b0ed72d0bcca17b89a717a69d5cacf666"
+    },
+    {
+      "path": "qualification.json",
+      "bytes": 10214,
+      "sha256": "ef68dccda1ad35168ccb65ecc238f8dfa672d51037d7b41eae53ceccac7a2e93"
+    },
+    {
+      "path": "toolchain.json",
+      "bytes": 3650,
+      "sha256": "3c327299b6fc284d15338703dac27f72871cc0d957645b3be95b737b1424ffa9"
+    }
+  ],
+  "totalBytes": 368625,
+  "checks": {
+    "functionalCloudStop": "passed",
+    "directPostgres": "82rows16canonicalhashes/currentprojectionpassed",
+    "freshProviderAbsenceCount": 6,
+    "providerAbsenceCheckedAt": "2026-11-04T00:30:33.752Z",
+    "credentialScanEntries": 660,
+    "credentialMatches": 0,
+    "privateMetadataCheck": "passed",
+    "localCleanup": "passed",
+    "immutableAppSourceBuildAfterJourney": "passed"
+  },
+  "exclusions": [
+    "privatecredentialbootstrapandOPmetadata",
+    "rawAPIpayloads",
+    "fulltrace/videoarchives",
+    "launchconfigs/localdatapaths",
+    "LinuxbinaryandprivateVMbuildpaths"
+  ],
+  "publication": "No repository copy, upload or PR edit by child; root owns publication."
+}

@@ -1,0 +1,94 @@
+{
+  "schema": "paperclip.acceptance-artifact-manifest.v1",
+  "scope": "Real Daytona Stop functional acceptance; no paired performance claim",
+  "testedRevision": "137501f595fd5ee13d395e26b4147ca8bc4d4eb6",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 6471,
+      "sha256": "2e501c60a59686809cd1302539cf0945c97be6d0adec93d96c918c994db02978"
+    },
+    {
+      "path": "after-stop-reload.png",
+      "bytes": 143333,
+      "sha256": "6b53cc2cb40001cdda9cf34bb276c5369a46ed963d89f534314ae73c094fc30d"
+    },
+    {
+      "path": "attempts.json",
+      "bytes": 3844,
+      "sha256": "fccf05434a4ed4169a95fe00ec126c2273ef850fc15549fa0a82594278e91f60"
+    },
+    {
+      "path": "before-stop.png",
+      "bytes": 206637,
+      "sha256": "5e1c27da8c03aa6167526fe13786aae82cc8be52e67c7a07fe2a0e75e004e006"
+    },
+    {
+      "path": "cleanup-and-scan.json",
+      "bytes": 1704,
+      "sha256": "7f118cd53a12568f08cc936315e84217e518b164b6096a7f50fbd761e9c77f98"
+    },
+    {
+      "path": "database-proof-all-attempts.json",
+      "bytes": 3932,
+      "sha256": "119a4aee83b2677753242ba7263eeef37c1173ae0fec2d4794b2fe99eb9eaef0"
+    },
+    {
+      "path": "helper-checks.json",
+      "bytes": 4772,
+      "sha256": "b34e33f2df0fa63589630fd1e425cf0d3f04e01b002eed49f74e8f8cd406e43f"
+    },
+    {
+      "path": "helpers/cloud-ui.mjs",
+      "bytes": 314,
+      "sha256": "c43c112546709fca064842c529d27bc78363ffdd2ca4258830dd17c85affb6cc"
+    },
+    {
+      "path": "helpers/launch.mjs",
+      "bytes": 4005,
+      "sha256": "b6124d665002da53628d3483452cbf30aa8b1acf5b759134c0298d13a5cd4aac"
+    },
+    {
+      "path": "helpers/provider.mjs",
+      "bytes": 6159,
+      "sha256": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269"
+    },
+    {
+      "path": "helpers/run.mjs",
+      "bytes": 26801,
+      "sha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9"
+    },
+    {
+      "path": "helpers/watchdog.mjs",
+      "bytes": 1849,
+      "sha256": "cbe0770ef67217a609b13ba5a557ee57dc9440180658314ff38919a81648fd2a"
+    },
+    {
+      "path": "qualification.json",
+      "bytes": 10815,
+      "sha256": "47e68bd12c90f2fb0bee58166b0e3ea63fc67233dd9a6a9bbebce79f04658610"
+    },
+    {
+      "path": "helpers/verify-failure-cleanup.mjs",
+      "bytes": 4045,
+      "sha256": "3ae73e3146ddb65051568e7b25e7b9f87fdd35ee6a649f9bc29b434ee8086d83"
+    }
+  ],
+  "checks": {
+    "allFiveExactProviderIdsFresh404At": "2026-11-03T23:14:03.153Z",
+    "retainedAndDecompressedCredentialScanEntries": 3084,
+    "credentialMatches": 0,
+    "publicPrivateMetadataCheck": "passed",
+    "reproductionHelperSyntax": "all6 passed after public guard/cleanup corrections",
+    "terminalLeaseAndClockCorrections": "passed",
+    "localControllerDatabaseDataCleanup": "passed",
+    "offlineFailureCleanupRegression": "passed; previous helper failed injected first SDK lookup; both cap failure and first-lookup failure ledger and clean all two observed IDs; zero cloud calls"
+  },
+  "excluded": [
+    "Private credential bootstrap identifiers",
+    "Launch configs and credential-bearing application data",
+    "Raw API records",
+    "Full optional traces and videos"
+  ],
+  "verification": "All current file sizes and hashes independently verified. The public reproduction adaptations are declared in qualification.json; the exact executed historical helper hash remains unchanged."
+}

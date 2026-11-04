@@ -1,0 +1,35 @@
+{
+  "verified": true,
+  "reconstructedVerifier": true,
+  "checkedAt": "2026-11-04T00:25:32.811Z",
+  "database": "Supplied disposable loopback PostgreSQL; read-only repeatable-read snapshot",
+  "limitation": "Cursor reconstruction requires the complete retained fixture history; no production or raw wire ACK durability claim",
+  "proofs": [
+    {
+      "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+      "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+      "status": "cancelled",
+      "nextEventSeq": 83,
+      "eventCursorProjectionSeq": 82,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 82,
+      "canonicalPayloadDigestsVerified": 16,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "d4246355-c2ee-40a2-b297-5c4f65faf5c5",
+          "events": 16,
+          "contiguousSourceSeq": 15,
+          "pendingRanges": [
+            {
+              "startSeq": 19,
+              "endSeq": 19
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

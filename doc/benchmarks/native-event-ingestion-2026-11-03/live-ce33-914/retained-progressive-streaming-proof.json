@@ -1,0 +1,580 @@
+{
+  "schema": "paperclip.retained-progressive-streaming-evidence.v1",
+  "scope": "Offline retained-trace evidence, no fresh app/provider run",
+  "sourceRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+  "originalTraceSha256": "a6337930fdeeca5aca127bd7c028ed5cd92e754412e2a6157a8ac3678776f5bb",
+  "originalTraceBytes": 262107893,
+  "partialFrames": [
+    {
+      "file": "partial-one.jpeg",
+      "jpegSha256": "0723dcce3f0faee653691088f2fcab3371cc6b0c3225a809741aa51d8201e1dc",
+      "originalResource": "resources/page@2719473e3c38e5dbeb4c0220c2f5a13f-1793751118578.jpeg",
+      "screencastMetadata": {
+        "type": "screencast-frame",
+        "pageId": "page@2719473e3c38e5dbeb4c0220c2f5a13f",
+        "sha1": "page@2719473e3c38e5dbeb4c0220c2f5a13f-1793751118578.jpeg",
+        "width": 1440,
+        "height": 1000,
+        "timestamp": 13068.798,
+        "frameSwapWallTime": 1793751118573.473
+      },
+      "domSnapshotName": "after@call@120",
+      "domWallTime": 1793751118580,
+      "domTimestamp": 13070.948
+    },
+    {
+      "file": "partial-two.jpeg",
+      "jpegSha256": "bedb9d6849cdce14c03bf33f7f35b6d6334c516fb1248df370ddd562c01a5ed4",
+      "originalResource": "resources/page@2719473e3c38e5dbeb4c0220c2f5a13f-1793751119146.jpeg",
+      "screencastMetadata": {
+        "type": "screencast-frame",
+        "pageId": "page@2719473e3c38e5dbeb4c0220c2f5a13f",
+        "sha1": "page@2719473e3c38e5dbeb4c0220c2f5a13f-1793751119146.jpeg",
+        "width": 1440,
+        "height": 1000,
+        "timestamp": 13637.225,
+        "frameSwapWallTime": 1793751119141.607
+      },
+      "domSnapshotName": "after@call@124",
+      "domWallTime": 1793751119149,
+      "domTimestamp": 13639.679
+    }
+  ],
+  "firstConcretePartialDom": {
+    "text": "The progress message was sent and list_task_documents returned 0 documents on this task.\n1",
+    "ancestors": [
+      {
+        "tag": "HTML",
+        "style": "color-scheme: light;"
+      },
+      {
+        "tag": "BODY",
+        "style": "overflow: clip;"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "shell-prepared-outlet"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "MAIN"
+      },
+      {
+        "tag": "DIV",
+        "data-task-chat-shell": ""
+      },
+      {
+        "tag": "DIV",
+        "data-orientation": "horizontal",
+        "data-slot": "tabs"
+      },
+      {
+        "tag": "DIV",
+        "data-state": "active",
+        "data-orientation": "horizontal",
+        "data-slot": "tabs-content",
+        "data-testid": "issue-detail-content",
+        "style": ""
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-thread"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-history-content"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-scroller"
+      },
+      {
+        "tag": "DIV"
+      },
+      {
+        "tag": "DIV",
+        "data-conversation-typography": ""
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-live-transcript"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-runner-turn"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-turn-timeline"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-turn-timeline-row",
+        "data-timeline-row-id": "688a6c34-f658-48ce-8ce6-61aeb2f72094:msg:10:phase",
+        "data-thread-anchor": "688a6c34-f658-48ce-8ce6-61aeb2f72094:msg:10:phase"
+      },
+      {
+        "tag": "SECTION",
+        "data-testid": "task-chat-activity-phase",
+        "data-activity-group": "688a6c34-f658-48ce-8ce6-61aeb2f72094:msg:10:phase",
+        "data-expanded": "false"
+      },
+      {
+        "tag": "DIV",
+        "data-testid": "task-chat-phase-interstitial",
+        "data-conversation-text": "progress"
+      }
+    ],
+    "node": [
+      "DIV",
+      {
+        "class": "min-w-0 px-1 text-sm text-foreground/90",
+        "data-testid": "task-chat-phase-interstitial",
+        "data-conversation-text": "progress"
+      },
+      [
+        "DIV",
+        {
+          "class": "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
+          "style": "overflow-wrap: anywhere; word-break: break-word;"
+        },
+        [
+          "P",
+          {
+            "style": "overflow-wrap: anywhere; word-break: break-word;"
+          },
+          "The progress message was sent and ",
+          [
+            "CODE",
+            {
+              "style": "overflow-wrap: anywhere; word-break: break-word;"
+            },
+            "list_task_documents"
+          ],
+          " returned 0 documents on this task."
+        ],
+        "\n",
+        [
+          "P",
+          {
+            "style": "overflow-wrap: anywhere; word-break: break-word;"
+          },
+          "1"
+        ]
+      ]
+    ]
+  },
+  "originalSelectorEmptyResult": [
+    {
+      "type": "before",
+      "callId": "call@120",
+      "startTime": 13037.129,
+      "class": "Frame",
+      "method": "evalOnSelectorAll",
+      "params": {
+        "selector": "[data-conversation-message=\"agent\"] [data-conversation-text]:visible, [data-testid=\"task-chat-live-self-talk\"]:visible",
+        "expression": "(ee) => ee.map((e) => e.innerText)",
+        "isFunction": true,
+        "arg": {
+          "value": {
+            "v": "undefined"
+          },
+          "handles": []
+        }
+      },
+      "pageId": "page@2719473e3c38e5dbeb4c0220c2f5a13f",
+      "beforeSnapshot": "before@call@120"
+    },
+    {
+      "type": "after",
+      "callId": "call@120",
+      "endTime": 13065.759,
+      "result": {
+        "value": {
+          "a": [],
+          "id": 1
+        }
+      },
+      "afterSnapshot": "after@call@120"
+    }
+  ],
+  "matchedAndLaterOrdinaryEvents": [
+    {
+      "id": 64,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 64,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": "The progress message was sent and",
+            "update": {
+              "kind": "agentMessage",
+              "text": "The progress message was sent and",
+              "delta": "The progress message was sent and",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:11:58.550Z",
+          "eventType": "item.delta",
+          "sourceSeq": 29,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:29",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:29",
+      "sourceSeq": 29,
+      "sourcePayloadSha256": "accc6086453a15c52b23a6f1af3fa1e9d263ed712b877025ab345a3570fa3b91",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:11:58.551Z"
+    },
+    {
+      "id": 65,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 65,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": " `list_task_documents` returned 0 documents on this task.\n\n1",
+            "update": {
+              "kind": "agentMessage",
+              "text": " `list_task_documents` returned 0 documents on this task.\n\n1",
+              "delta": " `list_task_documents` returned 0 documents on this task.\n\n1",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:11:58.560Z",
+          "eventType": "item.delta",
+          "sourceSeq": 30,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:30",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:30",
+      "sourceSeq": 30,
+      "sourcePayloadSha256": "bdbcc855be10315cc52758103f2286e0a246e3bf16271a87beb7a46bf34ed156",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:11:58.560Z"
+    },
+    {
+      "id": 66,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 66,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": ". This check proves that native Paperclip issue",
+            "update": {
+              "kind": "agentMessage",
+              "text": ". This check proves that native Paperclip issue",
+              "delta": ". This check proves that native Paperclip issue",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:11:59.037Z",
+          "eventType": "item.delta",
+          "sourceSeq": 31,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:31",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:31",
+      "sourceSeq": 31,
+      "sourcePayloadSha256": "e3be52cdc2f73fececbeab637b2c81cf6d40c8edf9c4e80f5c7bf6fd287e1076",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:11:59.037Z"
+    },
+    {
+      "id": 73,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 73,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": " instructions without external references.\n5. It proves the progress-reporting",
+            "update": {
+              "kind": "agentMessage",
+              "text": " instructions without external references.\n5. It proves the progress-reporting",
+              "delta": " instructions without external references.\n5. It proves the progress-reporting",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:11:59.120Z",
+          "eventType": "item.delta",
+          "sourceSeq": 38,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:38",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:38",
+      "sourceSeq": 38,
+      "sourcePayloadSha256": "77153c9d279e6755477b91843cfc9d9d9782406c0d9fa7a445eb99a67715136d",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:11:59.128Z"
+    },
+    {
+      "id": 74,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 74,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": " path works, since the START",
+            "update": {
+              "kind": "agentMessage",
+              "text": " path works, since the START",
+              "delta": " path works, since the START",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:11:59.626Z",
+          "eventType": "item.delta",
+          "sourceSeq": 39,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:39",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:39",
+      "sourceSeq": 39,
+      "sourcePayloadSha256": "6e5c08d82f493d5d296aedf4248baad2f83c193b9e5fa538aa1611da6075851a",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:11:59.627Z"
+    },
+    {
+      "id": 87,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "agentId": "64291cf2-e6a9-44f9-b2d5-821f95370539",
+      "seq": 87,
+      "eventType": "item.delta",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+          "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn-5ba4a018210a9251fd4885db",
+          "payload": {
+            "kind": "agentMessage",
+            "text": "3751106135-DONE\n\n",
+            "update": {
+              "kind": "agentMessage",
+              "text": "3751106135-DONE\n\n",
+              "delta": "3751106135-DONE\n\n",
+              "itemId": "prt_1a3e5f1ec001eLyZXOHRGC0Nw8",
+              "turnId": "turn-5ba4a018210a9251fd4885db",
+              "channel": "progress",
+              "provider": "opencode",
+              "threadId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+              "providerMethod": "item/agentMessage/delta"
+            },
+            "channel": "unknown",
+            "providerMethod": "item/agentMessage/delta"
+          },
+          "priority": 1,
+          "emittedAt": "2026-11-04T00:12:00.229Z",
+          "eventType": "item.delta",
+          "sourceSeq": 52,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:52",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "normalizedSessionId": "1655845e-0764-4943-af72-5dca00c1734d"
+        }
+      },
+      "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:52",
+      "sourceSeq": 52,
+      "sourcePayloadSha256": "66f5c4c4b3d14c7b34716eeb7963edbeee9ff6e2389c262b825e63e96b6351d1",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-11-04T00:12:00.230Z"
+    }
+  ],
+  "ordinaryEventsOriginalResource": "resources/486c57bffe212a181f572aabe1b9b15efb13fa72.json",
+  "acceptedResult": [
+    {
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "seq": 110,
+      "eventType": "run.result.accepted",
+      "createdAt": "2026-11-04T00:12:02.610Z",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:control:688a6c34-f658-48ce-8ce6-61aeb2f72094:1",
+      "sourceSeq": 1,
+      "sourcePayloadSha256": "f2d1b753315b39ed27a260f93b7f589b618302bfafc2380732ca7bfbbe3dceba"
+    }
+  ],
+  "acceptedOriginalResource": "resources/f907be612c098df7a1ffacb309b3f21f98003187.json",
+  "freshUiRunRead": {
+    "startedDateTime": "2026-11-04T00:11:58.443Z",
+    "durationMs": 6.236,
+    "originalResource": "resources/4db38fadf6a163c20961a1d67189d4c9e4b777f5.json",
+    "run": {
+      "id": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "status": "running",
+      "runtimeMode": "native",
+      "startedAt": "2026-11-04T00:11:47.167Z",
+      "finishedAt": null
+    },
+    "nativePhaseFieldPresent": false
+  },
+  "observations": [
+    "Original JPEGs show text growing from a short partial phrase to partial numbered sentences while the task is in progress",
+    "Source29/30 match the partial DOM; later ordinary source31..52 were emitted and committed after the first partial frame",
+    "Accepted result was committed later at00:12:02.610Z",
+    "Original helper excluded live interstitial/live-text branches, returning an empty array atcall120"
+  ],
+  "limits": [
+    "Native phase was omitted by the retained live-runs response; this does not assert an explicit provider-active full-GET phase",
+    "The earlier source52 observation occurred in workspace_finalizing and proves only pre-terminal visibility",
+    "This is a real functional progression observation, not latency/throughput acceptance or a new provider run"
+  ],
+  "visuallyInspectedOriginalJpegs": true
+}

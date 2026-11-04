@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { nativeSystemInstructions } from "./backends/runtime-context.js";
+import { NativeEventPersistence } from "./native-event-persistence.js";
 
 import type {
   CheckpointControlPlaneSessionOptions,
@@ -912,7 +913,7 @@ async function consumeTurn(
   let deferredSessionCancellationSettlement: Promise<unknown> | null = null;
   const inputTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const handoffCleanupOperations = new Set<Promise<unknown>>();
-  const eventIterator = session.events()[Symbol.asyncIterator]();
+  const eventIterator = new NativeEventPersistence(session.events()[Symbol.asyncIterator](), controlPlane);
   let stopConsumer = false;
   let rejectHandoff: ((error: unknown) => void) | null = null;
   const handoffFailure = new Promise<never>((_resolve, reject) => {
@@ -1002,7 +1003,7 @@ async function consumeTurn(
             || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
             || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
           if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
-            const receipt = await controlPlane.appendEvent(trailing, { signal: drainAbort.signal });
+            const receipt = await eventIterator.appendEvent(trailing, { signal: drainAbort.signal });
             if (drainAbort.signal.aborted) return;
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
@@ -1074,7 +1075,7 @@ async function consumeTurn(
       // the timer stayed live until the receipt returned, both settlement
       // and a durable handoff could commit for the same request.
       if (settlingRequestId !== null) clearInputTimer(settlingRequestId);
-      const receipt = await controlPlane.appendEvent(event, {
+      const receipt = await eventIterator.appendEvent(event, {
         signal: appendAbort.signal,
       });
       if (stopConsumer) throw new Error("native event consumer stopped");

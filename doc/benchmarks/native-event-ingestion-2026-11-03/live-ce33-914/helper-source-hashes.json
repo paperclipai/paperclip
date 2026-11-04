@@ -1,0 +1,10 @@
+{
+  "revision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "helperSha256": {
+    "live-launch.mjs": "67b5c1f367be4451ee70b969f9cf9ad10f5cb48ba4cf9ff0ea51f6f4d39b0ebb",
+    "verify-database.mjs": "d3bec80c1886792e3d2e92489a1e4aa5e79ad55947218f03fb6cd9a5762fd22b",
+    "live-browser.mjs": "e6e6af5670e8da496a66f420ad32bf5fe7df208e421d1254392df37106a21848",
+    "live-browser.guarded.mjs": "d7196cc7cf021252c386228cd1dc0ce59bde213fd464dc898a2f22155ff4b37b"
+  },
+  "adaptation": "Root-authorized private Stop-boundary wait for positive owned live sleep60 birth identity; all UI/model/workload/persistence gates unchanged"
+}

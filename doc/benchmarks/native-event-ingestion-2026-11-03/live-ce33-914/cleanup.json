@@ -1,0 +1,17 @@
+{
+  "startedAt": "2026-11-04T00:13:57.940Z",
+  "appPid": 58087,
+  "postgresPid": 68248,
+  "httpPort": 3104,
+  "postgresPort": 54333,
+  "removedOwnedDataDirs": [
+    "<recorded-owned-live-instance-home>"
+  ],
+  "errors": [],
+  "appAbsent": true,
+  "postgresAbsent": true,
+  "appPortClosed": true,
+  "postgresPortClosed": true,
+  "passed": true,
+  "finishedAt": "2026-11-04T00:13:59.945Z"
+}

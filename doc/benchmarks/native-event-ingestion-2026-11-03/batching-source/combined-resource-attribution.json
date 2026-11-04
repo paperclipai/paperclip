@@ -1,0 +1,405 @@
+{
+  "scope": "Combined SOURCE B0\u2192B2 attribution; prepared owner query execute calls exclude driver transaction/wire statements. Separate SQL diagnostic counts are not timed64-block instrumentation.",
+  "reportSha256": "1d8f28f508dc09470b1a7b24df3ec6bb15314a9bdc4f9a41a0e657ab10b87617",
+  "rows": [
+    {
+      "history": 1000,
+      "scenario": "ordered",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 4022.476887999994,
+        "medianOwnerCpuMicrosPerAttempt": 2013.083984375,
+        "medianSampledDatabaseCpuMsPerAttempt": 2.32421875,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9775439999993978,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.449703500000396,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          1032
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 146.22627600000123,
+        "medianOwnerCpuMicrosPerAttempt": 131.861328125,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.11718749999999911,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.00734200000079,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 12.898893000001408,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "replay",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 3200.9667550000013,
+        "medianOwnerCpuMicrosPerAttempt": 1606.638671875,
+        "medianSampledDatabaseCpuMsPerAttempt": 1.484375,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 4.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9319229999964591,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.041275499999756,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          1016
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 99.1924380000055,
+        "medianOwnerCpuMicrosPerAttempt": 71.556640625,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.078125,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.7425789999979315,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 9.658720999999787,
+        "diagnosticRetainedHistoryRowsExamined": [
+          16
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "late-gap",
+      "timedAttemptsPerArm": 1,
+      "separateDiagnosticAttemptsPerArm": 1,
+      "baseline": {
+        "medianActiveMs": 7.083709999998973,
+        "medianOwnerCpuMicrosPerAttempt": 2150.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9795359999989159,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.481844999994792,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          1001
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 8.511925999999221,
+        "medianOwnerCpuMicrosPerAttempt": 2392.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 10.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 7.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.4630699999979697,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.40166400000453,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "warm-suffix",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 4247.867891000031,
+        "medianOwnerCpuMicrosPerAttempt": 2204.607421875,
+        "medianSampledDatabaseCpuMsPerAttempt": 2.265625,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 6.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9531524999983958,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 7.277320499997586,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          1032,
+          0
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 145.3161140000011,
+        "medianOwnerCpuMicrosPerAttempt": 124.853515625,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.13671875,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8436000000074273,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 10.439747999989777,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "ordered",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 4136.773576000021,
+        "medianOwnerCpuMicrosPerAttempt": 1931.0234375,
+        "medianSampledDatabaseCpuMsPerAttempt": 2.8125,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9637254999906872,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.483819000000949,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          10032
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 145.51087600000028,
+        "medianOwnerCpuMicrosPerAttempt": 111.54296875,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.09765625,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8924039999983506,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 10.416976000007708,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "replay",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 3531.4280059999437,
+        "medianOwnerCpuMicrosPerAttempt": 1552.845703125,
+        "medianSampledDatabaseCpuMsPerAttempt": 2.265625,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 4.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0091970000066794,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.935364499993739,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          10016
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 96.69450899999356,
+        "medianOwnerCpuMicrosPerAttempt": 71.412109375,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.01953125,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.7482470000104513,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 7.277097999991383,
+        "diagnosticRetainedHistoryRowsExamined": [
+          16
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "late-gap",
+      "timedAttemptsPerArm": 1,
+      "separateDiagnosticAttemptsPerArm": 1,
+      "baseline": {
+        "medianActiveMs": 7.995563999982551,
+        "medianOwnerCpuMicrosPerAttempt": 2040.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 10.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.3850879999808967,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.300496000010753,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          10001
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 8.1081299999787,
+        "medianOwnerCpuMicrosPerAttempt": 2292.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 7.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8059040000080131,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.640362999984063,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "warm-suffix",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 4555.812348000036,
+        "medianOwnerCpuMicrosPerAttempt": 2146.1875,
+        "medianSampledDatabaseCpuMsPerAttempt": 3.0468749999999716,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 6.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9198964999814052,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 7.415338999999221,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          10032,
+          0
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 144.60336100001587,
+        "medianOwnerCpuMicrosPerAttempt": 122.595703125,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.13671875,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8834440000064205,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 11.50251500000013,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "ordered",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 8153.514350999991,
+        "medianOwnerCpuMicrosPerAttempt": 1986.203125,
+        "medianSampledDatabaseCpuMsPerAttempt": 10.44921875,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9857685000170022,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 14.307717500021681,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          100032
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 145.65450699999928,
+        "medianOwnerCpuMicrosPerAttempt": 115.021484375,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.09765625,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0368290000478737,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 12.91246099997079,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "replay",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 7557.748203999887,
+        "medianOwnerCpuMicrosPerAttempt": 1738.32421875,
+        "medianSampledDatabaseCpuMsPerAttempt": 9.86328125,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 4.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9627489999984391,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 13.572297999984585,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          100016
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 104.02474000002258,
+        "medianOwnerCpuMicrosPerAttempt": 74.87109375,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.05859375,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8926559999817982,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 9.554392000020016,
+        "diagnosticRetainedHistoryRowsExamined": [
+          16
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "late-gap",
+      "timedAttemptsPerArm": 1,
+      "separateDiagnosticAttemptsPerArm": 1,
+      "baseline": {
+        "medianActiveMs": 24.463751000002958,
+        "medianOwnerCpuMicrosPerAttempt": 2085.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 30.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 5.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0513989999890327,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 16.98576700000558,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          100001
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 9.073600000003353,
+        "medianOwnerCpuMicrosPerAttempt": 2531.0,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.0,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 7.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9658719999715686,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 7.268677999963984,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "warm-suffix",
+      "timedAttemptsPerArm": 512,
+      "separateDiagnosticAttemptsPerArm": 32,
+      "baseline": {
+        "medianActiveMs": 8614.058503000007,
+        "medianOwnerCpuMicrosPerAttempt": 2325.08984375,
+        "medianSampledDatabaseCpuMsPerAttempt": 10.52734375,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 6.0,
+        "diagnosticTransactionsPerAttempt": 1.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9820130000007339,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 15.572683500009589,
+        "diagnosticRetainedHistoryRowsExamined": [
+          1,
+          100032,
+          0
+        ],
+        "diagnosticProjectionStructuralGuard": null
+      },
+      "candidate": {
+        "medianActiveMs": 151.01604899996892,
+        "medianOwnerCpuMicrosPerAttempt": 125.318359375,
+        "medianSampledDatabaseCpuMsPerAttempt": 0.1171875,
+        "diagnosticOwnerQueryExecuteCallsPerAttempt": 0.15625,
+        "diagnosticTransactionsPerAttempt": 0.03125,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0573990000411868,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 12.429439000028651,
+        "diagnosticRetainedHistoryRowsExamined": [
+          32
+        ],
+        "diagnosticProjectionStructuralGuard": true
+      }
+    }
+  ]
+}

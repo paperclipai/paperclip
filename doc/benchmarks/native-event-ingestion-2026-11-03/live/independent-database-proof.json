@@ -1,0 +1,62 @@
+{
+  "verified": true,
+  "reconstructedVerifier": true,
+  "checkedAt": "2026-11-03T21:36:21.151Z",
+  "database": "Supplied disposable loopback PostgreSQL; read-only repeatable-read snapshot",
+  "limitation": "Cursor reconstruction requires the complete retained fixture history; no production or raw wire ACK durability claim",
+  "proofs": [
+    {
+      "runId": "e51fe504-e971-4ba1-a146-d91b5b8c92ae",
+      "companyId": "09885f08-ef5e-42e4-b87b-29575f393527",
+      "status": "succeeded",
+      "nextEventSeq": 127,
+      "eventCursorProjectionSeq": 126,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 126,
+      "canonicalPayloadDigestsVerified": 76,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "8f70aafb-262f-4091-8a9e-6da213aacc2c",
+          "events": 74,
+          "contiguousSourceSeq": 74,
+          "pendingRanges": []
+        },
+        {
+          "sourceInstanceId": "8f70aafb-262f-4091-8a9e-6da213aacc2c:control",
+          "events": 2,
+          "contiguousSourceSeq": 2,
+          "pendingRanges": []
+        }
+      ]
+    },
+    {
+      "runId": "9807b34f-4325-462d-bcd2-4addf66696e3",
+      "companyId": "09885f08-ef5e-42e4-b87b-29575f393527",
+      "status": "cancelled",
+      "nextEventSeq": 70,
+      "eventCursorProjectionSeq": 69,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 69,
+      "canonicalPayloadDigestsVerified": 25,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "2901c54d-9367-44e7-8106-b5652c7f3fb7",
+          "events": 25,
+          "contiguousSourceSeq": 24,
+          "pendingRanges": [
+            {
+              "startSeq": 27,
+              "endSeq": 27
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

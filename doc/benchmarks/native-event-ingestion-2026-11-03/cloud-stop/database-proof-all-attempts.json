@@ -1,0 +1,127 @@
+{
+  "verified": true,
+  "reconstructedVerifier": true,
+  "checkedAt": "2026-11-03T23:08:51.233Z",
+  "database": "Supplied disposable loopback PostgreSQL; read-only repeatable-read snapshot",
+  "limitation": "Cursor reconstruction requires the complete retained fixture history; no production or raw wire ACK durability claim",
+  "proofs": [
+    {
+      "runId": "cc899633-40a7-4911-bf22-2a4db3c8f0f3",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "status": "cancelled",
+      "nextEventSeq": 6,
+      "eventCursorProjectionSeq": 5,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 5,
+      "canonicalPayloadDigestsVerified": 0,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": []
+    },
+    {
+      "runId": "d40574ba-a0e9-41af-b055-fb4f2208f98f",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "status": "failed",
+      "nextEventSeq": 80,
+      "eventCursorProjectionSeq": 79,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 79,
+      "canonicalPayloadDigestsVerified": 15,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "75745627-bfa7-48e8-8e81-5f5656bab8b5",
+          "events": 15,
+          "contiguousSourceSeq": 14,
+          "pendingRanges": [
+            {
+              "startSeq": 18,
+              "endSeq": 18
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "runId": "e08343f7-0103-4be2-ab11-7dca9a67371f",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "status": "failed",
+      "nextEventSeq": 79,
+      "eventCursorProjectionSeq": 78,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 78,
+      "canonicalPayloadDigestsVerified": 15,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "cf796eeb-9555-4dcd-ae16-b441f9fd49ce",
+          "events": 15,
+          "contiguousSourceSeq": 14,
+          "pendingRanges": [
+            {
+              "startSeq": 18,
+              "endSeq": 18
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "runId": "fe71280a-0452-4599-9b28-65083b151d2d",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "status": "cancelled",
+      "nextEventSeq": 78,
+      "eventCursorProjectionSeq": 77,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 77,
+      "canonicalPayloadDigestsVerified": 16,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "3b60a81c-e14c-4a0c-9475-5ad665e5d7ca",
+          "events": 16,
+          "contiguousSourceSeq": 15,
+          "pendingRanges": [
+            {
+              "startSeq": 19,
+              "endSeq": 19
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "status": "cancelled",
+      "nextEventSeq": 82,
+      "eventCursorProjectionSeq": 81,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 81,
+      "canonicalPayloadDigestsVerified": 16,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "2f93856a-210e-4e98-ad38-70ee46014d9a",
+          "events": 16,
+          "contiguousSourceSeq": 15,
+          "pendingRanges": [
+            {
+              "startSeq": 19,
+              "endSeq": 19
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

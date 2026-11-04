@@ -1,0 +1,97 @@
+{
+  "scope": "Fresh real-provider functional acceptance on updated common base; not paired performance",
+  "revision": "b9a66be242395a4bab671d512643e338fbac77fe",
+  "files": [
+    {
+      "path": "after-live-stop.png",
+      "bytes": 167681,
+      "sha256": "54cbc818d08118965e9131263de4b27cefb5fbb4097e1f6a8e195559156f7881"
+    },
+    {
+      "path": "artifact-secret-scan.json",
+      "bytes": 150,
+      "sha256": "8a7c5bfc703ea787bd63b6eaafe66dcb8a7fe443ca598ce9b5f6d696d5d511ea"
+    },
+    {
+      "path": "before-live-stop.png",
+      "bytes": 220987,
+      "sha256": "9aeb1fe9202f92f0457329e58f301c616321e28bf95c499c3e4433ba7508213a"
+    },
+    {
+      "path": "build-receipt.json",
+      "bytes": 305,
+      "sha256": "e909096ebb0641218e4a81dd5a26791c10b7ef5963b0d43d51b2abb4564523a5"
+    },
+    {
+      "path": "cleanup.json",
+      "bytes": 399,
+      "sha256": "fe80f860ebb891b16fce2792c7b27be290d831fb7b9b7e41d2b8a9b7d59c2328"
+    },
+    {
+      "path": "execution-receipts.json",
+      "bytes": 747,
+      "sha256": "1d7a9e19f820a97027f8f836a4f34318b4b7a3c9cc871688e7878de897da0487"
+    },
+    {
+      "path": "helper-review-regressions.json",
+      "bytes": 2041,
+      "sha256": "88a9c79f256b753d6f7eae36b6cf2962acb75450d2561d49fedfe4b2a9961ba9"
+    },
+    {
+      "path": "helper-review-regressions.mjs",
+      "bytes": 6731,
+      "sha256": "66310e800d849c0ca0c049441cce9e751a20e6c2fb3d126f75ce978f450df166"
+    },
+    {
+      "path": "independent-database-proof.json",
+      "bytes": 1993,
+      "sha256": "a555cd435ac3ca1b01f95c5df95776ddf2772878497a3a7f75cdb629aace5b22"
+    },
+    {
+      "path": "independent-database-verifier-command.json",
+      "bytes": 506,
+      "sha256": "94886a00da917498f7f31db9df1a960e2b5ce54e35e80b59a374708b8adeb14f"
+    },
+    {
+      "path": "independent-lifecycle-process-proof.json",
+      "bytes": 6487,
+      "sha256": "9e778505bb8ec2cf9308b8142a665a818443a1022de311af713b647dfab3f0c3"
+    },
+    {
+      "path": "live-launch.json",
+      "bytes": 954,
+      "sha256": "4634459ce5180f73d45dc01675e76ee5270a3e58871fad644e6d3c264f91380c"
+    },
+    {
+      "path": "live-provider-result.json",
+      "bytes": 7461,
+      "sha256": "c40f7605a2dce493cd63d81ee30c7dae1e8ccac030f62ba466619a98c15ec738"
+    },
+    {
+      "path": "live-reloaded.png",
+      "bytes": 195097,
+      "sha256": "73c1f4ca32d01b75acaddd97594303e78ba4cc5764cebeae2da05dd79d4acb6e"
+    },
+    {
+      "path": "live-result.png",
+      "bytes": 284421,
+      "sha256": "d83e6b43e1352365c741f64a024cc561836828323b3de544d00e32527814e25d"
+    },
+    {
+      "path": "live-streaming.png",
+      "bytes": 290498,
+      "sha256": "1d3047d448e52a838e0b0bb12f4b2cf5d1abb4a1417f40e5b61fbb56d70720e2"
+    }
+  ],
+  "exactCredentialScanOfSelectedFiles": {
+    "credentialAvailableForComparison": true,
+    "files": 16,
+    "matches": 0
+  },
+  "supplementalLocalOnly": [
+    "full browser video",
+    "full trace.zip",
+    "full OS process observations"
+  ],
+  "supplementalPolicy": "Required visual, persistence, lifecycle, source and cleanup evidence is included here."
+}

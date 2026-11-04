@@ -1,0 +1,268 @@
+{
+  "schema": "paperclip.real-cloud-stop-qualification.public.v1",
+  "status": "passed",
+  "scope": "One functional real-Daytona Stop journey; deterministic Codex provider fixture, real runnerd and real sleep60. Separate live-LLM verification and paired ingestion performance evidence are outside this result.",
+  "testedRevision": "137501f595fd5ee13d395e26b4147ca8bc4d4eb6",
+  "productionBuildCommit": "137501f595fd5ee13d395e26b4147ca8bc4d4eb6",
+  "controllerPlatform": {
+    "node": "v26.4.0",
+    "os": "darwin",
+    "architecture": "arm64"
+  },
+  "dependencies": {
+    "provider": "deterministic Codex app-server fixture with real sleep60; no model call",
+    "sandbox": "real Daytona",
+    "sdk": "0.203.0",
+    "image": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:bff4c3f291087a0eeae37e4c20dd51857b92833eaf73ba3aca4157f37de1e109",
+    "controller": "normal production-built local Paperclip",
+    "actualLlmJourney": "separate real OpenCode/DeepSeek acceptance"
+  },
+  "hashes": {
+    "server": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "ui": "ba61db172af52228b1a5aacf4972bf7a85bb8a6da9bd359e5ce755b7e772db95",
+    "linuxRunner": "d4b3b76a510524a96ce23a1173c9559699bc0a0b2c096755d260f21e844ab0f2",
+    "provider": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269"
+  },
+  "runtime": {
+    "node": "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
+    "nodeVersion": "v24.21.0",
+    "nodeSha256": "7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c",
+    "runnerSha256": "d4b3b76a510524a96ce23a1173c9559699bc0a0b2c096755d260f21e844ab0f2",
+    "fixtureSha256": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269",
+    "runnerMetadata": {
+      "binaryContractVersion": 2,
+      "binaryName": "paperclip-runnerd",
+      "durableSessionCapabilities": [
+        "unlimited_runtime",
+        "connection_lease_renewal"
+      ],
+      "externalProviderCapabilities": [
+        "openai_dot_mcp",
+        "grok_bot_mcp",
+        "muse_external_v1"
+      ],
+      "harnessDriverVersion": 1,
+      "nativeExecutionVersion": 1,
+      "packageName": "@paperclipai/paperclip-runner",
+      "packageVersion": "0.0.0",
+      "providerPacks": [],
+      "prp": {
+        "maximumVersion": 2,
+        "minimumVersion": 1,
+        "name": "paperclip.runner"
+      },
+      "prpTransportModes": [
+        "dial_ws_loopback",
+        "dial_wss",
+        "listen_ws"
+      ],
+      "schema": "paperclip-runner/runnerd-build-metadata/v1"
+    },
+    "fixtureState": "awaiting-observer"
+  },
+  "issueId": "0b686e4a-185f-4a49-a6b7-0672d08bfe65",
+  "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+  "leaseId": "1b1aca64-e936-47d4-8509-43b7fe49f75f",
+  "providerLeaseId": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+  "checks": {
+    "normalApiBindings": true,
+    "currentDaemonAndFixture": true,
+    "visibleStreamingBeforeTerminal": true,
+    "realSleepObserved": true,
+    "nativeAcknowledgement": true,
+    "sharedProviderReceiptAcknowledgement": true,
+    "independentChildRetirementNoEffect": true,
+    "exactLeaseProviderReceipt": true,
+    "independentProviderStopped": true,
+    "reloadAndNoSuccessorOrResult": true
+  },
+  "visibleSourceMarker": {
+    "eventType": "item.delta",
+    "kind": "agentMessage",
+    "text": "CLOUD-STOP-STREAM: real sandbox process is starting. ",
+    "sourceEventId": "2f93856a-210e-4e98-ad38-70ee46014d9a:c42d6ef1-ae58-44e3-8b76-fcf9b682000f:12",
+    "sourceSeq": 12
+  },
+  "uiStop": {
+    "method": "POST",
+    "path": "/api/heartbeat-runs/c42d6ef1-ae58-44e3-8b76-fcf9b682000f/cancel",
+    "httpStatus": 200,
+    "clickedAtMs": 1793747222119,
+    "responseRunId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+    "responseStatus": "cancelled",
+    "nativeCancellation": {
+      "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+      "scope": "run",
+      "schema": "paperclip.native-cancellation.v1",
+      "effects": [
+        "release_run_resources"
+      ],
+      "issueId": "0b686e4a-185f-4a49-a6b7-0672d08bfe65",
+      "intentId": "native-cancellation:5d947d68-4a95-4ed1-b7d7-cf0053d9402b",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "decisionId": null,
+      "dispatched": true,
+      "reasonCode": "cancellation_run_only",
+      "recordedAt": "2026-11-03T23:07:02.184Z",
+      "dispatchState": "acknowledged",
+      "intentAuditId": "77c08f8e-6efb-40e5-bec8-a5ef78bc6379",
+      "acknowledgedAt": "2026-11-03T23:07:02.574Z",
+      "acknowledgementAuditId": "489f0915-f4e9-4571-b4ad-36b4a35acaed",
+      "priorCoordinatorDecisionId": null
+    },
+    "executionCancellation": {
+      "proof": "provider_termination_receipt",
+      "state": "acknowledged",
+      "requestedAt": "2026-11-03T23:07:02.165Z",
+      "acknowledgedAt": "2026-11-03T23:07:14.581Z"
+    },
+    "timingScope": "One functional sample, no performance claim"
+  },
+  "processProof": {
+    "beforeStop": {
+      "observedAtMs": 1793747222186,
+      "child": {
+        "pid": 1226,
+        "ppid": 1171,
+        "pgid": 1226,
+        "startTicks": "2214420701",
+        "bootId": "89a86dc0-653a-4053-ae37-0701d477ebb5"
+      },
+      "groupProcesses": [
+        {
+          "pid": 1226,
+          "ppid": 1171,
+          "pgid": 1226,
+          "startTicks": "2214420701",
+          "command": "/bin/sh -c sleep 60; printf forbidden > \"$1\" cloud-stop-owned-child /home/daytona/paperclip-workspace/.cloud-stop-forbidden-effect "
+        },
+        {
+          "pid": 1227,
+          "ppid": 1226,
+          "pgid": 1226,
+          "startTicks": "2214420702",
+          "command": "sleep 60 "
+        }
+      ],
+      "effectPresent": false,
+      "remoteStartedAtMs": 1793747221392,
+      "remoteProcessAgeAtObservationMs": 794
+    },
+    "retirement": {
+      "observedAtMs": 1793747222497,
+      "phase": "interrupted-child-retired",
+      "childLive": false,
+      "groupProcesses": [],
+      "effectPresent": false
+    },
+    "causalOrdering": "The independent SDK snapshot promise resolved before the ordinary UI Stop click.",
+    "clockLimitation": "Provider and controller/browser clocks are independent. No remote-observation-to-UI interval or cross-host process age is inferred."
+  },
+  "providerReceipt": {
+    "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+    "state": "stopped",
+    "schema": "paperclip.remote-termination.v1",
+    "leaseId": "1b1aca64-e936-47d4-8509-43b7fe49f75f",
+    "provider": "daytona",
+    "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+    "confirmedAt": "2026-11-03T23:07:14.570Z",
+    "providerLeaseId": "19e2daa7-e0fa-4427-988b-de136dd1b2b0"
+  },
+  "independentProviderState": {
+    "id": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+    "state": "stopped",
+    "labels": {
+      "paperclip-provider": "daytona",
+      "paperclip-company-id": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "paperclip-environment-id": "54a2f054-9a17-4678-bdf0-ff11898ef913",
+      "paperclip-run-id": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+      "paperclip-reuse-lease": "false"
+    },
+    "observedAt": 1793747234856
+  },
+  "databaseProof": {
+    "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+    "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+    "status": "cancelled",
+    "nextEventSeq": 82,
+    "eventCursorProjectionSeq": 81,
+    "eventCursorRebuildPending": false,
+    "globalEvents": 81,
+    "canonicalPayloadDigestsVerified": 16,
+    "encodedPayloadsDecoded": 0,
+    "projectionChecked": true,
+    "projectionStatus": "matches_retained_complete_fixture_history",
+    "sources": [
+      {
+        "sourceInstanceId": "2f93856a-210e-4e98-ad38-70ee46014d9a",
+        "events": 16,
+        "contiguousSourceSeq": 15,
+        "pendingRanges": [
+          {
+            "startSeq": 19,
+            "endSeq": 19
+          }
+        ]
+      }
+    ]
+  },
+  "cleanup": {
+    "normalEnvironmentDelete": true,
+    "exactOwnedFallbackDelete": true,
+    "providerAbsence": [
+      {
+        "id": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+        "state": "absent",
+        "observedAt": 1793747239557
+      }
+    ],
+    "watchdogDisarmed": true
+  },
+  "localCleanup": {
+    "status": "passed",
+    "checkedAt": "2026-11-03T23:10:48.163Z",
+    "ownedControllerProcessGone": true,
+    "ownedHttpPortClosed": true,
+    "ownedDatabasePortClosed": true,
+    "postmasterPidFileGone": true,
+    "credentialBearingDataRemoved": true,
+    "initialRemovalFailure": "EACCES unlink readonly skill bundle; retained as cleanup failure before bounded repair",
+    "ownedDirectoriesMadeWritable": 143,
+    "followedSymlinks": false
+  },
+  "sourceDurabilityLimit": "This verifies database-retained events and derived cursors. It does not equate every wire ACK with a durable ordinary streaming event.",
+  "provenance": {
+    "executedPrivateHelperSha256": "a1a9b14f3718a448dbd566a92de9e14306df165fbacad5f3b6371eaaae3e005b",
+    "publicReproductionAdaptation": "Environment-supplied DAYTONA_API_KEY, one-resource cap, OP metadata omitted, same-provider-clock process-age guard, and ledger all host-observed resource IDs before any SDK lookup or cap assertion. Provider label checks remain before execution and every deletion. Public adaptations passed syntax and offline actual-source cap/lookup-failure cleanup regressions; they were not used for a second live acceptance claim. The historical same-provider-clock process age is independently retained in this proof."
+  },
+  "terminalLease": {
+    "id": "1b1aca64-e936-47d4-8509-43b7fe49f75f",
+    "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+    "environmentId": "54a2f054-9a17-4678-bdf0-ff11898ef913",
+    "heartbeatRunId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+    "provider": "daytona",
+    "providerLeaseId": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+    "status": "released",
+    "releasedAt": "2026-11-03T23:07:14.570Z",
+    "cleanupStatus": "success",
+    "receipt": {
+      "runId": "c42d6ef1-ae58-44e3-8b76-fcf9b682000f",
+      "state": "stopped",
+      "schema": "paperclip.remote-termination.v1",
+      "leaseId": "1b1aca64-e936-47d4-8509-43b7fe49f75f",
+      "provider": "daytona",
+      "companyId": "f2ad7f34-3348-4be1-a7ef-139e3fd83324",
+      "confirmedAt": "2026-11-03T23:07:14.570Z",
+      "providerLeaseId": "19e2daa7-e0fa-4427-988b-de136dd1b2b0"
+    }
+  },
+  "sourceEquivalence": {
+    "testedAndBuiltRevision": "137501f595fd5ee13d395e26b4147ca8bc4d4eb6",
+    "laterPrRevision": "fcb5d94848b3c4b0b32096ff5e023618e0f0637b",
+    "changedPaths": [
+      "packages/plugins/paperclip-plugin-fake-sandbox/src/lease-cleanup.test.ts",
+      "packages/plugins/paperclip-plugin-fake-sandbox/src/lease-cleanup.ts"
+    ],
+    "scope": "Only fake sandbox readonly cleanup changed. Daytona, ingestion, native runner and dependency inputs are unchanged. Actual qualification remains the production build at the tested revision."
+  }
+}

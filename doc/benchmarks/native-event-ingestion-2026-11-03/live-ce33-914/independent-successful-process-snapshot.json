@@ -1,0 +1,64 @@
+{
+  "schema": "paperclip.retained-successful-process-snapshot.v1",
+  "scope": "Read-only selection from original executed successful full process-list monitor; no new live journey",
+  "sourceRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+  "originalMonitorOutputSha256": "a221f6dc6dc80b91f4660808587d296719b07d08a7fc2e516cd35718fe93ba40",
+  "exactExecutedMonitorSha256": "4f003d4db2ce70006028265735ecb10151710fccb8b6c701837ba1a21b150ab0",
+  "complete": true,
+  "startedAtMs": 1793751091096,
+  "finishedAtMs": 1793751143470,
+  "checks": [
+    {
+      "pid": 90624,
+      "parentPid": 58087,
+      "processGroupId": 90624,
+      "state": "Ss",
+      "birthTime": "Tue Nov  3 18:12:05 2026",
+      "executable": "paperclip-runnerd",
+      "firstSeen": 1793751126043,
+      "lastSeen": 1793751139287,
+      "aliveAtFinalSnapshot": false,
+      "matchesCapturedPreStopBirthTime": true
+    },
+    {
+      "pid": 90674,
+      "parentPid": 90624,
+      "processGroupId": 90674,
+      "state": "S",
+      "birthTime": "Tue Nov  3 18:12:06 2026",
+      "executable": "(.paperclip-verif)",
+      "firstSeen": 1793751126605,
+      "lastSeen": 1793751139287,
+      "aliveAtFinalSnapshot": false,
+      "matchesCapturedPreStopBirthTime": true
+    },
+    {
+      "pid": 90708,
+      "parentPid": 90674,
+      "processGroupId": 90674,
+      "state": "S",
+      "birthTime": "Tue Nov  3 18:12:06 2026",
+      "executable": "(launch)",
+      "firstSeen": 1793751126970,
+      "lastSeen": 1793751139287,
+      "aliveAtFinalSnapshot": false,
+      "matchesCapturedPreStopBirthTime": true
+    },
+    {
+      "pid": 92068,
+      "parentPid": 90708,
+      "processGroupId": 92068,
+      "state": "Ss",
+      "birthTime": "Tue Nov  3 18:12:17 2026",
+      "executable": "sleep",
+      "firstSeen": 1793751137985,
+      "lastSeen": 1793751138192,
+      "aliveAtFinalSnapshot": false,
+      "matchesCapturedPreStopBirthTime": true
+    }
+  ],
+  "successBoundary": "Executed monitor assigns finalOutput=execFileSync(ps,[-axo,pid=,comm=]) without a catch before computing aliveAtFinalSnapshot and saving this complete result",
+  "limit": "Original full ps stdout was not retained separately; the successful monitor output, exact executed source hash and exit receipt establish the recorded PID membership. No later same-number PID probe is substituted.",
+  "executableLabelLimit": "macOS comm labels can be truncated or parenthesized; captured PID, birth time and parent chain supply identity, not literal equality of comm and full executable labels."
+}

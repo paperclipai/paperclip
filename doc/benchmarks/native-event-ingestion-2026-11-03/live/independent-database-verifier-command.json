@@ -1,0 +1,14 @@
+{
+  "executable": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+  "script": "/private/tmp/native-ingestion-delivery-batching/scripts/native-ingestion/verify-database.mjs",
+  "revision": "b9a66be242395a4bab671d512643e338fbac77fe",
+  "companyId": "09885f08-ef5e-42e4-b87b-29575f393527",
+  "runIds": [
+    "e51fe504-e971-4ba1-a146-d91b5b8c92ae",
+    "9807b34f-4325-462d-bcd2-4addf66696e3"
+  ],
+  "exit": 0,
+  "signal": null,
+  "readOnlyDatabase": "Owned loopback embedded PostgreSQL",
+  "databasePort": 54333
+}

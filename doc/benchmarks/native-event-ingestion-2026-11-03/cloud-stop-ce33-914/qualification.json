@@ -1,0 +1,261 @@
+{
+  "schema": "paperclip.real-cloud-stop-qualification.public.v2",
+  "status": "passed",
+  "scope": "Fresh latest-common-base real-Daytona Stop qualification; one resource, one successful journey. Deterministic Codex provider fixture with a real sleep60 process, current real runnerd, normal production-built Paperclip and actual provider lifecycle. Not a performance comparison or live-LLM claim.",
+  "testedRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "productionBuildCommit": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "platform": {
+    "node": "v26.4.0",
+    "os": "darwin",
+    "architecture": "arm64"
+  },
+  "runnerRustTree": "eac015472eb88b49aa92e6f30def348aa34b4911",
+  "hashes": {
+    "server": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "ui": "847e43ecc2469a5b54dcf89e0be4a71ba750f9d123e9d893ed90a3b3f693959e",
+    "linuxRunner": "6873b6325850a0f9eeedb43eca83413ac2379e7e804dee0ef614aa87c57859c8",
+    "provider": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269"
+  },
+  "runtime": {
+    "node": "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
+    "nodeVersion": "v24.21.0",
+    "nodeSha256": "7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c",
+    "runnerSha256": "6873b6325850a0f9eeedb43eca83413ac2379e7e804dee0ef614aa87c57859c8",
+    "fixtureSha256": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269",
+    "runnerMetadata": {
+      "binaryContractVersion": 2,
+      "binaryName": "paperclip-runnerd",
+      "durableSessionCapabilities": [
+        "unlimited_runtime",
+        "connection_lease_renewal"
+      ],
+      "externalProviderCapabilities": [
+        "openai_dot_mcp",
+        "grok_bot_mcp",
+        "muse_external_v1"
+      ],
+      "harnessDriverVersion": 1,
+      "nativeExecutionVersion": 1,
+      "packageName": "@paperclipai/paperclip-runner",
+      "packageVersion": "0.0.0",
+      "providerPacks": [],
+      "prp": {
+        "maximumVersion": 2,
+        "minimumVersion": 1,
+        "name": "paperclip.runner"
+      },
+      "prpTransportModes": [
+        "dial_ws_loopback",
+        "dial_wss",
+        "listen_ws"
+      ],
+      "schema": "paperclip-runner/runnerd-build-metadata/v1"
+    },
+    "fixtureState": "awaiting-observer"
+  },
+  "dependencies": {
+    "provider": "deterministic Codex app-server fixture with real sleep60; no model call",
+    "sandbox": "real Daytona",
+    "sdk": "0.203.0",
+    "image": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:bff4c3f291087a0eeae37e4c20dd51857b92833eaf73ba3aca4157f37de1e109",
+    "controller": "normal production-built local Paperclip",
+    "actualLlmJourney": "separate real OpenCode/DeepSeek acceptance"
+  },
+  "issueId": "edc4ce6f-641c-4198-ad18-b37ccf03ec2d",
+  "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+  "leaseId": "73a0f737-9830-44b2-9055-19278957ef4e",
+  "providerLeaseId": "79fd034e-b161-4ce0-87b0-a54c430be3f4",
+  "checks": {
+    "normalApiBindings": true,
+    "currentDaemonAndFixture": true,
+    "visibleStreamingBeforeTerminal": true,
+    "realSleepObserved": true,
+    "nativeAcknowledgement": true,
+    "sharedProviderReceiptAcknowledgement": true,
+    "independentChildRetirementNoEffect": true,
+    "exactLeaseProviderReceipt": true,
+    "independentProviderStopped": true,
+    "reloadAndNoSuccessorOrResult": true
+  },
+  "visibleSourceMarker": {
+    "eventType": "item.delta",
+    "kind": "agentMessage",
+    "text": "CLOUD-STOP-STREAM: real sandbox process is starting. ",
+    "sourceEventId": "d4246355-c2ee-40a2-b297-5c4f65faf5c5:12cc7b1f-b698-4465-b9bb-dc3258328afb:12",
+    "sourceSeq": 12
+  },
+  "uiStop": {
+    "method": "POST",
+    "path": "/api/heartbeat-runs/12cc7b1f-b698-4465-b9bb-dc3258328afb/cancel",
+    "httpStatus": 200,
+    "requestedAtControllerMs": 1793751885311,
+    "responseRunId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+    "responseStatus": "cancelled",
+    "nativeCancellation": {
+      "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+      "scope": "run",
+      "schema": "paperclip.native-cancellation.v1",
+      "effects": [
+        "release_run_resources"
+      ],
+      "issueId": "edc4ce6f-641c-4198-ad18-b37ccf03ec2d",
+      "intentId": "native-cancellation:1cedca68-9e0d-4ab6-9c6d-df2192ee1be3",
+      "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+      "decisionId": null,
+      "dispatched": true,
+      "reasonCode": "cancellation_run_only",
+      "recordedAt": "2026-11-04T00:24:45.363Z",
+      "dispatchState": "acknowledged",
+      "intentAuditId": "2bc9850f-2235-4845-8175-5f046fdf4c17",
+      "acknowledgedAt": "2026-11-04T00:24:45.754Z",
+      "acknowledgementAuditId": "2b197246-165f-4fab-a18a-70b7f6478416",
+      "priorCoordinatorDecisionId": null
+    },
+    "executionCancellation": {
+      "proof": "provider_termination_receipt",
+      "state": "acknowledged",
+      "requestedAt": "2026-11-04T00:24:45.351Z",
+      "acknowledgedAt": "2026-11-04T00:24:50.626Z"
+    },
+    "timingScope": "One functional observation; no latency distribution or performance claim"
+  },
+  "processProof": {
+    "beforeStop": {
+      "remoteObservedAtMs": 1793751885334,
+      "remoteStartedAtMs": 1793751884856,
+      "remoteProcessAgeAtObservationMs": 478,
+      "child": {
+        "pid": 1216,
+        "ppid": 1161,
+        "pgid": 1216,
+        "startTicks": "2214887048",
+        "bootId": "89a86dc0-653a-4053-ae37-0701d477ebb5"
+      },
+      "groupProcesses": [
+        {
+          "pid": 1216,
+          "ppid": 1161,
+          "pgid": 1216,
+          "startTicks": "2214887048",
+          "command": "/bin/sh -c sleep 60; printf forbidden > \"$1\" cloud-stop-owned-child /home/daytona/paperclip-workspace/.cloud-stop-forbidden-effect "
+        },
+        {
+          "pid": 1217,
+          "ppid": 1216,
+          "pgid": 1216,
+          "startTicks": "2214887048",
+          "command": "sleep 60 "
+        }
+      ],
+      "effectPresent": false
+    },
+    "retirement": {
+      "remoteObservedAtMs": 1793751885626,
+      "phase": "interrupted-child-retired",
+      "childLive": false,
+      "groupProcesses": [],
+      "effectPresent": false
+    },
+    "causalOrdering": "Independent SDK snapshot promise resolved before ordinary UI Stop click.",
+    "clockLimitation": "Provider and controller/browser clocks are independent; no cross-host process age or delivery interval is inferred."
+  },
+  "terminalLease": {
+    "id": "73a0f737-9830-44b2-9055-19278957ef4e",
+    "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+    "environmentId": "0a86ee31-eca7-4aa3-aa57-5641d07a3c79",
+    "heartbeatRunId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+    "provider": "daytona",
+    "providerLeaseId": "79fd034e-b161-4ce0-87b0-a54c430be3f4",
+    "status": "released",
+    "releasedAt": "2026-11-04T00:24:50.619Z",
+    "cleanupStatus": "success",
+    "receipt": {
+      "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+      "state": "stopped",
+      "schema": "paperclip.remote-termination.v1",
+      "leaseId": "73a0f737-9830-44b2-9055-19278957ef4e",
+      "provider": "daytona",
+      "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+      "confirmedAt": "2026-11-04T00:24:50.619Z",
+      "providerLeaseId": "79fd034e-b161-4ce0-87b0-a54c430be3f4"
+    }
+  },
+  "providerReceipt": {
+    "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+    "state": "stopped",
+    "schema": "paperclip.remote-termination.v1",
+    "leaseId": "73a0f737-9830-44b2-9055-19278957ef4e",
+    "provider": "daytona",
+    "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+    "confirmedAt": "2026-11-04T00:24:50.619Z",
+    "providerLeaseId": "79fd034e-b161-4ce0-87b0-a54c430be3f4"
+  },
+  "independentProviderState": {
+    "id": "79fd034e-b161-4ce0-87b0-a54c430be3f4",
+    "state": "stopped",
+    "labels": {
+      "paperclip-provider": "daytona",
+      "paperclip-company-id": "1211ed47-48bf-4607-91e3-8680d05c840d",
+      "paperclip-environment-id": "0a86ee31-eca7-4aa3-aa57-5641d07a3c79",
+      "paperclip-run-id": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+      "paperclip-reuse-lease": "false"
+    },
+    "observedAt": 1793751891040
+  },
+  "databaseProof": {
+    "runId": "12cc7b1f-b698-4465-b9bb-dc3258328afb",
+    "companyId": "1211ed47-48bf-4607-91e3-8680d05c840d",
+    "status": "cancelled",
+    "nextEventSeq": 83,
+    "eventCursorProjectionSeq": 82,
+    "eventCursorRebuildPending": false,
+    "globalEvents": 82,
+    "canonicalPayloadDigestsVerified": 16,
+    "encodedPayloadsDecoded": 0,
+    "projectionChecked": true,
+    "projectionStatus": "matches_retained_complete_fixture_history",
+    "sources": [
+      {
+        "sourceInstanceId": "d4246355-c2ee-40a2-b297-5c4f65faf5c5",
+        "events": 16,
+        "contiguousSourceSeq": 15,
+        "pendingRanges": [
+          {
+            "startSeq": 19,
+            "endSeq": 19
+          }
+        ]
+      }
+    ]
+  },
+  "cleanup": {
+    "normalEnvironmentDelete": true,
+    "exactOwnedFallbackDelete": true,
+    "providerAbsence": [
+      {
+        "id": "79fd034e-b161-4ce0-87b0-a54c430be3f4",
+        "state": "absent",
+        "observedAt": 1793751895675
+      }
+    ],
+    "watchdogDisarmed": true
+  },
+  "sourceDurabilityLimit": "Cursor reconstruction requires the complete retained fixture history; no production or raw wire ACK durability claim",
+  "historicalProofScope": "Prior137 proof remains historical because the upstream native Stop finalizer/recovery/run-log wrapper changed. This fresh journey tests914 with the newly built eac015 runner.",
+  "artifactIntegrityAfterQualification": {
+    "status": "passed",
+    "checkedAt": "2026-11-04T00:30:10.858Z",
+    "sourceRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+    "trackedSourceClean": true,
+    "compiledBuildStamp": {
+      "commit": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da"
+    },
+    "compiledHashesAfterQualification": {
+      "server": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+      "ui": "847e43ecc2469a5b54dcf89e0be4a71ba750f9d123e9d893ed90a3b3f693959e",
+      "macRunner": "3e9acd73d2fb380d3d95e35de0e6ed78232b1be5dcbb3a96c76ca0d8b8c951b2",
+      "vendorMacRunner": "3e9acd73d2fb380d3d95e35de0e6ed78232b1be5dcbb3a96c76ca0d8b8c951b2"
+    },
+    "matchedBeforeQualificationBuild": true
+  }
+}

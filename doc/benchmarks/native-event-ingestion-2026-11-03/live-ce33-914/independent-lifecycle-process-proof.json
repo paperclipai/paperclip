@@ -1,0 +1,245 @@
+{
+  "verified": true,
+  "checkedAt": "2026-11-04T00:12:43.392Z",
+  "revision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "database": "Independent raw SELECT on owned loopback PostgreSQL",
+  "proofs": [
+    {
+      "run": {
+        "id": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+        "status": "succeeded",
+        "nextEventSeq": 123,
+        "eventCursorProjectionSeq": 122,
+        "eventCursorRebuildPending": false,
+        "processPid": 89567,
+        "processGroupId": 89567,
+        "processStartedAt": "2026-11-04T00:11:48.000Z",
+        "nativePhase": "committed",
+        "cancellationDispatchState": null
+      },
+      "globalEvents": 122,
+      "deltaKinds": {
+        "agentMessage": 28
+      },
+      "lifecycle": [
+        {
+          "seq": 107,
+          "eventType": "turn.completed",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:70",
+          "sourceSeq": 70,
+          "sourcePayloadSha256": "8ef83070ee92b77ced1041c83b8185e0bb5971206a14f98891e5b440cabb11b0",
+          "processPid": null,
+          "processGroupId": null
+        },
+        {
+          "seq": 109,
+          "eventType": "turn.completed",
+          "sourceInstanceId": null,
+          "sourceEventId": null,
+          "sourceSeq": null,
+          "sourcePayloadSha256": null,
+          "processPid": null,
+          "processGroupId": null
+        },
+        {
+          "seq": 112,
+          "eventType": "run.terminal",
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:control",
+          "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:control:688a6c34-f658-48ce-8ce6-61aeb2f72094:2",
+          "sourceSeq": 2,
+          "sourcePayloadSha256": "77b93871761c9889a47aa4168041186bccebf75d208506c762e4ae7387206a31",
+          "processPid": null,
+          "processGroupId": null
+        }
+      ],
+      "tools": [
+        {
+          "seq": 50,
+          "eventType": "tool.execution.started",
+          "name": "paperclip_report_progress",
+          "status": "running"
+        },
+        {
+          "seq": 51,
+          "eventType": "tool.execution.progressed",
+          "name": "paperclip_report_progress",
+          "status": "running"
+        },
+        {
+          "seq": 52,
+          "eventType": "tool.execution.started",
+          "name": "paperclip_list_task_documents",
+          "status": "running"
+        },
+        {
+          "seq": 53,
+          "eventType": "tool.execution.progressed",
+          "name": "paperclip_list_task_documents",
+          "status": "running"
+        },
+        {
+          "seq": 58,
+          "eventType": "tool.execution.completed",
+          "name": "paperclip_report_progress",
+          "status": "completed"
+        },
+        {
+          "seq": 60,
+          "eventType": "tool.execution.completed",
+          "name": "paperclip_list_task_documents",
+          "status": "completed"
+        },
+        {
+          "seq": 88,
+          "eventType": "tool.execution.started",
+          "name": "paperclip_finish",
+          "status": "running"
+        },
+        {
+          "seq": 91,
+          "eventType": "tool.execution.progressed",
+          "name": "paperclip_finish",
+          "status": "running"
+        },
+        {
+          "seq": 97,
+          "eventType": "tool.execution.completed",
+          "name": "paperclip_finish",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "run": {
+        "id": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+        "status": "cancelled",
+        "nextEventSeq": 72,
+        "eventCursorProjectionSeq": 71,
+        "eventCursorRebuildPending": false,
+        "processPid": null,
+        "processGroupId": null,
+        "processStartedAt": null,
+        "nativePhase": "observed",
+        "cancellationDispatchState": "acknowledged"
+      },
+      "globalEvents": 71,
+      "deltaKinds": {
+        "agentMessage": 2
+      },
+      "lifecycle": [
+        {
+          "seq": 62,
+          "eventType": "turn.cancelled",
+          "sourceInstanceId": "e7bce6a4-cab2-4c8b-bf2c-cc09b5e1436b",
+          "sourceEventId": "e7bce6a4-cab2-4c8b-bf2c-cc09b5e1436b:51ad4429-6d34-4df9-bdb9-a54b91842d5a:29",
+          "sourceSeq": 29,
+          "sourcePayloadSha256": "d3d3d232f5211f35e61221dc59811300e7387b43dc8261d54f868ef7719749f0",
+          "processPid": null,
+          "processGroupId": null
+        },
+        {
+          "seq": 64,
+          "eventType": "turn.cancelled",
+          "sourceInstanceId": null,
+          "sourceEventId": null,
+          "sourceSeq": null,
+          "sourcePayloadSha256": null,
+          "processPid": null,
+          "processGroupId": null
+        },
+        {
+          "seq": 70,
+          "eventType": "native.local_process_stopped",
+          "sourceInstanceId": null,
+          "sourceEventId": null,
+          "sourceSeq": null,
+          "sourcePayloadSha256": null,
+          "processPid": 90624,
+          "processGroupId": 90624
+        }
+      ],
+      "tools": [
+        {
+          "seq": 45,
+          "eventType": "tool.execution.started",
+          "name": "paperclip_report_progress",
+          "status": "running"
+        },
+        {
+          "seq": 49,
+          "eventType": "tool.execution.progressed",
+          "name": "paperclip_report_progress",
+          "status": "running"
+        },
+        {
+          "seq": 52,
+          "eventType": "tool.execution.completed",
+          "name": "paperclip_report_progress",
+          "status": "completed"
+        },
+        {
+          "seq": 57,
+          "eventType": "tool.execution.started",
+          "name": "bash",
+          "status": "running"
+        },
+        {
+          "seq": 58,
+          "eventType": "tool.execution.progressed",
+          "name": "bash",
+          "status": "running"
+        },
+        {
+          "seq": 59,
+          "eventType": "tool.execution.progressed",
+          "name": "bash",
+          "status": "running"
+        }
+      ]
+    }
+  ],
+  "physicalSettlement": {
+    "observedRuntimePids": [
+      89408,
+      89567,
+      89629,
+      89644,
+      90624,
+      90708,
+      92068
+    ],
+    "checks": [
+      {
+        "pid": 89408,
+        "absent": true
+      },
+      {
+        "pid": 89567,
+        "absent": true
+      },
+      {
+        "pid": 89629,
+        "absent": true
+      },
+      {
+        "pid": 89644,
+        "absent": true
+      },
+      {
+        "pid": 90624,
+        "absent": true
+      },
+      {
+        "pid": 90708,
+        "absent": true
+      },
+      {
+        "pid": 92068,
+        "absent": true
+      }
+    ],
+    "allObservedRuntimeAbsentOrExited": true
+  },
+  "independentCanonicalProof": "independent-database-proof.json"
+}

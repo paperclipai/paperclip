@@ -1,0 +1,33 @@
+{
+  "verified": true,
+  "checkedAt": "2026-11-04T00:13:20.230Z",
+  "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+  "causalOrder": "Owned live sleep60 birth identity gate completed before ordinary UI Stop click",
+  "source": "Independent postsettlement ps by exact preStop birth-identity chain",
+  "checks": [
+    {
+      "pid": 92068,
+      "observedBirthTime": "Tue Nov  3 18:12:17 2026",
+      "observedExecutable": "sleep",
+      "absent": true
+    },
+    {
+      "pid": 90708,
+      "observedBirthTime": "Tue Nov  3 18:12:06 2026",
+      "observedExecutable": "launch",
+      "absent": true
+    },
+    {
+      "pid": 90674,
+      "observedBirthTime": "Tue Nov  3 18:12:06 2026",
+      "observedExecutable": ".paperclip-verified-executable-0025c93ee91e494b961a901de3688522",
+      "absent": true
+    },
+    {
+      "pid": 90624,
+      "observedBirthTime": "Tue Nov  3 18:12:05 2026",
+      "observedExecutable": "paperclip-runnerd",
+      "absent": true
+    }
+  ]
+}

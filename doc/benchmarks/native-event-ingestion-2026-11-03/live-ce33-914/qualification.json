@@ -1,0 +1,295 @@
+{
+  "schema": "paperclip.native-ingestion-live-qualification.public.v2",
+  "status": "passed",
+  "testedRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "scope": "Fresh real local-provider functional journey on compiled914; no performance, production-deployment or remote-cloud claim",
+  "dependencyType": "LIVE OpenCode/OpenRouter DeepSeek; no mock provider or deterministic fixture",
+  "provider": {
+    "adapterType": "paperclip_runner",
+    "provider": "opencode",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+  },
+  "platform": {
+    "node": "v26.4.0",
+    "os": "darwin",
+    "architecture": "arm64"
+  },
+  "runtimeProvenance": "runtime-provenance.json",
+  "checks": {
+    "normalUiTaskChat": true,
+    "ordinaryAssistantVisibleWhileFreshGetRunning": true,
+    "nativeMcpToolCompleted": true,
+    "acceptedResultAndReload": true,
+    "positiveOwnedSleep60BirthBeforeVisibleStop": true,
+    "nativeStopAcknowledged": true,
+    "reloadNoSuccessor": true,
+    "independentRawDatabaseHashCursorProof": true,
+    "exactBirthIdentityChainAbsent": true,
+    "ownedProcessPortsDataCleanup": true,
+    "actualCredentialScanPassed": true,
+    "progressiveUiBeforeLaterOrdinaryDeltasAndAcceptedResult": true
+  },
+  "success": {
+    "issueId": "bddc5135-f18e-45df-a2b5-a8d09b78f697",
+    "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+    "visibleDelta": {
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:52",
+      "sourceSeq": 52,
+      "emittedAt": "2026-11-04T00:12:00.229Z",
+      "visibleText": "LIVE-INGESTION-1793751106135-DONE Task verified. Sent the START progress message, inspected this task's documents via the native listtaskdocuments tool (count: 0 documents), and provided the twelve numbered sentences about what the check proves. No files modified, no unrelated tasks or services accessed.",
+      "visibleAt": 1793751122648,
+      "run": {
+        "id": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+        "status": "running",
+        "runtimeMode": "native",
+        "driverKind": "opencode_server",
+        "providerSessionId": "ses_e5c1a28adffeMCyKLH1xL98uUQ",
+        "nativeSessionId": "1655845e-0764-4943-af72-5dca00c1734d",
+        "startedAt": "2026-11-04T00:11:47.167Z",
+        "finishedAt": null,
+        "error": null,
+        "nativePhase": "workspace_finalizing",
+        "provider": {
+          "kind": "opencode",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "permissionMode": "allow"
+        }
+      },
+      "statusObservedAt": 1793751122748
+    },
+    "toolEvidence": [
+      {
+        "eventType": "tool.execution.started",
+        "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:18",
+        "sourceSeq": 18,
+        "name": "paperclip_list_task_documents",
+        "operation": "unknown",
+        "status": "running"
+      },
+      {
+        "eventType": "tool.execution.progressed",
+        "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:19",
+        "sourceSeq": 19,
+        "name": "paperclip_list_task_documents",
+        "operation": "unknown",
+        "status": "running"
+      },
+      {
+        "eventType": "tool.execution.completed",
+        "sourceEventId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:688a6c34-f658-48ce-8ce6-61aeb2f72094:25",
+        "sourceSeq": 25,
+        "name": "paperclip_list_task_documents",
+        "operation": "unknown",
+        "status": "completed"
+      }
+    ],
+    "assistantDeltas": 28,
+    "result": "succeeded and retained after reload",
+    "originalCapturedObservationLimit": "Source52 was captured during workspace_finalizing and proves only pre-terminal visibility; progressive content is separately established by earlier retained images and source29/30->31..52 chronology",
+    "progressiveRetainedEvidence": "retained-progressive-streaming-proof.json"
+  },
+  "stop": {
+    "issueId": "21ec5d77-c672-4095-bdec-e5fae752256a",
+    "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+    "beforeClickProcessGate": {
+      "observedAtMs": 1793751138112,
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+      "runnerPid": 90624,
+      "sleepPid": 92068,
+      "sleepBirthTime": "Tue Nov  3 18:12:17 2026",
+      "observedProcessAgeMs": 1000,
+      "command": "sleep 60",
+      "chain": [
+        {
+          "pid": 92068,
+          "parentPid": 90708,
+          "processGroupId": 92068,
+          "state": "Ss",
+          "birthTime": "Tue Nov  3 18:12:17 2026",
+          "executable": "sleep"
+        },
+        {
+          "pid": 90708,
+          "parentPid": 90674,
+          "processGroupId": 90674,
+          "state": "S",
+          "birthTime": "Tue Nov  3 18:12:06 2026",
+          "executable": "launch"
+        },
+        {
+          "pid": 90674,
+          "parentPid": 90624,
+          "processGroupId": 90674,
+          "state": "S",
+          "birthTime": "Tue Nov  3 18:12:06 2026",
+          "executable": ".paperclip-verified-executable-0025c93ee91e494b961a901de3688522"
+        },
+        {
+          "pid": 90624,
+          "parentPid": 58087,
+          "processGroupId": 90624,
+          "state": "Ss",
+          "birthTime": "Tue Nov  3 18:12:05 2026",
+          "executable": "paperclip-runnerd"
+        }
+      ],
+      "verifiedBeforeClickAtMs": 1793751138237
+    },
+    "requestedAtMs": 1793751138237,
+    "acknowledgedAtMs": 1793751138609,
+    "observedAcknowledgementMs": 372,
+    "timingLimit": "One functional observation; no latency comparison/distribution",
+    "nativeCancellation": {
+      "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+      "scope": "run",
+      "schema": "paperclip.native-cancellation.v1",
+      "effects": [
+        "release_run_resources"
+      ],
+      "issueId": "21ec5d77-c672-4095-bdec-e5fae752256a",
+      "intentId": "native-cancellation:eadcd50b-01fa-48e6-9d8e-9498ed524299",
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "decisionId": null,
+      "dispatched": true,
+      "reasonCode": "cancellation_run_only",
+      "recordedAt": "2026-11-04T00:12:18.290Z",
+      "dispatchState": "acknowledged",
+      "intentAuditId": "c3a586eb-6e87-4f20-a0c5-24b04442e9ce",
+      "acknowledgedAt": "2026-11-04T00:12:18.394Z",
+      "acknowledgementAuditId": "05d82436-2bfd-451a-82ea-d7fa3bf146fd",
+      "priorCoordinatorDecisionId": null
+    },
+    "runIdsAfterReload": [
+      "51ad4429-6d34-4df9-bdb9-a54b91842d5a"
+    ]
+  },
+  "databaseProofs": [
+    {
+      "runId": "688a6c34-f658-48ce-8ce6-61aeb2f72094",
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "status": "succeeded",
+      "nextEventSeq": 123,
+      "eventCursorProjectionSeq": 122,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 122,
+      "canonicalPayloadDigestsVerified": 72,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667",
+          "events": 70,
+          "contiguousSourceSeq": 70,
+          "pendingRanges": []
+        },
+        {
+          "sourceInstanceId": "208ee7e9-3edd-43c1-ad8f-7dee4034b667:control",
+          "events": 2,
+          "contiguousSourceSeq": 2,
+          "pendingRanges": []
+        }
+      ]
+    },
+    {
+      "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+      "companyId": "b86f6d47-2c51-4aeb-88e1-f2ab18844f97",
+      "status": "cancelled",
+      "nextEventSeq": 72,
+      "eventCursorProjectionSeq": 71,
+      "eventCursorRebuildPending": false,
+      "globalEvents": 71,
+      "canonicalPayloadDigestsVerified": 27,
+      "encodedPayloadsDecoded": 0,
+      "projectionChecked": true,
+      "projectionStatus": "matches_retained_complete_fixture_history",
+      "sources": [
+        {
+          "sourceInstanceId": "e7bce6a4-cab2-4c8b-bf2c-cc09b5e1436b",
+          "events": 27,
+          "contiguousSourceSeq": 26,
+          "pendingRanges": [
+            {
+              "startSeq": 29,
+              "endSeq": 29
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "physicalSettlement": {
+    "verified": true,
+    "checkedAt": "2026-11-04T00:13:20.230Z",
+    "runId": "51ad4429-6d34-4df9-bdb9-a54b91842d5a",
+    "causalOrder": "Owned live sleep60 birth identity gate completed before ordinary UI Stop click",
+    "source": "Independent postsettlement ps by exact preStop birth-identity chain",
+    "checks": [
+      {
+        "pid": 92068,
+        "observedBirthTime": "Tue Nov  3 18:12:17 2026",
+        "observedExecutable": "sleep",
+        "absent": true
+      },
+      {
+        "pid": 90708,
+        "observedBirthTime": "Tue Nov  3 18:12:06 2026",
+        "observedExecutable": "launch",
+        "absent": true
+      },
+      {
+        "pid": 90674,
+        "observedBirthTime": "Tue Nov  3 18:12:06 2026",
+        "observedExecutable": ".paperclip-verified-executable-0025c93ee91e494b961a901de3688522",
+        "absent": true
+      },
+      {
+        "pid": 90624,
+        "observedBirthTime": "Tue Nov  3 18:12:05 2026",
+        "observedExecutable": "paperclip-runnerd",
+        "absent": true
+      }
+    ]
+  },
+  "sourceDurabilityLimit": "Verifies database-retained events and cursors; does not equate every ordinary streaming wire ACK with durable storage",
+  "execution": {
+    "appExitCode": 0,
+    "browserExitCode": 0,
+    "monitorExitCode": 0,
+    "independentDbVerifierExitCode": 0,
+    "birthSettlementExitCode": 0,
+    "cleanupExitCode": 0,
+    "firstAttemptBothJourneysPassed": true,
+    "helperAdaptation": "Root-authorized private Stop boundary waits for same-run positive exact OS sleep60 birth identity before ordinary UI Stop; original corrected helper remains immutable; no provider/model/prompt/app changes",
+    "helperSha256": {
+      "independent-lifecycle-process-proof.helper.mjs": "816b30b6686a4626f72b61b64452518f6ac87b11b5338e61c1db00baa3c3ba17",
+      "live-launch.mjs": "67b5c1f367be4451ee70b969f9cf9ad10f5cb48ba4cf9ff0ea51f6f4d39b0ebb",
+      "verify-database.mjs": "d3bec80c1886792e3d2e92489a1e4aa5e79ad55947218f03fb6cd9a5762fd22b",
+      "cleanup.helper.mjs": "20685c6246bf2ba2194d9e43fee9526a64c32c03a757ca9ff2c8c3d0cd4a5fb9",
+      "verify-birth-settlement.mjs": "ce6a5aca9a0fdeef21c0e5b785d2d3ac643da62c992465f8b9b4e4c41b947cef",
+      "process-monitor.mjs": "4f003d4db2ce70006028265735ecb10151710fccb8b6c701837ba1a21b150ab0",
+      "live-browser.guarded.mjs": "d7196cc7cf021252c386228cd1dc0ce59bde213fd464dc898a2f22155ff4b37b",
+      "live-browser.mjs": "e6e6af5670e8da496a66f420ad32bf5fe7df208e421d1254392df37106a21848"
+    }
+  },
+  "artifactsExcluded": [
+    "Full trace and video (retained in private evidence)",
+    "Controller and database logs",
+    "Credential-bearing application data (removed)"
+  ],
+  "checkedAt": "2026-11-04T00:16:16.470749+00:00",
+  "futureVerificationHelper": {
+    "executedInThisLiveJourney": false,
+    "scope": "Verification-only selector/open-item/finalizing guards; offline regression, no new app/provider run",
+    "helperSha256": "d5aac1e02c23fd294a4bcb11c0441f92f2c2c7309d9f4f4b4c3e2030de9456a2",
+    "regressionCases": {
+      "focusedDomAndSource": 6,
+      "existingControlledSeams": 9
+    },
+    "previousHelperSha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be",
+    "followUp": "verification-follow-up.json"
+  },
+  "streamingEvidenceScope": "Original selected source52 was preterminal at workspace_finalizing. Earlier retained JPEG/DOM/source excerpts establish progressive visible content before subsequent ordinary deltas and result acceptance; no literal provider-active nativePhase is asserted."
+}

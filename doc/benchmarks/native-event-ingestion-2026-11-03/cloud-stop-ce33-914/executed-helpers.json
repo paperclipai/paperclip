@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "publicHelperFilesUsedWithoutModification": {
+    "cloud-ui.mjs": "c43c112546709fca064842c529d27bc78363ffdd2ca4258830dd17c85affb6cc",
+    "launch.mjs": "b6124d665002da53628d3483452cbf30aa8b1acf5b759134c0298d13a5cd4aac",
+    "provider.mjs": "b62bd845e63a2736a76bcf834c2a2bd281db46079d5e5c786c7e996f9a9ef269",
+    "run.mjs": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9",
+    "verify-failure-cleanup.mjs": "3ae73e3146ddb65051568e7b25e7b9f87fdd35ee6a649f9bc29b434ee8086d83",
+    "watchdog.mjs": "cbe0770ef67217a609b13ba5a557ee57dc9440180658314ff38919a81648fd2a"
+  },
+  "mainPublicHelperSha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9",
+  "offlineActualSourceCleanupCases": [
+    {
+      "case": "cap1_with2_observed_owned_resources",
+      "status": "passed",
+      "allIdsLedgeredBeforeFailure": true,
+      "bothExactOwnedResourcesCleaned": true
+    },
+    {
+      "case": "first_sdk_lookup_throws_with2_observed_owned_resources",
+      "status": "passed",
+      "allIdsLedgeredBeforeFailure": true,
+      "bothExactOwnedResourcesCleaned": true
+    }
+  ],
+  "offlineCloudCalls": 0,
+  "credentialBoundary": "A private credential-manager bootstrap supplied only DAYTONA_API_KEY in the journey child environment; service-account token was not inherited. The controller was launched with inherited credentials stripped. Normal encrypted company-secret API and reference were used.",
+  "resourceBounds": {
+    "currentEpochMaximum": 1,
+    "currentEpochActual": 1,
+    "maximumTaskTotal": 6,
+    "taskActual": 6,
+    "maximumConcurrent": 1,
+    "ttlMinutes": 30,
+    "automaticRetry": false
+  }
+}

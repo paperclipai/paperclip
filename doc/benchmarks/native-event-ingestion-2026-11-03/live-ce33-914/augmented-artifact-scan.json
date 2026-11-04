@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "checkedAt": "2026-11-04T00:47:02.146764+00:00",
+  "scope": "Copied compact proof after public path projections; original full-trace/decompressed scan retained separately",
+  "files": 32,
+  "exactQualificationCredentialMatches": [],
+  "resourceSpecificAbsolutePrivatePaths": [],
+  "privateHomeOrCredentialManagerMetadataPatterns": [],
+  "intentionalGenericPlatformPrefix": "The unchanged public launcher mkdtemp macOS prefix is generic, not a resource-specific private path"
+}

@@ -1,0 +1,139 @@
+{
+  "admission-helper-check.json": {
+    "status": "passed",
+    "actualHelperSha256": "975e19141a1a70a98024fc42b54e07b91c9d63dc53be3f28884def118b1f6a70",
+    "actualPollExecuted": true,
+    "actualAdmissionPredicateExecuted": true,
+    "cases": 5,
+    "observedTransitions": [
+      {
+        "runtimeMode": "legacy",
+        "status": "queued"
+      },
+      {
+        "runtimeMode": "legacy",
+        "status": "running"
+      },
+      {
+        "runtimeMode": "native",
+        "status": "queued"
+      },
+      {
+        "runtimeMode": "native",
+        "status": "running"
+      }
+    ],
+    "readsBeforeRelease": 4,
+    "releasedAfterNativeRunning": true,
+    "resourceCalls": 0
+  },
+  "visible-selector-check.json": {
+    "status": "passed",
+    "resourceCalls": 0,
+    "actualSharedLocatorExecuted": true,
+    "source": "existing owned task UI plus reversible DOM-only negative cases",
+    "issueId": "6e6bc95f-7852-417c-95d1-20d2a535358d",
+    "runId": "d40574ba-a0e9-41af-b055-fb4f2208f98f",
+    "legacyVisibleTexts": [],
+    "correctedVisibleMarkerCount": 1,
+    "correctedMarkerVisible": true,
+    "negativeCases": [
+      "hidden_owned_marker",
+      "user_prompt_only",
+      "unrelated_thread"
+    ],
+    "terminalStateCannotProveStreaming": true,
+    "runStatus": "failed",
+    "limitation": "Locator requires separate fresh-task/one-run ownership check; this alone cannot establish current streaming."
+  },
+  "captured-live-dom-check.json": {
+    "status": "passed",
+    "resourceCalls": 0,
+    "source": "Actual third-attempt Playwright LIVE frame snapshot ancestry, replayed without network",
+    "traceSha256": "2a7f10af70c4d43b4e3ecbca69ea02c6ae9bd1243765aa8739d82c4149fa84e5",
+    "snapshotName": "after@call@44",
+    "correctedSharedLocatorVisible": true,
+    "priorExactTurnAnchorCount": 0,
+    "liveAncestorTestIds": [
+      "shell-prepared-outlet",
+      "issue-detail-content",
+      "task-chat-thread",
+      "task-chat-history-content",
+      "task-chat-scroller",
+      "task-chat-live-transcript",
+      "task-chat-runner-turn",
+      "task-chat-turn-timeline",
+      "task-chat-turn-timeline-row",
+      "task-chat-activity-phase",
+      "task-chat-phase-interstitial"
+    ],
+    "stopControls": [
+      {
+        "tag": "BUTTON",
+        "testId": "task-chat-composer-stop",
+        "ariaLabel": "Stop",
+        "disabled": null
+      }
+    ],
+    "limitation": "Recorded DOM locator verification; fresh live UI Stop still required."
+  },
+  "canonical-task-route-check.json": {
+    "status": "passed",
+    "resourceCalls": 0,
+    "source": "actual owned fourth task API and normal visible UI after cleanup",
+    "issueId": "c6d400e9-031a-484e-a8d6-24194d1532a1",
+    "identifier": "CLO-4",
+    "title": "Real cloud Stop 1793747057656",
+    "requestedUuidUrl": "/CLO/issues/c6d400e9-031a-484e-a8d6-24194d1532a1",
+    "actualUrl": "/CLO/issues/CLO-4",
+    "headerTitleVisible": true,
+    "uuidInActualUrl": false,
+    "limitation": "Reproduces incorrect URL-only harness assertion; no Stop or streaming claim."
+  },
+  "resourceCapFailureCleanup": {
+    "scope": "Offline actual-source admission and finally-cleanup sections; all SDK/filesystem effects stubbed, no cloud resources created",
+    "red": {
+      "exitCode": 1,
+      "rejectedBecause": "Only one of two already-admitted owned IDs reached the cleanup/watchdog ledger",
+      "sourceSha256": "44021e72ffe7f6d07a005fa9946d1e2af5d638dadc29f5c39a3080d5bd786854"
+    },
+    "green": {
+      "status": "passed",
+      "cloudCalls": 0,
+      "observedOwnedResources": 2,
+      "declaredCap": 1,
+      "ledgeredBeforeFailure": 2,
+      "exactOwnedCleanupCalls": 2
+    },
+    "sourceSha256": "026fe92d5452062ddd5840a0bc9aeba9f6b4f7fda57040eaadb76ca80b960409"
+  },
+  "providerLookupFailureCleanup": {
+    "scope": "Offline actual-source admission, first provider lookup, and finally-cleanup sections; SDK and filesystem effects stubbed; no provider calls",
+    "red": {
+      "exitCode": 1,
+      "reason": "First provider lookup threw before any of two host-observed IDs reached the ledger",
+      "sourceSha256": "026fe92d5452062ddd5840a0bc9aeba9f6b4f7fda57040eaadb76ca80b960409"
+    },
+    "green": {
+      "status": "passed",
+      "cloudCalls": 0,
+      "cases": [
+        {
+          "failure": "resource-cap",
+          "observedOwnedResources": 2,
+          "declaredCap": 1,
+          "ledgeredBeforeFailure": 2,
+          "exactOwnedCleanupCalls": 2
+        },
+        {
+          "failure": "first-provider-lookup",
+          "observedOwnedResources": 2,
+          "declaredCap": 2,
+          "ledgeredBeforeFailure": 2,
+          "exactOwnedCleanupCalls": 2
+        }
+      ]
+    },
+    "sourceSha256": "753ea9b830bbaa9be6fa8510fe2b7bdcc1099248939f7aa28d51d29fb854e4e9"
+  }
+}
