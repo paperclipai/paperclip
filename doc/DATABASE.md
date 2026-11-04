@@ -746,6 +746,19 @@ blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
 
+## Remote workspace save row locks
+
+Remote snapshot reservation and publication lock the company for foreign-key
+reference, then the source task and run, before the workspace. The run's task
+binding is rechecked under the run lock. This order matches task-first workspace
+admission and file preservation. It prevents an operation insert from holding a
+workspace while its task or run foreign key waits on another workspace owner.
+
+The workspace lock still serializes generations and publication. Existing
+foreign keys, ownership checks and transaction-aware work notifications remain
+in place. Archive capture and object upload run between transactions, without
+these row locks.
+
 ## Execution admission accounting
 
 The execution-admission module (`server/src/modules/execution-admission/`) owns

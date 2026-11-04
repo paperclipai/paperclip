@@ -7,6 +7,7 @@ export type JourneyId =
   | "task-properties"
   | "task-create"
   | "project-task-context"
+  | "task-dependency-resume"
   | "task-document-persistence"
   | "ask-question"
   | "chat-continuity"

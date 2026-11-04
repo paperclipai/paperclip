@@ -21,6 +21,7 @@ import { runClarificationJourney } from "./clarification-flow.js";
 import { runChatContinuity } from "./chat-continuity-flow.js";
 import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { taskDependencyResume } from "./task-dependency-resume.js";
 import { runInputFile } from "./input-file-flow.js";
 import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
@@ -141,6 +142,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "inbox-triage-fixture.ts",
     "inbox-author-contract.ts",
     "task-properties.ts",
+    "../../../packages/shared/src/constants.ts",
+    "task-dependency-resume.ts",
+    "task-dependency-resume-evidence.ts",
     "task-search-filter.ts",
     "task-search-evidence.ts",
     "basic-flows.ts",
@@ -288,6 +292,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "task-dependency-resume") await taskDependencyResume(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });

@@ -1,7 +1,9 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { configDefaults, defineConfig } from "vitest/config";
+import { RunnerSequencer } from "./scripts/vitest-sequencer.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 
@@ -17,6 +19,8 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
       : {}),
     environment: "node",
+    ...(process.env.GITHUB_ACTIONS === "true" ? { maxWorkers: Math.min(4, availableParallelism()) } : {}),
+    sequence: { sequencer: RunnerSequencer },
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
@@ -27,6 +31,7 @@ export default defineConfig({
       "examples/scenario-explorer/src/**/*.test.tsx",
       "scripts/local-runner-browser-server.test.mjs",
       "scripts/live-console-browser-server.test.mjs",
+      "scripts/vitest-sequencer.test.mjs",
     ],
   },
 });

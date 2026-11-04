@@ -9795,6 +9795,7 @@ describeEmbeddedPostgres("tool access service", () => {
       const revived = await service.connectGalleryApp(
         company.id,
         {
+          reconnectConnectionId: first.connectionId,
           galleryKey: "google-drive",
           connectionMethodKey: "paperclip-write",
           grantKind: "user",
@@ -15997,7 +15998,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  it("reuses a removed gallery app while applying the omitted organization identity default", async () => {
+  it("creates a separate gallery app for the omitted organization default after personal removal", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const actor = { actorType: "user" as const, actorId: "local-board" };
@@ -16022,8 +16023,10 @@ describeEmbeddedPostgres("tool access service", () => {
       actor,
     );
 
-    expect(second.application.id).toBe(first.application.id);
-    expect(second.connectionId).toBe(first.connectionId);
+    expect(second.application.id).not.toBe(first.application.id);
+    expect(second.connectionId).not.toBe(first.connectionId);
+    await expect(service.getConnection(first.connectionId, company.id))
+      .resolves.toMatchObject({ status: "archived", credentialPolicy: "per_user" });
     expect(second.application.status).toBe("draft");
     expect(second.connection.status).toBe("draft");
     expect(second.connection.credentialPolicy).toBe("shared");
@@ -16038,8 +16041,8 @@ describeEmbeddedPostgres("tool access service", () => {
         isDefault: true,
       }),
     ]);
-    await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
-    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(2);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(2);
   });
 
   it("restores grants and credential policy when an identity-changing revival fails", async () => {
@@ -18413,6 +18416,119 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(secret.latestVersion).toBe(2);
     });
   }, 15000);
+
+  it.each(["local-board", "another-user", "current-user"])(
+    "creates an independent fresh GitHub identity after archiving a personal connection owned by %s",
+    async (ownerUserId) => {
+      const company = await createCompany(db);
+      const service = createTestToolAccessService(db);
+      const currentUserId = "current-user";
+      await grantBoardUser(db, company.id, currentUserId, [], "member");
+      mockToolsList([readTool("get_me", "Read current user")]);
+      await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, async () => {
+        const first = await service.connectGalleryApp(company.id, {
+          galleryKey: "github",
+          connectionMethodKey: "mcp-key",
+          name: "GitHub",
+          grantKind: "user",
+          credentialValues: { "credentials.authorization": "archived-fixture-key" },
+        }, { actorType: "user", actorId: ownerUserId });
+        // Model a legacy archived row that still has personal credential refs.
+        // Fresh setup must leave even this retained material untouched.
+        await db.update(toolConnections).set({ status: "archived", enabled: false })
+          .where(eq(toolConnections.id, first.connectionId));
+        await db.update(toolApplications).set({ status: "archived", archivedAt: new Date() })
+          .where(eq(toolApplications.id, first.application.id));
+        await db.insert(activityLog).values({
+          companyId: company.id, actorType: "user", actorId: ownerUserId,
+          action: "tool_connection.archived", entityType: "tool_connection",
+          entityId: first.connectionId,
+        });
+        const retained = async () => ({
+          applications: await db.select().from(toolApplications)
+            .where(eq(toolApplications.id, first.application.id)),
+          connections: await db.select().from(toolConnections)
+            .where(eq(toolConnections.id, first.connectionId)),
+          grants: await db.select().from(connectionGrants)
+            .where(eq(connectionGrants.connectionId, first.connectionId)),
+          secrets: await db.select().from(companySecrets),
+          versions: await db.select().from(companySecretVersions),
+          activity: await db.select().from(activityLog)
+            .where(eq(activityLog.entityId, first.connectionId)),
+        });
+        const before = await retained();
+        const app = createRouteApp(db,
+          boardSessionActor(company.id, "member", currentUserId),
+          undefined, { deploymentMode: "authenticated" });
+        const freshInput = {
+          galleryKey: "github",
+          connectionMethodKey: "mcp-key",
+          name: "GitHub",
+          grantKind: "user",
+          credentialValues: { "credentials.authorization": "fresh-fixture-key" },
+        };
+
+        if (ownerUserId !== currentUserId) {
+          for (const target of [
+            { reconnectConnectionId: first.connectionId },
+            { applicationId: first.application.id },
+          ]) {
+            await request(app)
+              .post(`/api/companies/${company.id}/tools/apps/connect`)
+              .send({ ...freshInput, ...target }).expect(403);
+            await expect(service.connectGalleryApp(company.id, {
+              ...freshInput, grantKind: "user", ...target,
+            }, { actorType: "user", actorId: currentUserId, actorSource: "session" }))
+              .rejects.toMatchObject({
+                status: 403,
+                message: "Only the existing personal identity can reconnect this connection",
+              });
+          }
+          expect(await retained()).toEqual(before);
+        }
+
+        // An omitted key must not borrow the archived personal credential.
+        await request(app)
+          .post(`/api/companies/${company.id}/tools/apps/connect`)
+          .send({ ...freshInput, credentialValues: {} }).expect(400);
+        expect(await retained()).toEqual(before);
+
+        const fresh = await request(app)
+          .post(`/api/companies/${company.id}/tools/apps/connect`)
+          .send(freshInput).expect(201);
+        expect(fresh.body.connectionId).not.toBe(first.connectionId);
+        expect(fresh.body.application.id).not.toBe(first.application.id);
+        expect(fresh.body.application.name).toBe("GitHub (2)");
+        expect(fresh.body.connection).toMatchObject({
+          credentialPolicy: "per_user", credentialSecretRefs: [],
+        });
+        const after = await retained();
+        expect(after.applications).toEqual(before.applications);
+        expect(after.connections).toEqual(before.connections);
+        expect(after.grants).toEqual(before.grants);
+        expect(after.activity).toEqual(before.activity);
+        for (const secret of before.secrets) expect(after.secrets).toContainEqual(secret);
+        for (const version of before.versions) expect(after.versions).toContainEqual(version);
+        const freshGrants = await db.select().from(connectionGrants)
+          .where(eq(connectionGrants.connectionId, fresh.body.connectionId));
+        expect(freshGrants).toEqual([expect.objectContaining({
+          kind: "user", subjectUserId: currentUserId, status: "active",
+        })]);
+        const oldSecretIds = before.grants.flatMap((grant) =>
+          grant.credentialSecretRefs.map((ref) => ref.secretId));
+        expect(freshGrants[0]!.credentialSecretRefs).toHaveLength(1);
+        expect(oldSecretIds).toHaveLength(1);
+        const freshSecretId = freshGrants[0]!.credentialSecretRefs[0]!.secretId;
+        expect(oldSecretIds).not.toContain(freshSecretId);
+        expect(after.secrets.find((secret) => secret.id === freshSecretId))
+          .toMatchObject({ scope: "user", ownerUserId: currentUserId });
+        await expect(db.select().from(activityLog)
+          .where(and(eq(activityLog.entityId, fresh.body.connectionId),
+            eq(activityLog.action, "tool_app.connected"))))
+          .resolves.toEqual([expect.objectContaining({ actorId: currentUserId })]);
+      }, "mcp-key");
+    },
+  );
 
   it("reconnects a personal key on the existing user grant without creating an organization credential", async () => {
     const company = await createCompany(db);

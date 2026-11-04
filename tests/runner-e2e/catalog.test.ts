@@ -135,6 +135,7 @@ describe("runner E2E catalog", () => {
       "file-input-answer",
       "task-create",
       "project-task-context",
+      "task-dependency-resume",
       "ask-question",
       "chat-continuity",
       "question-answer-resume",
