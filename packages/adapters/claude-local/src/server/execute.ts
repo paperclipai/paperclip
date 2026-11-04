@@ -97,6 +97,7 @@ import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { probeTranscript } from "./transcript-probe.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
@@ -122,30 +123,7 @@ async function hasLocalClaudeSessionTranscript(input: {
     encodedCwd,
     `${input.sessionId}.jsonl`,
   );
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    const inspection = fs.stat(transcriptPath).then(
-      (stat) => stat.isFile(),
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
-        return null;
-      },
-    );
-    return await Promise.race([
-      inspection,
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), 500);
-      }),
-    ]);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return false;
-    // If the configured storage cannot be inspected, preserve Claude's normal
-    // resume attempt instead of turning an I/O problem into a false miss.
-    return null;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return probeTranscript(transcriptPath);
 }
 
 interface ClaudeExecutionInput {
@@ -828,9 +806,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     hasMatchingSessionCwd &&
     hasMatchingExecutionTarget;
   let sessionId = canResumeSession ? runtimeSessionId : null;
+  const localClaudeEnv = { ...process.env, ...env };
+  const localClaudeConfigDir = localClaudeEnv.CLAUDE_CONFIG_DIR?.trim()
+    ? path.resolve(effectiveExecutionCwd, localClaudeEnv.CLAUDE_CONFIG_DIR)
+    : localClaudeEnv.HOME?.trim()
+      ? path.resolve(effectiveExecutionCwd, localClaudeEnv.HOME, ".claude")
+      : resolveSharedClaudeConfigDir(localClaudeEnv);
   if (sessionId && !executionTargetIsRemote) {
     const transcriptAvailable = await hasLocalClaudeSessionTranscript({
-      configDir: resolveSharedClaudeConfigDir(effectiveEnv),
+      configDir: localClaudeConfigDir,
       cwd: effectiveExecutionCwd,
       sessionId,
     });
@@ -1433,6 +1417,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
+      !(stoppedAfterTerminalResult && !executionTargetIsRemote && process.platform === "win32") &&
       ((initial.proc.exitCode ?? 0) !== 0 ||
         (stoppedAfterTerminalResult &&
           !executionTargetIsRemote &&
@@ -1459,7 +1444,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
       if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
-        const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
+        const claudeConfigDir = localClaudeConfigDir;
         // Mirrors Claude Code's project-dir encoding: non-alphanumeric chars become "-"; existing hyphens pass through.
         const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");
         const poisonedJsonlPath = path.join(claudeConfigDir, "projects", encodedCwd, `${sessionId}.jsonl`);

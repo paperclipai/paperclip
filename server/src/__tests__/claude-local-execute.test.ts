@@ -84,6 +84,12 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "11111111-1111-4111-8111-111111111111", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "11111111-1111-4111-8111-111111111111", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+const os = require("node:os");
+const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), ".claude");
+const encodedCwd = process.cwd().replace(/[^a-zA-Z0-9-]/g, "-");
+const projectDir = path.join(configDir, "projects", encodedCwd);
+fs.mkdirSync(projectDir, { recursive: true });
+fs.writeFileSync(path.join(projectDir, "11111111-1111-4111-8111-111111111111.jsonl"), "{}\\n", "utf8");
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -300,7 +306,7 @@ console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-822
 
 async function setupExecuteEnv(
   root: string,
-  options?: { commandWriter?: (commandPath: string) => Promise<void> },
+  options?: { commandWriter?: (commandPath: string) => Promise<void>; initialSessionIds?: string[] },
 ) {
   const workspace = path.join(root, "workspace");
   const binDir = path.join(root, "bin");
@@ -310,6 +316,13 @@ async function setupExecuteEnv(
   await fs.mkdir(workspace, { recursive: true });
   await fs.mkdir(binDir, { recursive: true });
   await (options?.commandWriter ?? writeFakeClaudeCommand)(commandPath);
+  if (options?.initialSessionIds?.length) {
+    const projectDir = path.join(root, ".claude", "projects", workspace.replace(/[^a-zA-Z0-9-]/g, "-"));
+    await fs.mkdir(projectDir, { recursive: true });
+    await Promise.all(options.initialSessionIds.map((sessionId) =>
+      fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8"),
+    ));
+  }
   const previousHome = process.env.HOME;
   const previousPath = process.env.PATH;
   process.env.HOME = root;
@@ -541,7 +554,9 @@ describe("claude execute", () => {
 
   it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
-    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
+    });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     try {
@@ -610,7 +625,9 @@ describe("claude execute", () => {
 
   it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
-    const { workspace, commandPath, restore } = await setupExecuteEnv(root);
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
+    });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     let capturedNotes: string[] = ["sentinel"];
@@ -639,10 +656,46 @@ describe("claude execute", () => {
     }
   });
 
+  it("checks resumed transcripts under the configured child HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-child-home-resume-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const childHome = path.join(root, "child-home");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const projectDir = path.join(childHome, ".claude", "projects", workspace.replace(/[^a-zA-Z0-9-]/g, "-"));
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8");
+
+    try {
+      await execute({
+        runId: "run-child-home-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { HOME: childHome, PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(captured.argv).toContain("--resume");
+      expect(captured.argv).toContain(sessionId);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds the combined instructions file when an unknown resumed session falls back to fresh", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-fallback-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeRetryThenSucceedClaudeCommand,
+      initialSessionIds: ["11111111-1111-4111-8111-111111111111"],
     });
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -1850,6 +1903,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-msgid-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writePoisonedMessageIdClaudeCommand,
+      initialSessionIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
     });
     const logs: string[] = [];
     try {
@@ -1942,6 +1996,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-retry-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+      initialSessionIds: ["aaaaaaaa-0000-4000-8000-000000000004"],
     });
     try {
       const result = await execute({
