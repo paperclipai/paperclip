@@ -3,6 +3,7 @@ import { gradeLegacyWorkspaceMigration, migrationPrimaryOutputCheckpoints, isLeg
 import { necessaryQuestionContract } from "./continuation-cases.js";
 import { validResumeQuestionForm, validResumeReferenceForm } from "./question-resume-scoring.js";
 import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
+import { confirmContinuationPlan } from "./continuation-approval.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
 import { prepareLegacyContinuationSkill, prepareContinuationBudget } from "./continuation-fixtures.js";
@@ -308,7 +309,12 @@ export async function runContinuationFlow(input: {
         scenario.id === "revision-preserves-approval" ? "revised" : "answered",
       );
       assertWaiting();
-      await reply(scenario.approval);
+      if (scenario.id === "revision-preserves-approval") {
+        const before = new Set(runs.map(r => r.id));
+        const accepted = await confirmContinuationPlan({ page, api, checkpoint: checkpoints.at(-1)!, deadlineAt: input.deadlineAt });
+        await input.evidence("continuation-plan-approval.json", accepted);
+        await settle(before);
+      } else await reply(scenario.approval);
     }
     if (migration) migrationAfter = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue!.id });
     await snapshot("final");
