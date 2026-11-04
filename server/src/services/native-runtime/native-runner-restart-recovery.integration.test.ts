@@ -82,7 +82,7 @@ vi.mock("../../sentry.js", async () => {
     captureRunFailure: mockCaptureRunFailure,
   };
 });
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeControllerIdentity } from "./native-restart-recovery.js";
 
 // Exact v5 wire prompt from before the task-monitor upgrade (#15446).
 const historicalPrompt = {
@@ -228,7 +228,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);
   });
 
-  it("does not turn another database constraint failure into a routine wait", async () => {
+  it("defers another database constraint failure without calling it a routine wait", async () => {
     const fixture = await seedRun("UNRELATED-DATABASE-FAILURE");
     const db = new Proxy(fixture.db, { get(target, key) {
       if (key === "transaction") return () => target.transaction(async tx => {
@@ -241,7 +241,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     } });
     const onClaim = vi.fn();
     await expect(claimNativeRestartRecoveries({ db, controller: successor,
-      restartKind: "hard", runIds: [fixture.runId], onClaim })).rejects.toThrow(/recovery_constraint_control/);
+      restartKind: "hard", runIds: [fixture.runId], onClaim })).resolves.toEqual([{ kind: "awaiting_evidence",
+      runId: fixture.runId, reason: NATIVE_RESTART_RECOVERY_FAILED, retryAt: expect.any(Date) }]);
     expect(onClaim).not.toHaveBeenCalled();
     const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, fixture.runId));

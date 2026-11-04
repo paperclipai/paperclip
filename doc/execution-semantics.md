@@ -1275,7 +1275,12 @@ Another task can hold the same routine execution slot even when this task's
 lock is free. If that unique claim fails, restart recovery rolls back the whole
 candidate claim and waits through the existing recovery deadline. It preserves
 the current routine owner, checkpoint, and provider attempt, and continues the
-startup batch. Other database failures still fail the recovery pass.
+startup batch. Any other failure while claiming one run is handled the same
+way with reason `restart_recovery_failed`: the run's claim rolls back, the
+error is logged, a warning transition is recorded on the run, and the run waits
+for the next deadline. A failed transition write is logged and does not stop
+the claims that already committed. Only a failure of the candidate scan itself
+fails the recovery pass.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 

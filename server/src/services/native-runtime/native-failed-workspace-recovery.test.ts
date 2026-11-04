@@ -13,7 +13,7 @@ import { getExecutionBlocker } from "../execution-blocker.js";
 import { markExecutionReconciliation, settleUnrecoverableExecutions, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
 import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace, registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
@@ -119,7 +119,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     $$`);
     await db.execute(sql`create trigger ${name} before update on heartbeat_runs for each row execute function ${name}()`);
     try {
-      await expect(claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).rejects.toThrow();
+      // The run's whole claim rolls back and waits for the next deadline; the batch continues.
+      await expect(claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).resolves.toEqual([
+        { kind: "awaiting_evidence", runId: f.runId, reason: NATIVE_RESTART_RECOVERY_FAILED, retryAt: expect.any(Date) },
+      ]);
       expect(await readRun(f.runId)).toMatchObject({ status: "running", nativePhase: "observed", resultJson: { originalDiagnostic: true } });
       expect(await readLease(f.lease.id)).toMatchObject({ status: "active", leasePolicy: "ephemeral" });
       expect(await actions(f.issueId)).toHaveLength(0);
