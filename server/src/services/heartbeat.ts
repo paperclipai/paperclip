@@ -10547,6 +10547,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    // A queued run cancelled because the issue changed hands must not strand the
+    // new owner's wake. While this run held the issue lock, the new assignee's
+    // wake was parked in `deferred_issue_execution`; releasing the lock is
+    // exactly the moment to promote it. Without this the card is left in `todo`
+    // with no execution path and no pending wake, and nothing re-queues it:
+    // TON-776 sat that way from 2026-10-28 to 2026-11-04 (TON-1040).
+    //
+    // The daily-cap cancel path already promotes deferred wakes the same way
+    // (see cancelQueuedRunForHeartbeatDailyCap); the assignee-change path was
+    // the one that released the lock without promoting.
+    if (staleness.errorCode === "issue_assignee_changed") {
+      await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+    }
+
     return cancelled;
   }
 

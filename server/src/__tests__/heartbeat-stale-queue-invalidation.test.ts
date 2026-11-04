@@ -1078,6 +1078,94 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("promotes the new assignee's deferred wake when a queued run is cancelled after the issue changed hands", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    // The previous owner still holds the issue lock, so the new owner's wake is
+    // parked in `deferred_issue_execution` until that lock is released.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned task",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+      executionRunId: runId,
+    });
+
+    const deferredWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeupId,
+      companyId,
+      agentId: replacementAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          wakeSource: "assignment",
+          wakeTriggerDetail: "system",
+        },
+      },
+      status: "deferred_issue_execution",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const [deferred] = await db
+        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupId));
+      return Boolean(deferred?.runId) && deferred?.status !== "deferred_issue_execution";
+    });
+
+    const [deferred] = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeupId));
+    const [promotedRun] = deferred?.runId
+      ? await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, deferred.runId))
+      : [];
+
+    // The card must not be stranded: the deferred wake has to become a real run
+    // for the new owner instead of staying parked forever (TON-1040 / TON-776).
+    expect(deferred?.status).not.toBe("deferred_issue_execution");
+    expect(promotedRun?.agentId).toBe(replacementAgentId);
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
