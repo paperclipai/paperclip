@@ -1,0 +1,122 @@
+{
+  "schema": "paperclip.native-ingestion.blocked-stop-helper-sources.v3",
+  "scope": "Exact frozen companion v3 sources and reviewed helper; one functional qualification is not a timing/noise/performance pass.",
+  "repository": "https://github.com/paperclipai/paperclip.git",
+  "deliveryLockSha256AtPackaging": "7540075e96f9a93924a1e54775c17346c5760dd5d02902d83fb5228f918996ba",
+  "deliveryCheckoutWasExecutedDriver": false,
+  "mixedDeliveryTreeCannotReplaceEitherFrozenDriver": true,
+  "recordedVmRuntime": {
+    "node": "v26.4.0",
+    "pnpm": "9.15.4",
+    "otherRuntimeOutputs": "Exact absolute executable, argument and output pins from sealed runtime receipts; never guessed."
+  },
+  "rawB2Role": "ca7cba171cd5198ed569d75012edc858041cbc44 is unoptimized B2 provenance, not a final candidate.",
+  "frozenDriver": {
+    "commit": "bc33f09cae26404352848169d92a20c89480a5f5",
+    "tree": "c84d96153d87ef3a31265c3de01568714688200c",
+    "parent": "6e5349cdbd5e3a197877f1082f84a17e866c03e7",
+    "tag": "native-ingestion-blocked-stop-v3",
+    "tagObject": "a49c24dc2a690764d1cfcc080077f90485218df7",
+    "tagPeeledCommit": "bc33f09cae26404352848169d92a20c89480a5f5",
+    "companionNineFileConcatOrder": "Lexicographically sorted repository-relative paths in files",
+    "companionNineFileSha256": "0dea53d3ec7bbf63c45c628e39c65983181d5e19f8bfae872cf78fa85e7831e8",
+    "frozenH5cNineFileSha256": "2265aabe9c7344f5d4b9c8b08a5c6bbd5571a6e2de9ae7b72a8d1733250e609f",
+    "driverLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+    "protocol": {
+      "PROTOCOL": "blocked-stop-history-v1",
+      "WORKLOAD_SHA256": "0fc383bca459682042be313e1c3243746b7428ab3b94c2a6ab3dc81eee252522",
+      "PRECISION_RULE_SHA256": "a93bb828c91eae6f6fcb3b5f5533465475d57aaa03c79485b51d879af5d14669",
+      "arms": 50
+    }
+  },
+  "sourceFreezeReceiptSha256": "210002a6699059ff9b5f74a49558c9f7f0f5866cd9ed3f786507b3ee12fc7b38",
+  "sourceFiles": [
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-authority.ts",
+      "sha256": "cd94f1f0dcd49a17ea341918954a115a1627357b0b78ea9d94905190a0973514",
+      "bytes": 10309,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-clock.ts",
+      "sha256": "530bee16cbbec6801d0efe78942917fad63b4e2e5410d273dd4510a62ea87721",
+      "bytes": 6976,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-db.ts",
+      "sha256": "8d9c637048280feb495f834e0dcd9e35cb4fbc98ded98a8e1d296525f1cbcc96",
+      "bytes": 2904,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-protocol.mjs",
+      "sha256": "fcb83d72d6ab609fbd6a7e765a756989ece681f27d97675271f8d1f2c9c2ee0c",
+      "bytes": 28889,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-protocol.test.mjs",
+      "sha256": "91e134430df46488ad19adcdb17591c688e069e747095e4a66361ece5fb33484",
+      "bytes": 27170,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop-validate.mjs",
+      "sha256": "383e43ce1e210a35ec920d8e3e5d763e7502c61db2057cf8a8d3ba8270b6dbd3",
+      "bytes": 1502,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/fixtures/native-ingestion-blocked-stop.md",
+      "sha256": "e5fe99b4ba353b77e76507bae6f9095a4475f61c9badbfa27c75e6ca8470f77c",
+      "bytes": 16597,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/native-event-ingestion-blocked-stop.journey.ts",
+      "sha256": "8b3f8b3a9704c77a6ddd14d996ebd5cf34a5fe76883c51060edee208e82211a0",
+      "bytes": 24850,
+      "byteIdenticalToFrozenDriver": true
+    },
+    {
+      "file": "tests/e2e/playwright-native-ingestion-blocked-stop.config.ts",
+      "sha256": "e9766cfd60c2eea5c1e14bedefa95706e5d87c03efebb8229a6536f00f441706",
+      "bytes": 383,
+      "byteIdenticalToFrozenDriver": true
+    }
+  ],
+  "helper": {
+    "file": "native-ingestion-run-blocked-stop-v3.mjs",
+    "originalTaskFile": "/private/tmp/native-ingestion-run-blocked-stop-v3.mjs",
+    "bytes": 27973,
+    "sha256": "5748b6c1d271cf9ab270d5473873b85da295ffb03bb55ebc63693369c9b1a29d",
+    "packagingChanges": []
+  },
+  "checkedH5cDependency": {
+    "sha256": "6b6376b01de6cdc15ca05343a0bdd5c00424f1d6c546b9b4d61cd76716b253c4",
+    "packagedSource": "scripts/native-ingestion/h5c/native-ingestion-run-h5c-browser.mjs",
+    "recordedPath": "/home/ubuntu/native-ingestion/helpers/native-ingestion-run-h5c-browser.mjs",
+    "purpose": "Six checked build/inventory/UI/quiet/raw-seal exports only; original stage plan and loadRelease are not invoked."
+  },
+  "mainCampaignBoundary": "Companion bc33 inherits H5c e431/main9=2265; main H5d2df/main9=e1 is separate. Install each immutable driver independently.",
+  "priorFailedQualifications": {
+    "v1": "200396/936d failed unsupported shared PGID assumption before epoch; API200/port did not prove physical quiet; failed raw and exact owned cleanup retained.",
+    "v2": "6e5349/dc693 failed unconditional retirement receipt although retained identity is supported; transcript/reload/lease gate unreached; failed raw retained, no timing reuse."
+  },
+  "qualificationAsOfUtc": "2026-11-04T09:30:00Z",
+  "qualificationFacts": {
+    "onePassed": true,
+    "preludeDeltas": 1000,
+    "canonicalStopPrefixDeltas": 12,
+    "results": 0,
+    "heldDurationMs": 1010,
+    "heldSamples": 15,
+    "bothPidsAndBothGroupsAbsent": true,
+    "ownIntentAndAckAudits": true,
+    "retirementState": "cleared-identity-with-authoritative-retirement",
+    "leaseReleasedReloadAndStrictQuiet": true,
+    "manualSignals": false,
+    "noiseOrPerformancePassed": false
+  }
+}

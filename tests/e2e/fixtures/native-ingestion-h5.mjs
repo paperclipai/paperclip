@@ -334,6 +334,79 @@ export function assertRecordedFailures(proof, item, companyId) {
     recordedErrorClasses: Object.fromEntries([...classes].sort(([a], [b]) => a.localeCompare(b)).map(([code, ids]) => [code, ids.size])) };
 }
 
+// H5d only changes post-observation oracle instrumentation. These functions
+// check the same retained API rows and original provider clocks without making
+// a Playwright step for every normalized delta. They never drive the SUT.
+export function collectDurableRunEvents(rows, markerCode) {
+  const deltas = []; let resultAcceptedEvents = 0;
+  for (const row of rows) {
+    const event = row.payload?.prpEvent;
+    if (row.eventType === 'run.result.accepted' || event?.eventType === 'run.result.accepted') resultAcceptedEvents++;
+    if (event?.eventType !== 'item.delta') continue;
+    for (const match of String(event.payload?.text ?? '').matchAll(new RegExp(`\\[${markerCode}([a-z0-9]{1,3})\\]`, 'g'))) {
+      const index = Number.parseInt(match[1], 36);
+      deltas.push({ index, identity: `${event.sourceInstanceId}:${event.sourceEventId}:${event.sourceSeq}`, event });
+    }
+  }
+  return { deltas, resultAcceptedEvents };
+}
+
+export function assertDurableRunEvents({ collected, runId, token, markerCode, events, stop, sourceClocks, visible,
+  requireNativeIdentity }) {
+  const { deltas, resultAcceptedEvents } = collected;
+  for (const [ordinal,delta] of deltas.entries()) {
+    const { index, event } = delta, context = `Durable run ${runId} source ${token} delta ${ordinal} marker ${markerCode}:${index}`;
+    assert.equal(event.payload.text, `[${markerCode}${index.toString(36)}] `, `${context}: complete normalized payload`);
+    if (requireNativeIdentity) {
+      assert.equal(event.runId, runId, `${context}: exact run identity`);
+      assert.ok(event.sourceInstanceId, `${context}: nonempty source instance identity`);
+      assert.ok(event.sourceEventId, `${context}: nonempty source event identity`);
+      assert.ok(Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > 0, `${context}: positive integer source sequence`);
+    }
+    const original = sourceClocks.get(index);
+    assert.ok(original, `${context}: missing original provider clock`);
+    assert.deepEqual({ nonce: original.nonce, markerCode: original.markerCode, index: original.index },
+      { nonce: token, markerCode, index }, `${context}: exact original emission clock join`);
+  }
+  const identities = new Set(deltas.map(delta => delta.identity)), indices = deltas.map(delta => delta.index);
+  assert.equal(identities.size, deltas.length, `Durable run ${runId}: duplicate normalized source identity tuple`);
+  assert.deepEqual(indices, Array.from({ length: stop ? deltas.length : events }, (_, index) => index),
+    `Durable run ${runId}: complete ordered ${stop ? 'canonical Stop prefix' : 'measured events'}`);
+  if (stop) {
+    const present = new Set(indices);
+    for (const item of visible) assert.ok(present.has(item.index),
+      `Durable run ${runId}: visible Stop marker ${item.index} must remain durable`);
+  } else assert.equal(sourceClocks.size, events, `Durable run ${runId}: complete source clock count`);
+  assert.equal(resultAcceptedEvents, stop ? 0 : 1, `Durable run ${runId}: exact accepted result count`);
+  return { runId, token, markerCode, individualDeltas: deltas.length, uniqueSourceIdentities: identities.size,
+    matchedSourceClocks: deltas.length, ordered: true, resultAcceptedEvents };
+}
+
+export function assertPreludeEvents({ rows, runId, token, expectedEvents }) {
+  const identities = new Set(); let count = 0;
+  for (const row of rows) {
+    const event = row.payload?.prpEvent;
+    if (event?.eventType !== 'item.delta' || !String(event.itemId ?? '').startsWith('prelude-')) continue;
+    assert.equal(event.payload?.text, count === expectedEvents - 1 ? ` PRELUDE_${token}_READY ` : '.',
+      `Prelude run ${runId} delta ${count}: complete normalized payload`);
+    count++; identities.add(`${event.sourceInstanceId}:${event.sourceEventId}:${event.sourceSeq}`);
+  }
+  assert.equal(count, expectedEvents, `Prelude run ${runId}: exact individually persisted delta count`);
+  assert.equal(identities.size, count, `Prelude run ${runId}: unique source identity tuples`);
+  return { individualDeltas: count, uniqueSourceIdentities: identities.size };
+}
+
+export function assertVisibleMarkerClocks({ seenMarkers, sourceClocks, markerCode, expectedEvents, stop }) {
+  const visible = seenMarkers.map(marker => {
+    const original = sourceClocks.get(marker.index);
+    assert.ok(original, `Missing original provider clock for visible ${marker.markerCode}:${marker.index}`);
+    return { ...original, ...marker }; // Retain the original two-frame paint timestamp.
+  });
+  if (!stop) assert.equal(new Set(visible.map(item => item.index)).size, expectedEvents,
+    `Visible marker ${markerCode}: complete unique foreground count`);
+  return visible;
+}
+
 export function assessH5Arm(report, owner) {
   assert.equal(report.protocolVersion, H5_PROTOCOL);
   assert.equal(report.observationMode, H5_MODE);

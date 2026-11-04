@@ -8,7 +8,8 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
 import { h5Enabled, H5_MODE, H5_PROTOCOL, H4E_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
-  observeStreaming, observeRunSettlement, originalTerminal, prepareParticipantAgents, assertParticipantTopology, assertRecordedFailures } from "./fixtures/native-ingestion-h5.mjs";
+  observeStreaming, observeRunSettlement, originalTerminal, prepareParticipantAgents, assertParticipantTopology, assertRecordedFailures, collectDurableRunEvents, assertDurableRunEvents,
+  assertPreludeEvents, assertVisibleMarkerClocks } from "./fixtures/native-ingestion-h5.mjs";
 
 type SeenMarker = { markerCode: string; index: number; visibleMs: number };
 type Emission = { nonce: string; markerCode: string; index: number; intendedMs: number; emittedMs: number; receivedAtMs: number };
@@ -511,23 +512,18 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         const listed = await json(await request.get(`/api/companies/${company.id}/heartbeat-runs?limit=1000`));
         const foreground = listed.find((run: any) => (run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) === issue.id);
         expect(foreground).toBeTruthy();
-        const identities = new Set<string>(); let count = 0, afterSeq = 0;
+        const preludeRows: any[] = []; let afterSeq = 0;
         while (true) {
           const rows = await json(await request.get(`/api/heartbeat-runs/${foreground.id}/events?afterSeq=${afterSeq}&limit=1000`));
           if (!rows.length) break;
-          for (const row of rows) {
-            const event = row.payload?.prpEvent;
-            if (event?.eventType !== "item.delta" || !String(event.itemId ?? "").startsWith("prelude-")) continue;
-            expect(event.payload?.text).toBe(count === workload.prelude - 1 ? ` PRELUDE_${nonce}_READY ` : ".");
-            count++; identities.add(`${event.sourceInstanceId}:${event.sourceEventId}:${event.sourceSeq}`);
-          }
+          preludeRows.push(...rows);
           const next = Math.max(...rows.map((row: { seq: number }) => row.seq));
           expect(next).toBeGreaterThan(afterSeq); afterSeq = next;
         }
-        preludeProof = { runId: foreground.id, individualDeltas: count, uniqueSourceIdentities: identities.size,
+        const checked = assertPreludeEvents({ rows: preludeRows, runId: foreground.id, token: nonce, expectedEvents: workload.prelude });
+        preludeProof = { runId: foreground.id, ...checked,
           retainedGlobalHead: afterSeq, verifiedAtMs: Date.now(), method: "Independent normal event API read before common emission gate release" };
         active.preludeProof = preludeProof;
-        expect(count).toBe(workload.prelude); expect(identities.size).toBe(count);
       }
       const controllerAuthority = await runtimeAuthority({
         appRoot, companyId: company.id, environmentId: caseEnvironment.id, issueIds, transport: caseTransport,
@@ -645,12 +641,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         ? seenMarkers.every(marker => state.streams.get(nonce)!.records.has(marker.index))
         : stream.records.size === workload.events && stream.ended)), { timeout: 30_000 }).toBe(true);
       expect(state.errors).toEqual([]);
-      const visible: Visible[] = seenMarkers.map(marker => {
-        const original = state.streams.get(nonce)!.records.get(marker.index);
-        expect(original, `Missing original provider clock for visible ${marker.markerCode}:${marker.index}`).toBeTruthy();
-        return { ...original!, ...marker }; // Keep the original paint timestamp; never restamp after clock arrival.
-      });
-      if (!stop) expect(new Set(visible.map(item => item.index)).size).toBe(workload.events);
+      const visible: Visible[] = assertVisibleMarkerClocks({ seenMarkers, sourceClocks: state.streams.get(nonce)!.records,
+        markerCode, expectedEvents: workload.events, stop });
       // Terminal drainage has finished. Derive paint gaps from the retained
       // observer timestamps without adding work to the streaming observer.
       const paintTimes = [...new Set(visible.map(item => item.visibleMs))].sort((a, b) => a - b);
@@ -693,39 +685,23 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         const token = issuedTokens.get(taskId)!;
         const code = state.streams.get(token)!.markerCode;
         expect(token).toBeTruthy();
-        const deltas: Array<{ index: number; identity: string }> = [];
-        let afterSeq = 0, resultAcceptedEvents = 0;
+        const persistedRows: any[] = [];
+        let afterSeq = 0;
+        active.verifyingRun = { runId: run.id, nonce: token, markerCode: code, afterSeq, rows: 0 };
         while (true) {
           const rows = await json(await request.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
           if (!rows.length) break;
-          for (const row of rows) {
-            const event = row.payload?.prpEvent;
-            if (row.eventType === "run.result.accepted" || event?.eventType === "run.result.accepted") resultAcceptedEvents++;
-            if (event?.eventType !== "item.delta") continue;
-            for (const match of String(event.payload?.text ?? "").matchAll(new RegExp(`\\[${code}([a-z0-9]{1,3})\\]`, "g"))) {
-              const index = Number.parseInt(match[1], 36);
-              expect(event.payload.text, "Every durable normalized delta retains its complete compact payload").toBe(`[${code}${index.toString(36)}] `);
-              if (h5) { expect(event.runId).toBe(run.id); expect(event.sourceInstanceId).toBeTruthy();
-                expect(event.sourceEventId).toBeTruthy(); expect(Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > 0).toBe(true); }
-              deltas.push({ index, identity: `${event.sourceInstanceId}:${event.sourceEventId}:${event.sourceSeq}` });
-            }
-          }
+          persistedRows.push(...rows);
           const next = Math.max(...rows.map((row: { seq: number }) => row.seq));
           expect(next).toBeGreaterThan(afterSeq); afterSeq = next;
+          active.verifyingRun = { runId: run.id, nonce: token, markerCode: code, afterSeq, rows: persistedRows.length };
         }
-        active.latestDurableRead = { runId: run.id, nonce: token, markerCode: code, deltas };
-        await expect.poll(() => deltas.every(delta => state.streams.get(token)!.records.has(delta.index)), { timeout: 30_000 }).toBe(true);
-        for (const delta of deltas) {
-          const original = state.streams.get(token)!.records.get(delta.index)!;
-          expect({ nonce: original.nonce, markerCode: original.markerCode, index: original.index })
-            .toEqual({ nonce: token, markerCode: code, index: delta.index });
-        }
-        expect(new Set(deltas.map(item => item.identity)).size).toBe(deltas.length);
-        expect(deltas.map(item => item.index)).toEqual(Array.from({ length: stop ? deltas.length : workload.events }, (_, index) => index));
-        if (stop) for (const item of visible) expect(deltas.some(delta => delta.index === item.index)).toBe(true);
-        expect(resultAcceptedEvents).toBe(stop ? 0 : 1);
-        durable.push({ runId: run.id, token, markerCode: code, individualDeltas: deltas.length, uniqueSourceIdentities: deltas.length,
-          matchedSourceClocks: deltas.length, ordered: true, resultAcceptedEvents });
+        const collected = collectDurableRunEvents(persistedRows, code);
+        active.latestDurableRead = { runId: run.id, nonce: token, markerCode: code,
+          deltas: collected.deltas.map(({ index, identity }) => ({ index, identity })) };
+        await expect.poll(() => collected.deltas.every(delta => state.streams.get(token)!.records.has(delta.index)), { timeout: 30_000 }).toBe(true);
+        durable.push(assertDurableRunEvents({ collected, runId: run.id, token, markerCode: code, events: workload.events, stop,
+          sourceClocks: state.streams.get(token)!.records, visible, requireNativeIdentity: h5 }));
       }
       await expect.poll(() => [...state.streams.values()].every(stream => stream.ended || stream.aborted), { timeout: 30_000 }).toBe(true);
       expect(state.errors).toEqual([]);

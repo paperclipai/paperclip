@@ -3,23 +3,20 @@ import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { h5Enabled, H5_MODE, observeStreaming, originalTerminal, requireH5Candidate,
-  H5_LIMITS, ORIGINAL_BUDGETS, prepareParticipantAgents, observeRunSettlement } from '../tests/e2e/fixtures/native-ingestion-h5.mjs';
+  H5_LIMITS, ORIGINAL_BUDGETS, prepareParticipantAgents, observeRunSettlement, collectDurableRunEvents, assertDurableRunEvents,
+  assertPreludeEvents, assertVisibleMarkerClocks } from '../tests/e2e/fixtures/native-ingestion-h5.mjs';
 
 const timeout = milliseconds => Object.assign(new Error(`Timeout ${milliseconds}ms exceeded while waiting on the predicate`),
   { matcherResult: { name: 'toBeGreaterThanOrEqual', pass: false } });
 
-test('the actual paginated result counter counts accepted results in default H4e and observation H5c', async () => {
-  const source = await readFile(new URL('../tests/e2e/native-event-ingestion.journey.ts', import.meta.url), 'utf8');
-  const statements = source.split('\n').filter(line => line.includes('resultAcceptedEvents++'));
-  assert.equal(statements.length, 1, 'Exercise the actual event-loop counter statement');
-  const count = new Function('h5', 'rows', `let resultAcceptedEvents = 0;
-    for (const row of rows) { const event = row.payload?.prpEvent; ${statements[0]} } return resultAcceptedEvents;`);
-  for (const h5 of [false, true]) {
-    assert.equal(count(h5, [{ eventType: 'run.result.accepted', payload: { prpEvent: { eventType: 'run.result.accepted' } } }]), 1);
-    assert.equal(count(h5, [{ payload: { prpEvent: { eventType: 'run.result.accepted' } } }]), 1);
-    assert.equal(count(h5, [{ eventType: 'run.result.proposed' }, { payload: { prpEvent: { eventType: 'item.delta' } } }]), 0);
-    assert.equal(count(h5, []), 0);
-  }
+test('the actual durable collector counts each accepted row once in default H4e and observation H5c', () => {
+  for (const row of [
+    { eventType: 'run.result.accepted', payload: { prpEvent: { eventType: 'run.result.accepted' } } },
+    { payload: { prpEvent: { eventType: 'run.result.accepted' } } },
+    { eventType: 'run.result.accepted' }]) assert.equal(collectDurableRunEvents([row], 'q7').resultAcceptedEvents, 1);
+  assert.equal(collectDurableRunEvents([{ eventType: 'run.result.proposed' },
+    { payload: { prpEvent: { eventType: 'item.delta' } } }], 'q7').resultAcceptedEvents, 0);
+  assert.equal(collectDurableRunEvents([], 'q7').resultAcceptedEvents, 0);
 });
 
 test('real frozen Playwright tiny poll exposes the matcher deadline shape used by H5', async () => {
@@ -230,4 +227,88 @@ test('cursor inherits only paired exact known misses; final candidate inherits n
     { misses: ['operator-stop:streaming120'] }]) assert.throws(() => requireH5Candidate('cursor-nonregression', base, candidate));
   assert.throws(() => requireH5Candidate('final-b2', base, base), /every original SLA/);
   assert.throws(() => requireH5Candidate('final-b2', slowInvocation, slowInvocation), /every original SLA/);
+});
+
+
+const durableFixture = ({ stop = false, count = 4 } = {}) => {
+  const runId = 'run-1', token = 'provider-1', markerCode = 'q7';
+  const rows = Array.from({ length: count }, (_, index) => ({ seq: index+1, payload: { prpEvent: {
+    eventType: 'item.delta', runId, sourceInstanceId: 'source-1', sourceEventId: `event-${index}`, sourceSeq: index+1,
+    payload: { text: `[${markerCode}${index.toString(36)}] ` } } } }));
+  if (!stop) rows.push({ seq: count+1, eventType: 'run.result.accepted' });
+  return { rows, input: { runId, token, markerCode, events: 4, stop, requireNativeIdentity: true,
+    sourceClocks: new Map(Array.from({ length: 4 }, (_, index) => [index, { nonce: token, markerCode, index,
+      intendedMs: 1000+index*25, emittedMs: 1000+index*25, receivedAtMs: 1001+index*25 }])),
+    visible: Array.from({ length: stop ? count : 4 }, (_, index) => ({ index, markerCode, visibleMs: 1003+index*25 })) } };
+};
+const checkDurable = fixture => assertDurableRunEvents({ ...fixture.input,
+  collected: collectDurableRunEvents(fixture.rows, fixture.input.markerCode) });
+
+test('durable oracle retains complete per-run evidence in H4e and H5c and permits only the canonical Stop prefix', () => {
+  for (const requireNativeIdentity of [false,true]) {
+    const fixture = durableFixture(); fixture.input.requireNativeIdentity = requireNativeIdentity;
+    assert.deepEqual(checkDurable(fixture), { runId: 'run-1', token: 'provider-1', markerCode: 'q7', individualDeltas: 4,
+      uniqueSourceIdentities: 4, matchedSourceClocks: 4, ordered: true, resultAcceptedEvents: 1 });
+  }
+  const stopped = durableFixture({ stop: true, count: 2 });
+  assert.equal(checkDurable(stopped).individualDeltas, 2);
+  assert.equal(checkDurable(stopped).resultAcceptedEvents, 0);
+  assert.equal(stopped.input.sourceClocks.size, 4, 'Raw emissions outside the durable Stop prefix remain permitted');
+});
+test('durable oracle rejects corrupted payloads, coalescing, replay identity conflicts, gaps and foreign runs', () => {
+  const changes = [
+    fixture => { fixture.rows[0].payload.prpEvent.payload.text = '[q70] corruption'; },
+    fixture => { fixture.rows[0].payload.prpEvent.payload.text = '[q70] [q71] '; },
+    fixture => { fixture.rows[1].payload.prpEvent.sourceEventId = 'event-0'; fixture.rows[1].payload.prpEvent.sourceSeq = 1; },
+    fixture => { fixture.rows.splice(1,1); }, fixture => { fixture.rows.splice(1,0,fixture.rows[0]); },
+    fixture => { fixture.rows.reverse(); }, fixture => { fixture.rows[0].payload.prpEvent.runId = 'foreign-run'; },
+    fixture => { fixture.rows[0].payload.prpEvent.sourceInstanceId = ''; },
+    fixture => { fixture.rows[0].payload.prpEvent.sourceEventId = ''; },
+    fixture => { fixture.rows[0].payload.prpEvent.sourceSeq = 0; },
+    fixture => { fixture.rows[0].payload.prpEvent.sourceSeq = '1'; },
+  ];
+  for (const change of changes) {
+    const fixture = durableFixture(); change(fixture);
+    assert.throws(() => checkDurable(fixture), /Durable run run-1/, 'Failure must identify its exact run');
+  }
+});
+test('durable oracle rejects wrong or missing original clock joins, wrong source counts and result counts', () => {
+  for (const change of [
+    fixture => { fixture.input.sourceClocks.delete(0); },
+    fixture => { fixture.input.sourceClocks.get(0).nonce = 'foreign-source'; },
+    fixture => { fixture.input.sourceClocks.get(0).markerCode = 'z9'; },
+    fixture => { fixture.input.sourceClocks.get(0).index = 1; },
+    fixture => { fixture.input.sourceClocks.set(9, { nonce: 'provider-1', markerCode: 'q7', index: 9 }); },
+    fixture => { fixture.rows.pop(); }, fixture => { fixture.rows.push({ eventType: 'run.result.accepted' }); },
+  ]) { const fixture = durableFixture(); change(fixture); assert.throws(() => checkDurable(fixture), /Durable run run-1/); }
+});
+test('durable Stop oracle rejects visible markers outside the ordered durable prefix or an accepted result', () => {
+  const missing = durableFixture({ stop: true, count: 2 }); missing.input.visible.push({ index: 2 });
+  assert.throws(() => checkDurable(missing), /visible Stop marker 2/);
+  const gap = durableFixture({ stop: true, count: 2 }); gap.rows.shift(); assert.throws(() => checkDurable(gap), /canonical Stop prefix/);
+  const result = durableFixture({ stop: true, count: 2 }); result.rows.push({ eventType: 'run.result.accepted' });
+  assert.throws(() => checkDurable(result), /exact accepted result count/);
+});
+test('prelude oracle preserves exact setup payloads, source tuple uniqueness, count and prelude-only selection', () => {
+  const rows = [0,1,2].map(index => ({ payload: { prpEvent: { eventType: 'item.delta', itemId: 'prelude-turn',
+    sourceInstanceId: 'source-1', sourceEventId: `event-${index}`, sourceSeq: index+1,
+    payload: { text: index === 2 ? ' PRELUDE_provider-1_READY ' : '.' } } } }));
+  const check = selected => assertPreludeEvents({ rows: selected, runId: 'run-1', token: 'provider-1', expectedEvents: 3 });
+  assert.deepEqual(check([...rows,{ payload: { prpEvent: { eventType: 'item.delta', itemId: 'measured-turn' } } }]),
+    { individualDeltas: 3, uniqueSourceIdentities: 3 });
+  assert.throws(() => check(rows.slice(1)), /Prelude run run-1/);
+  const bad = structuredClone(rows); bad[0].payload.prpEvent.payload.text = '..'; assert.throws(() => check(bad), /complete normalized payload/);
+  const replay = structuredClone(rows); Object.assign(replay[1].payload.prpEvent, { sourceEventId: 'event-0', sourceSeq: 1 });
+  assert.throws(() => check(replay), /unique source identity tuples/);
+});
+test('visible-clock oracle preserves original two-frame timestamps and rejects missing clocks or incomplete unique output', () => {
+  const fixture = durableFixture(), { visible: seenMarkers, sourceClocks } = fixture.input;
+  const check = (seen = seenMarkers, clocks = sourceClocks, stop = false) => assertVisibleMarkerClocks({
+    seenMarkers: seen, sourceClocks: clocks, markerCode: 'q7', expectedEvents: 4, stop });
+  const visible = check(); assert.deepEqual(visible.map(row => row.visibleMs), seenMarkers.map(row => row.visibleMs));
+  assert.deepEqual(visible.map(row => row.emittedMs), [...sourceClocks.values()].map(row => row.emittedMs));
+  assert.throws(() => check(seenMarkers, new Map()), /Missing original provider clock/);
+  assert.throws(() => check(seenMarkers.slice(1)), /complete unique foreground count/);
+  assert.throws(() => check([seenMarkers[0],seenMarkers[0],seenMarkers[2],seenMarkers[3]]), /complete unique foreground count/);
+  assert.equal(check(seenMarkers.slice(0,2), sourceClocks, true).length, 2);
 });

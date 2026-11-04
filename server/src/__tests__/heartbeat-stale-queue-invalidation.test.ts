@@ -265,16 +265,13 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
     expect(delivered.runId).toBeTruthy();
     // The receipt can commit before execution enters liveRunExecutions.
-    // Observe actual adapter admission before awaiting its drain.
-    await vi.waitFor(async () => {
-      const current = await heartbeat.getRun(delivered.runId!);
-      expect(countExecuteCallsForRun(delivered.runId!), JSON.stringify({
-        status: current?.status, errorCode: current?.errorCode,
-      })).toBe(1);
-    }, { timeout: 5_000 });
-    await heartbeat.waitForRunExecutionDrain(delivered.runId!);
+    // Join the tracked dispatch even when live registration has not started.
+    await heartbeat.drainActiveRunExecutions();
     expect(countExecuteCallsForRun(delivered.runId!)).toBe(1);
-    expect((await heartbeat.getRun(delivered.runId!))?.contextSnapshot).toMatchObject({ wakeCommentIds: [comment.id] });
+    expect(await heartbeat.getRun(delivered.runId!)).toMatchObject({
+      status: "succeeded",
+      contextSnapshot: { wakeCommentIds: [comment.id] },
+    });
     await heartbeat.resumeQueuedRuns();
     expect(countExecuteCallsForRun(delivered.runId!)).toBe(1);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0]?.body).toBe(comment.body);

@@ -107,6 +107,10 @@ const workloads = [
 ];
 const names = workloads.map(item => item.name);
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+const pooledMedian = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
 const first = pairs[0];
 const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
@@ -463,27 +467,112 @@ if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
   }
 }
 const metric = (item: any, key: string): number => key.split(".").reduce((value, part) => value[part], item);
+// Prospective main-campaign rule. The 2ms floor is timestamp contrast
+// representation only: it never pads observed noise or a regression gate.
+const browserAaRule = Object.freeze({ pairCount: 5, pairedFraction: 0.20, medianDriftFraction: 0.10,
+  contrastRepresentationFloorMs: 2, representationLimitedMedianMs: 20 });
+function assertArmChronology(rows: any[]) {
+  assert.equal(rows?.length, 10, "Browser A/A/comparison requires ten actual owning invocations");
+  const sorted = [...rows].sort((a,b) => a.startedAtMs - b.startedAtMs);
+  const companies = new Set(), runIds = new Set(), owners = new Set();
+  for (const [index, row] of sorted.entries()) {
+    assert.ok(Number.isSafeInteger(row.startedAtMs) && row.startedAtMs > 0 && Number.isFinite(row.durationMs)
+      && row.durationMs > 0, "Missing finite actual owning timestamp/duration");
+    assert.equal(row.finishedAtMs, row.startedAtMs + row.durationMs);
+    if (index) assert.ok(sorted[index - 1].finishedAtMs <= row.startedAtMs, "Browser owning invocations overlap");
+    assert.ok(sha256(row.ownerReportSha256) && !owners.has(row.ownerReportSha256), "Reused owning report"); owners.add(row.ownerReportSha256);
+    assert.ok(uuid(row.companyId) && !companies.has(row.companyId), "Each browser arm needs its fresh owned company"); companies.add(row.companyId);
+    assert.ok(Array.isArray(row.runIds) && row.runIds.length > 0);
+    for (const runId of row.runIds) {
+      assert.ok(uuid(runId) && !runIds.has(runId), "Browser arms reuse an owned run"); runIds.add(runId);
+    }
+    const pairIndex = Math.floor(index / 2), firstArm = pairIndex % 2 ? "candidate" : "baseline";
+    assert.equal(row.pairIndex, pairIndex, "Owner chronology must match registered pair order");
+    assert.equal(row.arm, index % 2 ? firstArm === "baseline" ? "candidate" : "baseline" : firstArm,
+      "Browser pairs must alternate baseline-first then candidate-first");
+  }
+  return sorted;
+}
+const armChronology = h5 ? assertArmChronology(pairs.flatMap((pair, pairIndex) => (["baseline", "candidate"] as const).map(arm => {
+  const report = pair[arm], owner = report.owningPlaywright, startedAtMs = Date.parse(owner.startedAt);
+  return { pairIndex, arm, startedAtMs, durationMs: owner.durationMs, finishedAtMs: startedAtMs + owner.durationMs,
+    ownerReportSha256: owner.reportSha256, companyId: report.companyId, runIds: report.cases.flatMap((item: any) => item.runIds) };
+}))) : undefined;
+function assessAaMetric(samples: any[], chronology: any[]) {
+  assert.equal(samples.length, 5);
+  for (const sample of samples) {
+    assert.ok(Number.isFinite(sample.baseline) && sample.baseline > 0 && Number.isFinite(sample.candidate) && sample.candidate >= 0);
+    assert.equal(sample.improvementMs, sample.baseline - sample.candidate, "A/A paired absolute contrast was forged");
+    assert.equal(sample.improvementRelative, sample.improvementMs / sample.baseline, "A/A paired relative contrast was forged");
+  }
+  const pairedDifferencesMs = samples.map(sample => Math.abs(sample.improvementMs));
+  const pairedLimitsMs = samples.map(sample => Math.max(browserAaRule.pairedFraction * sample.baseline, browserAaRule.contrastRepresentationFloorMs));
+  const baselineMedianMs = median(samples.map(sample => sample.baseline)), candidateMedianMs = median(samples.map(sample => sample.candidate));
+  const chronologicalValues = chronology.map(row => samples[row.pairIndex][row.arm]);
+  const firstFiveMedianMs = median(chronologicalValues.slice(0,5)), lastFiveMedianMs = median(chronologicalValues.slice(5));
+  const chronologicalMedianDriftMs = Math.abs(lastFiveMedianMs - firstFiveMedianMs);
+  const chronologicalDriftLimitMs = Math.max(browserAaRule.medianDriftFraction * firstFiveMedianMs, browserAaRule.contrastRepresentationFloorMs);
+  const roleMedianDriftMs = Math.abs(candidateMedianMs - baselineMedianMs);
+  const roleDriftLimitMs = Math.max(browserAaRule.medianDriftFraction * baselineMedianMs, browserAaRule.contrastRepresentationFloorMs);
+  const pooledMedianMs = pooledMedian(samples.flatMap(sample => [sample.baseline, sample.candidate]));
+  return { sampleCount: 10, pairCount: 5, pairedDifferencesMs, pairedLimitsMs, baselineMedianMs, candidateMedianMs,
+    pooledMedianMs, firstFiveMedianMs, lastFiveMedianMs, chronologicalMedianDriftMs, chronologicalDriftLimitMs,
+    roleMedianDriftMs, roleDriftLimitMs, representationLimited: pooledMedianMs <= browserAaRule.representationLimitedMedianMs,
+    observedNoiseAbsoluteMs: Math.max(...pairedDifferencesMs),
+    observedNoiseRelative: Math.max(...samples.map(sample => Math.abs(sample.improvementRelative))),
+    passed: pairedDifferencesMs.every((value,index) => value <= pairedLimitsMs[index])
+      && chronologicalMedianDriftMs <= chronologicalDriftLimitMs && roleMedianDriftMs <= roleDriftLimitMs };
+}
 const measurements = names.flatMap(name => {
   const observed = first.baseline.cases.find((item: any) => item.name === name);
   const keys = ["firstVisibleAfterEmissionMs", "emissionToVisible.medianMs", "drainThroughTerminalMs",
     ...(name === "paced" ? ["interChunkGaps.maxMs"] : []),
     ...(observed.emissionToVisible.p95Ms === undefined ? [] : ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms"]),
-    ...(observed.stop ? ["stopThroughTerminalMs", "stopThroughAcknowledgementMs"] : [])];
+    ...(observed.stop ? ["stopThroughTerminalMs", "stopThroughAcknowledgementMs"] : []),
+    ...(h5 && !observed.stop ? ["h5.independentDrain.elapsedFromEpochMs"] : [])];
   return keys.map(key => {
     const samples = pairs.map(pair => {
       const baseline = metric(pair.baseline.cases.find((item: any) => item.name === name), key);
       const candidate = metric(pair.candidate.cases.find((item: any) => item.name === name), key);
       assert.ok(Number.isFinite(baseline) && baseline > 0 && Number.isFinite(candidate) && candidate >= 0, `Invalid latency ${name}.${key}`);
-      return { baseline, candidate, improvementRelative: (baseline - candidate) / baseline };
+      return { baseline, candidate, improvementMs: baseline - candidate, improvementRelative: (baseline - candidate) / baseline };
     });
+    const pooledMedianMs = pooledMedian(samples.flatMap(sample => [sample.baseline, sample.candidate]));
+    const representationLimited = h5 && pooledMedianMs <= browserAaRule.representationLimitedMedianMs;
+    const aaSuitability = h5 && phase === "aa" ? assessAaMetric(samples, armChronology!) : undefined;
     return { name, metric: key, baselineMedianMs: median(samples.map(sample => sample.baseline)),
       candidateMedianMs: median(samples.map(sample => sample.candidate)),
-      medianPairedImprovementRelative: median(samples.map(sample => sample.improvementRelative)),
+      medianPairedImprovementRelative: representationLimited ? null : median(samples.map(sample => sample.improvementRelative)),
+      ...(h5 ? { pooledMedianMs, representationLimited, percentageGainClaimAllowed: !representationLimited,
+        sub2msOrP99GainClaimAllowed: false, medianPairedImprovementMs: median(samples.map(sample => sample.improvementMs)),
+        aaSuitability } : {}),
       candidateWins: samples.filter(sample => sample.improvementRelative > 0).length,
       aaNoiseEnvelopeRelative: phase === "aa" ? Math.max(...samples.map(sample => Math.abs(sample.improvementRelative))) : undefined,
+      ...(h5 ? { aaNoiseEnvelopeAbsoluteMs: phase === "aa" ? Math.max(...samples.map(sample => Math.abs(sample.improvementMs))) : undefined } : {}),
       samples };
   });
 });
+// A descriptive rate from the independently verified completion upper bound.
+// Gate duration against its own A/A noise; invent no separate rate threshold.
+const verifiedCompletionRates = h5 ? names.filter(name => !first.baseline.cases.find((item: any) => item.name === name).stop).map(name => {
+  const samples = pairs.map(pair => {
+    const baseline = pair.baseline.cases.find((item: any) => item.name === name);
+    const candidate = pair.candidate.cases.find((item: any) => item.name === name);
+    const counts = [baseline, candidate].map(item => item.h5.independentDrain.deltaCount);
+    assert.equal(counts[0], counts[1], "Verified completion rates require equal matched measured-delta counts");
+    assert.ok([baseline, candidate].every(item => item.h5.independentDrain.elapsedFromEpochMs > 0),
+      "Verified completion rate needs positive observed duration");
+    return { measuredDeltas: counts[0], baselineElapsedMs: baseline.h5.independentDrain.elapsedFromEpochMs,
+      candidateElapsedMs: candidate.h5.independentDrain.elapsedFromEpochMs,
+      baselineDeltasPerSecond: 1000 * counts[0] / baseline.h5.independentDrain.elapsedFromEpochMs,
+      candidateDeltasPerSecond: 1000 * counts[1] / candidate.h5.independentDrain.elapsedFromEpochMs };
+  });
+  return { name, sampleCount: samples.length, samples,
+    baselineMedianDeltasPerSecond: median(samples.map(sample => sample.baselineDeltasPerSecond)),
+    candidateMedianDeltasPerSecond: median(samples.map(sample => sample.candidateDeltasPerSecond)),
+    gatedDurationMetric: "h5.independentDrain.elapsedFromEpochMs",
+    scope: "Matched measured normalized deltas / independently verified completion upper bound; includes oracle, reload, screenshot, API and lease verification; not exact last-commit throughput" };
+}) : undefined;
 const retryObservations = names.map(name => {
   const samples = pairs.map(pair => Object.fromEntries((["baseline", "candidate"] as const).map(arm => {
     const item = pair[arm].cases.find((value: any) => value.name === name);
@@ -525,6 +614,9 @@ const result: Record<string, any> = {
   comparatorSha256: createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex"),
   manifestSha256: createHash("sha256").update(await readFile(manifestPath)).digest("hex"), measurements,
   primaryLoadedWorkload: "burst512", complete: true, retryObservations,
+  ...(h5 ? { verifiedCompletionRates, armChronology,
+    ...(phase === "aa" ? { aaSuitability: { rule: browserAaRule, metricCount: measurements.length,
+      passed: measurements.every(item => item.aaSuitability?.passed) } } : {}) } : {}),
   ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, candidatePolicy, h5Assessments,
     artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4eConfirmation,
     originalProtocolAcceptance: "Baseline SLA misses are retained; H5c complete observation is not an original-deadline PASS",
@@ -550,16 +642,55 @@ if (phase === "compare") {
   assert.equal(noise.gatesSha256, result.gatesSha256, "Acceptance gates changed after A/A calibration");
   assert.equal(noise.comparatorSha256, result.comparatorSha256, "Comparator changed after A/A calibration");
   assert.ok(noise.pairCount >= 5);
+  if (h5) {
+    assert.equal(noise.pairCount, 5); assert.deepEqual(noise.aaSuitability?.rule, browserAaRule, "Browser A/A suitability rule changed");
+    const chronology = assertArmChronology(noise.armChronology);
+    assert.deepEqual(chronology, noise.armChronology, "Frozen A/A chronology was reordered");
+    assert.ok(armChronology![0].startedAtMs >= chronology.at(-1).finishedAtMs,
+      "Comparison must follow all owning calibration invocations");
+    const priorOwners = new Set(chronology.map(row => row.ownerReportSha256));
+    const priorCompanies = new Set(chronology.map(row => row.companyId));
+    const priorRuns = new Set(chronology.flatMap(row => row.runIds));
+    for (const arm of armChronology!) {
+      assert.ok(!priorOwners.has(arm.ownerReportSha256) && !priorCompanies.has(arm.companyId)
+        && arm.runIds.every((runId: string) => !priorRuns.has(runId)), "Comparison reuses a calibration owner/company/run");
+    }
+    assert.equal(noise.measurements?.length, measurements.length, "Frozen A/A is missing a predeclared metric");
+    assert.equal(noise.aaSuitability.metricCount, measurements.length);
+    for (const item of measurements) {
+      const controls = noise.measurements.filter((entry: any) => entry.name === item.name && entry.metric === item.metric);
+      assert.equal(controls.length, 1, "Frozen A/A needs exactly one calibration per metric");
+      const control = controls[0], actual = assessAaMetric(control.samples, chronology);
+      assert.equal(actual.passed, true, "Unsuitable browser A/A cannot freeze noise");
+      assert.deepEqual(control.aaSuitability, actual, "Browser A/A suitability was forged");
+      assert.equal(control.aaNoiseEnvelopeAbsoluteMs, actual.observedNoiseAbsoluteMs, "Browser absolute noise was forged");
+      assert.equal(control.aaNoiseEnvelopeRelative, actual.observedNoiseRelative, "Browser relative noise was forged");
+      assert.equal(control.representationLimited, actual.representationLimited, "Browser representation flag was forged");
+    }
+    assert.equal(noise.aaSuitability.passed, true, "Unsuitable browser A/A cannot freeze noise");
+  }
   result.gates = measurements.map(item => {
     const control = noise.measurements.find((entry: any) => entry.name === item.name && entry.metric === item.metric);
     assert.ok(control);
     const improvementRequired = expectation === "improvement" && item.name === "burst512"
-      && ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms", "drainThroughTerminalMs"].includes(item.metric);
-    const noRegression = -item.medianPairedImprovementRelative <= control.aaNoiseEnvelopeRelative;
-    const paired = noiseExceedingPairedWins(item.samples.map(sample => sample.improvementRelative), control.aaNoiseEnvelopeRelative);
+      && ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms", "drainThroughTerminalMs",
+        "h5.independentDrain.elapsedFromEpochMs"].includes(item.metric);
+    const representationLimited = h5 && (control.representationLimited || item.representationLimited);
+    if (representationLimited) {
+      item.representationLimited = true; item.percentageGainClaimAllowed = false; item.medianPairedImprovementRelative = null;
+    }
+    const medianImprovementRelative = median(item.samples.map(sample => sample.improvementRelative));
+    const medianImprovementMs = median(item.samples.map(sample => sample.improvementMs));
+    const noRegression = representationLimited ? -medianImprovementMs <= control.aaNoiseEnvelopeAbsoluteMs
+      : -medianImprovementRelative <= control.aaNoiseEnvelopeRelative;
+    const paired = noiseExceedingPairedWins(item.samples.map(sample => h5 && sample.improvementMs <= 2 ? 0 : sample.improvementRelative), control.aaNoiseEnvelopeRelative);
     const improvement = paired.pairedWinRequirementPassed
-      && item.medianPairedImprovementRelative > control.aaNoiseEnvelopeRelative;
+      && medianImprovementRelative > control.aaNoiseEnvelopeRelative && (!h5 || medianImprovementMs > 2);
     return { name: item.name, metric: item.metric, improvementRequired, noiseEnvelopeRelative: control.aaNoiseEnvelopeRelative,
+      ...(h5 ? { noiseEnvelopeAbsoluteMs: control.aaNoiseEnvelopeAbsoluteMs, representationLimited,
+        percentageGainClaimAllowed: !representationLimited, sub2msOrP99GainClaimAllowed: false,
+        nonregressionScale: representationLimited ? "observed-absolute-ms" : "observed-relative",
+        requiredAbsoluteImprovementAboveMs: improvementRequired ? 2 : undefined } : {}),
       noiseExceedingPairedWins: paired.noiseExceedingPairedWins, requiredPairedWins: paired.requiredPairedWins,
       passed: improvementRequired ? improvement : noRegression };
   });
@@ -588,6 +719,8 @@ if (phase === "compare") {
 }
 if (arg("output")) await writeFile(arg("output")!, JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));
+if (h5 && phase === "aa") assert.equal(result.aaSuitability.passed, true,
+  "Browser A/A suitability failed; retain all ten arms, diagnose and review a fresh calibration");
 if (process.argv.includes("--require-performance")) {
   assert.equal(h5, true, "H5c performance-only gating is explicit; default H4e keeps original deadlines");
   assert.equal(phase, "compare");

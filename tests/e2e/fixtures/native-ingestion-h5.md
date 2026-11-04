@@ -305,3 +305,165 @@ queue/backlog, delay and memory with identical capture hooks. Aborted profiles
 remain diagnostic-only and cannot establish complete CPU/event costs. No CPU
 requirement or profiling is added to this timing comparator. Local results do
 not establish deployed improvement.
+
+## Prospective H5d oracle instrumentation and verified-completion gate
+
+H5d adds oracle instrumentation and a prospective completion gate from frozen H5c
+`e431ec63d41fe90c6fd68bd2fc2bb969feeca917`. It keeps the exact H5/H4e mode,
+protocol, registration, workload and deadline constants. The new driver commit
+and changed nine-file measurement digest distinguish the experiment. No product
+optimization, new buffering, setup/control flow, payload bound, provider fixture,
+transport, public API, P0 ordering or raw-ACK durability policy changes here.
+All fifty main arms, including fresh B0/B1 A/A, must be rerun on the qualified new
+source; old noise or the failed H5c attempt cannot qualify H5d.
+
+The retained H5c FULL B0 attempt reached the unchanged 1,200,000-ms observation
+ceiling while fetching/validating independent durable events. Root's retained
+raw evidence records all 100 runs succeeded within 75.926 seconds of the same
+180-second settlement window, all 100 clock uploads ended with 51,200 emissions
+and no clock errors, and only roughly 30 of 100 per-run durable reads completed
+before timeout. Foreground completion remained 283.391 seconds, with only
+66/512 markers at the original streaming deadline. This owning attempt failed;
+complete in-journey transcript/results verification and later cases were not
+finished. A separate stopped read-only supplement cannot turn it into an arm
+pass. Product improvement is not established by that failure or this correction.
+
+Frozen H5c performed five Playwright assertions for every measured normalized
+delta and one Playwright deep-equality assertion for its original clock join.
+It also asserted each prelude payload and each visible clock through Playwright.
+H5d uses the same actual paginated API rows and provider clock maps, then validates
+those retained observations through Node assertions. Only verified per-run
+summaries enter the existing durable evidence array. The active failure record
+also identifies the current run, pagination cursor and returned row count.
+
+| Frozen check | H5d equivalent |
+| --- | --- |
+| Exact complete compact payload for every measured delta | `assertDurableRunEvents` checks the same full text, rejecting coalescing or added bytes |
+| Exact run, truthy source-instance/event IDs, positive safe integer sequence in H5 | Same assertions under the unchanged `requireNativeIdentity: h5` condition |
+| Original nonce, marker code and index for every durable event | Same tuple deep equality against the original provider clock map |
+| Unique normalized identity tuple and complete ordered indices | Same set count and exact ordered index array; Stop permits only its canonical prefix |
+| Every visible Stop marker is durable; normal result one / Stop result zero | Same prefix membership and exact accepted-result count |
+| Complete normal source-clock count and closed uploads | Existing clock-readiness/closure polls remain; Node oracle also checks the normal count |
+| Prelude exact dots/final readiness text, count and unique identity tuples | `assertPreludeEvents` checks the same filtered prelude rows before epoch release |
+| Every visible marker has an original clock; complete normal unique visible count | `assertVisibleMarkerClocks` checks the same observations and preserves the original two-frame timestamp |
+
+The same `/events?afterSeq=…&limit=1000` pages, advancing cursor checks and final
+empty-page read remain. The 30-second per-run provider-clock availability poll
+is unchanged and still occurs before the Node assertion. The 120/180/900-second
+original gates, 600/180/1,200-second observation ceilings, original late Stop ACK
+and lease polls, and outer resource watchdog remain unchanged. No per-event
+check is dropped to make the invocation finish.
+
+The frozen comparator9e01 validated `h5.independentDrain` correctness but omitted
+its elapsed duration from quantitative gates. A synthetic RED counterexample
+actually passed that comparator with faster browser/terminal delivery while full
+verified completion regressed from180,010 to200,000 ms. The prospective comparator
+adds `h5.independentDrain.elapsedFromEpochMs` to every non-Stop H5 case's existing
+measurement, own A/A noise and nonregression loops. For loaded burst512, final B2
+must also improve that duration beyond its own noise in the median and at least
+four of five pairs, alongside the existing browser p95 and terminal-duration
+gates. Three improving pairs do not pass. Cursor nonregression includes the same
+verified-completion metric. All previous gates and timing limits remain.
+
+Reports also derive measured normalized deltas per second from equal matched
+counts divided by that independently verified completion upper bound. For the
+loaded burst, N is51,200 complete measured deltas, with all100 accepted results
+independently checked. The duration includes oracle, reload, screenshot, normal
+API and lease verification overhead; it is not the exact last database-commit
+instant. This conservative observed completion rate is descriptive: the existing
+noise gate applies to duration, and no separate rate-noise threshold is invented.
+Equal counts make a shorter fully verified duration monotonically higher rate.
+Missing/tampered completion proof still fails the existing functional oracle.
+No accepted A/A exists. The following finite browser repeatability rule is
+chosen prospectively; source freezing still requires the combined root/peer review.
+
+### Prospective main-browser A/A suitability (H5 only)
+
+Before any B0 or B1 calibration data, choose exactly five alternating pairs and
+apply these rules independently to every declared case/metric after all existing
+functional, owning-report and cleanup checks. With pair durations a,b:
+
+- Every paired difference must satisfy `abs(a-b) <= max(0.20*a, 2 ms)`.
+- Sort the ten actual owning invocations by validated start. First-five versus
+  last-five median drift must satisfy `abs(lastMedian-firstMedian) <=
+  max(0.10*firstMedian, 2 ms)`.
+- The two five-sample role medians must also satisfy `abs(candidateMedian-
+  baselineMedian) <= max(0.10*baselineMedian, 2 ms)`.
+
+Require parseable owner start/duration, nonoverlap, registered baseline-first then
+candidate-first alternation, distinct owning reports, companies and run sets.
+A comparison must follow all calibration owners and reuse none of their evidence
+or owned data. Synthetic oracle fixtures represent this chronology and freshness
+explicitly; they do not establish that an application or provider ran.
+
+Retain all raw samples and owner chronology. Freeze the actual maximum paired
+absolute difference AND actual maximum paired relative difference. The 2-ms
+floor applies only to suitability and never replaces either observed envelope.
+Comparisons recompute these envelopes and suitability diagnostics from retained
+samples and reject altered envelopes, rules, flags or timestamps. Unsuitable A/A
+exits unsuccessfully after writing its complete diagnostic report; retain all ten
+arms and diagnose before a newly reviewed prospective observation. Do not inflate
+caps or silently replace an arm.
+
+If the pooled ten-value median is at most20 ms, label that metric
+representation-limited, suppress percentage-improvement claims and use its actual
+frozen absolute noise for nonregression: `median(candidate-baseline) <= observed
+absolute noise`. In particular, zero observed noise permits no positive regression
+even when the suitability floor was2 ms. Longer metrics retain the existing
+relative-noise nonregression rule. Loaded improvement still requires its existing
+relative-noise median and at least4/5 individual wins; each counted win and the
+median absolute improvement must additionally exceed2 ms before a numerical gain
+is claimed. No sub-2ms, p99 or percentage gain is claimed for representation-limited
+metrics. All original hard product/control deadlines remain unchanged.
+
+The floor describes integer-millisecond timestamp contrast representation only.
+It is not a frame period, paint guarantee, clock-accuracy bound or a bound on the
+settlement/Stop observer. The unchanged Playwright polls can wait1000 ms after a
+callback and incur API/scheduler time as well; no blanket1–2second tolerance is
+introduced. The blocked-Stop companion keeps its separate frozen100-ms policy.
+The default H4e comparator and journey semantics remain unchanged.
+
+### Deferred diagnostic design: Playwright assertion cost only
+
+This diagnostic has **not run**. After root review and an explicit quiet-window
+release, create an owned temporary standalone Playwright test/config outside the
+measured source. Do not inherit a config with `webServer`. Request no `page`,
+`browser` or `request` fixture; use one Node worker, no retries, trace/video off,
+and a bounded 300-second diagnostic timeout. It must start no app, database,
+provider or browser. Record the temporary source/config, Node and Playwright
+versions, source hashes, owning test status, raw durations and all failures.
+
+Generate 1,000 deterministic synthetic normalized rows and a matching clock map
+inside that test process. They are CPU-oracle inputs only: no provider output,
+application event or persisted outcome is seeded. Use the same six checks for
+both branches on the same objects:
+
+```ts
+// Planned scratch test functions, not an executed measurement.
+const checkPw = (event, original, index) => {
+  expect(event.payload.text).toBe(`[q7${index.toString(36)}] `);
+  expect(event.runId).toBe("diagnostic-run");
+  expect(event.sourceInstanceId).toBeTruthy();
+  expect(event.sourceEventId).toBeTruthy();
+  expect(Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > 0).toBe(true);
+  expect({ nonce: original.nonce, markerCode: original.markerCode, index: original.index })
+    .toEqual({ nonce: "diagnostic-source", markerCode: "q7", index });
+};
+const checkNode = (event, original, index) => {
+  assert.equal(event.payload.text, `[q7${index.toString(36)}] `);
+  assert.equal(event.runId, "diagnostic-run");
+  assert.ok(event.sourceInstanceId);
+  assert.ok(event.sourceEventId);
+  assert.ok(Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > 0);
+  assert.deepEqual({ nonce: original.nonce, markerCode: original.markerCode, index: original.index },
+    { nonce: "diagnostic-source", markerCode: "q7", index });
+};
+```
+
+Warm each branch once on 100 inputs outside timing. Then record five alternating
+pairs of all 1,000 inputs using monotonic `performance.now()` boundaries, retaining
+each elapsed time and six-check count. Do not disable normal Playwright assertion
+steps in its branch. Compare total completion duration and spread; keep diagnostic
+profiles separate. This tests assertion instrumentation overhead, not application
+ingestion throughput, browser responsiveness or acceptance. Full H5d qualification
+and the fresh frozen fifty-arm protocol remain required regardless of its result.
