@@ -2,6 +2,15 @@ import type { RunnerLaunchPreparer } from "../live/runner-provider-launch.js";
 import type { DurablePrpControlPlane, RunnerProcessConnection, RunnerProcessHandle, RunnerProcessLaunchSpec } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 
+export interface RunnerColdCheckpoint {
+  schema: "paperclip.runner.cold-checkpoint.v1";
+  sourceId: string;
+  sha256: string;
+  runnerStateSha256: string;
+  identity: DurableRecoveryIdentity;
+  providerSessionId: string;
+}
+
 /** Environment ownership shared by local, SSH, and sandbox Runner execution.
  * Preparation belongs to connection registration, before launch; activation
  * happens after dispatch. PRP authority and session semantics stay with Core.
@@ -55,6 +64,8 @@ export interface RunnerExecutionDriver {
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
   }) => Promise<Record<string, unknown>>;
+  /** A provider-verified immutable completed-turn source, admitted only after its live owner stopped. */
+  resumeColdCheckpoint?: RunnerColdCheckpoint;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
   /** Process lifetime while disconnected. Defaults to the active-connection

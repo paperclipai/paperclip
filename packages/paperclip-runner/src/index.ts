@@ -117,7 +117,7 @@ export { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bun
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
 
-export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
+export type { RunnerExecutionDriver, RunnerColdCheckpoint } from "./control-plane/runner-execution-driver.js";
 
 export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
@@ -132,3 +132,5 @@ export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/chec
 
 export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
 export { providerFailureFromError } from "./drivers/provider-failure.js";
+
+export { coldCheckpointStateDigest, assertColdCheckpointRunnerState } from "./control-plane/cold-checkpoint.js";
