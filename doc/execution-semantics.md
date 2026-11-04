@@ -1646,6 +1646,19 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+### Late provider usage
+
+A provider can report more usage after its run's charge was posted. That usage
+already happened, so it never fails a run or blocks a session. Codex usage totals
+are cumulative, so the Runner reports the exact increment and names its owning run
+when the provider turn proves the owner. Core posts the increment to that run as a
+separate cost event and records `cost.late_usage_posted` in the activity log. If
+the owner is not proven, Core charges the session's last finished run and records
+the attribution as inferred. A late charge can put an agent over budget after later
+work started; budget evaluation runs after each correction. Conflicting evidence,
+such as a lower total or a changed model, stays visible as accounting debt for
+an operator to review. It does not change the charge or stop the session.
+
 ### Provider continuity and bounded finalization
 
 A permanently unusable native runner session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.

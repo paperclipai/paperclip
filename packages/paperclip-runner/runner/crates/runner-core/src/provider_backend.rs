@@ -663,48 +663,46 @@ fn normalize_provider_notification(
                 .is_some_and(|usage| usage.increases_run_baseline(total));
         if historical
             && (increases_known_usage || increases_prior_baseline)
-            && params.get("turnId").and_then(Value::as_str)
-                != state.active_provider_turn_id.as_deref()
+            && received_turn != state.active_provider_turn_id.as_deref()
         {
-            state.lifecycle = "reconciliation_required".to_owned();
             let owns_completed_turn = state.active_provider_turn_id.is_none()
-                && state
-                    .completed_provider_turn_id
-                    .as_deref()
-                    .is_some_and(|id| params.get("turnId").and_then(Value::as_str) == Some(id));
+                && state.completed_provider_turn_id.is_some()
+                && received_turn == state.completed_provider_turn_id.as_deref();
             if !owns_completed_turn {
-                if state.active_provider_turn_id.is_some() {
-                    state.settle_active_provider_turn_identity()?;
+                // The usage happened and cannot be undone or billed to this run.
+                // Report the increment with its owner and keep working: Core
+                // posts it to the owning run. Moving both counters together
+                // keeps this run's own delta unchanged.
+                let late = state
+                    .codex_usage
+                    .get_or_insert_with(|| CodexRunUsage::new(true))
+                    .absorb_late_usage(total);
+                if late
+                    .as_object()
+                    .is_some_and(|late| late.values().all(|value| value.as_u64() == Some(0)))
+                {
+                    // A replay of usage already moved to its owner carries nothing.
+                    return Ok(normalize_codex_notification(
+                        "paperclip/resumeUsageSnapshot",
+                        params,
+                    ));
                 }
-                state.active_provider_turn_id = None;
-                let mut invalidation = normalize_codex_notification("thread/tokenUsage/updated", &json!({
-                    "threadId":params.get("threadId"), "model":state.config.model, "tokenUsage":{"total":total}
-                })).remove(0);
-                invalidation.payload["runDeltaBasis"] = json!("run");
-                invalidation.payload["reconciliation"] = json!({"reason":"accounting_reconciliation_required",
-                    "receivedTurnId":params.get("turnId"),"cumulative":invalidation.payload["cumulative"],
-                    "priorOrigin":state.previous_accounting_origin.as_ref().filter(|origin| received_turn == Some(origin.provider_turn_id.as_str())).map(|origin| &origin.identity)});
-                return Ok(vec![
-                    NormalizedProviderEvent {
-                        event_type: "harness.diagnostic".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({"code":"codex_usage_accounting_integrity", "classification":"accounting_reconciliation_required",
-                        "receivedTurnId":params.get("turnId"),"cumulative":total,"priorOrigin":state.previous_accounting_origin.as_ref().filter(|origin| params.get("turnId").and_then(Value::as_str) == Some(origin.provider_turn_id.as_str())).map(|origin| &origin.identity),
-                        "message":"Late provider usage cannot be attributed to the attached run; explicit reconciliation is required"}),
-                    },
-                    invalidation,
-                    NormalizedProviderEvent {
-                        event_type: "turn.failed".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({"provider":"codex","status":"failed","code":"codex_usage_accounting_integrity","recoverable":false,
-                        "message":"Late provider usage requires explicit accounting reconciliation"}),
-                    },
-                    NormalizedProviderEvent {
-                        event_type: "run.terminal".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({"schema":"paperclip.prp.terminal.v1","provider":"codex","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review"}),
-                    },
-                ]);
+                let mut event = normalize_codex_notification(
+                    "thread/tokenUsage/updated",
+                    &json!({
+                        "threadId":params.get("threadId"), "model":state.config.model,
+                        "tokenUsage":{"total":total,"last":late}
+                    }),
+                )
+                .remove(0);
+                event.payload["runDeltaAvailable"] = json!(false);
+                event.payload["runDeltaBasis"] = json!("run");
+                event.payload["reconciliation"] = json!({"reason":"accounting_reconciliation_required",
+                    "receivedTurnId":params.get("turnId"),"cumulative":event.payload["cumulative"],
+                    "priorOrigin":state.previous_accounting_origin.as_ref()
+                        .filter(|origin| received_turn == Some(origin.provider_turn_id.as_str()))
+                        .map(|origin| &origin.identity)});
+                return Ok(vec![event]);
             }
         }
         let had_baseline = state

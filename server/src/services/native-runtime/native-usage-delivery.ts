@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import type { NativeExecutionInput, PrpEvent } from "../../vendor/paperclip-runner/index.js";
@@ -75,6 +75,37 @@ function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "
         or coalesce(r.usage_json->'accountingLateReceiptDebts', '{}'::jsonb) ? ${runUsageReceipts.id}::text))`)).orderBy(asc(runUsageReceipts.sequence));
 }
 
+const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+const finishedRunStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
+
+/** The Runner names a late report's owner when the turn proves it. A session's
+ * usage belongs to that session, so an unproven owner is the session's last
+ * finished run, recorded as inferred. Neither case changes the delivering run. */
+async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput, event: PrpEvent, payload: Record<string, unknown>) {
+  const reconciliation = payload.reconciliation;
+  if (!reconciliation || typeof reconciliation !== "object" || !isUuid(event.normalizedSessionId)) return false;
+  const measured = { runDelta: payload.runDelta };
+  const usage = normalizeNativeUsage(measured, { inputIncludesCacheReads: input.provider.kind === "codex" });
+  // An older Runner reports only an invalidation. It has no increment to move.
+  if (!usage) return false;
+  const prior = (reconciliation as Record<string, unknown>).priorOrigin as Record<string, unknown> | null | undefined;
+  const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeSessionId, event.normalizedSessionId),
+    inArray(heartbeatRuns.status, finishedRunStatuses), ne(heartbeatRuns.id, input.runId),
+  )).orderBy(desc(heartbeatRuns.finishedAt));
+  const exact = runs.find(run => run.id === prior?.runId && prior?.normalizedSessionId === event.normalizedSessionId);
+  const owner = exact ?? runs[0];
+  if (!owner) return false;
+  const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing, model: input.provider.model ?? "unknown", usage, usageBasis: "per_run",
+    complete: true, costUsd: nativeUsageCostUsd(measured, input.provider) ?? null }));
+  await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: uuid(`${owner.id}:${input.runnerInstanceId}:${event.sourceEventId}`),
+    companyId: input.companyId, runId: owner.id, adapterType: "paperclip_runner", sourceId: uuid(`late:${owner.id}:${input.runId}:${input.runnerInstanceId}`),
+    sequence: event.sourceSeq, receivedAt: event.emittedAt, receipt,
+    producerEvent: { sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType, usage: { runDelta: payload.runDelta, reconciliation } },
+    lateDelta: { attribution: exact ? "exact" : "inferred", reportedByRunId: input.runId } });
+  return true;
+}
+
 function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
   saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false) {
   const accepted = new Map<string, UsageReceiptEnvelope>();
@@ -120,6 +151,7 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
     if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
     if (event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId) throw new Error("native_usage_source_mismatch");
     const payload = event.payload as Record<string, unknown>;
+    if (event.eventType === "usage.reported" && await captureLateUsageForOwner(db, input, event, payload)) return;
     const fact: NonNullable<UsageReceiptEnvelope["producerEvent"]> = {
       sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),

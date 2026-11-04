@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 pub(crate) struct CodexRunUsage {
     baseline: Option<BTreeMap<String, Value>>,
     latest: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    late_watermark: BTreeMap<String, Value>,
 }
 
 impl CodexRunUsage {
@@ -14,6 +16,7 @@ impl CodexRunUsage {
         Self {
             baseline: (!requires_baseline).then(BTreeMap::new),
             latest: BTreeMap::new(),
+            late_watermark: BTreeMap::new(),
         }
     }
 
@@ -63,6 +66,48 @@ impl CodexRunUsage {
         self.baseline = (valid_token(self.latest.get("inputTokens"))
             && valid_token(self.latest.get("outputTokens")))
         .then(|| self.latest.clone());
+    }
+
+    /// Records usage that belongs to an earlier run and returns its increment.
+    /// Totals are one thread-wide counter, so usage this run already counted moves
+    /// to the owner by raising the baseline, and newer usage moves both counters.
+    /// A repeated report adds nothing. The sum of all runs always equals the total.
+    pub(crate) fn absorb_late_usage(&mut self, total: &Value) -> Value {
+        let mut late = serde_json::Map::new();
+        // Classify the whole report: one thread counter advanced or arrived late.
+        let advanced = self.increases_known_usage(total) || self.latest.is_empty();
+        for (key, value) in total.as_object().into_iter().flatten() {
+            let Some(reported) = value.as_u64() else {
+                continue;
+            };
+            let seen = self.late_watermark.get(key).and_then(Value::as_u64);
+            let known = self.latest.get(key).and_then(Value::as_u64).unwrap_or(0);
+            let base = self
+                .baseline
+                .as_ref()
+                .and_then(|baseline| baseline.get(key))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let increment = if seen.is_some_and(|seen| reported <= seen) {
+                0
+            } else if advanced {
+                reported.saturating_sub(known)
+            } else {
+                reported.saturating_sub(base)
+            };
+            late.insert(key.clone(), json!(increment));
+            self.late_watermark.insert(key.clone(), json!(reported));
+            if increment == 0 {
+                continue;
+            }
+            if let Some(baseline) = self.baseline.as_mut() {
+                baseline.insert(key.clone(), json!(base + increment));
+            }
+            if reported > known {
+                self.latest.insert(key.clone(), json!(reported));
+            }
+        }
+        Value::Object(late)
     }
 
     pub(crate) fn observe(&mut self, total: &Value, historical: bool) -> (Value, bool) {
@@ -181,6 +226,34 @@ mod tests {
             next,
             json!({"inputTokens":30,"outputTokens":4,"cachedInputTokens":2})
         );
+    }
+
+    #[test]
+    fn late_usage_moves_to_its_owner_without_changing_the_attached_runs_delta() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        let (paid, _) = usage.observe(&json!({"inputTokens":130,"outputTokens":14}), false);
+        assert_eq!(paid, json!({"inputTokens":30,"outputTokens":4}));
+        let late = usage.absorb_late_usage(&json!({"inputTokens":150,"outputTokens":14}));
+        assert_eq!(late, json!({"inputTokens":20,"outputTokens":0}));
+        let (next, complete) = usage.observe(&json!({"inputTokens":160,"outputTokens":20}), false);
+        assert!(complete);
+        assert_eq!(next, json!({"inputTokens":40,"outputTokens":10}));
+    }
+
+    #[test]
+    fn out_of_order_late_usage_moves_already_counted_tokens_once() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        let late = usage.absorb_late_usage(&json!({"inputTokens":120,"outputTokens":12}));
+        assert_eq!(late, json!({"inputTokens":20,"outputTokens":2}));
+        let repeated = usage.absorb_late_usage(&json!({"inputTokens":120,"outputTokens":12}));
+        assert_eq!(repeated, json!({"inputTokens":0,"outputTokens":0}));
+        let (run, _) = usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        assert_eq!(run, json!({"inputTokens":30,"outputTokens":3}));
     }
 
     #[test]

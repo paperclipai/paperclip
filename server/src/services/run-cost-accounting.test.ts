@@ -180,13 +180,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(false);
   });
 
-  it("commits native late evidence before reporting reconciliation and keeps ambiguous debt quiet", async () => {
+  it("commits conflicting native late evidence and keeps its debt quiet", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
     await persistUsageReceipt(db, receipt(owner, sourceId, 1, 0.01));
     await accountRunCost(db, owner.runId);
-    const late = { ...receipt(owner, sourceId, 2, 0.02, 20), producerEvent: { sourceEventId: "late", eventType: "usage.reported" } };
-    await expect(persistUsageReceipt(db, late)).rejects.toThrow("requires_reconciliation");
+    const late = { ...receipt(owner, sourceId, 2, 0.02, 5), producerEvent: { sourceEventId: "late", eventType: "usage.reported" } };
+    await persistUsageReceipt(db, late);
     expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.id, late.id))).toHaveLength(1);
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
     expect(await accountRunCost(db, owner.runId)).toBe(false);
