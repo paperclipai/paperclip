@@ -22,6 +22,8 @@ export function truthfulTimelineAccount(input: {
     const owner = owners.length === 1 && ![firstWorker, repairWorker].some(name => name !== owners[0] && mentions(raw, name)) ? owners[0] : undefined;
     const resolvedPronouns = new Set<number>();
     const text = raw.replace(/[*`]/g, "")
+      // Timeline bullets can prefix the same milestone with a display clock.
+      .replace(/^[ \t]*(?:(?:[-+] |\d+[.)] )\s*)?\d{1,2}:\d{2}(?::\d{2})?\s*[—–-]\s*/gm, "")
       // Inline source markup still names its semantic repair object.
       .replace(/<([a-z][a-z0-9]*)(?:\s+[^<>]*|\s*\/?)>/gi, "$1 ").replace(/<\/[a-z][a-z0-9]*\s*>/gi, "")
       .replace(/(^|\n|[.!?]\s+)(he|she|they)\b/gi, (match, lead, _pronoun, at, paragraph) => {
@@ -43,7 +45,7 @@ export function truthfulTimelineAccount(input: {
   // Search milestone clauses, not the first occurrence of a worker or outcome.
   // A summary or heading may mention the repair before the ordered account.
   const withinClause = "(?:[^.!?\\n]|\\.(?=\\S))";
-  const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|$)`, "g"))]
+  const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|(?=\\n|$))`, "g"))]
     .map(match => ({ text: match[0], at: match.index, owner: paragraphs.find(row => row.start <= match.index && row.end > match.index)?.owner }));
   // A command noun can have ordinary modifiers, but never absorb a new event,
   // actor, negation or clause boundary while connecting this pause to failure.
@@ -61,7 +63,7 @@ export function truthfulTimelineAccount(input: {
   // Heading ownership fills an omitted actor only when the command itself is
   // the clause subject. It cannot override an explicit different actor.
   const commandIsSubject = new RegExp(`^\\s*(?:(?:then|next|later|finally)\\s+)?(?:(?:the|a|an)\\s+)?${commandSubject}\\b`, "i");
-  const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text) && !namesOtherActor(text, firstWorker))
+  const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
     ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, end: at + match.index + match[0].length, clauseAt: at })) : []);
   const humanActors = ["you", "human operator", "board member", "human", "person", "user", "operator", "board", input.personName].filter(Boolean).map(name => escape(name!)).join("|");
