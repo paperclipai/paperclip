@@ -101,3 +101,11 @@ uses the same narrow asset-path policy. Content, skill digests, workspace/sessio
 identity, unknown context policy, same-run mutations and unauthenticated run
 rotation remain rejected. All 57 ACPX provider tests pass after the fix. A fresh
 Linux Runner and real Grok continuation must still verify the provider boundary.
+
+The released ACPX Codex profile had the same immutable-path default. Its
+no-provider regression also reproduces the attachment rejection, and the same
+narrow policy fixes it. All 58 ACPX provider tests pass. Unknown profiles retain
+their prior restrictive default. Claude at `b12ecd823e` passed both strict
+migration assertions, including the downloaded reference, but its full browser
+workflow failed on an unnecessary confirmation and incorrect booking text.
+That failed user-flow result remains recorded separately from preservation.
