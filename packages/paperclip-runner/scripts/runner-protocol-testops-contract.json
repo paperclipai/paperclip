@@ -1,0 +1,259 @@
+{
+  "schema": "paperclip.runner-protocol-testops-contract/v1",
+  "projectId": 1,
+  "planId": 3,
+  "planName": "Runner protocol qualification",
+  "rosterId": "protocol-live-testops-claude",
+  "model": "claude-sonnet-5",
+  "provider": "acpx",
+  "driver": "acpx_runtime",
+  "cases": [
+    {
+      "testCaseId": 178,
+      "caseId": "list-company-agents",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.list-company-agents",
+      "title": "Agent lists company agents"
+    },
+    {
+      "testCaseId": 179,
+      "caseId": "request-task-review",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.request-task-review",
+      "title": "Agent requests task review"
+    },
+    {
+      "testCaseId": 180,
+      "caseId": "create-child-task",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.create-child-task",
+      "title": "Agent creates a child task"
+    },
+    {
+      "testCaseId": 181,
+      "caseId": "avoid-generic-api-request",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.avoid-generic-api-request",
+      "title": "Agent avoids the generic API escape hatch"
+    },
+    {
+      "testCaseId": 182,
+      "caseId": "get-workspace-runtime",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.get-workspace-runtime",
+      "title": "Agent inspects workspace runtime"
+    },
+    {
+      "testCaseId": 183,
+      "caseId": "answer-status-question",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.answer-status-question",
+      "title": "Agent answers a status-only wake"
+    },
+    {
+      "testCaseId": 184,
+      "caseId": "register-deliverable",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.register-deliverable",
+      "title": "Agent registers an inspectable deliverable"
+    },
+    {
+      "testCaseId": 185,
+      "caseId": "list-approvals",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.list-approvals",
+      "title": "Agent lists approvals"
+    },
+    {
+      "testCaseId": 186,
+      "caseId": "update-task-document",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.update-task-document",
+      "title": "Agent safely updates a task document"
+    },
+    {
+      "testCaseId": 187,
+      "caseId": "workflow-context-document-progress",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-context-document-progress",
+      "title": "Orient, revise a document, and report progress"
+    },
+    {
+      "testCaseId": 188,
+      "caseId": "block-task",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.block-task",
+      "title": "Agent blocks its assigned task"
+    },
+    {
+      "testCaseId": 189,
+      "caseId": "request-approval",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.request-approval",
+      "title": "Agent requests governed approval"
+    },
+    {
+      "testCaseId": 190,
+      "caseId": "search-company-tasks",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.search-company-tasks",
+      "title": "Agent searches company tasks"
+    },
+    {
+      "testCaseId": 191,
+      "caseId": "get-company-agent",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.get-company-agent",
+      "title": "Agent reads one company agent"
+    },
+    {
+      "testCaseId": 192,
+      "caseId": "reassign-existing-task",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-existing-task",
+      "title": "Reassign existing work without duplicating it"
+    },
+    {
+      "testCaseId": 193,
+      "caseId": "comment-on-approval",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.comment-on-approval",
+      "title": "Agent comments on an approval"
+    },
+    {
+      "testCaseId": 194,
+      "caseId": "get-task-context",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.get-task-context",
+      "title": "Agent orients itself with task context"
+    },
+    {
+      "testCaseId": 195,
+      "caseId": "finish-task",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.finish-task",
+      "title": "Agent finishes its assigned task"
+    },
+    {
+      "testCaseId": 196,
+      "caseId": "get-approval",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.get-approval",
+      "title": "Agent reads one approval"
+    },
+    {
+      "testCaseId": 197,
+      "caseId": "workflow-workspace-recovery",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-workspace-recovery",
+      "title": "Inspect and recover a workspace service"
+    },
+    {
+      "testCaseId": 198,
+      "caseId": "get-approval-context",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.get-approval-context",
+      "title": "Agent reads approval context"
+    },
+    {
+      "testCaseId": 199,
+      "caseId": "lazy-unauthorized-undisclosed",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-unauthorized-undisclosed",
+      "title": "Discovery does not reveal unauthorized delegation"
+    },
+    {
+      "testCaseId": 200,
+      "caseId": "read-task-document",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.read-task-document",
+      "title": "Agent discovers and reads a task document"
+    },
+    {
+      "testCaseId": 201,
+      "caseId": "workflow-orient-delegate",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-orient-delegate",
+      "title": "Orient, select an agent, and delegate bounded work"
+    },
+    {
+      "testCaseId": 202,
+      "caseId": "workflow-governed-wait",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.workflow-governed-wait",
+      "title": "Orient, request approval, and schedule continuation"
+    },
+    {
+      "testCaseId": 203,
+      "caseId": "set-task-dependencies",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.set-task-dependencies",
+      "title": "Agent sets task dependencies"
+    },
+    {
+      "testCaseId": 204,
+      "caseId": "block-task-narrative-baseline",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.block-task-narrative-baseline",
+      "title": "Block with a benign historical summary"
+    },
+    {
+      "testCaseId": 205,
+      "caseId": "lazy-discover-agents",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-discover-agents",
+      "title": "Agent discovers an authorized optional capability"
+    },
+    {
+      "testCaseId": 206,
+      "caseId": "lazy-core-no-search",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.lazy-core-no-search",
+      "title": "Core task context needs no discovery"
+    },
+    {
+      "testCaseId": 207,
+      "caseId": "create-task-document",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.create-task-document",
+      "title": "Agent creates a task document"
+    },
+    {
+      "testCaseId": 208,
+      "caseId": "request-human-confirmation",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.request-human-confirmation",
+      "title": "Agent requests structured confirmation"
+    },
+    {
+      "testCaseId": 209,
+      "caseId": "reassign-without-permission",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-without-permission",
+      "title": "Reassignment is unavailable without authority"
+    },
+    {
+      "testCaseId": 210,
+      "caseId": "context-before-action",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.context-before-action",
+      "title": "Agent reads context before changing task state"
+    },
+    {
+      "testCaseId": 211,
+      "caseId": "schedule-task-wake",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.schedule-task-wake",
+      "title": "Agent schedules a bounded wake"
+    },
+    {
+      "testCaseId": 212,
+      "caseId": "create-skill",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.create-skill",
+      "title": "Agent creates a company skill"
+    },
+    {
+      "testCaseId": 213,
+      "caseId": "read-document-revisions",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.read-document-revisions",
+      "title": "Agent inspects document revision history"
+    },
+    {
+      "testCaseId": 214,
+      "caseId": "finish-task-narrative-baseline",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.finish-task-narrative-baseline",
+      "title": "Finish with misleading approval wording"
+    },
+    {
+      "testCaseId": 215,
+      "caseId": "control-workspace-service",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.control-workspace-service",
+      "title": "Agent controls a workspace service"
+    },
+    {
+      "testCaseId": 216,
+      "caseId": "read-task-history",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.read-task-history",
+      "title": "Agent reads task history"
+    },
+    {
+      "testCaseId": 217,
+      "caseId": "decide-approval",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.decide-approval",
+      "title": "Authorized approver decides an approval"
+    },
+    {
+      "testCaseId": 218,
+      "caseId": "reassign-blocked-task",
+      "fullName": "paperclip.Runner Protocol.paperclip-runner.reassign-blocked-task",
+      "title": "Reassignment preserves a blocked task"
+    }
+  ],
+  "workflowId": 351260602
+}

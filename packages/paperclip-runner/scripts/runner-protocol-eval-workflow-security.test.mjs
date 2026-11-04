@@ -321,6 +321,27 @@ test('controlled admission rejects missing policy, automatic retries and job rer
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('TestOps admission preserves the explicit legacy mode, current source and dedicated roster', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-testops-admission-'));
+  try {
+    for (const [mode, source, roster, expected] of [
+      ['legacy', 'a', 'protocol-live-testops-claude', 0],
+      ['controlled', 'a', 'protocol-live-testops-claude', 1],
+      ['legacy', 'b', 'protocol-live-testops-claude', 1],
+      ['legacy', 'a', 'all', 1],
+    ]) {
+      const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
+        ACCOUNTING_MODE: mode, EVENT_NAME: 'workflow_dispatch', GITHUB_RUN_ATTEMPT: '1', RETRIES: '0',
+        TESTOPS_REQUESTED: 'true', REQUESTED_ROSTERS: roster,
+        CONTROLLER_POLICY_JSON: JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}),
+        TARGET_SHA: source.repeat(40), GITHUB_SHA: 'a'.repeat(40), GITHUB_OUTPUT: resolve(root, 'output') } });
+      assert.equal(result.status, expected, `${mode}/${source}/${roster}: ${result.stderr}`);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('controlled evidence uses private storage and cloud credentials stay out of provider execution', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const paid = workflow.slice(workflow.indexOf('    steps: &direct_eval_steps'), workflow.indexOf('  eval_shard_1:'));

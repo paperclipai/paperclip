@@ -977,3 +977,39 @@ The trusted controller artifact preserves hidden dependency metadata as well as
 code. Its inventory verifier requires every recorded byte, including package
 `.npmignore` files. Only the fresh provider-credential-free controller build uses
 this upload setting; private attempts still use the protected archive path.
+
+## TestOps plan 3
+
+The existing workflow accepts the optional `ALLURE_JOB_RUN_ID` and
+`ALLURE_USERNAME` service inputs. Use `report_to_testops=true`,
+`rosters=protocol-live-testops-claude`, an exact eval commit that includes that
+roster, and explicit `accounting_mode=legacy` for the standing 41-case protocol
+plan. The source must be the trusted current workflow revision. This is a
+recorded Claude Sonnet 5 configuration with direct-provider accounting, not
+controlled-mode or all-provider qualification. Controlled admission remains
+unchanged and cannot publish through this path.
+
+Before provider work, a protected reporting job validates the current GitHub
+job run, launch, standing plan and exact selected case identities. The full
+41-case roster is filtered to that selection before matrix fan-out. A manual
+reporting run resolves plan 3; a TestOps-triggered job uses its requested
+selection. Targeted selections retain their smaller coverage and omit the
+`full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
+
+The final protected reporting job consumes only the separately sanitized
+current-run report. It checks source and attempt identity, uploads one result
+per selected case, and verifies the saved case and status bindings. Missing
+execution/report evidence becomes a broken result. A passing campaign row
+without matching successful behavioral checks is rejected. The original
+workflow status and retained attempts remain authoritative.
+
+After the initial upload creates the GitHub job in TestOps, assign that job to
+all 41 existing plan cases and retain its master branch and explicit roster,
+eval revision and accounting parameters. Registration alone is not live
+acceptance. A completed TestOps-triggered attempt provides that evidence.
+
+Failed eval turns retain up to eight operator diagnostics in `artifact.json`
+under `providerFailureDiagnostics`. These contain only the validated provider
+failure phase, category, HTTP status and retryability. Unknown causes remain
+unknown. Messages, request IDs and raw provider data stay outside this field.
+The original machine grade remains unchanged.
