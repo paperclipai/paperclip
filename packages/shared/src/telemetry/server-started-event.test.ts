@@ -10,11 +10,11 @@ const TEST_STATE: TelemetryState = {
   firstSeenVersion: "0.0.0",
 };
 
-function makeClient() {
+function makeClient(enabled = true) {
   const stateFactory = vi.fn(() => TEST_STATE);
   return {
     client: new TelemetryClient(
-      { enabled: true, endpoint: "http://localhost:9999/ingest" },
+      { enabled, endpoint: "http://localhost:9999/ingest" },
       stateFactory,
       "0.0.0-test",
       () => 0.5,
@@ -23,7 +23,7 @@ function makeClient() {
   };
 }
 
-describe("proposed server.started event", () => {
+describe("registered server.started event", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -42,14 +42,27 @@ describe("proposed server.started event", () => {
     ]);
   });
 
-  it("is swallowed by the real client until the schema registers it", async () => {
+  it("sends the registered event with only the raw OS family", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client, stateFactory } = makeClient();
 
-    expect(client.isRegisteredEventName("server.started")).toBe(false);
+    expect(client.isRegisteredEventName("server.started")).toBe(true);
     trackServerStarted(client, { os_platform: process.platform });
     await client.flush();
 
+    expect(stateFactory).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.events).toEqual([
+      { name: "server.started", occurredAt: expect.any(String), dimensions: { os_platform: process.platform } },
+    ]);
+  });
+
+  it("leaves state and network untouched when disabled", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { client, stateFactory } = makeClient(false);
+    trackServerStarted(client, { os_platform: process.platform });
+    await client.flush();
     expect(stateFactory).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });

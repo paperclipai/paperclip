@@ -65,6 +65,22 @@ provider-supplied error name that may contain a credential. This is a privacy
 boundary, not enum canonicalization. Test the value reaching the telemetry
 helper as well as the separate crash-reporting and local logging sinks.
 
+## Server Startup Privacy
+
+The startup helper emits the raw Node.js operating system family once when an
+enabled server telemetry client initializes. It omits OS versions, CPU
+architecture, hostnames, and other machine details. The usual telemetry opt-out
+and CI suppression apply before client initialization. Container and WSL servers
+report their runtime platform; this does not identify the underlying physical
+host's OS. Count distinct installation identifiers by platform to compare
+installations, since restart event counts also reflect restart frequency.
+
+Contract syncs may also register existing proposals. Remove each adopted
+proposal marker and update its helper and transport tests in the same change.
+The connector helpers preserve raw enum values and send only catalog connector
+keys and the approved lifecycle and invocation dimensions. Connection names,
+credentials, tool arguments, and tool results stay out of those events.
+
 ## Interaction Resolver Events
 
 `interaction.created` records the interaction kind and whether the create

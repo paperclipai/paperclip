@@ -42,11 +42,6 @@ export type RetentionClass = keyof typeof RETENTION_DAYS;
  *   counts (rotations detected). No token material and no PII.
  *   External-system event (Codex CLI) — not yet in PaperclipEventName.
  *   Class: operational_enum_count — 90-day window.
- *
- * server.started
- *   Emits only the raw Node.js `process.platform` enum. No token material and
- *   no PII. Proposed event — not yet in PaperclipEventName.
- *   Class: operational_enum_count — 90-day window.
  */
 export const EVENT_RETENTION_CLASS: Partial<Record<string, RetentionClass>> = {
   "codex.credential_health": "operational_enum_count",
