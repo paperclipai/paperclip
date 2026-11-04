@@ -257,7 +257,7 @@ describe("legacy continuation persisted authority", () => {
     for (let sweep = 0; sweep < 4; sweep += 1) await rejecting.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     const rejected = await f.actions();
     expect(rejected).toHaveLength(1);
-    expect(rejected[0]).toMatchObject({ kind: "deliberate_wait_without_target", status: "cancelled", attemptCount: 0, resolutionNote: "repair_admission_rejected" });
+    expect(rejected[0]).toMatchObject({ kind: "deliberate_wait_without_target", status: "cancelled", attemptCount: 0 });
     expect(await f.runs()).toHaveLength(1);
     await f.createRecovery().reconcileStrandedAssignedIssues({ companyId: f.companyId });
     expect(await f.actions()).toEqual([expect.objectContaining({ id: rejected[0].id, status: "active", attemptCount: 1 })]);

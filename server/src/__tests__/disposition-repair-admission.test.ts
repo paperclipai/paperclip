@@ -56,4 +56,45 @@ describe("disposition repair admission", () => {
     expect(new Set(changed.map(action => action.fingerprint)).size).toBe(2);
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
   });
+
+  it("does not let a stale rejected check cancel a reopened repair that was admitted", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Admission fixture", issuePrefix: `A${companyId.slice(0, 6)}`, defaultResponsibleUserId: "fixture-owner" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", runtimeConfig: { heartbeat: { wakeOnDemand: true } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Implement export", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "fixture-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", runtimeMode: "legacy", contextSnapshot: { issueId, legacyDispositionEpisode: { id: runId, attempt: 0, maxAttempts: 2 } } });
+    let staleCheckFinished = () => {};
+    const staleCheckDone = new Promise<void>(resolve => { staleCheckFinished = resolve; });
+    let admissionReached = () => {};
+    const admissionPending = new Promise<void>(resolve => { admissionReached = resolve; });
+    const admitted = recoveryService(db, {
+      enqueueWakeup: async (targetAgentId, opts) => {
+        admissionReached();
+        await staleCheckDone;
+        return db.transaction(async tx => {
+          const [wake] = await tx.insert(agentWakeupRequests).values({ companyId, agentId: targetAgentId, source: "automation", reason: opts?.reason, idempotencyKey: opts?.idempotencyKey, status: "queued" }).returning();
+          const [run] = await tx.insert(heartbeatRuns).values({ companyId, agentId: targetAgentId, status: "queued", runtimeMode: "legacy", wakeupRequestId: wake.id, contextSnapshot: opts?.contextSnapshot }).returning();
+          await tx.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wake.id));
+          return run;
+        });
+      },
+    });
+    let admittedCheck: Promise<unknown> = Promise.resolve();
+    const stale = recoveryService(db, {
+      enqueueWakeup: async () => {
+        await recoveryService(db, { enqueueWakeup: async () => null }).reconcileLegacyContinuation(runId);
+        admittedCheck = admitted.reconcileLegacyContinuation(runId);
+        await admissionPending;
+        return null;
+      },
+    });
+    await stale.reconcileLegacyContinuation(runId);
+    staleCheckFinished();
+    await admittedCheck;
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const successor = runs.find(run => run.id !== runId)!;
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toMatchObject([
+      { status: "active", outcome: null, attemptCount: 1, resolvedAt: null, wakePolicy: { scheduledRunId: successor.id } },
+    ]);
+  });
 });

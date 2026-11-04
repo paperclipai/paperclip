@@ -81,6 +81,9 @@ export type ResolveIssueRecoveryActionInput = {
   kind?: IssueRecoveryActionKind | null;
   cause?: string | null;
   fingerprint?: string | null;
+  // Every reopen and admitted attempt rewrites this value, so a caller holding
+  // an older read cannot resolve the action as it stands now.
+  lastAttemptAt?: Date | string | null;
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
@@ -635,6 +638,9 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     }
     if (input.fingerprint) {
       predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
+    }
+    if (input.lastAttemptAt) {
+      predicates.push(eq(issueRecoveryActions.lastAttemptAt, asDatabaseDate(input.lastAttemptAt)!));
     }
 
     const [updated] = await writeExecutionControl(dbOrTx, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {

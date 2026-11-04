@@ -4027,9 +4027,10 @@ export function recoveryService(
     });
     if (!scheduled && episode) {
       // Admission can reject a stale snapshot under the issue lock. An empty
-      // repair action must not subsequently cause escalation.
+      // repair action must not subsequently cause escalation. The action id
+      // survives a reopen, so only cancel the attempt this check observed.
       await recoveryActionsSvc.resolveActiveForIssue({
-        companyId: current.companyId, sourceIssueId: current.id, actionId: action.id,
+        companyId: current.companyId, sourceIssueId: current.id, actionId: action.id, lastAttemptAt: action.lastAttemptAt,
         status: "cancelled", outcome: "cancelled", resolutionNote: DISPOSITION_REPAIR_ADMISSION_REJECTED_NOTE,
       });
     }
