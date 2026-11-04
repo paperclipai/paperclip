@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import { expect, it, vi } from "vitest";
 import { createCapabilityRunnerdCodexTransport, type CapabilityRunnerdCodexTransportOptions } from "./runnerd-codex-transport.js";
 import { runnerLaunchRequirementsDigest, runnerProviderLaunchRequirements, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
@@ -13,7 +15,7 @@ const read = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const absent = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
 const kill = (pid: number | null) => { if (pid) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
 
-async function sourceFixture() {
+async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"]) {
   const root = await mkdtemp(join(tmpdir(), "runner-source-reconciliation-"));
   const home = join(root, "empty-codex-home"); await mkdir(home);
   const identity = { runnerInstanceId: "runner-source", environmentLeaseId: "lease-source", runId: "run-source", normalizedSessionId: "session-source", turnId: "turn-source", itemId: "item-source" };
@@ -22,6 +24,7 @@ async function sourceFixture() {
     codexArgs: fakeCodexArgs(root, "--call-log", join(root, "calls"), "--record-process-start", "--durable-turn-ids"),
     stateDirectory: root, sourceCodexHome: home, prpIdentity: identity,
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
+    ...(registration ? { controlPlaneRegistration: registration } : {}),
   };
   const bundles: Bundle[] = [];
   const first = createCapabilityRunnerdCodexTransport(options); bundles.push(first);
@@ -96,9 +99,23 @@ it.each(["attach", "prepared-attach", "suspend"] as const)("reconciles killed so
   } finally { await fixture.dispose(); }
 }, 30_000);
 
-it("prepares a cacheless source launch without replacing the ordinary source configuration", async () => {
-  const fixture = await sourceFixture();
+it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless source %s without replacing the ordinary source configuration", async mode => {
+  let authority: DurablePrpControlPlane | null = null;
+  const server = createServer();
+  server.on("upgrade", (request, socket, head) => {
+    if (authority) authority.handleUpgrade(request, socket, "/runner", head);
+    else socket.destroy();
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing source listener");
+  const registration: NonNullable<CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"]> = async next => {
+    authority = next;
+    return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === next) authority = null; } };
+  };
+  let cleanup = async () => {};
   try {
+    const fixture = await sourceFixture(registration); cleanup = fixture.dispose;
     const before = await read(fixture.coreFile), provider = before.runAttachTemplate.provider;
     before.preparedLaunchConfigurations = [{ identity: fixture.identity, configurationId: "old-source-configuration" }];
     await writeFile(fixture.coreFile, JSON.stringify(before));
@@ -110,14 +127,10 @@ it("prepares a cacheless source launch without replacing the ordinary source con
     }, null, provider.instructions ?? "");
     const prepare = vi.fn(async (input: RunnerProviderLaunchRequirements) => ({ configurationId: input.identity.runId === fixture.identity.runId ? "new-source-incarnation" : "target-configuration", requirementsDigest: runnerLaunchRequirementsDigest(input), provider }));
     const binary = fixture.options.runnerBinary;
-    const registered = new WeakSet<object>();
-    const resumed = fixture.recover({ sourceRecoveryVersion: 1,
+    const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1,
       sourceReconciliationLaunch: { requirements }, prepareLaunch: prepare,
       runnerArtifact: { version: "0.3.0", digest: `sha256:${createHash("sha256").update(await readFile(binary)).digest("hex")}` },
-      controlPlaneRegistration: async authority => {
-        if (!registered.has(authority)) { await authority.start(); registered.add(authority); }
-        return { release: () => {} };
-      },
+      controlPlaneRegistration: registration,
       runnerProcessLauncher: spec => {
         expect(spec.nativeRunner).toHaveProperty("recoveryPurpose", "source_reconcile");
         expect(spec.args).toContain("--source-reconcile");
@@ -126,20 +139,49 @@ it("prepares a cacheless source launch without replacing the ordinary source con
           child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
         }) };
       },
-    });
+    };
+    let resumed = fixture.recover(sourceOptions);
     expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
     expect(prepare).toHaveBeenCalledExactlyOnceWith(requirements, undefined);
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toEqual(before.preparedLaunchConfigurations);
     await expect(readFile(join(fixture.root, "launch-preparation.json"))).rejects.toHaveProperty("code", "ENOENT");
+    if (mode !== "launch") {
+      const evidence = resumed.evidence(), startedAt = resumed.transport.processInfo().startedAt;
+      await resumed.detachControllerForRestart();
+      prepare.mockClear();
+      if (mode === "adopt-denied") prepare.mockRejectedValueOnce(new Error("source preparation authorization revoked"));
+      const authorizeOldConfiguration = vi.fn(async () => { throw new Error("old configuration must not authorize source adoption"); });
+      const launch = vi.fn(() => { throw new Error("duplicate source process"); });
+      const adoption = { pid: evidence.runnerPid, processGroupId: evidence.runnerPid, startedAt,
+        isAlive: () => !absent(evidence.runnerPid!), signal: () => false };
+      expect(() => fixture.recover({ adoptExistingRunner: adoption })).toThrow("source_reconciliation_requires_retained_source");
+      resumed = fixture.recover({ ...sourceOptions, runnerProcessLauncher: launch, authorizeRunnerAdoption: authorizeOldConfiguration,
+        adoptExistingRunner: adoption });
+      if (mode === "adopt-denied") {
+        await expect(resumed.transport.request("thread/read", {})).rejects.toThrow("source preparation authorization revoked");
+        expect(absent(evidence.runnerPid!)).toBe(false);
+        expect(authorizeOldConfiguration).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+        expect(await fixture.calls("turn/start")).toBe(1); expect(await fixture.calls("process-start")).toBe(2);
+        return;
+      }
+      expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
+      expect(resumed.evidence().runnerPid).toBe(evidence.runnerPid);
+      expect(prepare).toHaveBeenCalledExactlyOnceWith(requirements, undefined);
+      expect(authorizeOldConfiguration).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+      expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toEqual(before.preparedLaunchConfigurations);
+      await expect(readFile(join(fixture.root, "launch-preparation.json"))).rejects.toHaveProperty("code", "ENOENT");
+    }
     const target = { ...fixture.identity, runId: "prepared-target", turnId: "prepared-turn", itemId: "prepared-item" };
     await resumed.transport.attachRun!(target);
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toContainEqual({ identity: target, configurationId: "target-configuration" });
     expect((await read(join(fixture.root, "launch-preparation.json"))).entries).toContainEqual(expect.objectContaining({ prepared: expect.objectContaining({ configurationId: "target-configuration" }) }));
+    await fixture.complete(resumed, "Continue after source preparation."); await fixture.settled();
+    expect(await fixture.calls("turn/start")).toBe(2); expect(await fixture.calls("process-start")).toBe(2);
     await resumed.transport.close();
     expect((await read(fixture.runnerFile)).lifecycle).toBe("suspended");
     expect(() => fixture.recover({ sourceReconciliationLaunch: { requirements: { ...requirements, identity: { ...fixture.identity, runId: "foreign-source" } } }, prepareLaunch: prepare })).toThrow("source_launch_requirements_invalid");
     expect(() => fixture.recover({ recoveryPurpose: "execution", sourceReconciliationLaunch: { requirements }, prepareLaunch: prepare })).toThrow("source_launch_requirements_invalid");
-  } finally { await fixture.dispose(); }
+  } finally { await cleanup(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }, 30_000);
 
 it.each(["active", "ambiguous", "goal", "live-goal"] as const)("rejects unsafe %s source without admitting execution", async state => {

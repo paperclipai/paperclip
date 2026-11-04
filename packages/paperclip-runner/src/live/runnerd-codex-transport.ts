@@ -3685,7 +3685,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_runner_source_launch_requirements_invalid");
     }
     if (this.#sourceReconciliationPending) {
-      if ((options.provider ?? "codex") !== "codex" || !options.resumeProviderSession?.driverSessionId || !options.prpIdentity || options.adoptExistingRunner) {
+      if ((options.provider ?? "codex") !== "codex" || !options.resumeProviderSession?.driverSessionId || !options.prpIdentity
+        || (options.adoptExistingRunner && !options.sourceReconciliationLaunch)) {
         throw new Error("native_runner_source_reconciliation_requires_retained_source");
       }
       if (options.sourceRecoveryVersion !== 1) {
@@ -5927,7 +5928,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
     // Existing consumers retain the preparation callback's authorization path.
-    const authorizeAdoption = this.options.adoptExistingRunner && this.options.authorizeRunnerAdoption;
+    const authorizeAdoption = !this.options.sourceReconciliationLaunch
+      && this.options.adoptExistingRunner && this.options.authorizeRunnerAdoption;
     if (this.options.prepareLaunch && authorizeAdoption) {
       const configurationId = core.preparedLaunchConfigurationId(desiredIdentity);
       if (!configurationId) throw new Error("runner_launch_recovery_configuration_unavailable");

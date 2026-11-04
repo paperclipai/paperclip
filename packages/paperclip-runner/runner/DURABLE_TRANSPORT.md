@@ -87,6 +87,10 @@ If controller-local launch preparation is absent, the trusted caller can supply
 The current execution owner prepares this launch afresh. The source launch does
 not overwrite the ordinary source configuration or populate its preparation
 cache. This option requires source mode, exact source identity and a preparer.
+The process owner can also adopt its exact existing source-mode incarnation
+with this option. It must verify that incarnation before adoption. A fresh
+preparation authorizes the source incarnation instead of its older ordinary
+configuration; it does not spawn another process or release the source gate.
 
 Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
