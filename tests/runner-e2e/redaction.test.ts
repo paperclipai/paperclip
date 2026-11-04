@@ -1,8 +1,9 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
-import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, isEphemeralCodexRuntimeAuthFile, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { writeApiKeyAuthJson } from "../../packages/adapters/codex-local/src/server/codex-home.js";
 
 const tokens = {
   account_id: "identity-canary-private-90123",
@@ -14,6 +15,63 @@ const sources = { CODEX_AUTH_JSON: JSON.stringify({ tokens }) };
 const secrets = normalizedSecrets(Object.values(sources));
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+
+const runtimeHash = "a".repeat(64);
+const companyCodexHome = "instances/test/companies/company/codex-home";
+
+it.each([
+  companyCodexHome,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}`,
+  `${companyCodexHome}/connector-runtimes/agent/${runtimeHash}`,
+  "instances/test/companies/company/agents/agent/codex-home",
+  "instances/test/runtime/paperclip-runner/durable-sessions/session/codex-home",
+  "instances/test/runtime/paperclip-runner/acpx/acpx/session/codex-home",
+])("recognizes required private Codex API auth in %s without exempting its bytes from scans", async relativeHome => {
+  const root = await mkdtemp(path.join(tmpdir(), "codex-runtime-auth-layout-")); directories.push(root);
+  const home = path.join(root, relativeHome);
+  const syntheticKey = "synthetic-codex-api-key-local-only-91234";
+  await writeApiKeyAuthJson(home, syntheticKey);
+  const file = path.join(home, "auth.json");
+  const metadata = await lstat(file);
+  expect(metadata.isFile()).toBe(true);
+  expect(metadata.mode & 0o777).toBe(0o600);
+  expect(isEphemeralCodexRuntimeAuthFile(root, file)).toBe(true);
+  expect(await findSecretLeakInDirectory(root, [syntheticKey], { includeShapes: false })).toEqual({ file, reason: "exact secret value" });
+});
+
+it.each([
+  "workspace/auth.json",
+  `${companyCodexHome}/config.toml`,
+  `${companyCodexHome}/skill-runtimes/agent/${"a".repeat(63)}/auth.json`,
+  `${companyCodexHome}/skill-runtimes/agent/${"A".repeat(64)}/auth.json`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/config.toml`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/auth.json.backup`,
+  `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}/nested/auth.json`,
+  `${companyCodexHome}/other-runtimes/agent/${runtimeHash}/auth.json`,
+  `${companyCodexHome}/connector-runtimes/${runtimeHash}/auth.json`,
+  `../outside/${companyCodexHome}/auth.json`,
+])("does not classify unrelated or malformed auth paths as private runtime credentials: %s", relativeFile => {
+  const root = path.resolve(tmpdir(), "codex-runtime-auth-path-boundary");
+  expect(isEphemeralCodexRuntimeAuthFile(root, path.resolve(root, relativeFile))).toBe(false);
+});
+
+it("keeps legacy runtime identity content subject to scanning beyond its required auth file", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "legacy-codex-identity-scan-")); directories.push(temporary);
+  const root = path.join(temporary, "paperclip-home");
+  const options = { sources, includeShapes: false, privateCodexRuntimeIdentityRoot: root };
+  for (const relativeHome of [companyCodexHome, `${companyCodexHome}/skill-runtimes/agent/${runtimeHash}`]) {
+    const home = path.join(root, relativeHome);
+    for (const relativeFile of ["logs_2.sqlite", "sessions/2026/11/03/rollout-test.jsonl"]) {
+      const file = path.join(home, relativeFile);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, relativeFile.endsWith(".jsonl")
+        ? JSON.stringify({ type: "session_meta", payload: { creator_account_id: tokens.account_id } })
+        : tokens.account_id);
+      expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file, matchCategory: "CODEX_AUTH_JSON.tokens.account_id" });
+      await rm(file);
+    }
+  }
+});
 
 it.each(Object.keys(tokens) as Array<keyof typeof tokens>)("classifies %s without returning its value", key => {
   const match = findSecretLeakMatch(`provider state: ${tokens[key]}`, secrets, { sources });

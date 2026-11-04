@@ -91,7 +91,7 @@ export function findSecretLeakMatch(value: string | Buffer, secrets: readonly st
   return matchSecret(Buffer.isBuffer(value) ? value.toString("utf8") : value, secretMatchIndex(secrets, options.sources), options);
 }
 
-export function isEphemeralCodexRuntimeAuthFile(
+function isPrivateCodexIdentityAuthFile(
   paperclipHome: string,
   file: string,
 ) {
@@ -109,14 +109,20 @@ export function isEphemeralCodexRuntimeAuthFile(
   );
 }
 
+export function isEphemeralCodexRuntimeAuthFile(paperclipHome: string, file: string) {
+  const relative = path.relative(paperclipHome, file).split(path.sep).join("/");
+  return isPrivateCodexIdentityAuthFile(paperclipHome, file) ||
+    /^instances\/[^/]+\/companies\/[^/]+\/codex-home\/(?:(?:skill-runtimes|connector-runtimes)\/[^/]+\/[a-f0-9]{64}\/)?auth\.json$/.test(relative);
+}
+
 export function isEphemeralCodexRuntimeIdentityDatabase(paperclipHome: string, file: string) {
   return /^(?:logs|state)_\d+\.sqlite(?:-wal|-shm)?$/.test(path.basename(file)) &&
-    isEphemeralCodexRuntimeAuthFile(paperclipHome, path.join(path.dirname(file), "auth.json"));
+    isPrivateCodexIdentityAuthFile(paperclipHome, path.join(path.dirname(file), "auth.json"));
 }
 
 function isEphemeralCodexRolloutFile(paperclipHome: string, file: string) {
   const match = /^(.*\/codex-home)\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[\w-]+\.jsonl$/.exec(file.split(path.sep).join("/"));
-  return Boolean(match && isEphemeralCodexRuntimeAuthFile(paperclipHome, path.join(match[1]!, "auth.json")));
+  return Boolean(match && isPrivateCodexIdentityAuthFile(paperclipHome, path.join(match[1]!, "auth.json")));
 }
 
 function privateCodexAccountIdentity(sources: SecretScanOptions["sources"]): string | undefined {
