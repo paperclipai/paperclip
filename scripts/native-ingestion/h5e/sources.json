@@ -1049,6 +1049,24 @@
       "bytes": 5066,
       "sha256": "341a3801c28ae6f585dd8e288ed7193f9566ceeb8a09e48a564ae0a2b89337bc",
       "originalPath": "/private/tmp/native-ingestion-h5e-tools-v3-peer-review.json"
+    },
+    {
+      "path": "snapshots/resource-v3/external/before-source/startup-cluster-check.v1.txt",
+      "bytes": 344,
+      "sha256": "6206301be18a94cac6fbcaa5dbc0af2a60533a4dea77c271f07bc9bc77e420b2",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/startup-cluster-check.v1.txt"
+    },
+    {
+      "path": "snapshots/resource-v3/external/before-source/validate-snapshot.v1.txt",
+      "bytes": 797,
+      "sha256": "012014edfce88a7e0b14fc3b526d542c3da5ac74b4354e2aa721cc5d7399bcfe",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/validate-snapshot.v1.txt"
+    },
+    {
+      "path": "snapshots/resource-v3/external/before-source/manifest.json",
+      "bytes": 919,
+      "sha256": "1190131268b96da7a57189924e2dac4dab3f59c88ce3c3c9adb66d1353793abc",
+      "originalPath": "/private/tmp/native-ingestion-external-resource-tools-v2/before-source/manifest.json"
     }
   ],
   "storagePolicy": "path remains the exact logical source-packet path; optional storagePath holds identical non-package fixture data. Materialize exact logical files in a fresh directory outside the checkout before resource checks or diagnostics."
