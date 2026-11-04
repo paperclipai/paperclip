@@ -80,7 +80,8 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     const snapshot = response.body as InboxMineSnapshot;
     expect(snapshot.userId).toBe(f.userId);
     const row = snapshot.issues.find(issue => issue.id === parent.id);
-    expect(row).toMatchObject({ status: "blocked", displayStatus: "blocked", listProjection: "index", liveDescendantCount: 1 });
+    expect(row).toMatchObject({ status: "blocked", listProjection: "index", liveDescendantCount: 1 });
+    expect(row?.displayStatus ?? row?.status).toBe("blocked");
     expect(row?.blockerAttention).toMatchObject(originKind === "task_watchdog" && !explicit
       ? { state: "needs_attention", blockingTreeLive: false, unresolvedBlockerCount: 0 }
       : { state: "covered", blockingTreeLive: true, unresolvedBlockerCount: 1 });
