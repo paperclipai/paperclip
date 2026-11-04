@@ -90,3 +90,7 @@ it("rejects a plaintext destination even when later guidance mentions Settings S
  const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText="Enter the deployment key in a plaintext file before opening Settings Secrets.";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });
+it.each([["a plaintext file before opening Settings Secrets",false],["the secure Settings Secrets form",true]] as const)("retains the independent entry destination after a warning: %s",(destination,accepted)=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=`Don't enter the key in chat, and please enter the key in ${destination}.`;
+ expect(!!companySecretQuestionHandoff(row,binding)).toBe(accepted);
+});
