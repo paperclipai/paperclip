@@ -3202,6 +3202,13 @@ a close-on-release request from an abandoned sleep attempt. Counts describe the
 attempt; the caller must still validate its hold and final local-work proof.
 Diagnostic-only inspection must never invoke this resource preparation.
 
+The privileged `task-drain?idleSleepSafety=1` preflight invokes this operation only
+for the exact current, unexpired idle owner with no active admitted work. It tracks
+the actual cleanup promise, rejects concurrent work or a changed hold, and then
+takes a fresh durable/local safety snapshot. Busy or failed retirement keeps the
+instance awake. Plain drain reads and `idleSleepDiagnostics=1` remain passive with
+respect to native retirement.
+
 An idle warm owner proves only the exact prior run in the same company, session,
 workspace and environment. Mutable configuration compatibility is checked
 separately: changed settings retire the owned provider before a replacement can
