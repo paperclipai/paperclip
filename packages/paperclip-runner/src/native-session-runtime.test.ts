@@ -4751,12 +4751,15 @@ describe("executeNativeSession recovery", () => {
       runnerInstanceId: "runner-recovery", transportFactory: () => transport,
     });
     const events: PrpEvent[] = [];
+    const deferredEventTypes: string[] = [];
     const completeRun = vi.fn(async () => undefined);
     const execution = executeNativeSession({ input: executionInput, backend,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 5_000,
       controlPlane: {
         async openRun() {}, async checkpointSession() {}, completeRun,
-        async appendEvent(event) { events.push(structuredClone(event)); return {
+        async appendEvent(event, options) {
+          if (options?.deferPostCommitObservers) deferredEventTypes.push(event.eventType);
+          events.push(structuredClone(event)); return {
           cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
         }; },
         async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
@@ -4772,6 +4775,8 @@ describe("executeNativeSession recovery", () => {
       item: { id: "waiting-message", type: "agentMessage", channel: "final", text: "The human-only question is saved." } });
     await outcome;
     expect(events.find(event => event.eventType === "turn.interrupted")?.payload).toMatchObject({ error: null, status: "interrupted" });
+    expect(deferredEventTypes).toEqual(["turn.interrupted"]);
+    expect(events.some(event => event.eventType === "item.completed")).toBe(true);
     expect(completeRun).toHaveBeenCalledOnce();
     expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(1);
   });

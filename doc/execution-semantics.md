@@ -2707,8 +2707,10 @@ observer debt and joins it before accepting a checkpoint or result. The existing
 checkpoint deadline bounds that join, while the provider-terminal drain keeps its
 existing deadline. Observer rejection preserves its original cause, and abort or
 controller revocation prevents late checkpoint/result writes. A retained terminal
-and saved wait can be replayed through the same observers after restart without
-starting another model turn. Ordinary event appends still await their observers.
+and saved wait can be replayed through duplicate-event observers after restart
+without starting another model turn. Committed-only live events and trace
+milestones are not re-emitted by that replay. Ordinary event appends still await
+their observers.
 
 Before either shutdown path exits, idle warm sessions close through their
 normal suspend-and-checkpoint path. Remote sessions therefore leave verified
