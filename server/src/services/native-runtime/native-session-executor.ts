@@ -5215,11 +5215,14 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
 // Refusal reasons reach run errors, so they draw only from these closed sets.
 // Any other persisted value reports as "other".
 const RETIREMENT_REASON_NAMES = {
-  commandType: new Set(["run.prepare", "run.attach", "run.cancel", "session.open", "session.resume", "session.close",
-    "session.destroy", "session.goal.get", "session.goal.set", "session.goal.clear", "turn.start", "turn.stop",
-    "semantic_tool.result", "request.resolve", "runner.drain", "runner.suspend", "runner.shutdown"]),
-  commandStatus: new Set(["pending", "dispatched", "running", "failed", "rejected", "cancelled"]),
-  ownerPhase: new Set(["observed", "committed", "retryable_failure", "terminal_failure", "workspace_finalizing",
+  // Mirrors the durable controller's stored-journal contract (commandTypes and
+  // the command status union in paperclip-runner's durable PRP control plane).
+  commandType: new Set(["run.prepare", "run.attach", "session.open", "turn.start", "turn.steer", "turn.interrupt",
+    "turn.stop", "request.resolve", "interaction.receipt", "semantic_tool.result", "external_provider.operation",
+    "session.snapshot", "session.goal.get", "session.goal.set", "session.goal.clear", "session.close",
+    "session.budget.increase", "session.destroy", "run.cancel", "runner.drain", "runner.suspend", "runner.shutdown"]),
+  commandStatus: new Set(["pending", "failed", "rejected", "indeterminate"]),
+  ownerPhase: new Set(["observed", "retryable_failure", "terminal_failure", "workspace_finalizing",
     "recovery_needed"]),
   recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
   controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
@@ -5285,7 +5288,8 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   }
   if (!prior || prior.run.runtimeMode !== "native") return refuse("owner_missing");
   if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.run.status)) return refuse("owner_run_not_terminal");
-  if (prior.owner.phase !== "committed" || !prior.owner.resultId) return refuse(`owner_${retirementReasonName("ownerPhase", prior.owner.phase)}`);
+  if (prior.owner.phase !== "committed") return refuse(`owner_${retirementReasonName("ownerPhase", prior.owner.phase)}`);
+  if (!prior.owner.resultId) return refuse("owner_result_missing");
   if (prior.owner.leaseOwner) return refuse("owner_lease_held");
   if (prior.owner.recoveryState) return refuse(`owner_recovery_${retirementReasonName("recoveryState", prior.owner.recoveryState)}`);
   // A durable controller is fenced by its released database lease; a legacy

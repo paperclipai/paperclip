@@ -346,7 +346,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
 
-  it.each(["uncommitted result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",
+  it.each(["uncommitted result", "committed without result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",
     "unanswered tool input", "foreign quarantine"] as const)("keeps the prior owner held with %s", async scenario => {
     const prior = await seedRecoveredPriorRun(scenario === "pending command" ? "pending-command"
       : scenario === "unanswered tool input" ? "unanswered-tool" : "settled");
@@ -355,6 +355,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     if (scenario === "uncommitted result") {
       await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", resultId: null })
         .where(eq(nativeRunFinalizations.runId, prior.runId));
+    }
+    if (scenario === "committed without result") {
+      await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, prior.runId));
     }
     if (scenario === "live controller lease") {
       await db.update(nativeRunFinalizations).set({ leaseOwner: "another-controller", leaseExpiresAt: new Date(Date.now() + 60_000) })
@@ -387,6 +390,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     // other hold names its failed proof instead of one indeterminate state.
     expect(outcome).toBe({
       "uncommitted result": stranded("owner_retryable_failure"),
+      "committed without result": stranded("owner_result_missing"),
       "live controller lease": "native_controller_recovery_waiting_for_owner",
       "unexpired controller lease": stranded("controller_remote_controller_lease_live"),
       "recovery pending": stranded("owner_recovery_resuming_session"),
