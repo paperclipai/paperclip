@@ -1,0 +1,44 @@
+{
+  "scope": "Actual CF builds. B0/B1 usable as prospective baseline descriptors only after root release. B2-base is NOT final Rust candidate.",
+  "builds": {
+    "B0": {
+      "appRoot": "/home/ubuntu/native-ingestion/aligned-cf-baseline",
+      "revision": "7550ffa5d6447d2615bc89fc5313f4cbb958b615",
+      "qualifiedReceiptFile": "/home/ubuntu/native-ingestion/aligned-cf-builds-qualified.json",
+      "qualifiedReceiptSha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+      "inventorySummaryFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/artifact-inventory-summary.json",
+      "inventorySummarySha256": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+      "manifestFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/B0-artifact-inventory.json.gz",
+      "manifestFileSha256": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad",
+      "aggregateSha256": "bd14772d45fcbabc9d66582e27400a9cfe2cdfbeb40eccbc372428d3edf9102d",
+      "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+      "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6"
+    },
+    "B1": {
+      "appRoot": "/home/ubuntu/native-ingestion/aligned-cf-cursors",
+      "revision": "2cf1454406cbd582a11f04476713eceb746eada5",
+      "qualifiedReceiptFile": "/home/ubuntu/native-ingestion/aligned-cf-builds-qualified.json",
+      "qualifiedReceiptSha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+      "inventorySummaryFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/artifact-inventory-summary.json",
+      "inventorySummarySha256": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+      "manifestFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/B1-artifact-inventory.json.gz",
+      "manifestFileSha256": "5dd499b896425a9afc5776c2e76214027a9d146f2ee32f8554e7fe9873f1b7bc",
+      "aggregateSha256": "ebd636a5e5180f3eb6b9d8c1ade33c73d969e9c116e83d1c3326aa5ed7188ae5",
+      "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+      "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6"
+    }
+  },
+  "unoptimizedB2Base": {
+    "appRoot": "/home/ubuntu/native-ingestion/aligned-cf-batching-base",
+    "revision": "0b616ccc90bf43cb26adac056a22ff01a84f982b",
+    "qualifiedReceiptFile": "/home/ubuntu/native-ingestion/aligned-cf-builds-qualified.json",
+    "qualifiedReceiptSha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+    "inventorySummaryFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/artifact-inventory-summary.json",
+    "inventorySummarySha256": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+    "manifestFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/B2-base-artifact-inventory.json.gz",
+    "manifestFileSha256": "b7f109a3ce3db8f90768c8c64bcfa0a78b7c6e4d9e748044b2b8e2a6b299122c",
+    "aggregateSha256": "8d63a2d059352941dd607f11f1dc05cdb22b184f513097c1a6abb88a96bdb5fa",
+    "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+    "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6"
+  }
+}

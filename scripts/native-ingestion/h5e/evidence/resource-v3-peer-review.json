@@ -1,0 +1,59 @@
+{
+  "schema": "native-ingestion-h5e-resource-v3-independent-source-review/v1",
+  "reviewer": "/root/resource_v2_review",
+  "reviewedAtUtc": "2026-11-04T13:17:16.671459+00:00",
+  "verdict": "SOURCE_CLEAR",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "packet": {
+    "path": "/private/tmp/native-ingestion-h5e-resource-tools-v3/source-packet.json",
+    "sha256": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124"
+  },
+  "patchSha256": "424e365066b0b0d2d0e62ba39b093d3eaa7a26ab03e18c2ac00056aba3121890",
+  "verified": {
+    "sourceFiles": 58,
+    "checkReceipts": 25,
+    "exactUnchangedParentSources": 55,
+    "soleChangedParentSource": "pg-service-preload.mjs",
+    "productionChange": "One release-guard literal combined-h5e-resource-v1 -> existing combined-h5e-resource-v2; no ABI/tag increment elsewhere.",
+    "allParentV2SourceAndChecksUnchanged": true,
+    "priorPreloadExactFixtureRetained": true,
+    "preparedReleaseTemplatesUnauthorized": true,
+    "focusedNewTestsPassed": 3,
+    "newRuntimeOrOsOperations": 0,
+    "sourceOrProductEdits": 0
+  },
+  "findings": [],
+  "resolvedFinding": {
+    "parentReviewPath": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-review.json",
+    "parentReviewSha256": "37929bd2593e8638875a7e0783407d540b83874aec9859a442c337345793dce3",
+    "status": "SOURCE_REPAIRED",
+    "evidence": "Actual diagnosticPlan V2 tag and actual counter entry guard pass. Preserved actual V2 PG entry rejects before any path/hook operation; corrected full PG entry registers exactly one stub hook and performs zero SUT source loads. Missing, old, inventedV3, arbitrary tags and non-test environment all reject before registration."
+  },
+  "carriedForwardVerifiedEvidence": {
+    "cleanup": "Previous independent eight actual-source cleanup fault tests remain applicable: pg-service, exit writer, resource capture and fault source fixtures are byte-identical to reviewedV2. No broad rerun. Actual transient-GC status/receipt/retirement and collector acquisition source repairs remain accepted only at source level.",
+    "B2": "Previous three focused B2 pin/transform tests and complete five-fixture/Linux-manifest byte verification remain applicable to exact unchanged files. ExistingMaccompiled port origin is retained; no Linux installed dependency or actual hook execution is implied.",
+    "definitions": "DEFINITIONS e5f6, counters, numerical transforms, external sampler/binding/window code and frozen main73 workload/comparator remain unchanged.",
+    "priorSourceFailures": "V1/V2 source, peer fault reports, failed source checks and raw outputs remain sealed and retained."
+  },
+  "evidence": [
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v3-peer-tag-contract.log",
+      "bytes": 475,
+      "sha256": "d0b2126ae1a652978f33c4d0f6436c686d7984e46e5a051bfd19bd3f971ed59b"
+    }
+  ],
+  "operations": {
+    "mechanism": "Node node:vm pure actual-source contract tests with registerHooks/filesystem stubs; zero actual SUT load callbacks",
+    "actualOsProcessProcCloudVmSystemdCgroupPgAppBrowserNetworkBuildOrCredentials": false,
+    "onlyReviewerOutputWritten": true
+  },
+  "remainingGates": [
+    "Root review and concrete quiet-window release before staging or executing this new packet.",
+    "Actual Linux unit/env/permissions/effective controls/exited-child accounting and real ExecStopPost receipt behavior remain unqualified.",
+    "Actual installed Linux postgres3.4.9 package/index/connection hashes, all six serving hooks and independent flush/physical cleanup require one separately released SMALL owning pass.",
+    "Only after those qualify, matched completed FULL diagnostics with unchanged numerator/window/precision/outcome gates; no source-only, SMALL or production improvement claim."
+  ]
+}

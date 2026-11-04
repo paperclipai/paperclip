@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-11-04T12:11:37.159389+00:00",
+  "inventories": {
+    "B2": {
+      "manifest": "B2-artifact-inventory.json.gz",
+      "manifestSha256": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+      "fileCount": 12952,
+      "aggregateSha256": "2df789c77a7939ead10f8789f3c60ac8e6addcbc25f263650f0e9478c33e32ee"
+    }
+  }
+}

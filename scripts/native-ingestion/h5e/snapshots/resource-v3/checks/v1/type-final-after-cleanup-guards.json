@@ -1,0 +1,30 @@
+{
+  "scope": "Focused source typecheck after final helper/cleanup guards; no serving execution",
+  "command": [
+    "/private/tmp/native-ingestion-node24/bin/node",
+    "/private/tmp/paperclip-native-event-harness-h5e/node_modules/typescript/bin/tsc",
+    "--noEmit",
+    "--ignoreConfig",
+    "--target",
+    "ES2022",
+    "--module",
+    "esnext",
+    "--moduleResolution",
+    "bundler",
+    "--esModuleInterop",
+    "--allowSyntheticDefaultImports",
+    "--skipLibCheck",
+    "--allowJs",
+    "--types",
+    "node",
+    "--typeRoots",
+    "/private/tmp/paperclip-native-event-harness-h5e/node_modules/.pnpm/@types+node@24.13.3/node_modules/@types",
+    "resource-wrapper.config.mts",
+    "resource-wrapper.spec.mts",
+    "resource-capture.mjs",
+    "run-resource-diagnostic.mjs"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

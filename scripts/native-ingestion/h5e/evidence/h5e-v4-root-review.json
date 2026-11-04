@@ -1,0 +1,17 @@
+{
+  "atUtc": "2026-11-04T13:00:05.775085+00:00",
+  "reviewer": "root",
+  "sourceClear": true,
+  "executionReleased": false,
+  "sourcePacketSha256": "d0db3b84bcc73867dd6fe94afd68cadc956ba073c1a388678fa03748820be1b7",
+  "peerReviewSha256": "6d90030594faeb76b460642be94581b0e22055843287dd4829fd7d2185d67056",
+  "minimalFullPatchRead": true,
+  "patchSha256": "6157332aeed91242a28e911a36f93babb9f8e2fc68afb0bac8a1de681b4a65c3",
+  "filesVerified": 56,
+  "noMetricWorkloadNoiseSlaOrRuntimeGateChange": true,
+  "currentMainV3AaRemainsImmutable": true,
+  "newCompanionIdentityRequiresFreshQualificationBeforeAa": true,
+  "currentOnlyRegisteredB2": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+  "futureExactCandidateReleaseRegistrationAllowedBeforeUnstartedComparisons": true,
+  "noCompletedCandidateRetargetAllowed": true
+}

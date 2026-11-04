@@ -1,0 +1,111 @@
+{
+  "schema": "paperclip.native-ingestion.candidate-registration-compatibility.v1",
+  "recordedAtUtc": "2026-11-04 12:45:52 UTC",
+  "scope": "Read-only source audit. No VM operation, source/release edit, interruption, test, or data regrade.",
+  "verdict": {
+    "mainControls": "A candidate-only B2 literal/helper hash change does not invalidate unchanged main A/A under current validation. Preserve old release bytes, reports, raw arm seals and all measured identities.",
+    "companionControls": "Current V4 rejects prior qualification/AAs after the dependency/orchestrator hashes change. The noise mathematics remains unchanged; the wrapper's strict current-executable identity equality rejects reuse.",
+    "releaseOnlyOverrideExists": false,
+    "minimumProspectiveFix": "Freeze a candidate-neutral validator before companion A/A. Use the exact authorized release's B2 descriptor as the source pin, retaining actual receipt/Git/stamp/native/inventory checks and rejecting B0/B1 as B2. Later reviewed candidate registration is data only; helper/orchestrator bytes remain stable."
+  },
+  "main": {
+    "source": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-h5e-browser.mjs",
+    "sha256": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+    "bindings": [
+      {
+        "line": 216,
+        "finding": "B2 revision is hardcoded to75; the same check exists in the companion dependency."
+      },
+      {
+        "line": 299,
+        "finding": "harnessFields contains driver/protocol/comparator/inventory-helper/document/lock/gates/workload/mode/version; excludes orchestrator SHA and B2 candidate pin."
+      },
+      {
+        "line": 309,
+        "finding": "Each current stage verifies its own released orchestrator SHA."
+      },
+      {
+        "line": 326,
+        "finding": "An active stage continually checks its original release and executable bytes. Do not mutate the running V3 file."
+      },
+      {
+        "line": 370,
+        "finding": "Prior main reports bind comparison identity, fixed B0/B1 revisions and artifact inventories. Prior A/A candidate role equals its own baseline; unrelated future B2 pin is not consulted."
+      },
+      {
+        "line": 392,
+        "finding": "Frozen noise binds exact file/SHA, baseline source/inventories, workload, comparator, gates and suitability, not orchestrator SHA."
+      }
+    ],
+    "comparator": {
+      "path": "/private/tmp/paperclip-native-event-harness-h5e/scripts/compare-native-ingestion-browser.ts",
+      "lines": [
+        287,
+        309,
+        317,
+        633,
+        638,
+        647,
+        648,
+        649
+      ],
+      "finding": "Each role has its own qualified native hash and within-role stability. Driver measured bytes/lock stay matched; noise comparison binds baseline native/full inventory, fixed measurement and comparator/gates. No orchestrator SHA binding exists."
+    }
+  },
+  "companion": {
+    "source": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-blocked-stop-v4.mjs",
+    "sha256": "22c5dd91ecf40a44a0ed02324ae80838a761cffe43f3a6a8dad53f5b0780d470",
+    "bindings": [
+      {
+        "line": 60,
+        "finding": "Release must match the hardcoded dependency H5SHA."
+      },
+      {
+        "line": 186,
+        "finding": "Series identity includes h5HelperSha256 AND orchestratorSha256, alongside frozen driver/files/workload/precision/runtime checks."
+      },
+      {
+        "line": 193,
+        "finding": "readSeries deep-equals every prior series identity to the CURRENT identity. Changing the dependency's B2 literal therefore blocks prior series."
+      },
+      {
+        "line": 194,
+        "finding": "Historical owner release and its identity must also match its preserved series; editing old identities is not a valid migration."
+      },
+      {
+        "line": 209,
+        "finding": "All prior series, including qualification and both A/As, are re-read before later stages."
+      },
+      {
+        "line": 200,
+        "finding": "Noise bytes are pinned and independently recomputed from sealed raw arms."
+      }
+    ],
+    "protocol": {
+      "path": "/private/tmp/paperclip-native-event-blocked-stop-v4/tests/e2e/fixtures/native-ingestion-blocked-stop-protocol.mjs",
+      "lines": [
+        171,
+        182,
+        216,
+        238
+      ],
+      "finding": "Numeric noise binds baseline variant, fixed workload/precision, five pairs/ten raw arms, chronology and recomputed metrics. Candidate revision and orchestration hashes are not part of this mathematical noise envelope; the wrapper adds their execution-identity restriction."
+    }
+  },
+  "prospectiveDisposition": [
+    "Let the current main V3 A/A finish with its exact original source/release. Prepare successor helpers offline and stage only at a quiet boundary.",
+    "Remove the candidate literal once in new immutable helper sources. The exact authorized B2 descriptor remains pinned to its actual qualified receipt, clean source, build stamp, full inventories, native input/config/metadata/target/hash and within-role stability.",
+    "Keep frozen B0/B1 descriptors, driver73/V4a89, workload/oracle/timers, comparator/gates, runtime settings, precision and all raw/noise bytes unchanged.",
+    "Use one fresh companion functional qualification under the new stable helper/orchestrator identity before either companion A/A. Preserve the old V3 qualification under its own identity.",
+    "Select and seal any future actual candidate before its treatment stages. This does not authorize relabelling completed candidate comparisons."
+  ],
+  "completedCandidateLimit": "Main line381 checks prior treatment candidateRevision against the currently registered B2; finalization793 binds measured descriptors. Companion141 revalidates old B2 arms against the registered build. Existing fixed stage paths also refuse overwrites (main742, companion220). A measured/failed candidate must remain its own record; this audit proposes no retrospective migration or retry framework.",
+  "parentDecision": "Parent confirmed: main V3 A/A continues unchanged; new candidate-neutral V4 helpers will be frozen before companion A/A, with one fresh companion qualification. All four A/A gates still precede any further product optimization.",
+  "performed": {
+    "sourceReads": true,
+    "reportOnlyWrite": true,
+    "tests": false,
+    "sourceEdits": false,
+    "vmOrRuntimeOperations": false
+  }
+}

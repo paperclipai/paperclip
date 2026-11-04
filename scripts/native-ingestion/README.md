@@ -1,6 +1,18 @@
 # Native ingestion experiment helpers
 
-For fresh cursor results and the current interleaved source reproduction, see [the new source report](../../doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md). The frozen runner below preserves the earlier experiment. Current application reproduction uses the separately frozen [H5d driver and helpers](h5d/README.md) and [v3 blocked-write Stop companion](blocked-stop/README.md). Each requires its own immutable checkout and locked install: main `2df9897e` uses measurement `e1d8930c…`, while companion `bc33f09c` inherits H5c measurement `2265aabe…`. This mixed delivery tree and its lock are not an executed driver. Functional qualifications passed; no application A/A or performance gain is established at the recorded 09:30 UTC cutoff. The versioned [H5c helpers](h5c/README.md), H5b and older H4c runner below retain historical evidence. Each current campaign has 50 fresh arms and independent noise gates; source reproduction commands are in its linked README.
+Current application reproduction uses the separately frozen [H5e tools and
+resource diagnostic](h5e/README.md): main `73ea8516` and blocked-Stop `a89f321a`,
+each with its own immutable checkout and locked install. Current TypeScript B2
+`75b3578c` has its own actual production build and native target; a Rust product
+change is not required. Current-CF SMALL/FULL and old-wrapper blocked-Stop
+functional observations are complete, with the original loaded-streaming miss
+retained. Main B0 A/A is active at the packaging snapshot; no noise or application
+gain is claimed. Neutral V4 and resource V3 are source-cleared with runtime gates
+still open. This mixed delivery tree and its lock are not either executed driver.
+[H5d](h5d/README.md), [v3 Stop](blocked-stop/README.md), [H5c](h5c/README.md), H5b
+and the older runner below preserve historical experiments. Each current
+unprofiled campaign retains 50 fresh arms and independent noise gates. Cursor
+service reproduction remains in [the source report](../../doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md).
 
 These helpers reproduce the experiment registered on November 3, 2026. They
 retain its immutable application revisions, harness revision, workload hashes,

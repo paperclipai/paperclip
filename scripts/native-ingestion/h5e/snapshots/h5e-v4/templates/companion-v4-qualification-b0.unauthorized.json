@@ -1,0 +1,122 @@
+{
+  "schema": "paperclip.native-ingestion.blocked-stop-root-release.v1",
+  "authorized": false,
+  "stage": "qualification-b0",
+  "outputRoot": "/home/ubuntu/native-ingestion/evidence/blocked-stop-v4/series",
+  "orchestratorSha256": "b17e7a164e9c4e828a9dca27e02440b327c1457ac540130d3e046308b3b566fa",
+  "h5HelperFile": "/home/ubuntu/native-ingestion/helpers/native-ingestion-h5c-cf-build-guards.mjs",
+  "h5HelperSha256": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf",
+  "harnessRoot": "/home/ubuntu/native-ingestion/harness-blocked-stop-v4",
+  "harnessRevision": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+  "inheritedH5cRevision": "e431ec63d41fe90c6fd68bd2fc2bb969feeca917",
+  "lockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+  "companionFiles": {
+    "native-event-ingestion-blocked-stop.journey.ts": "8b3f8b3a9704c77a6ddd14d996ebd5cf34a5fe76883c51060edee208e82211a0",
+    "playwright-native-ingestion-blocked-stop.config.ts": "e9766cfd60c2eea5c1e14bedefa95706e5d87c03efebb8229a6536f00f441706",
+    "fixtures/native-ingestion-blocked-stop-authority.ts": "cd94f1f0dcd49a17ea341918954a115a1627357b0b78ea9d94905190a0973514",
+    "fixtures/native-ingestion-blocked-stop-clock.ts": "530bee16cbbec6801d0efe78942917fad63b4e2e5410d273dd4510a62ea87721",
+    "fixtures/native-ingestion-blocked-stop-db.ts": "8d9c637048280feb495f834e0dcd9e35cb4fbc98ded98a8e1d296525f1cbcc96",
+    "fixtures/native-ingestion-blocked-stop-protocol.mjs": "fcb83d72d6ab609fbd6a7e765a756989ece681f27d97675271f8d1f2c9c2ee0c",
+    "fixtures/native-ingestion-blocked-stop-protocol.test.mjs": "91e134430df46488ad19adcdb17591c688e069e747095e4a66361ece5fb33484",
+    "fixtures/native-ingestion-blocked-stop-validate.mjs": "383e43ce1e210a35ec920d8e3e5d763e7502c61db2057cf8a8d3ba8270b6dbd3",
+    "fixtures/native-ingestion-blocked-stop.md": "72979d6da5999368ea456c9bb376475f2fb00813e5efde0363d1ce378173e7d6",
+    "fixtures/native-ingestion-h5.mjs": "4eda47e6a1086e08174e08160c7d6f99d3e6da8cc349f93650bd0df693b6984e",
+    "fixtures/native-ingestion-h5.md": "b9f6a5af5b7ddb1a19fdb34231169eb4d99cac90d55ef11b35f6327f38cd6fa9"
+  },
+  "workloadSha256": "0fc383bca459682042be313e1c3243746b7428ab3b94c2a6ab3dc81eee252522",
+  "precisionRuleSha256": "a93bb828c91eae6f6fcb3b5f5533465475d57aaa03c79485b51d879af5d14669",
+  "resourceWatchdogMillis": 1800000,
+  "runtimeChecks": {
+    "node": {
+      "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+      "args": [
+        "--version"
+      ],
+      "expected": "v26.4.0"
+    },
+    "pnpm": {
+      "executable": "/usr/local/bin/pnpm",
+      "args": [
+        "--version"
+      ],
+      "expected": "9.15.4"
+    },
+    "postgres": {
+      "executable": "/home/ubuntu/native-ingestion/aligned-cf-baseline/node_modules/.pnpm/@embedded-postgres+linux-x64@18.1.0-beta.16/node_modules/@embedded-postgres/linux-x64/native/bin/postgres",
+      "args": [
+        "--version"
+      ],
+      "expected": "postgres (PostgreSQL) 18.1"
+    },
+    "chromium": {
+      "executable": "/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell",
+      "args": [
+        "--version"
+      ],
+      "expected": "Google Chrome for Testing 151.0.7922.34"
+    },
+    "rustc": {
+      "executable": "/home/ubuntu/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+      "args": [
+        "-vV"
+      ],
+      "expected": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6"
+    },
+    "cargo": {
+      "executable": "/home/ubuntu/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+      "args": [
+        "-vV"
+      ],
+      "expected": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:OpenSSL/3.6.2)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]"
+    }
+  },
+  "perVariantBuilds": {
+    "B0": {
+      "appRoot": "/home/ubuntu/native-ingestion/aligned-cf-baseline",
+      "revision": "7550ffa5d6447d2615bc89fc5313f4cbb958b615",
+      "qualifiedReceiptFile": "/home/ubuntu/native-ingestion/aligned-cf-builds-qualified.json",
+      "qualifiedReceiptSha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+      "inventorySummaryFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/artifact-inventory-summary.json",
+      "inventorySummarySha256": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+      "manifestFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf/environment/B0-artifact-inventory.json.gz",
+      "manifestFileSha256": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad",
+      "aggregateSha256": "bd14772d45fcbabc9d66582e27400a9cfe2cdfbeb40eccbc372428d3edf9102d",
+      "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+      "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6"
+    }
+  },
+  "priorStageReports": {},
+  "noiseReports": {},
+  "runtimeProvenance": {
+    "file": "/private/tmp/native-ingestion-cf-runtime-path-readback/stdout.json",
+    "sha256": "4498a01f20116a1a83860568411e780c7de65e26509824df682cc9ce811fb02b",
+    "manifestFile": "/private/tmp/native-ingestion-cf-runtime-path-readback/manifest.json",
+    "manifestSha256": "e8f69f51db226a743e41595a358e4ff6a92b748f1bc400f954b695bdaa7c01fd",
+    "nodeVersionSource": "Actual process.version plus CF normal-build node-version.log; --version is the guard command",
+    "nodeVersionFile": "/private/tmp/native-ingestion-evidence-cf/builds/aligned-cf-build-logs/node-version.log",
+    "nodeVersionFileSha256": "a75bc1e881900bc735e456cd684724256bcc2d09f91e04e5a42082d821a6b87b",
+    "pnpmCanonicalFile": "/opt/native-ingestion/pnpm/node_modules/pnpm/bin/pnpm.cjs",
+    "pnpmFileSha256": "98e6b99a881d64a1cc982c3e60aa260bf02160386b12e74475e06486dc74b090",
+    "actualPnpmNodeObservation": {
+      "observed": true,
+      "samples": [
+        {
+          "pid": 3552991,
+          "startTicks": "5694068",
+          "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+          "cwd": "/home/ubuntu/native-ingestion/aligned-cf-baseline"
+        }
+      ],
+      "scope": "Actual same-PID /proc executable/cwd during package-manager --version; no project script or bootstrap invoked"
+    },
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
+    "cwd": "/home/ubuntu/native-ingestion/aligned-cf-baseline"
+  },
+  "guardProvenance": {
+    "file": "/private/tmp/native-ingestion-evidence-cf/builds/evidence/aligned-cf/environment/watchdog-extension-cf-next08.json",
+    "sha256": "9fdcdc640978d7540164cda67616410850c5592d05207e552736f8060dc78b9c",
+    "hardResourceExpiryUtc": "2026-11-05T08:08:02Z",
+    "finalExplicitTerminationStillRequired": true
+  },
+  "releasePending": "UNAUTHORIZED source template. No qualification or timing arm has run on this driver."
+}

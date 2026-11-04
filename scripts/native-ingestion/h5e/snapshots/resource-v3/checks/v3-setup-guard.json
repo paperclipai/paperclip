@@ -1,0 +1,6 @@
+{
+  "sourceOnly": true,
+  "attempt": "Initial shell request used the not-yet-created new directory as cwd",
+  "result": "Command process never started because cwd did not exist; no file mutation or runtime operation",
+  "correction": "Create versioned source copy in existing cwd, then run source checks in it"
+}

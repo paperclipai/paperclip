@@ -1,0 +1,62 @@
+{
+  "schema": "native-ingestion-h5e-tools-v3-independent-source-review/v1",
+  "reviewer": "/root/resource_v2_review",
+  "reviewedAtUtc": "2026-11-04T12:01:18.244603+00:00",
+  "verdict": "SOURCE_CLEAR",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "packet": {
+    "path": "/private/tmp/native-ingestion-h5e-tools-v3/source-packet.json",
+    "sha256": "caab406f96294313b9ab05ed4f26a083023cbb4d61075993cfbf9b8fc15129c7"
+  },
+  "patchSha256": "2a18b5601fcdc63a490f69cbf08375f746db5573f3d6d335bffd3b42ff4b3e35",
+  "verified": {
+    "sourceFiles": 22,
+    "verificationFiles": 36,
+    "exactCompositionClones": 8,
+    "allV2And18aSourceAndVerificationFilesUnchanged": true,
+    "frozenDrivers73eaAndA89fCleanPinnedBeforeAfter": true,
+    "allFourTemplatesUnauthorized": true,
+    "independentPureHelperTestsPassed": 91,
+    "actualV2RedFailures": 2,
+    "actualFrozenComparatorCliTestsPassed": 6,
+    "runtimeAppBuildProviderBrowserDatabaseVmNetworkOrProductOperationsExecuted": false
+  },
+  "findings": [],
+  "conclusions": [
+    "Full minimal helper patch review confirms only cross-role OLD_BINARY equality is removed; provenance mode names now distinguish unchanged/changed native INPUTS, the unused descriptor argument is removed, and descriptive pending text/helper hash references are updated.",
+    "Both main and companion dependency retain byte-identical native/candidate validation. Complete fifteen source inputs, compiler/toolchain outputs, environment/profile, metadata, current75 B2-role qualified receipt, canonical independent target, clean source/stamps and four inventory roots remain required.",
+    "B0/B1 original qualified receipt, source, native target and exact artifact hashes remain frozen. B2 must still match binarySha256 across its descriptor, receipt and nativeStageHashes, and the live pre-app guard hashes the actual executable and checks resolved target, actualGit inputs and complete inventories.",
+    "Source-only reproducibility review a58dea3653249ccd495e70e78c7b4baaade3a5634e8105244bb93d9973f6d1db establishes a coverage limitation, not an observed B2 mismatch or path-specific cause. The correction is prospective before a newB2build/currentpairedapplicationdata and changes no measured-performance threshold.",
+    "Fresh independent RED reruns fail both immutableV2 validators at their actual validateNativeProvenance cross-role equality assertion with expectedCFhash versus syntheticindependenthash. GREEN reruns pass all91helpercases; this is an executable-guard change, not merely a reporter/parser result.",
+    "The first RED verification parser assumption and its original command receipt/raw two-failure TAP outputs remain sealed. Multiline TAP formatting was corrected in verification only; the prior outputs already contain actual expected assertions.",
+    "Six actual frozen comparator CLI tests pass independently. They accept distinct properly qualified role artifacts and reject serving/receipt mismatches, a second artifact within one role, distinctA/Aartifacts and a different candidate artifact in later original-deadline proof. The frozen top-level test also retains failed baseline SLA and verified-drain regression evidence.",
+    "All workloads/oracles, timers/SLAs, control/durability rules, stage sequence, noise and four-of-five acceptance, runtime checks, inventories, physical quiet guards and ten-file arm seal set remain unchanged; no driver/comparator/product source was edited."
+  ],
+  "logs": [
+    {
+      "path": "/private/tmp/native-ingestion-h5e-tools-v3-peer-green.log",
+      "bytes": 19905,
+      "sha256": "4cfa806cd1171849f708bc063d29b2b4f808973c529068a41110cf3b0faf34f3"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-tools-v3-peer-red.log",
+      "bytes": 3071,
+      "sha256": "544552a7b3bb38ade05702a4cb949b5bdf71342cf8924ceba06fc909074aa75f"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-tools-v3-peer-comparator.log",
+      "bytes": 2162,
+      "sha256": "5733b0cc165f5de7494e0842493b26f80c4ad82c9b1ee7fbb2fb18f6151ebb3a"
+    }
+  ],
+  "remainingGates": [
+    "Root review and concrete release before staging/executing the newhelperpacket.",
+    "A fresh actual normal current75 B2 production build in its own canonical target, complete qualification receipt and actual serving binary hash are still absent.",
+    "If the actual native artifact hash differs, root must preserve and inspect actual binary differences and normal-build provenance before accepting application treatment. Equal inputs alone do not prove equal bytes or innocuous differences. Do not change flags, chase a hash, mutate baselines, relabelB2-base or addRust to satisfy artifact identity.",
+    "ActualB2qualification input pins require the real build receipt and root review; the unchangedB2-base controller cannot qualify current75.",
+    "Fresh A/A/noise and unchanged paired application/correctness/control acceptance remain open. This review grants no gain or historical-arm qualification."
+  ]
+}

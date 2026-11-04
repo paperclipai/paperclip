@@ -1,0 +1,63 @@
+{
+  "name": "postgres",
+  "version": "3.4.9",
+  "description": "Fastest full featured PostgreSQL client for Node.js",
+  "type": "module",
+  "module": "src/index.js",
+  "main": "cjs/src/index.js",
+  "exports": {
+    "types": "./types/index.d.ts",
+    "bun": "./src/index.js",
+    "workerd": "./cf/src/index.js",
+    "import": "./src/index.js",
+    "default": "./cjs/src/index.js"
+  },
+  "types": "types/index.d.ts",
+  "typings": "types/index.d.ts",
+  "engines": {
+    "node": ">=12"
+  },
+  "scripts": {
+    "build": "npm run build:cjs && npm run build:deno && npm run build:cf",
+    "build:cjs": "node transpile.cjs",
+    "build:deno": "node transpile.deno.js",
+    "build:cf": "node transpile.cf.js",
+    "test": "npm run test:esm && npm run test:cjs && npm run test:deno",
+    "test:esm": "node tests/index.js",
+    "test:cjs": "npm run build:cjs && cd cjs/tests && node index.js && cd ../../",
+    "test:deno": "npm run build:deno && cd deno/tests && deno run --no-lock --allow-all --unsafely-ignore-certificate-errors index.js && cd ../../",
+    "lint": "eslint src && eslint tests",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run lint"
+  },
+  "files": [
+    "/cf/src",
+    "/cf/polyfills.js",
+    "/cjs/src",
+    "/cjs/package.json",
+    "/src",
+    "/types"
+  ],
+  "author": "Rasmus Porsager <rasmus@porsager.com> (https://www.porsager.com)",
+  "funding": {
+    "type": "individual",
+    "url": "https://github.com/sponsors/porsager"
+  },
+  "license": "Unlicense",
+  "repository": "porsager/postgres",
+  "homepage": "https://github.com/porsager/postgres",
+  "bugs": "https://github.com/porsager/postgres/issues",
+  "keywords": [
+    "driver",
+    "postgresql",
+    "postgres.js",
+    "postgres",
+    "postrges",
+    "postgre",
+    "client",
+    "sql",
+    "db",
+    "pg",
+    "database"
+  ]
+}

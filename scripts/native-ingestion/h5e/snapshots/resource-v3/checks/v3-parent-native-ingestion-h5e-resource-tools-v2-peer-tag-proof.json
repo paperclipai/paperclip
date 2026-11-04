@@ -1,0 +1,17 @@
+{
+  "actualSourceFunctions": [
+    "diagnosticPlan",
+    "counter preload release assertion",
+    "PG preload release assertion"
+  ],
+  "providedReleaseTag": "combined-h5e-resource-v2",
+  "counterGuard": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v2', 'Separate reviewed resource release required');",
+  "counterGuardPassed": true,
+  "pgGuard": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v1');",
+  "pgGuardPassed": false,
+  "errorCode": "ERR_ASSERTION",
+  "actual": "combined-h5e-resource-v2",
+  "expected": "combined-h5e-resource-v1",
+  "processAppPgVmNetworkOrBuildExecuted": false,
+  "scope": "Node node:vm runs the actual extracted assertions against diagnosticPlan output; no preload, app or OS process is started."
+}

@@ -1,0 +1,135 @@
+{
+  "schema": "native-ingestion-h5e-source-composition/v4",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "parentPacketFile": "/private/tmp/native-ingestion-h5e-tools-v3/source-packet.json",
+  "parentPacketSha256": "caab406f96294313b9ab05ed4f26a083023cbb4d61075993cfbf9b8fc15129c7",
+  "candidateSourceAuthority": "Exact authorized root release perVariantBuilds.B2 descriptor and its actual qualified receipt; live Git/clean/build/native/inventory checks remain.",
+  "currentlyRegisteredCandidateRevision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+  "futureCandidateRegistered": false,
+  "candidateTargetPolicy": "independent-in-both-input-modes",
+  "crossRoleArtifactEqualityRequired": false,
+  "actualDifferentHashReviewRequiredBeforeTreatmentAcceptance": true,
+  "clones": [
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-h5e-browser.mjs",
+      "parentSha256": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+      "file": "native-ingestion-run-h5e-browser.mjs",
+      "sha256": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+      "bytes": 68900,
+      "replacements": [
+        {
+          "old": "const B2_REVISION = '75b3578cfccf040b087a55a624e01baa2bca37f9';\n",
+          "new": "",
+          "count": 1
+        },
+        {
+          "old": "    assert.equal(descriptor.revision, B2_REVISION, 'B2 must use the reviewed current TypeScript batching source revision');",
+          "new": "    assert.ok(!Object.values(BASELINES).includes(descriptor.revision), 'B2 source cannot reuse a frozen B0/B1 baseline revision');",
+          "count": 1
+        },
+        {
+          "old": "B2 source75b3578 needs its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.",
+          "new": "B2 needs a prospectively registered exact root-release source and its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5c-cf-build-guards.mjs",
+      "parentSha256": "2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d",
+      "file": "native-ingestion-h5c-cf-build-guards.mjs",
+      "sha256": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf",
+      "bytes": 62077,
+      "replacements": [
+        {
+          "old": "const B2_REVISION = '75b3578cfccf040b087a55a624e01baa2bca37f9';\n",
+          "new": "",
+          "count": 1
+        },
+        {
+          "old": "    assert.equal(descriptor.revision, B2_REVISION, 'B2 must use the reviewed current TypeScript batching source revision');",
+          "new": "    assert.ok(!Object.values(BASELINES).includes(descriptor.revision), 'B2 source cannot reuse a frozen B0/B1 baseline revision');",
+          "count": 1
+        },
+        {
+          "old": "B2 source75b3578 needs its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.",
+          "new": "B2 needs a prospectively registered exact root-release source and its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-linux-readiness.mjs",
+      "parentSha256": "f07d10221f28116fae37ca0cd3510ee71bd5d6b36d88b8f783319eeff10657e3",
+      "file": "native-ingestion-h5e-linux-readiness.mjs",
+      "sha256": "3f7eaeeefaebab26a348314f4dc6eef7cd041f02a330cc5d9b9a410f724005fc",
+      "bytes": 3292,
+      "replacements": [
+        {
+          "old": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+          "new": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-full-linux-readiness.mjs",
+      "parentSha256": "7a0f0dd78fb6a48af79a63b45cbd20eed2b9b2552bc8d649860b39981802c8cf",
+      "file": "native-ingestion-h5e-full-linux-readiness.mjs",
+      "sha256": "04bd5fd05bea8ef6d0d83a5d75d5a894030dc974a04fee7be167860c1a9225aa",
+      "bytes": 3291,
+      "replacements": [
+        {
+          "old": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+          "new": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-linux-h5e-qualification.py",
+      "parentSha256": "97a27b73554d7e11f4ffa78c62615ed300385b13ed7206e0a3147491195e77b3",
+      "file": "native-ingestion-linux-h5e-qualification.py",
+      "sha256": "f1a1a2936c4663ca97429c1f6d8e42b6704561c5be27847b65dc8b5c7365e9d5",
+      "bytes": 7804,
+      "replacements": [
+        {
+          "old": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+          "new": "191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-extract-h5e-qualification-foreground.py",
+      "parentSha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12",
+      "file": "native-ingestion-extract-h5e-qualification-foreground.py",
+      "sha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12",
+      "bytes": 6339,
+      "replacements": []
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-validate-h5e-evidence.mjs",
+      "parentSha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb",
+      "file": "native-ingestion-validate-h5e-evidence.mjs",
+      "sha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb",
+      "bytes": 7590,
+      "replacements": []
+    },
+    {
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-blocked-stop-v4.mjs",
+      "parentSha256": "22c5dd91ecf40a44a0ed02324ae80838a761cffe43f3a6a8dad53f5b0780d470",
+      "file": "native-ingestion-run-blocked-stop-v4.mjs",
+      "sha256": "b17e7a164e9c4e828a9dca27e02440b327c1457ac540130d3e046308b3b566fa",
+      "bytes": 28940,
+      "replacements": [
+        {
+          "old": "2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d",
+          "new": "8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

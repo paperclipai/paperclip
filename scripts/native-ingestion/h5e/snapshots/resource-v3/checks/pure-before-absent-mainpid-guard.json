@@ -1,0 +1,219 @@
+{
+  "scope": "Source/synthetic IO/Node:vm functions only, no actual VM/runtime/PG/process inspection",
+  "checks": [
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-concurrency=1",
+        "counter-semantics.test.mjs",
+        "counter-flush.test.mjs",
+        "resource-tools.test.mjs",
+        "cleanup-faults.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "\u2714 RED actual V1 stop success plus unit GC skips private cleanup; GREEN V2 retains normal proof and verifies retirement (3.304792ms)\n\u2714 RED V1 initially collected ready service is falsely never-started; GREEN V2 requires its exit proof and retirement (1.417083ms)\n\u2714 missing/mismatched exit proof and PID reuse fail honestly while always removing exact owned private paths (3.843375ms)\n\u2714 actual ExecStopPost writer atomically preserves own-unit status; bad exit stays explicitly unqualified (1.017833ms)\n\u2714 RED V1 birth EACCES escapes ownership; GREEN V2 owns before await and cooperatively joins with primary error preserved (1.700333ms)\n\u2714 early spawn error already has listeners and an owned joined handle; no numeric PID is signalled (0.363792ms)\n\u2714 unjoined unknown birth and reused known birth never signal a numeric PID or become successful cleanup (0.47075ms)\n\u2714 direct service installs only the source-bound finite exit writer after all event windows (0.192209ms)\n\u2714 independent filesystem proof accepts hash-matched final counters and rejects changed receipt/observer/log bytes (16.327875ms)\n\u2714 counter failures, missing ACK coverage, unknown/duplicate hooks and nonzero pending observer cannot pass a forged complete receipt (4.55ms)\n\u2714 self-consistent file hashes cannot substitute a claimed receipt hook for an absent observed hook (3.665208ms)\n\u2714 independent ACK must bind the same PID, boundary, observer/log hashes and counters as the reread receipt (1.6795ms)\n\u2714 capture ownership rejects a different uid, symlink evidence and canonical escape from the owned directory (2.16925ms)\n\u2714 inspector validation and CDP use only Runtime.evaluate, bind exact PID and fail on early close without an ACK (7.706458ms)\n\u2714 marker-level coverage keeps normal complete joins and Stop prefix while rejecting missing, foreign and duplicated observations (0.756625ms)\n\u2714 unknown bytes, variants and absent/duplicated anchors fail without legacy fallback (1.153ms)\n\u2714 outer COMMIT is counted only after its actual awaited acknowledgement, not query construction or request (0.777125ms)\n\u2714 injected COMMIT failure preserves the exact error and never counts a committed transaction or rollback (0.334417ms)\n\u2714 callback rejection and acknowledged rollback are distinct, preserving original thrown error (0.271542ms)\n\u2714 actual scope handler retains its lexical uncaught-query error and original rollback propagation (0.276875ms)\n\u2714 rollback failure retains original postgres replacement-error behavior and has no rollback ACK (0.238541ms)\n\u2714 BEGIN rejection stays separate from callback, COMMIT and rollback failures (0.181334ms)\n\u2714 nested successful scopes and rollback-to scopes never inflate outer transactions (0.307542ms)\n\u2714 prepared transaction ACK and failure are not committed transactions (0.611709ms)\n\u2714 query-build attempts retain transaction commands but cannot become ACKs or log statement/parameters (0.170583ms)\n\u2714 postcommit new identities, duplicate receipts and later callback failures keep distinct durable semantics (0.932708ms)\n\u2714 actual transformed AsyncQueue counts accepted values, direct handoff and buffered depth without altering close/failure semantics (0.57925ms)\n\u2714 CF pins match sealed qualified B0/B1 inventories; actual B2 expected bytes remain serving-unqualified (23.943292ms)\n\u2714 all six current source hooks retain exact byte guards, anchors and syntax (339.18925ms)\n\u2714 startup hook checks actual CF entry bytes and exactly one existing reuse boundary (28.817583ms)\n\u2714 release rejects authorization, workload, budget, old runtime and missing actual PG pins before launch (3.4515ms)\n\u2714 parameterized candidate export requires its actual independent qualified manifest and preserves its own binary (8.04925ms)\n\u2714 service starts exact PG in root-owned nondelegated Type=exec scope before any child; no PID migration command (0.265375ms)\n\u2714 normal PG environment is privately encoded and compared by hashes without appearing in argv (6.104916ms)\n\u2714 service proof rejects proxy PID, wrong unit/user, delegation, capabilities and writable-control configuration (0.684625ms)\n\u2714 SMALL/FULL composition keeps frozen assembly and workload flags, bootstrap uninstrumented, PG hook server-only (0.158042ms)\n\u2714 resource bounds retain five interior intervals and independent 10-percent uncertainty per numerator (0.196792ms)\n\u2714 Stop is excluded from CPU/SQL/TX ratios and every reported denominator is exact independently durable text count (0.1495ms)\n\u2714 default command performs no serving action and marks actual B2 source pins serving-unqualified (29.422875ms)\n\u2714 actual old wrapper pins and ordinary startup lack CF resource qualification; adapted pins and one startup hook pass (6.399667ms)\n\u2714 partial startup cleanup binds its fresh ledger, exact PG argv and current unit; receipt rejects PID reuse (0.450667ms)\n\u2714 future main-helper metadata and execution share exact independently reviewed approval guards (0.151666ms)\n\u2714 actual B2 appendEvents wrapper preserves one batch, receipt order, immediate invocation and exact failures (0.378792ms)\n\u2139 tests 43\n\u2139 suites 0\n\u2139 pass 43\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 661.886625\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "analyze-pg-windows.test.py"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "...\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n"
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "cleanup-faults.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-capture-client.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-flush.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-preload.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-proofs.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-semantics.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counters.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "export-counter-pins.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "export-pg-inputs.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-exit-receipt.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-service-preload.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-service.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-capture.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-contract.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-tools.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-wrapper.config.mts"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-wrapper.spec.mts"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "run-resource-diagnostic.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "transforms.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "pythonAstPassed": 3
+}

@@ -1,0 +1,20 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Root release is not authorized
+
+false !== true
+
+    at loadRelease (file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs:306:10)
+    at async main (file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs:832:19)
+    at async file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs:848:68 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.22.2

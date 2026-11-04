@@ -1,0 +1,340 @@
+{
+  "scope": "Actual-source Node:vm/synthetic IO and syntax only, no actual VM/runtime/process inspection",
+  "checks": [
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-concurrency=1",
+        "counter-semantics.test.mjs",
+        "counter-flush.test.mjs",
+        "resource-tools.test.mjs",
+        "cleanup-faults.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "\u2714 RED actual V1 stop success plus unit GC skips private cleanup; GREEN V2 retains normal proof and verifies retirement (2.63075ms)\n\u2714 RED V1 initially collected ready service is falsely never-started; GREEN V2 requires its exit proof and retirement (1.002ms)\n\u2714 missing/mismatched exit proof and PID reuse fail honestly while always removing exact owned private paths (3.254542ms)\n\u2714 actual ExecStopPost writer atomically preserves own-unit status; bad exit stays explicitly unqualified (1.157458ms)\n\u2714 RED V1 birth EACCES escapes ownership; GREEN V2 owns before await and cooperatively joins with primary error preserved (1.530709ms)\n\u2714 early spawn error already has listeners and an owned joined handle; no numeric PID is signalled (0.342333ms)\n\u2714 unjoined unknown birth and reused known birth never signal a numeric PID or become successful cleanup (0.38325ms)\n\u2714 direct service installs only the source-bound finite exit writer after all event windows (0.180583ms)\n\u2714 independent filesystem proof accepts hash-matched final counters and rejects changed receipt/observer/log bytes (19.622291ms)\n\u2714 counter failures, missing ACK coverage, unknown/duplicate hooks and nonzero pending observer cannot pass a forged complete receipt (4.531ms)\n\u2714 self-consistent file hashes cannot substitute a claimed receipt hook for an absent observed hook (3.541667ms)\n\u2714 independent ACK must bind the same PID, boundary, observer/log hashes and counters as the reread receipt (1.737875ms)\n\u2714 capture ownership rejects a different uid, symlink evidence and canonical escape from the owned directory (2.100834ms)\n\u2714 inspector validation and CDP use only Runtime.evaluate, bind exact PID and fail on early close without an ACK (7.315917ms)\n\u2714 marker-level coverage keeps normal complete joins and Stop prefix while rejecting missing, foreign and duplicated observations (0.7325ms)\n\u2714 unknown bytes, variants and absent/duplicated anchors fail without legacy fallback (1.191542ms)\n\u2714 outer COMMIT is counted only after its actual awaited acknowledgement, not query construction or request (0.794542ms)\n\u2714 injected COMMIT failure preserves the exact error and never counts a committed transaction or rollback (0.336375ms)\n\u2714 callback rejection and acknowledged rollback are distinct, preserving original thrown error (0.256084ms)\n\u2714 actual scope handler retains its lexical uncaught-query error and original rollback propagation (0.282875ms)\n\u2714 rollback failure retains original postgres replacement-error behavior and has no rollback ACK (0.271209ms)\n\u2714 BEGIN rejection stays separate from callback, COMMIT and rollback failures (0.193959ms)\n\u2714 nested successful scopes and rollback-to scopes never inflate outer transactions (0.311083ms)\n\u2714 prepared transaction ACK and failure are not committed transactions (0.578375ms)\n\u2714 query-build attempts retain transaction commands but cannot become ACKs or log statement/parameters (0.178458ms)\n\u2714 postcommit new identities, duplicate receipts and later callback failures keep distinct durable semantics (0.695167ms)\n\u2714 actual transformed AsyncQueue counts accepted values, direct handoff and buffered depth without altering close/failure semantics (0.320625ms)\n\u2714 CF pins match sealed qualified B0/B1 inventories; actual B2 expected bytes remain serving-unqualified (22.589084ms)\n\u2714 all six current source hooks retain exact byte guards, anchors and syntax (317.53175ms)\n\u2714 startup hook checks actual CF entry bytes and exactly one existing reuse boundary (24.029875ms)\n\u2714 release rejects authorization, workload, budget, old runtime and missing actual PG pins before launch (2.302916ms)\n\u2714 parameterized candidate export requires its actual independent qualified manifest and preserves its own binary (7.43125ms)\n\u2714 service starts exact PG in root-owned nondelegated Type=exec scope before any child; no PID migration command (0.253042ms)\n\u2714 normal PG environment is privately encoded and compared by hashes without appearing in argv (5.972208ms)\n\u2714 service proof rejects proxy PID, wrong unit/user, delegation, capabilities and writable-control configuration (0.728ms)\n\u2714 SMALL/FULL composition keeps frozen assembly and workload flags, bootstrap uninstrumented, PG hook server-only (0.157958ms)\n\u2714 resource bounds retain five interior intervals and independent 10-percent uncertainty per numerator (0.186458ms)\n\u2714 Stop is excluded from CPU/SQL/TX ratios and every reported denominator is exact independently durable text count (0.14475ms)\n\u2714 default command performs no serving action and marks actual B2 source pins serving-unqualified (29.191916ms)\n\u2714 actual old wrapper pins and ordinary startup lack CF resource qualification; adapted pins and one startup hook pass (6.255ms)\n\u2714 partial startup cleanup binds its fresh ledger, exact PG argv and current unit; receipt rejects PID reuse (0.414583ms)\n\u2714 future main-helper metadata and execution share exact independently reviewed approval guards (0.140833ms)\n\u2714 actual B2 appendEvents wrapper preserves one batch, receipt order, immediate invocation and exact failures (0.305291ms)\n\u2139 tests 43\n\u2139 suites 0\n\u2139 pass 43\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 617.60175\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "analyze-pg-windows.test.py"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "...\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n"
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "cleanup-faults.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-capture-client.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-flush.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-preload.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-proofs.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counter-semantics.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "counters.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "export-counter-pins.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "export-pg-inputs.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-exit-receipt.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-service-preload.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "pg-service.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-capture.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-contract.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-tools.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-wrapper.config.mts"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "resource-wrapper.spec.mts"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "run-resource-diagnostic.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--check",
+        "transforms.mjs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "pythonAstPassed": 3,
+  "sourceHashesBefore": {
+    "B2-source-provenance.json": "6367725b908c07b85aef3b97566769a2eeb225f49c1a1ebfa5b85522317f67a7",
+    "DEFINITIONS.md": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+    "README.md": "e1f4349d84bec41948203029e4d7c6e44a68672299c0200075d3f73672e8dd97",
+    "analyze-pg-windows.py": "53a40f7ce7fe0d048bb2b65a9e1d9376056b94e3e093b0e765196b8177d57313",
+    "analyze-pg-windows.test.py": "bede61fdbde00a8e350fabed1a0c1971dc4fe644798867d9d409def0a9655dc2",
+    "baseline-metadata/B0-artifact-inventory.json.gz": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad",
+    "baseline-metadata/B1-artifact-inventory.json.gz": "5dd499b896425a9afc5776c2e76214027a9d146f2ee32f8554e7fe9873f1b7bc",
+    "baseline-metadata/B2-artifact-inventory-summary.json": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29",
+    "baseline-metadata/B2-artifact-inventory.json.gz": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+    "baseline-metadata/B2-build-descriptor.json": "6cb9946cf2d62cd95c85283129c2979894a2fb12ee1ab3d87ed1b43a0efbd3aa",
+    "baseline-metadata/B2-build-qualified.json": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1",
+    "baseline-metadata/Mac-B2-build-receipt-snapshot.json": "a67202281bb02fdd4aa839204efcd033c3308397d3f3937a50666f8dc075f155",
+    "baseline-metadata/aligned-cf-builds-qualified.json": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+    "baseline-metadata/artifact-inventory-summary.json": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+    "cleanup-faults.test.mjs": "e12aa0ea5bf072548c6d2535adc947c30a6043cb413e4e5b7f9c2c0b881ddc82",
+    "counter-capture-client.mjs": "d5cb42713a2dba1af1d15a879aa9b9a0adb1f8e8a0317f9fa1c69973e51a6741",
+    "counter-flush.test.mjs": "11e7b1b0c521aec9a55ab5af068684bd1cfd4212a211e42f636431e36a237bd7",
+    "counter-pin-export-template.unauthorized.json": "e02d99d1a92b3efb342687114387742a3c4f22ef83a414fd3fa71fcdc36566c5",
+    "counter-preload.mjs": "dbf9d4c3ae04ec754795d5a2fed673b3f0bc92939c899b6b35e3ee3c56e18534",
+    "counter-proof-sources.json": "58edc977f746031dc1aa8612183c0b236726bb42f651e63a9a62548f2e5fe35f",
+    "counter-proofs.mjs": "3784fa8e928087fba8d9274cafcd38e1e5a3b63dd0e9ff838e347664f2957e5a",
+    "counter-semantics.test.mjs": "58c49ef49d7816b32134d3cec01866cc7ec81930a357288c8872676e61d129ce",
+    "counters.mjs": "91de72c53829e13fe5c9a33f43fd7b9f20dbc01933e0392645603270371876d0",
+    "embedded-source-pins.json": "304a22bc4881ea3a9e54562ffd675c4d1d23afb0f5bffab7595f7d6da0cd6b50",
+    "export-counter-pins.mjs": "b6e6d3430a506fa559ba8a53b61537f62325704aa0778042d83588814d1916cf",
+    "export-pg-inputs.mjs": "34b7dfe3381914cf2795525761125a2ca5a297059d08d8754719910f33063be7",
+    "external/external_resources.py": "1a040299087b85b4e50f63fc8c45783241fe9893c709359cd56e200451d4ae57",
+    "external/pg-snapshot.sql": "dfc702d531f51da75ae0f49fa19a46c5f5d04e61e9c790bddae8d8fcd1403bbf",
+    "external/pg_cluster_binding.mjs": "75b9713aaa5e89099947b6e4d3864bc105f82852f6718cb6d2f9935f13a23c63",
+    "external/pg_resources.mjs": "e90ce40fdb45f7f789f29c20c0ff8a57f1e915ca1e8fa8f4cce6b2d19084b6d3",
+    "known-builds.json": "c1dc00935ab24c4c42f80058917cc5f8c2fee9f6615c9924def1cad5de383d9e",
+    "main-helper-approval-template.unauthorized.json": "d8ff8d67c251075f645481c632ff71559b9b2a49fdbdb3528569da644fb74a24",
+    "parent-review.patch": "5df1e3fad498c306cd5582e1b021125dae3ec92e7e4557758951fe54ddd0264e",
+    "parent-source-packet.json": "dbc565017889b995880ee05a0b4bffae5c4c5fc56a7ed538226c4ea7bea6c960",
+    "pg-exit-receipt.mjs": "e0db58a1fb8287ff83830123aadf2c9597c420be3186e9f823631e8834d00be0",
+    "pg-service-preload.mjs": "228aef635832803dd48219b402978ad41e7fc051f0ac223b7a02aea249b00d03",
+    "pg-service.mjs": "3266341d23869db920ce0155cbda6f91dfac49c95c464c3b18e9f339726ecf88",
+    "pins.json": "a9697e71a8baff93c0dec67eec6fb5bc0015c266bf4ebf53c165327bb3e39984",
+    "release-template.unauthorized.json": "de09c38cce3853d0f3fda92b6c83fdf881790fc70d0eb03f8ae46b00a71a2abc",
+    "resource-capture.mjs": "7f3fd79913b12c91d87e8c3a9178d54ec6308148cbbdfd03996260549ab2cddd",
+    "resource-contract.mjs": "53174552b3772d61de19fb486db235cae5dc58ecc42c4f45716bc870f521aec5",
+    "resource-tools.test.mjs": "c09b8c9f0cbabbe7ec5821324cf45852bd3826a71b335fa4dd4c962fc7094099",
+    "resource-wrapper.config.mts": "f38042056e4008de83a1db29a9b722a59e85abcd0afb4e509fdbb96252049f92",
+    "resource-wrapper.spec.mts": "caf3d7864e731bd6348248eaca15bf6720f77b7e67cd66f0a8a097faa8402759",
+    "run-resource-diagnostic.mjs": "8f5123dfdaf721de3b54f17bce158b6c2966bdb87825a0b83ceffa1014985c81",
+    "test-fixtures/modules/port-B2.js": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66",
+    "test-fixtures/modules/port.js": "49a971a961d831dc4dbea39c715abb371609464797bbfcc58ac911792d8b945c",
+    "test-fixtures/modules/queue.js": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869",
+    "test-fixtures/modules/resolver.js": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c",
+    "test-fixtures/modules/runlog.js": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5",
+    "test-fixtures/modules/server-index-B1.js": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "test-fixtures/old-wrapper-pins.json": "fe669525dbb158e4720b4c61b2b51b077e763810b9dfddeeda0c11882ed34f98",
+    "test-fixtures/postgres/package.json": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9",
+    "test-fixtures/postgres/src/connection.js": "b57261592f135d127b8e7267c78981eb2c5f4751259641b782ba621b89d939d1",
+    "test-fixtures/postgres/src/index.js": "07dee80154d83ca9163a4a8790ef0281602ffca682e2387b3487bf20395d2adf",
+    "test-fixtures/v1/pg-service.mjs": "db1f89a2e0021932a184628f1ffa55e96be8003a50fcab6f17bf0c7eb7f674a0",
+    "test-fixtures/v1/resource-capture.mjs": "943514f0955860052f7f2d2b36793483f303177cf32e42f22236431664e0d981",
+    "transforms.mjs": "ed0a07c4775b99f7f2a0f7861e3ca40a360fe4d7cb23822cfcaa6338da0af1cc"
+  },
+  "sourceHashesAfter": {
+    "B2-source-provenance.json": "6367725b908c07b85aef3b97566769a2eeb225f49c1a1ebfa5b85522317f67a7",
+    "DEFINITIONS.md": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+    "README.md": "e1f4349d84bec41948203029e4d7c6e44a68672299c0200075d3f73672e8dd97",
+    "analyze-pg-windows.py": "53a40f7ce7fe0d048bb2b65a9e1d9376056b94e3e093b0e765196b8177d57313",
+    "analyze-pg-windows.test.py": "bede61fdbde00a8e350fabed1a0c1971dc4fe644798867d9d409def0a9655dc2",
+    "baseline-metadata/B0-artifact-inventory.json.gz": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad",
+    "baseline-metadata/B1-artifact-inventory.json.gz": "5dd499b896425a9afc5776c2e76214027a9d146f2ee32f8554e7fe9873f1b7bc",
+    "baseline-metadata/B2-artifact-inventory-summary.json": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29",
+    "baseline-metadata/B2-artifact-inventory.json.gz": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+    "baseline-metadata/B2-build-descriptor.json": "6cb9946cf2d62cd95c85283129c2979894a2fb12ee1ab3d87ed1b43a0efbd3aa",
+    "baseline-metadata/B2-build-qualified.json": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1",
+    "baseline-metadata/Mac-B2-build-receipt-snapshot.json": "a67202281bb02fdd4aa839204efcd033c3308397d3f3937a50666f8dc075f155",
+    "baseline-metadata/aligned-cf-builds-qualified.json": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+    "baseline-metadata/artifact-inventory-summary.json": "e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d",
+    "cleanup-faults.test.mjs": "e12aa0ea5bf072548c6d2535adc947c30a6043cb413e4e5b7f9c2c0b881ddc82",
+    "counter-capture-client.mjs": "d5cb42713a2dba1af1d15a879aa9b9a0adb1f8e8a0317f9fa1c69973e51a6741",
+    "counter-flush.test.mjs": "11e7b1b0c521aec9a55ab5af068684bd1cfd4212a211e42f636431e36a237bd7",
+    "counter-pin-export-template.unauthorized.json": "e02d99d1a92b3efb342687114387742a3c4f22ef83a414fd3fa71fcdc36566c5",
+    "counter-preload.mjs": "dbf9d4c3ae04ec754795d5a2fed673b3f0bc92939c899b6b35e3ee3c56e18534",
+    "counter-proof-sources.json": "58edc977f746031dc1aa8612183c0b236726bb42f651e63a9a62548f2e5fe35f",
+    "counter-proofs.mjs": "3784fa8e928087fba8d9274cafcd38e1e5a3b63dd0e9ff838e347664f2957e5a",
+    "counter-semantics.test.mjs": "58c49ef49d7816b32134d3cec01866cc7ec81930a357288c8872676e61d129ce",
+    "counters.mjs": "91de72c53829e13fe5c9a33f43fd7b9f20dbc01933e0392645603270371876d0",
+    "embedded-source-pins.json": "304a22bc4881ea3a9e54562ffd675c4d1d23afb0f5bffab7595f7d6da0cd6b50",
+    "export-counter-pins.mjs": "b6e6d3430a506fa559ba8a53b61537f62325704aa0778042d83588814d1916cf",
+    "export-pg-inputs.mjs": "34b7dfe3381914cf2795525761125a2ca5a297059d08d8754719910f33063be7",
+    "external/external_resources.py": "1a040299087b85b4e50f63fc8c45783241fe9893c709359cd56e200451d4ae57",
+    "external/pg-snapshot.sql": "dfc702d531f51da75ae0f49fa19a46c5f5d04e61e9c790bddae8d8fcd1403bbf",
+    "external/pg_cluster_binding.mjs": "75b9713aaa5e89099947b6e4d3864bc105f82852f6718cb6d2f9935f13a23c63",
+    "external/pg_resources.mjs": "e90ce40fdb45f7f789f29c20c0ff8a57f1e915ca1e8fa8f4cce6b2d19084b6d3",
+    "known-builds.json": "c1dc00935ab24c4c42f80058917cc5f8c2fee9f6615c9924def1cad5de383d9e",
+    "main-helper-approval-template.unauthorized.json": "d8ff8d67c251075f645481c632ff71559b9b2a49fdbdb3528569da644fb74a24",
+    "parent-review.patch": "5df1e3fad498c306cd5582e1b021125dae3ec92e7e4557758951fe54ddd0264e",
+    "parent-source-packet.json": "dbc565017889b995880ee05a0b4bffae5c4c5fc56a7ed538226c4ea7bea6c960",
+    "pg-exit-receipt.mjs": "e0db58a1fb8287ff83830123aadf2c9597c420be3186e9f823631e8834d00be0",
+    "pg-service-preload.mjs": "228aef635832803dd48219b402978ad41e7fc051f0ac223b7a02aea249b00d03",
+    "pg-service.mjs": "3266341d23869db920ce0155cbda6f91dfac49c95c464c3b18e9f339726ecf88",
+    "pins.json": "a9697e71a8baff93c0dec67eec6fb5bc0015c266bf4ebf53c165327bb3e39984",
+    "release-template.unauthorized.json": "de09c38cce3853d0f3fda92b6c83fdf881790fc70d0eb03f8ae46b00a71a2abc",
+    "resource-capture.mjs": "7f3fd79913b12c91d87e8c3a9178d54ec6308148cbbdfd03996260549ab2cddd",
+    "resource-contract.mjs": "53174552b3772d61de19fb486db235cae5dc58ecc42c4f45716bc870f521aec5",
+    "resource-tools.test.mjs": "c09b8c9f0cbabbe7ec5821324cf45852bd3826a71b335fa4dd4c962fc7094099",
+    "resource-wrapper.config.mts": "f38042056e4008de83a1db29a9b722a59e85abcd0afb4e509fdbb96252049f92",
+    "resource-wrapper.spec.mts": "caf3d7864e731bd6348248eaca15bf6720f77b7e67cd66f0a8a097faa8402759",
+    "run-resource-diagnostic.mjs": "8f5123dfdaf721de3b54f17bce158b6c2966bdb87825a0b83ceffa1014985c81",
+    "test-fixtures/modules/port-B2.js": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66",
+    "test-fixtures/modules/port.js": "49a971a961d831dc4dbea39c715abb371609464797bbfcc58ac911792d8b945c",
+    "test-fixtures/modules/queue.js": "f8cb9fd06a567831cff886251c79eb73810a83d1384fb2b61851587a30832869",
+    "test-fixtures/modules/resolver.js": "92031b6800bfb2356812d6fdc28af89143e1ffea37d2060879515d04667c5f3c",
+    "test-fixtures/modules/runlog.js": "b52995bbeec431c687a35d073a0a2aeb27513a239909a0dc7844e893146e6cc5",
+    "test-fixtures/modules/server-index-B1.js": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "test-fixtures/old-wrapper-pins.json": "fe669525dbb158e4720b4c61b2b51b077e763810b9dfddeeda0c11882ed34f98",
+    "test-fixtures/postgres/package.json": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9",
+    "test-fixtures/postgres/src/connection.js": "b57261592f135d127b8e7267c78981eb2c5f4751259641b782ba621b89d939d1",
+    "test-fixtures/postgres/src/index.js": "07dee80154d83ca9163a4a8790ef0281602ffca682e2387b3487bf20395d2adf",
+    "test-fixtures/v1/pg-service.mjs": "db1f89a2e0021932a184628f1ffa55e96be8003a50fcab6f17bf0c7eb7f674a0",
+    "test-fixtures/v1/resource-capture.mjs": "943514f0955860052f7f2d2b36793483f303177cf32e42f22236431664e0d981",
+    "transforms.mjs": "ed0a07c4775b99f7f2a0f7861e3ca40a360fe4d7cb23822cfcaa6338da0af1cc"
+  },
+  "sourceUnchanged": true
+}

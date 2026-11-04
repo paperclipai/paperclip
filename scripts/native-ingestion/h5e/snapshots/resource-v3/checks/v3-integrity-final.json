@@ -1,0 +1,13 @@
+{
+  "sourceOnly": true,
+  "parentPacketSha256": "5e51a40ba0d531e190ec651a7190dff4c40e10f5bfbbfe82640966f4b34cd8f8",
+  "allParentSourcesAndChecksUnchanged": true,
+  "allCopiedParentSourcesExceptSingleTagEqual": true,
+  "unchangedCopiedSourceCount": 55,
+  "actualPriorPreloadFixtureSha256": "228aef635832803dd48219b402978ad41e7fc051f0ac223b7a02aea249b00d03",
+  "definitionsSha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+  "numericalDefinitionsAndTransformsUnchanged": true,
+  "cleanupFixesAndB2SourceProofUnchanged": true,
+  "runtimeAbiTag": "combined-h5e-resource-v2",
+  "sourcePacketRevisionOnly": 3
+}

@@ -1,0 +1,133 @@
+{
+  "draft": true,
+  "observationMode": "h5c-observe-original-sla-independent-agents-settlement",
+  "protocolVersion": "v5c-independent-agents-complete-settlement-original-sla",
+  "workloadSha256": "68863d27c95106852050a5eedf8b76ab47aa854c6bd9038afc0fbbfdc6500e2a",
+  "stages": [
+    {
+      "stage": "browser-aa-b0",
+      "baseline": "B0",
+      "candidate": "B0",
+      "aa": true,
+      "expectation": "improvement",
+      "candidatePolicy": null,
+      "requiredVariants": [
+        "B0"
+      ],
+      "priorStages": [],
+      "pairs": 5,
+      "fullArms": 10,
+      "noiseStage": null
+    },
+    {
+      "stage": "browser-aa-b1",
+      "baseline": "B1",
+      "candidate": "B1",
+      "aa": true,
+      "expectation": "improvement",
+      "candidatePolicy": null,
+      "requiredVariants": [
+        "B1"
+      ],
+      "priorStages": [
+        "browser-aa-b0"
+      ],
+      "pairs": 5,
+      "fullArms": 10,
+      "noiseStage": null
+    },
+    {
+      "stage": "browser-b0-b1",
+      "baseline": "B0",
+      "candidate": "B1",
+      "aa": false,
+      "expectation": "nonregression",
+      "candidatePolicy": "cursor-nonregression",
+      "requiredVariants": [
+        "B0",
+        "B1"
+      ],
+      "priorStages": [
+        "browser-aa-b0",
+        "browser-aa-b1"
+      ],
+      "pairs": 5,
+      "fullArms": 10,
+      "noiseStage": "browser-aa-b0"
+    },
+    {
+      "stage": "browser-b1-b2",
+      "baseline": "B1",
+      "candidate": "B2",
+      "aa": false,
+      "expectation": "improvement",
+      "candidatePolicy": "final-b2",
+      "requiredVariants": [
+        "B1",
+        "B2"
+      ],
+      "priorStages": [
+        "browser-aa-b0",
+        "browser-aa-b1",
+        "browser-b0-b1"
+      ],
+      "pairs": 5,
+      "fullArms": 10,
+      "noiseStage": "browser-aa-b1"
+    },
+    {
+      "stage": "browser-b0-b2",
+      "baseline": "B0",
+      "candidate": "B2",
+      "aa": false,
+      "expectation": "improvement",
+      "candidatePolicy": "final-b2",
+      "requiredVariants": [
+        "B0",
+        "B2"
+      ],
+      "priorStages": [
+        "browser-aa-b0",
+        "browser-aa-b1",
+        "browser-b0-b1",
+        "browser-b1-b2"
+      ],
+      "pairs": 5,
+      "fullArms": 10,
+      "noiseStage": "browser-aa-b0"
+    }
+  ],
+  "fullArms": 50,
+  "finalization": {
+    "stage": "browser-finalize-h4e",
+    "requiredVariants": [
+      "B0",
+      "B1",
+      "B2"
+    ],
+    "priorStages": [
+      "browser-aa-b0",
+      "browser-aa-b1",
+      "browser-b0-b1",
+      "browser-b1-b2",
+      "browser-b0-b2"
+    ],
+    "fullArms": 0,
+    "finalizationOnly": true
+  },
+  "baselines": {
+    "B0": "7550ffa5d6447d2615bc89fc5313f4cbb958b615",
+    "B1": "2cf1454406cbd582a11f04476713eceb746eada5"
+  },
+  "originalReceiptSha256": "5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b",
+  "resourceWatchdogMillis": 1800000,
+  "frozenH5": {
+    "revision": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+    "protocolSha256": "7995ffdbf14b772e4c39444f6b89ba8684bcd86ef8ae866ffb0f5dbd89f35ccd",
+    "comparatorSha256": "3deceda0ef909829dfc3c2169d5d88ccb7c1ce9aa2881998e8ee07d23c1b56dc",
+    "inventoryHelperSha256": "76b897dd6b7a90e784e228d78d79633a6d7011fe3ea01737f3bef9c6113298e9",
+    "protocolDocumentSha256": "9fa1ba019e2385e0e9c23e2c66aebaeaf915e8204f04f00fa7e9bc0f83059291"
+  },
+  "pendingPins": "B2 needs a prospectively registered exact root-release source and its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.",
+  "note": "Plan only; no SUT/build/VM/network or arm starts. Root and independent peer review plus qualification release required."
+}

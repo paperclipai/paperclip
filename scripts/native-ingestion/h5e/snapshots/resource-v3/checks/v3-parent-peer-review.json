@@ -1,0 +1,127 @@
+{
+  "schema": "native-ingestion-h5e-resource-v2-independent-source-review/v1",
+  "reviewer": "/root/resource_v2_review",
+  "reviewedAtUtc": "2026-11-04T13:12:22.245565+00:00",
+  "verdict": "CHANGES_REQUIRED",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "packet": {
+    "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2/source-packet.json",
+    "sha256": "5e51a40ba0d531e190ec651a7190dff4c40e10f5bfbbfe82640966f4b34cd8f8"
+  },
+  "patchSha256": "4697f63d83a14379a7b9dd240eaf2e69a68eae4592c4c4c35b33bf1554a495a5",
+  "verification": {
+    "sourceFilesVerified": 56,
+    "checkReceiptsVerified": 19,
+    "unchangedMetricProofFilesVerified": 9,
+    "parent45SourceAndAllRawChecksUnchanged": true,
+    "focusedCleanupTestsPassed": 8,
+    "focusedB2PinTransformTestsPassed": 3,
+    "fullUnchangedPureMatrixNotRepeated": true,
+    "definitionsSha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e",
+    "B2AllFiveSourceFixturesMatchQualifiedLinuxManifest": true,
+    "B2PortCopiedFromExistingMacBuildAndOriginExplicit": true,
+    "counterTransformsAndNumericalSemanticsUnchanged": true,
+    "preparedReleaseTemplatesUnauthorized": true
+  },
+  "priorFindings": [
+    {
+      "finding": "Transient PG unit GC skipped cleanup or falsely classified a ready service never-started",
+      "status": "SOURCE_REPAIRED",
+      "evidence": "Eight focused cleanup tests include actual extracted V1 RED ->V2GREEN successful stop/GC and already-collected ready unit. Exit writer reads real systemd SERVICE_RESULT/EXIT_CODE/EXIT_STATUS and own-unit ExecMainPID/InvocationID/code/status before GC; matching ready/source/writer/boot identities are mandatory. Missing/wrong proof or PID reuse returns UNKNOWN/incomplete; private environment/password paths are cleaned in finally and primary failure is retained. Actual Linux ExecStopPost behavior is still unqualified."
+    },
+    {
+      "finding": "Spawned collector escaped acquisition ownership after birth failure",
+      "status": "SOURCE_REPAIRED",
+      "evidence": "Listeners and owner.children registration now precede first await. Actual V1 RED->V2GREEN birth EACCES and early spawn-error tests establish owned cooperative nonce-stop/join; unknown unjoined birth and reused known PID remain failed and unsignalled. Acquisition error and cleanup uncertainty persist in the result. Actual serving cleanup is still unqualified."
+    }
+  ],
+  "findings": [
+    {
+      "priority": "P2",
+      "title": "Use the V2 release tag consistently in both server preloads",
+      "file": "/private/tmp/native-ingestion-h5e-resource-tools-v2/pg-service-preload.mjs",
+      "line": 10,
+      "relatedFiles": [
+        {
+          "file": "/private/tmp/native-ingestion-h5e-resource-tools-v2/run-resource-diagnostic.mjs",
+          "line": 33
+        },
+        {
+          "file": "/private/tmp/native-ingestion-h5e-resource-tools-v2/counter-preload.mjs",
+          "line": 12
+        }
+      ],
+      "trigger": "Any V2 resource diagnostic starts its normal compiled server with the generated launch environment.",
+      "actualBehavior": "diagnosticPlan sets PAPERCLIP_RESOURCE_COUNTER_RELEASE=combined-h5e-resource-v2 and counter-preload requires that value, but unchanged pg-service-preload still asserts combined-h5e-resource-v1. The second import therefore rejects before the PG startup seam. Setting V1 instead would fail the counter preload, so no single launch environment can satisfy both.",
+      "impact": "Every V2 serving qualification is blocked before PG/app readiness despite the pure/type/discovery checks passing.",
+      "actualSourceProof": {
+        "actualSourceFunctions": [
+          "diagnosticPlan",
+          "counter preload release assertion",
+          "PG preload release assertion"
+        ],
+        "providedReleaseTag": "combined-h5e-resource-v2",
+        "counterGuard": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v2', 'Separate reviewed resource release required');",
+        "counterGuardPassed": true,
+        "pgGuard": "assert.equal(process.env.PAPERCLIP_RESOURCE_COUNTER_RELEASE, 'combined-h5e-resource-v1');",
+        "pgGuardPassed": false,
+        "errorCode": "ERR_ASSERTION",
+        "actual": "combined-h5e-resource-v2",
+        "expected": "combined-h5e-resource-v1",
+        "processAppPgVmNetworkOrBuildExecuted": false,
+        "scope": "Node node:vm runs the actual extracted assertions against diagnosticPlan output; no preload, app or OS process is started."
+      },
+      "requiredCorrection": "Publish a new packet with the intended V2 release tag shared by launcher, counter preload and PG preload; retain the separate-release assertions. Add a pure test executing both actual early release-tag assertions against diagnosticPlan output so discovery/type checks cannot hide this mismatch."
+    }
+  ],
+  "B2SourceReview": {
+    "revision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+    "portBytes": 33500,
+    "portSha256": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66",
+    "provenance": "Existing normal Mac production output is byte-identical to the separately qualified Linux B2 manifest. This establishes exact source fixture bytes; no new build or Linux source/process export occurred.",
+    "semantics": "The unchanged transform adds one postcommit observation at the existing ordered per-event receipt observer; committed versus duplicate filtering remains in the unchanged counters. Public appendEvents input-size/timing wrapper invokes once immediately, preserves receipt order and exact thrown errors; batch internals and source payloads are unchanged.",
+    "limits": "Actual Linux installed postgres3.4.9 triple hashes, six exercised serving hooks, owning fixture outcome, independent flush and cleanup remain unqualified."
+  },
+  "operations": {
+    "actualOsProcessOrProcInspection": 0,
+    "cloudVmSystemdCgroupPgAppBrowserBuildOrNetworkOperations": 0,
+    "credentialsAccess": 0,
+    "packetOrProductEdits": 0,
+    "sourceFaultMechanism": "Node node:vm evaluates actual extracted guards/functions with in-memory synthetic inputs; no actual virtual-machine or serving operations."
+  },
+  "evidence": [
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-cleanup.log",
+      "bytes": 1094,
+      "sha256": "cdd05a3a2f1156b9c1711b80a4625cdd58fbb3db063d93b5a3fd164fa0d7d528"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-b2.log",
+      "bytes": 451,
+      "sha256": "34aa52c9e0a519aa55b42eae4637ca72da4c058d071e9ddbf6adf4c749622a68"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-tag-proof.mjs",
+      "bytes": 2075,
+      "sha256": "94a46b87ccfb64c16975bd0a6cf480be7443d0f4e4b4ab5b70290c10a4a9bd91"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-tag-proof.json",
+      "bytes": 807,
+      "sha256": "177326e3af5db676ba19d04a4009be79d0efcb9df82283a495a72a26182ea71d"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v2-peer-tag-proof.log",
+      "bytes": 807,
+      "sha256": "177326e3af5db676ba19d04a4009be79d0efcb9df82283a495a72a26182ea71d"
+    }
+  ],
+  "remainingGates": [
+    "Correct the contradictory release tag in a NEW sealed packet and re-review the minimal change. This V2 packet remains unchanged and unreleased.",
+    "Actual Linux exit-writer/env/permissions/controls/exited-child accounting qualification, a separate one-pass SMALL with all six hooks and complete cleanup, then matched completed FULL diagnostics.",
+    "Main73 workload, metric definitions, runtime/precision/five-pair acceptance and production/application performance gates remain unchanged and unproved by source checks."
+  ]
+}

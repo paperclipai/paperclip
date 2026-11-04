@@ -1,0 +1,45 @@
+{
+  "frozenAtUtc": "2026-11-04T10:46:03.967357+00:00",
+  "drivers": [
+    {
+      "root": "/private/tmp/paperclip-native-event-harness-h5e",
+      "parent": "2df9897e1ce2ca90be29fa097d776c3766e217ad",
+      "revision": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+      "tree": "6cd855045456c5a7f84fb088babba332c1e7689c",
+      "tag": "native-ingestion-h5e",
+      "tagObject": "86688373df32d4d460b90885357c29f992bbc21b",
+      "changedPaths": [
+        "scripts/compare-native-ingestion-browser.ts",
+        "scripts/native-ingestion-performance-gates.test.mjs",
+        "tests/e2e/fixtures/native-ingestion-h5.mjs",
+        "tests/e2e/fixtures/native-ingestion-h5.md"
+      ],
+      "clean": true,
+      "applicationExecuted": false,
+      "performanceQualified": false
+    },
+    {
+      "root": "/private/tmp/paperclip-native-event-blocked-stop-v4",
+      "parent": "bc33f09cae26404352848169d92a20c89480a5f5",
+      "revision": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+      "tree": "a47e5afb80c631325c5c4c949c419ab9e815e397",
+      "tag": "native-ingestion-blocked-stop-v4",
+      "tagObject": "db469817cf23d755bbc8c34e1ef5c7451608e1d6",
+      "changedPaths": [
+        "tests/e2e/fixtures/native-ingestion-h5.mjs",
+        "tests/e2e/fixtures/native-ingestion-h5.md",
+        "tests/e2e/fixtures/native-ingestion-blocked-stop.md"
+      ],
+      "clean": true,
+      "applicationExecuted": false,
+      "performanceQualified": false
+    }
+  ],
+  "rootLiteralOnlyAndP1DiffReviewed": true,
+  "mainMeasurementSha256": "7995ffdbf14b772e4c39444f6b89ba8684bcd86ef8ae866ffb0f5dbd89f35ccd",
+  "companionInheritedMainMeasurementSha256": "e70ae87229d6cd0bec244e56ee8585fce06f9725838acaf08cff74dc0323e048",
+  "registrationSha256": "68863d27c95106852050a5eedf8b76ab47aa854c6bd9038afc0fbbfdc6500e2a",
+  "comparatorSha256": "3deceda0ef909829dfc3c2169d5d88ccb7c1ce9aa2881998e8ee07d23c1b56dc",
+  "normalBuildArtifactsNotYetQualified": true,
+  "executionReleased": false
+}

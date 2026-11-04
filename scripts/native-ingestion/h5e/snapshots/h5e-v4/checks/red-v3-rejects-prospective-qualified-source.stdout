@@ -1,0 +1,62 @@
+TAP version 13
+# Subtest: main: qualified current75 and prospective sources use exact descriptor receipts
+not ok 1 - main: qualified current75 and prospective sources use exact descriptor receipts
+  ---
+  duration_ms: 5.713958
+  type: 'test'
+  location: '/private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:47:2'
+  failureType: 'testCodeFailure'
+  error: |-
+    B2 must use the reviewed current TypeScript batching source revision
+    + actual - expected
+    
+    + 'ffffffffffffffffffffffffffffffffffffffff'
+    - '75b3578cfccf040b087a55a624e01baa2bca37f9'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '75b3578cfccf040b087a55a624e01baa2bca37f9'
+  actual: 'ffffffffffffffffffffffffffffffffffffffff'
+  operator: 'strictEqual'
+  stack: |-
+    Module.validateVariantBuild (file:///private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-h5e-browser.mjs:216:12)
+    async file:///private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:55:17
+    async withFixture (file:///private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:44:116)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  ...
+# Subtest: companion dependency: qualified current75 and prospective sources use exact descriptor receipts
+not ok 2 - companion dependency: qualified current75 and prospective sources use exact descriptor receipts
+  ---
+  duration_ms: 3.19175
+  type: 'test'
+  location: '/private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:47:2'
+  failureType: 'testCodeFailure'
+  error: |-
+    B2 must use the reviewed current TypeScript batching source revision
+    + actual - expected
+    
+    + 'ffffffffffffffffffffffffffffffffffffffff'
+    - '75b3578cfccf040b087a55a624e01baa2bca37f9'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '75b3578cfccf040b087a55a624e01baa2bca37f9'
+  actual: 'ffffffffffffffffffffffffffffffffffffffff'
+  operator: 'strictEqual'
+  stack: |-
+    Module.validateVariantBuild (file:///private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5c-cf-build-guards.mjs:216:12)
+    async file:///private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:55:17
+    async withFixture (file:///private/tmp/native-ingestion-h5e-tools-v4/native-provenance.test.mjs:44:116)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 43.404125

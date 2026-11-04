@@ -1,0 +1,13 @@
+{
+  "appRoot": "/home/ubuntu/native-ingestion/aligned-cf-batching-ts",
+  "revision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+  "qualifiedReceiptFile": "/home/ubuntu/native-ingestion/aligned-cf-ts-b2-build-qualified.json",
+  "qualifiedReceiptSha256": "86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1",
+  "inventorySummaryFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf-ts-b2/artifact-inventory-summary.json",
+  "inventorySummarySha256": "330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29",
+  "manifestFile": "/home/ubuntu/native-ingestion/evidence/aligned-cf-ts-b2/B2-artifact-inventory.json.gz",
+  "manifestFileSha256": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+  "aggregateSha256": "2df789c77a7939ead10f8789f3c60ac8e6addcbc25f263650f0e9478c33e32ee",
+  "binarySha256": "512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66",
+  "rustSourceTree": "11a7ac118a438159c252dc0df4779aa56fec80d6"
+}
