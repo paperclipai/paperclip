@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -155,4 +156,39 @@ it.each([false, true])("overlaps seed verification and upload and drains both be
   expect(verificationFinished).toBe(true);
   if ("error" in outcome) { expect(failUpload).toBe(true); expect(outcome.error.message).toBe("upload failed"); }
   else { expect(failUpload).toBe(false); await outcome.runtime.cleanupWorkspaceSnapshot(); }
+});
+
+it("refuses a durable seed copy that would cross the shared free-space reserve", async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "managed-seed-reserve-")); roots.push(temp);
+  vi.stubEnv("PAPERCLIP_HOME", path.join(temp, "home"));
+  const reserve = 64 * 1024 * 1024;
+  vi.stubEnv("PAPERCLIP_WORKSPACE_MANIFEST_MIN_FREE_BYTES", String(reserve));
+  const host = path.join(temp, "host"), seedDirectory = path.join(temp, "durable");
+  await fs.mkdir(host); await fs.mkdir(seedDirectory);
+  await fs.writeFile(path.join(host, "work.txt"), "x".repeat(64 * 1024));
+  const statfsSync = nodeFs.statfsSync;
+  vi.spyOn(nodeFs, "statfsSync").mockImplementation(((directory: nodeFs.PathLike, options?: nodeFs.StatFsOptions) => {
+    const real = statfsSync(directory, { bigint: true });
+    // The seed volume has room for the reserve plus a few KiB, less than the archive.
+    if (path.resolve(String(directory)) !== seedDirectory) return statfsSync(directory, options as never);
+    return { ...real, bsize: 1n, bavail: BigInt(reserve + 4 * 1024) };
+  }) as typeof nodeFs.statfsSync);
+  const copied: string[] = [];
+  const copyFile = fs.copyFile;
+  vi.spyOn(fs, "copyFile").mockImplementation(async (source, target, mode) => {
+    if (path.dirname(path.resolve(String(target))) === seedDirectory) copied.push(String(target));
+    return copyFile(source, target, mode);
+  });
+  await expect(prepareSandboxManagedRuntime({
+    spec: { provider: "test", sandboxId: "test", remoteCwd: path.join(temp, "remote"), timeoutMs: 30000, apiKey: null, transport: "sandbox" },
+    adapterKey: "test", workspaceLocalDir: host, workspaceFileMode: "all",
+    workspaceDurableSeed: { workspaceArchivePath: path.join(seedDirectory, "workspace-seed.tar") },
+    client: {
+      makeDir: async () => {}, run: async () => {}, writeFile: async () => {},
+      readFile: async () => Buffer.alloc(0), listFiles: async () => [], remove: async () => {},
+      syncIn: async () => ({ operations: [] }),
+    },
+  })).rejects.toThrow("free-space reserve");
+  expect(copied).toEqual([]);
+  expect(await fs.readdir(seedDirectory)).toEqual([]);
 });
