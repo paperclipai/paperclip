@@ -73,6 +73,26 @@ describe("onboarding approval history journey", () => {
     expect(failures(recording())).toEqual([]);
   });
 
+  it.each(runnerMatrix.filter(cell => cell.suite.id === APPROVAL_HISTORY_SUITE))(
+    "the grader's completed task matches the outer runner's expected statuses for $id", execution => {
+      const evidence = recording();
+      expect(failures(evidence)).toEqual([]);
+      const finished = evidence.checkpoints.at(-1)!;
+      const parent = finished.tasks.find(task => task.id === evidence.onboardingIssueId)!;
+      const parentRuns = finished.runs.filter(run => run.nativeIssueId === parent.id);
+      expect(parent.status).toBe(execution.task.expectedTerminalState.issue);
+      expect(parentRuns).not.toHaveLength(0);
+      expect(parentRuns.every(run => run.status === execution.task.expectedTerminalState.run)).toBe(true);
+    });
+
+  it("rejects a completed writer task when the onboarding parent remains in review", () => {
+    const evidence = recording();
+    for (const checkpoint of evidence.checkpoints.filter(c => c.phase === "finished")) {
+      checkpoint.tasks.find(task => task.id === evidence.onboardingIssueId)!.status = "in_review";
+    }
+    expect(failures(evidence)).toContain("reload-retains-completion");
+  });
+
   it("reads the exact saved document revision through its production API", async () => {
     const document = recording().checkpoints.at(-1)!.documents[1];
     const get = vi.fn(async (_path: string) => document.savedRevision);

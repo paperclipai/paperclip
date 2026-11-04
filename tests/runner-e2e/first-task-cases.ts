@@ -85,4 +85,8 @@ const buildFirstTaskFixture = ([id, label, , expectedRunCount]: readonly [string
     buildMatchers: () => [], // Checkpoints and state effects are graded by first-task-scoring.
   });
 export const firstTaskTasks: readonly RunnerTaskFixture[] = FIRST_TASK_CASES.map(buildFirstTaskFixture);
-export const onboardingApprovalHistoryTask = { ...buildFirstTaskFixture(approvalHistoryCase), automaticRetryPolicy: "single_attempt" as const };
+export const onboardingApprovalHistoryTask = {
+  ...buildFirstTaskFixture(approvalHistoryCase),
+  expectedTerminalState: { issue: "done", run: "succeeded" } as const,
+  automaticRetryPolicy: "single_attempt" as const,
+};
