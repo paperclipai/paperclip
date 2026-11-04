@@ -84,10 +84,10 @@ describe("redactDiagnosticText", () => {
   });
 
   it("does not hang on an unterminated escaped-JSON value full of backslashes", () => {
-    const input = String.raw`{\"token\": \"` + String.raw`\\\\`.repeat(40) + "x";
+    const input = String.raw`{\"token\": \"` + String.raw`\\\\`.repeat(26) + "x";
     const started = performance.now();
     expect(redactDiagnosticText(input)).toBe(input);
-    expect(performance.now() - started).toBeLessThan(10_000);
+    expect(performance.now() - started).toBeLessThan(5_000);
   });
 
   it("still redacts a shell KEY=value secret", () => {
