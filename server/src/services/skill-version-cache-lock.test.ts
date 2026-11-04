@@ -43,7 +43,12 @@ describePostgres("skill version cache lock during slow preparation", () => {
     }).then(value => ({ value }), error => ({ error }));
 
     try {
-      await started;
+      // Surface a preparation that settles before entering instead of timing out.
+      let hasEntered = false;
+      await Promise.race([started.then(() => { hasEntered = true; }), preparation.then(result => {
+        if (hasEntered) return;
+        throw "error" in result ? result.error : new Error("Preparation finished before entering the lock");
+      })]);
       await delay(1400);
       await expect(db.execute(sql`select 1 as usable`)).resolves.toMatchObject([{ usable: 1 }]);
       await expect(withSkillVersionCacheLock(db, companyId, async () => "overlap", true))
