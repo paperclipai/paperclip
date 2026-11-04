@@ -5413,6 +5413,7 @@ registry.registerPath({
   tags: ["secrets"],
   summary:
     "List secret metadata (id, name, key, status) — accessible to agents",
+  description: "Discover stored company credential metadata, never values. To add a company credential, direct the human to the company-prefixed /company/settings/secrets page and New secret, then bind only the intended agent's environment reference in its configuration. Secure storage of an already-requested key does not require connecting a new external service. Never request the value in chat or claim it is saved or bound before observing the authorized changes.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -5430,7 +5431,8 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/secrets",
   tags: ["secrets"],
-  summary: "Create a secret",
+  summary: "Create a company secret credential",
+  description: "Board-only secure credential entry. An agent cannot create the value on behalf of the human. Direct the human to New secret on the company-prefixed /company/settings/secrets page; never request the value in chat. After entry, use only the intended consumer's secret reference, not plaintext or a grant to every agent. A saved credential is not proof of runtime delivery.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createSecretSchema),
@@ -5531,7 +5533,8 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/user-secret-definitions",
   tags: ["secrets"],
-  summary: "List user secret definitions",
+  summary: "List personal credential definitions (user secrets)",
+  description: "Board-only company-admin metadata for personal credential definitions, not their values. Agents cannot read this list using the human's identity. For an existing required personal credential, direct the current person to the company-prefixed /company/settings/secrets page, My secrets, then Set my value for the matching definition. The definition detail also supports ?definition=<definitionId> when its ID is already known. Only that signed-in person's value is set; another person's value cannot satisfy it. Never request values in chat. Storing a credential for an existing definition does not require choosing or connecting a new external provider.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -5607,7 +5610,8 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/me/user-secrets",
   tags: ["secrets"],
-  summary: "List my user secret values",
+  summary: "List my personal credential definitions and value metadata",
+  description: "Board-only current-person metadata. An agent cannot impersonate the person or list another owner's values. The signed-in person uses My secrets on the company-prefixed /company/settings/secrets page and Set my value for an existing definition; never send the value in chat. This secure entry is separate from connecting an external service. Confirm availability only after authorized entry and the intended task's required delivery have been observed.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });

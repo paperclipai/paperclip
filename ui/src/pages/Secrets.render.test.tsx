@@ -814,18 +814,18 @@ describe("Secrets page layout", () => {
     });
   });
 
-  it("opens the each-user detail sheet with coverage and set-my-value actions", async () => {
+  it.each([false, true])("opens the each-user secure-entry surface (definition link: %s)", async (fromLink) => {
     const definition = makeUserSecretDefinition();
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([definition]);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition, secret: null }]);
-    const root = await renderSecrets(container);
+    const root = await renderSecrets(container, {
+      path: fromLink ? `/company/settings/secrets?definition=${definition.id}` : "/company/settings/secrets",
+    });
 
     const definitionRow = Array.from(container.querySelectorAll("[role='row']")).find(
       (row) => row.textContent?.includes("Personal GitHub token"),
     ) as HTMLElement | undefined;
-    await act(async () => {
-      definitionRow?.click();
-    });
+    if (!fromLink) await act(async () => { definitionRow?.click(); });
     await waitForReact(() => document.body.textContent?.includes("Details") ?? false);
 
     expect(document.body.textContent).toContain("Personal GitHub token");
