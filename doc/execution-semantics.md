@@ -1829,7 +1829,9 @@ after intervening preparation failures. Recovery hands that failed source to
 preservation only after its controller lease expires and the same task and agent
 have a committed, accepted result and committed snapshot in the canonical new
 workspace. The server's coalesced user-Retry receipt must identify that isolated
-workspace and its exact failed parent. Current execution, accepted source results,
+workspace and its exact failed parent in the admitted run context. Ordinary Retry
+admission can leave `retryOfRunId` empty; a conflicting value still rejects the
+handoff. Current execution, accepted source results,
 dirty successor work, or changed source allocation identity retain the old hold.
 This settles coordinator ownership, not the recorded provider process: its PID,
 checkpoint, dirty writer and exact allocation remain protected by stop-and-save.

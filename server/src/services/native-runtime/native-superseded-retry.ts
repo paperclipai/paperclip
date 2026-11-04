@@ -52,8 +52,10 @@ async function completedIsolatedRetry(db: Db, { run, coordinator, now }: Retirem
       gt(heartbeatRuns.startedAt, agentWakeupRequests.requestedAt), isNotNull(heartbeatRuns.finishedAt),
       sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${agentWakeupRequests.id}::text`,
       sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
-      sql`${heartbeatRuns.retryOfRunId}::text = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
-      sql`exists (select 1 from heartbeat_runs retry_parent where retry_parent.id = ${heartbeatRuns.retryOfRunId}
+      sql`(${heartbeatRuns.retryOfRunId} is null or
+        ${heartbeatRuns.retryOfRunId}::text = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}')`,
+      sql`exists (select 1 from heartbeat_runs retry_parent
+        where retry_parent.id::text = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'
         and retry_parent.company_id = ${run.companyId} and retry_parent.agent_id = ${run.agentId}
         and coalesce(retry_parent.native_issue_id::text, retry_parent.issue_id::text,
           retry_parent.context_snapshot->>'issueId') = ${issues.id}::text

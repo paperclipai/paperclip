@@ -9,6 +9,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { heartbeatService } from "../heartbeat.js";
+import { requestTaskRetry } from "../task-retry.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("superseded observed workspace recovery", () => {
@@ -20,13 +22,15 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 30_000);
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
 
-  async function fixture() {
+  async function fixture(admitRetry = false) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const oldRunId = randomUUID(), oldWorkspaceId = randomUUID(), oldLeaseId = randomUUID();
-    const retryId = randomUUID(), successorId = randomUUID(), failedPreparationId = randomUUID();
+    let retryId: string = randomUUID(), successorId: string = randomUUID();
+    const failedPreparationId = randomUUID();
     const snapshotId = randomUUID(), successorLeaseId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Observed recovery", issuePrefix: companyId.slice(0, 8) });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", adapterType: "paperclip_runner" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", adapterType: "paperclip_runner", status: "idle",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue saved work", status: "in_progress", assigneeAgentId: agentId });
     const [environment] = await db.insert(environments).values({ name: `Observed ${oldRunId}`, driver: "sandbox" }).returning();
     const oldRemote = { schema: "paperclip.remote-workspace-run.v1", state: "prepared", epoch: 3,
@@ -47,23 +51,47 @@ const support = await getEmbeddedPostgresTestSupport();
       providerLeaseId: oldRemote.providerLeaseId, status: "active", leasePolicy: "reuse_by_environment",
       metadata: { remoteCwd: oldRemote.remoteCwd, agentId } });
     await db.insert(heartbeatRuns).values({ id: failedPreparationId, companyId, agentId, issueId,
-      runtimeMode: "legacy", status: "failed", errorCode: "setup_failed", startedAt: new Date(4), finishedAt: new Date(5) });
+      runtimeMode: "legacy", status: "failed", errorCode: "setup_failed", executionStage: "preparing",
+      contextSnapshot: { issueId }, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      startedAt: new Date(4), finishedAt: new Date(5) });
+    let admitted: typeof heartbeatRuns.$inferSelect | undefined;
+    if (admitRetry) {
+      const [occupied] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+      try {
+        const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "owner", actorSource: "local_implicit",
+          observedRunId: failedPreparationId, idempotencyKey: randomUUID() });
+        expect(receipt.accepted).toBe(true);
+        retryId = receipt.requestId!;
+        await heartbeatService(db).resumeTaskRetry(companyId, retryId);
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retryId));
+        expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+        [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+        expect(admitted).toMatchObject({ retryOfRunId: null, status: "queued", contextSnapshot: {
+          previousRunId: failedPreparationId, taskRetryRequestId: retryId,
+        } });
+        successorId = admitted.id;
+      } finally { await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, occupied.id)); }
+    }
     const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
       schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
       completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
       contractJson: { revision: "1", criteria: [] }, canonicalSha256: randomUUID(), createdByActorType: "system", createdByActorId: "test" }).returning();
     const successorRemote = { ...oldRemote, state: "saved", epoch: 1, workspaceId: retryId,
       leaseId: successorLeaseId, providerLeaseId: randomUUID(), remoteCwd: "/new/work", snapshotId };
-    await db.insert(heartbeatRuns).values({ id: successorId, companyId, agentId, issueId, nativeIssueId: issueId,
+    const completed = { companyId, agentId, issueId, nativeIssueId: issueId,
       runtimeMode: "native", status: "succeeded", nativePhase: "committed", completionContractId: contract.id,
-      startedAt: new Date(7), finishedAt: new Date(8), retryOfRunId: failedPreparationId,
-      contextSnapshot: { issueId, previousRunId: failedPreparationId, taskRetryRequestId: retryId, executionWorkspaceId: retryId },
-      runnerProfileJson: { remoteWorkspace: successorRemote } });
+      startedAt: admitRetry ? new Date(Date.now() + 1) : new Date(7), finishedAt: admitRetry ? new Date(Date.now() + 2) : new Date(8),
+      contextSnapshot: { ...(admitted?.contextSnapshot ?? { issueId, previousRunId: failedPreparationId, taskRetryRequestId: retryId }),
+        executionWorkspaceId: retryId }, runnerProfileJson: { remoteWorkspace: successorRemote } };
+    if (admitted) await db.update(heartbeatRuns).set(completed).where(eq(heartbeatRuns.id, successorId));
+    else await db.insert(heartbeatRuns).values({ id: successorId, ...completed });
     const [result] = await db.insert(nativeRunResults).values({ companyId, issueId, runId: successorId,
       completionContractId: contract.id, serverFingerprint: randomUUID(), schemaStatus: "accepted", canonicalSha256: randomUUID(),
       resultJson: { result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Changes saved; wait for CI." } } }).returning();
     await db.insert(nativeRunFinalizations).values({ runId: successorId, companyId, issueId, phase: "committed", resultId: result.id });
-    await db.insert(agentWakeupRequests).values({ id: retryId, companyId, agentId, reason: "task_retry", source: "on_demand",
+    if (admitted) await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(${agentWakeupRequests.payload},
+      '{taskRetry,strategy}', '"fresh_isolated_workspace"'::jsonb)` }).where(eq(agentWakeupRequests.id, retryId));
+    else await db.insert(agentWakeupRequests).values({ id: retryId, companyId, agentId, reason: "task_retry", source: "on_demand",
       status: "coalesced", runId: successorId, requestedByActorType: "user", requestedByActorId: "owner", requestedAt: new Date(6),
       payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: retryId, sourceRunId: failedPreparationId,
         actorId: "owner", actorSource: "session", strategy: "fresh_isolated_workspace" } } });
@@ -87,8 +115,10 @@ const support = await getEmbeddedPostgresTestSupport();
   const coordinator = async (id: string) => (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id)))[0]!;
   const workspace = async (id: string) => (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!;
 
-  it("hands an expired observed source to preservation after an explicit isolated retry commits", async () => {
-    const f = await fixture(); const beforeTask = await task(f.issueId);
+  it.each(["retained_context", "admitted_context", "linked_column"])("hands an expired observed source to preservation after an explicit isolated retry commits: %s", async path => {
+    const f = await fixture(path === "admitted_context"); const beforeTask = await task(f.issueId);
+    if (path === "linked_column") await db.update(heartbeatRuns).set({ retryOfRunId: f.failedPreparationId })
+      .where(eq(heartbeatRuns.id, f.successorId));
     expect(await recover(f)).toEqual([{ kind: "blocked", runId: f.oldRunId, reason: "native_retry_superseded" }]);
     expect(await coordinator(f.oldRunId)).toMatchObject({ phase: "terminal_failure", resultId: null, leaseOwner: null,
       failureCode: "native_retry_superseded", failureDetail: { successorRunId: f.successorId } });
@@ -106,11 +136,13 @@ const support = await getEmbeddedPostgresTestSupport();
       eq(issueRecoveryActions.sourceIssueId, f.issueId)))).toHaveLength(1);
     await recover(f);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(3);
-    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(row => row.payload?.taskRetry)).toHaveLength(1);
   });
 
   it.each(["live_owner", "unknown_owner_deadline", "current_execution", "dirty_successor", "pending_result",
-    "missing_result", "non_user_retry", "changed_actor", "changed_retry_source", "foreign_agent", "foreign_workspace", "same_workspace",
+    "missing_result", "non_user_retry", "changed_actor", "changed_retry_source", "changed_retry_column", "changed_retry_receipt",
+    "changed_retry_generation", "foreign_agent", "foreign_workspace", "same_workspace",
     "changed_source_allocation", "changed_source_cwd", "changed_source_writer", "expired_source", "missing_snapshot",
     "changed_snapshot_epoch", "active_successor", "accepted_source"] as const)("preserves authority when proof is incomplete: %s", async scenario => {
     const f = await fixture();
@@ -134,6 +166,12 @@ const support = await getEmbeddedPostgresTestSupport();
     if (scenario === "changed_retry_source") await db.update(heartbeatRuns).set({ contextSnapshot: {
       issueId: f.issueId, previousRunId: randomUUID(), taskRetryRequestId: f.retryId,
     } }).where(eq(heartbeatRuns.id, f.successorId));
+    if (scenario === "changed_retry_column") await db.update(heartbeatRuns).set({ retryOfRunId: f.oldRunId })
+      .where(eq(heartbeatRuns.id, f.successorId));
+    if (scenario === "changed_retry_receipt" || scenario === "changed_retry_generation") await db.update(agentWakeupRequests)
+      .set({ payload: sql`jsonb_set(${agentWakeupRequests.payload},
+        ${scenario === "changed_retry_receipt" ? "{taskRetry,sourceRunId}" : "{taskRetry,generationId}"}::text[],
+        to_jsonb(${randomUUID()}::text))` }).where(eq(agentWakeupRequests.id, f.retryId));
     if (scenario === "foreign_agent") {
       const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "paperclip_runner" }).returning();
       await db.update(heartbeatRuns).set({ agentId: other.id }).where(eq(heartbeatRuns.id, f.successorId));
