@@ -83,7 +83,11 @@ async function refCorrectionAllowed(row: RepositoryRow, workspace: Pick<typeof e
   if (row.state !== "needs_repair" || row.failureCode !== REPOSITORY_REF_NOT_FOUND || row.pinnedCommit) return false;
   // A remote checkout cannot be inspected from the control plane; keep it immutable.
   if (!workspace.cwd || readRemoteWorkspaceAuthority(workspace.metadata)) return false;
-  return !await fs.lstat(path.join(workspace.cwd, row.relativePath)).catch(() => null);
+  // Only proven absence allows correction; an unreadable path keeps the receipt.
+  return !await fs.lstat(path.join(workspace.cwd, row.relativePath)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
 }
 
 function assertAcquisitionReceipt(row: Pick<RepositoryRow, "catalogRepositoryId">, anonymousOnly: boolean) {
@@ -449,11 +453,18 @@ export function executionWorkspaceRepositoryService(db: Db) {
       return stagingParent;
     });
     const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
-    for (const [index, row] of rows.entries()) {
+    for (const [index, listedRow] of rows.entries()) {
       const source = sources[index];
-      if (source.repositoryIdentity !== row.repositoryIdentity || row.relativePath !== taskRepositoryRelativePath(row.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
-      const cwd = path.join(root, row.relativePath);
+      if (source.repositoryIdentity !== listedRow.repositoryIdentity || listedRow.relativePath !== taskRepositoryRelativePath(listedRow.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
+      const cwd = path.join(root, listedRow.relativePath);
       await withRepositoryPublication(cwd, async () => {
+        // A ref correction can commit after the receipts were listed. Use the
+        // current receipt so admission never checks out a discarded ref.
+        const [row] = await measureRunPhase("workspace.repository.receipts", () => db.select().from(executionWorkspaceRepositories)
+          .where(and(eq(executionWorkspaceRepositories.id, listedRow.id), eq(executionWorkspaceRepositories.companyId, input.companyId))));
+        if (!row || row.repositoryIdentity !== listedRow.repositoryIdentity || row.relativePath !== listedRow.relativePath) {
+          throw conflict("Repository preparation receipt changed during admission");
+        }
         const existing = await measureRunPhase("workspace.repository.checkout_identity", async () => {
           const existing = await fs.lstat(cwd).catch(() => null);
           if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || await fs.realpath(cwd) !== cwd)) throw conflict("Repository checkout path is not a contained directory");
@@ -467,7 +478,13 @@ export function executionWorkspaceRepositoryService(db: Db) {
         });
         const anonymous = buildGitAuthInvocation({ token: "", source: "managed_connection", secretName: null });
         anonymous.env = { ...anonymous.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
-        if (!acquisitionRestricted) await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "preparing", catalogRepositoryId: source.catalogRepositoryId, failureCode: null, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
+        if (!acquisitionRestricted) {
+          // Claim the receipt at the ref this admission uses. Correction only
+          // applies to needs_repair receipts, so it cannot change a claimed ref.
+          const [claimed] = await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "preparing", catalogRepositoryId: source.catalogRepositoryId, failureCode: null, updatedAt: new Date() })
+            .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.requestedRef, row.requestedRef))).returning({ id: executionWorkspaceRepositories.id }));
+          if (!claimed) throw conflict("Repository preparation receipt changed during admission");
+        }
         try {
           const ownershipPath = path.join(cwd, ".git", "paperclip-workspace-owner.json");
           const readOwnership = () => measureRunPhase("workspace.repository.ownership_read", async () => {

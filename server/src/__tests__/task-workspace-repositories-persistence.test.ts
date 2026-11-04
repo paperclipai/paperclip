@@ -15,7 +15,7 @@ import * as remoteWorkspaces from "../services/remote-workspaces.js";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
 import { readManagedWorkspaceRepositories, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
-import { captureDirectorySnapshot, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { captureDirectorySnapshot, disposeDirectorySnapshot, withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const catalog = vi.hoisted(() => ({ available: true }));
@@ -217,12 +217,25 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       // Retrying with the same missing ref keeps the receipt; a corrected ref replaces it.
       await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "missing-ref" } }))
         .resolves.toMatchObject({ operationId: intent.operationId });
-      const corrected = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "corrected-ref" } });
-      expect(corrected.operationId).toBe(intent.operationId);
-      expect(await receipt()).toMatchObject({ requestedRef: "master", state: "pending", failureCode: null, pinnedCommit: null });
-      expect((await receipt()).requestKeys.sort()).toEqual(["corrected-ref", "missing-ref"]);
+      // An admission that listed the receipt before the correction must use the corrected ref.
+      const stagingIgnore = path.join(taskRoot, ".paperclip-runtime", "repository-staging", ".gitignore");
+      await rm(stagingIgnore, { force: true });
+      let releaseLock!: () => void;
+      const lockHeld = new Promise<void>(resolve => { releaseLock = resolve; });
+      let lockAcquired!: () => void;
+      const acquired = new Promise<void>(resolve => { lockAcquired = resolve; });
+      const holder = withDirectoryPublicationLock(checkout, async () => { lockAcquired(); await lockHeld; });
+      await acquired;
+      const pending = admission();
+      try {
+        await vi.waitFor(async () => expect(await lstat(stagingIgnore).catch(() => null)).not.toBeNull());
+        const corrected = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "corrected-ref" } });
+        expect(corrected.operationId).toBe(intent.operationId);
+        expect(await receipt()).toMatchObject({ requestedRef: "master", state: "pending", failureCode: null, pinnedCommit: null });
+        expect((await receipt()).requestKeys.sort()).toEqual(["corrected-ref", "missing-ref"]);
+      } finally { releaseLock(); await holder; }
 
-      await expect(admission()).resolves.toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
+      await expect(pending).resolves.toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
       expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("master source\n");
       expect(await receipt()).toMatchObject({ state: "ready", requestedRef: "master", pinnedCommit: pin, failureCode: null });
       // Published files are never switched to another ref.
