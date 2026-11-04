@@ -15460,7 +15460,7 @@ export function issueRoutes(
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
 
-      if (enteringBlocked) {
+      if (issue.status === "blocked") {
         const blockedIssue = issue;
         let ownerNotifiedAt: Date | null = null;
         await deliverAgentUnblockNotification({

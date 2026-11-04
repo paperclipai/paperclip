@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companyMemberships,
@@ -40,6 +43,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -767,6 +774,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companyMemberships);
@@ -969,6 +977,76 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .where(eq(issues.id, issue.id))
       .then((rows) => rows[0] ?? null);
     expect(persisted?.assigneeAgentId).toBe(activeAgentId);
+  });
+
+  it.each([
+    { action: "Restore registry access", checkout: true, notified: true, resolvedBlocker: false, expectedWakes: 0 },
+    { action: "Rotate the rejected registry credential", checkout: true, notified: true, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: false, notified: true, resolvedBlocker: false, expectedWakes: 0 },
+    { action: "Rotate the rejected registry credential", checkout: false, notified: true, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: true, notified: false, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: false, notified: false, resolvedBlocker: false, expectedWakes: 1 },
+    { action: "Restore registry access", checkout: true, notified: true, resolvedBlocker: true, expectedWakes: 0 },
+  ])("emits $expectedWakes owner wakes for $action (checkout=$checkout, notified=$notified, resolvedBlocker=$resolvedBlocker)", async ({ action, checkout, notified, resolvedBlocker, expectedWakes }) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: agentId, name: "BlockedCoder" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "blocker-owner", status: "active", membershipRole: "owner",
+    });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() }).returning();
+    const transitionAt = new Date("2026-10-27T12:00:00.000Z");
+    const notifiedAt = new Date("2026-10-27T12:00:01.000Z");
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Wait for registry access", status: "blocked", assigneeAgentId: agentId,
+      unblockDescriptor: { owner: { agentId }, action: "Restore registry access" },
+      blockedTransitionAt: transitionAt, blockedOwnerNotifiedAt: notified ? notifiedAt : null,
+    }).returning();
+    if (resolvedBlocker) {
+      const [blocker] = await db.insert(issues).values({ companyId, title: "Registry restored", status: "done" }).returning();
+      await db.insert(issueRelations).values({ companyId, issueId: blocker!.id, relatedIssueId: issue!.id, type: "blocks" });
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_blockers_resolved",
+        status: "completed", requestedAt: notifiedAt, finishedAt: notifiedAt,
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: issue!.id, blockerIssueIds: [blocker!.id], blockedTransitionAt: transitionAt,
+        }),
+      });
+    }
+    const priorWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    if (checkout) await svc.checkout(issue!.id, agentId, ["blocked"], null);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_key", keyScope: { kind: "standard" } };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const reblock = () => request(app).patch(`/api/issues/${issue!.id}`).send({
+      ...(checkout ? { status: "blocked" } : {}), unblockDescriptor: { action, owner: { agentId } },
+    });
+    const response = await reblock();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const repeated = await reblock();
+    expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    const allWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const queued = allWakes.filter(wake => !priorWakes.some(prior => prior.id === wake.id));
+    expect(queued).toHaveLength(expectedWakes);
+    if (action === "Restore registry access") expect(updated!.blockedTransitionAt).toEqual(transitionAt);
+    if (expectedWakes === 0) {
+      expect(updated).toMatchObject({ blockedTransitionAt: transitionAt, blockedOwnerNotifiedAt: notifiedAt });
+    } else {
+      expect(queued[0]).toMatchObject({
+        agentId, status: "queued", reason: "issue_unblock_requested", payload: { issueId: issue!.id, action },
+      });
+      if (action !== "Restore registry access") expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+    }
   });
 
   it("rejects checkout by a terminated agent before assigning the issue", async () => {
