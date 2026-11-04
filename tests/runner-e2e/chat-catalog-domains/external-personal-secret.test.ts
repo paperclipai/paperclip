@@ -170,3 +170,10 @@ it("handles natural warnings without accepting another-person reuse or negative/
   ])
     expect(personalSecretConfirmation(reply)).toBe(false);
 });
+
+it("accepts secure-form guidance only when its excluded chat destination stays excluded", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in your secure form, never in the chat.")).toBe(true);
+  for (const conjunction of ["but", "then", "however"]) {
+    expect(personalSecretGuidance(`Enter your personal publishing credential in the secure form, not in chat ${conjunction} here.`)).toBe(false);
+  }
+});
