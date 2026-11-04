@@ -3492,3 +3492,19 @@ separate BROKEN gap shape and must not be used for this recovery bundle. Final
 coverage must match all selected case IDs and preserve the separate gap count.
 This mode prepares data only. It does not upload, start jobs, reopen launches,
 change credentials, or change evaluation and evidence limits.
+# Legacy workspace migration
+
+`legacy-workspace-migration` and `legacy-workspace-migration-warm` are explicit,
+paid, two-turn Daytona workflows for registered native production profiles. They
+create a private reference file and ask a question on a local-disk controller.
+The supervisor stops that controller, runs the packaged offline migration with
+owned PostgreSQL and S3, verifies the export, starts an empty-home controller,
+and deletes the original home. The browser answers the existing question. The
+oracle requires the same native and provider session, workspace addresses and
+file bytes, plus the exact final document. Provider session identifiers are
+hashed in the added evidence. The company budget is $10 and automatic retries
+are disabled. Existing fixture teardown owns sandboxes, credentials, processes,
+database and storage; failed private evidence is retained under the usual policy.
+
+This proves preservation during initial enrollment, which has an offline step.
+Use the separate rolling deployment suites for uninterrupted deployment proof.

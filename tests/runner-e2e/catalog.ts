@@ -1272,6 +1272,21 @@ const rollingDeploymentSuites: RunnerSuiteFixture[] = [
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   remoteWorkspaceStorageSuite,
   ...rollingDeploymentSuites,
+  ...[
+    { id: "legacy-workspace-migration", environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
+    { id: "legacy-workspace-migration-warm", environment: daytonaControllerOutageEnvironment },
+  ].map(({ id, environment }): RunnerSuiteFixture => ({
+    id, label: `Legacy native session migration (${environment.configurationKey ? "warm" : "per-turn"})`, manualOnly: true,
+    description: "Resume an existing native session and workspace after the production offline migration and deletion of the original controller home.",
+    groups: [], profiles: rollingDeploymentProfiles.filter(profile => !profile.qualificationCandidate), environments: [environment],
+    tasks: [{ ...necessaryQuestionTask, minimumExpectedRunCount: 2, turnTimeoutMs: 6 * 60_000,
+      attemptTimeoutMs: { local: 15 * 60_000, daytona: 20 * 60_000 } }],
+    expectedMatrixSize: rollingDeploymentProfiles.filter(profile => !profile.qualificationCandidate).length,
+    definitionMetadata: { version: 1, scheduling: "explicit-only", maximumAttemptsPerCell: 1, providerTurns: 2, budgetMonthlyCents: 1000,
+      lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable",
+      migration: "packaged-offline-entry-verified-export-delete-entire-source-home", authentication: "api-key", stagingQualification: false,
+      grading: "same-native-and-provider-session-logical-and-remote-paths-reference-bytes-question-and-final-document" },
+  })),
   {
     id: CURSOR_CLOUD_SUITE, label: "Native Cursor Cloud", manualOnly: true, groups: [],
     description: "Local Paperclip controller with hosted Cursor work: verified artifact, same-agent follow-up, real active-run Stop and semantic plan revision/approval.",

@@ -1,0 +1,50 @@
+import { createHash } from "node:crypto";
+import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
+import type { RunnerApi } from "./api.js";
+import type { StoryCheck } from "./everyday-observations.js";
+import type { MatrixExecution } from "./types.js";
+
+export function isLegacyWorkspaceMigration(execution: MatrixExecution) {
+  return ["legacy-workspace-migration", "legacy-workspace-migration-warm"].includes(execution.suite.id);
+}
+
+export function legacyWorkspaceMigrationPrompt(prompt: string) {
+  return `Work in this task's own workspace. Before asking the question, create migration-reference.txt containing a fresh random 32-character lowercase hexadecimal reference and a trailing newline. Keep it as a private intermediate file, not a deliverable. Do not print its contents in chat. After I answer, read this same file before finishing. Keep its original bytes. ${prompt}`;
+}
+
+export interface MigrationPoint {
+  workspaceId: string; providerType: string; migrated: boolean; proofSha256: string;
+  runId: string; sessionId: string; providerSessionSha256: string; logicalCwd: string; remoteCwd: string;
+}
+
+export async function readMigrationPoint(input: { api: Pick<RunnerApi, "get">; companyId: string; agentId: string; issueId: string }): Promise<MigrationPoint> {
+  const { workspace } = await input.api.get<{ workspace: ExecutionWorkspace | null }>(`/api/issues/${input.issueId}/workspace`);
+  if (!workspace || workspace.companyId !== input.companyId) throw new Error("Migration oracle has no bound workspace");
+  const runs = await input.api.get<Array<{ runId: string; status: string; agentId: string; finishedAt: string }>>(`/api/issues/${input.issueId}/runs`);
+  const latest = runs.filter(run => run.agentId === input.agentId && run.status === "succeeded")
+    .sort((a, b) => b.finishedAt.localeCompare(a.finishedAt))[0];
+  if (!latest || runs.some(run => ["queued", "running"].includes(run.status))) throw new Error("Migration requires a settled retained turn");
+  const run = await input.api.get<Record<string, any>>(`/api/heartbeat-runs/${latest.runId}`);
+  const execution = run.runnerProfileJson?.nativeExecutionInput;
+  const reference = run.runnerProfileJson?.nativeWorkspaceSync ?? run.runnerProfileJson?.remoteWorkspace;
+  if (run.companyId !== input.companyId || run.agentId !== input.agentId || run.nativeIssueId !== input.issueId
+    || run.runtimeMode !== "native" || !run.nativeSessionId || typeof run.sessionIdAfter !== "string" || !run.sessionIdAfter
+    || execution?.binding?.executionWorkspaceId !== workspace.id
+    || !execution?.workspace?.cwd || !reference?.remoteCwd) throw new Error("Migration run identity is incomplete");
+  const file = await input.api.get<WorkspaceFileContent>(`/api/issues/${input.issueId}/file-resources/content?workspace=execution&path=migration-reference.txt`);
+  if (file.resource?.workspaceId !== workspace.id || file.content?.encoding !== "utf8"
+    || !/^[a-f0-9]{32}\n$/.test(file.content.data)) throw new Error("Migration reference bytes are missing");
+  return { workspaceId: workspace.id, providerType: workspace.providerType,
+    migrated: Boolean(workspace.metadata?.nativeWorkspaceMigration),
+    proofSha256: createHash("sha256").update(file.content.data).digest("hex"),
+    runId: run.id, sessionId: run.nativeSessionId, providerSessionSha256: createHash("sha256").update(run.sessionIdAfter).digest("hex"),
+    logicalCwd: execution.workspace.cwd, remoteCwd: reference.remoteCwd };
+}
+
+export function gradeLegacyWorkspaceMigration(before?: MigrationPoint, after?: MigrationPoint): StoryCheck[] {
+  return [{ id: "legacy-workspace-migration-continuation", passed: Boolean(before && after && !before.migrated && after.migrated
+    && before.providerType !== "cloud_sandbox" && after.providerType === "cloud_sandbox" && before.workspaceId === after.workspaceId
+    && before.runId !== after.runId && before.sessionId === after.sessionId && before.logicalCwd === after.logicalCwd
+    && before.remoteCwd === after.remoteCwd && before.proofSha256 === after.proofSha256 && before.providerSessionSha256 === after.providerSessionSha256),
+  detail: "A new turn retains the exact native session, logical and provider paths, workspace, and private file bytes after offline migration and destruction of the old home." }];
+}

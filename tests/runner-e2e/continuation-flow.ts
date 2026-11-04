@@ -1,4 +1,5 @@
 import { gradeNecessaryQuestion } from "./necessary-question.js";
+import { gradeLegacyWorkspaceMigration, isLegacyWorkspaceMigration, legacyWorkspaceMigrationPrompt, readMigrationPoint, type MigrationPoint } from "./legacy-workspace-migration.js";
 import { necessaryQuestionContract } from "./continuation-cases.js";
 import { validResumeQuestionForm, validResumeReferenceForm } from "./question-resume-scoring.js";
 import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
@@ -52,6 +53,8 @@ export async function runContinuationFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { page, api, fixtures, execution } = input;
+  const migration = isLegacyWorkspaceMigration(execution);
+  let migrationBefore: MigrationPoint | undefined, migrationAfter: MigrationPoint | undefined;
   const lifecycleProbe = lifecycleLiveCase(execution.task.id);
   const scenario = lifecycleProbe
     ? lifecycleLiveContinuation(execution.task.id, input.nonce)
@@ -256,7 +259,7 @@ export async function runContinuationFlow(input: {
       issuePrefix: fixtures.company.issuePrefix!,
       agentName: fixtures.agent.name,
       title: execution.task.buildTitle(input.nonce),
-      prompt: scenario.prompt,
+      prompt: migration ? legacyWorkspaceMigrationPrompt(scenario.prompt) : scenario.prompt,
       workMode: "standard",
     });
     issue = await pollUntil({
@@ -272,6 +275,12 @@ export async function runContinuationFlow(input: {
     await settle(new Set(), scenario.id !== "revision-preserves-approval");
     await snapshot("initial");
     assertWaiting();
+    if (migration) {
+      migrationBefore = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue.id });
+      await input.evidence("legacy-migration-before.json", migrationBefore);
+      await input.restart();
+      await open();
+    }
     if (scenario.id === "untrusted-evidence") {
       const parentRun = runs.find((r) => r.contextSnapshot?.issueId === issue!.id);
       await seedContinuationContext({
@@ -301,6 +310,7 @@ export async function runContinuationFlow(input: {
       await reply(scenario.approval);
     }
     await snapshot("final");
+    if (migration) migrationAfter = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue!.id });
   } finally {
     checks = gradeContinuation({
       ...scenario,
@@ -308,6 +318,10 @@ export async function runContinuationFlow(input: {
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
     checks.push(...gradeLifecycleBaseline(checkpoints));
+    if (migration) {
+      checks.push(...gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter));
+      await input.evidence("legacy-migration.json", { before: migrationBefore, after: migrationAfter, checks: gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter) });
+    }
     if (scenario.id === "necessary-free-text") checks.push(...gradeNecessaryQuestion(checkpoints, scenario.answer));
     if (lifecycleProbe) checks.push(gradeLifecycleNarrative({
       narrative: lifecycleProbe.narrative,
