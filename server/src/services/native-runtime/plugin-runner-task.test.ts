@@ -565,3 +565,36 @@ it.each(["codex", "claude"])("refuses warm %s account, harness, project, or cred
   await expect(prepare(owner)).rejects.toThrow("credential broker v1");
   expect(task.mock.calls.map(([op])=>op.kind)).toEqual(["describe"]);
 });
+
+describe("completed warm turn cold checkpoints", () => {
+  const identity = requirements.identity;
+  const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "immutable-source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: `sha256:${"b".repeat(64)}`,
+    identity, providerSessionId: "native-thread" };
+  const authority = (settled = true) => ({ store: { state: { identity,
+    commands: settled ? [] : [{ status: "pending" }], committedEvents: [{ eventType: "run.terminal", envelope: identity }] } } });
+  it.each([undefined, 1] as const)("issues only qualified Codex checkpoints (capability=%s)", async version => {
+    const task = vi.fn(async () => ({ kind: "checkpoint", taskId: "task", checkpoint }));
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", adoptIdentity: identity,
+      warmCheckpointVersion: version });
+    await owner.registration(authority() as never, identity.runId);
+    await owner.checkpointWarmTurn("native-thread");
+    if (version) {
+      expect(task).toHaveBeenCalledExactlyOnceWith({ kind: "checkpoint", identity, providerSessionId: "native-thread" });
+    } else expect(task).not.toHaveBeenCalled();
+    expect(owner.isRetired()).toBe(false);
+  });
+  it.each(["identity", "provider", "unsettled", "released", "unqualified"])("refuses an unsafe checkpoint: %s", async mode => {
+    const task = vi.fn(async () => ({ kind: "checkpoint", taskId: "task", checkpoint: { ...checkpoint,
+      ...(mode === "identity" ? { identity: { ...identity, turnId: "other-turn" } } : {}),
+      ...(mode === "provider" ? { providerSessionId: "other-thread" } : {}),
+    } }));
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: mode === "unqualified" ? "claude" : "codex",
+      adoptIdentity: identity, warmCheckpointVersion: 1 });
+    const registration = await owner.registration(authority(mode !== "unsettled") as never, identity.runId);
+    if (mode === "released") await registration.release();
+    if (mode === "unqualified") await owner.checkpointWarmTurn("native-thread");
+    else await expect(owner.checkpointWarmTurn("native-thread")).rejects.toThrow(/checkpoint/);
+    if (["unsettled", "released", "unqualified"].includes(mode)) expect(task).not.toHaveBeenCalled();
+  });
+});

@@ -7,7 +7,8 @@ import type { PreparedRunnerProviderLaunch, RunnerProviderLaunchRequirements } f
 import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
 export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trustedRuntimeReadOnlyRoots, withCodexCollaborationRuntimeInstructions } from "./runner-provider-launch.js";
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
-import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
+import { assertColdCheckpointRunnerState } from "../control-plane/cold-checkpoint.js";
+import type { RunnerColdCheckpoint, RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
 import { bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
@@ -367,6 +368,7 @@ async function rotateExternalAuthorityEpoch(
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
   }) => Promise<Record<string, unknown>>,
+  checkpoint?: RunnerColdCheckpoint,
 ): Promise<Record<string, unknown>> {
   const priorIdentity = controlPlaneIdentity(controlPlaneState);
   if (
@@ -410,7 +412,8 @@ async function rotateExternalAuthorityEpoch(
     }
   } else {
     const runnerState = await readRunnerState();
-    assertSuspendedRunnerState(runnerState, priorIdentity);
+    if (checkpoint) assertColdCheckpointRunnerState(runnerState, priorIdentity, checkpoint);
+    else assertSuspendedRunnerState(runnerState, priorIdentity);
     assertRealDirectory(activeControlPlane);
     renameSync(activeControlPlane, archivedControlPlane);
   }
@@ -418,7 +421,8 @@ async function rotateExternalAuthorityEpoch(
     archiveKey: basename(archive).replace(/^epoch-/, ""),
     priorIdentity,
   });
-  assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
+  if (checkpoint) assertColdCheckpointRunnerState(archivedRunnerState, priorIdentity, checkpoint);
+  else assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
   return controlPlaneState;
 }
 
@@ -3674,6 +3678,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string; permission?: boolean }>();
 
   constructor(readonly options: CapabilityRunnerdCodexTransportOptions) {
+    if (options.resumeColdCheckpoint && ((options.provider ?? "codex") !== "codex" ||
+        options.resumeProviderSession && options.resumeProviderSession.driverSessionId !== options.resumeColdCheckpoint.providerSessionId)) {
+      throw new Error("native_runner_cold_checkpoint_provider_identity_mismatch");
+    }
     if (options.adoptExistingRunner && options.authorizeRunnerAdoption && !options.prepareLaunch) {
       throw new Error("runner_adoption_authorization_requires_launch_preparation");
     }
@@ -5707,6 +5715,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           desiredIdentity,
           this.options.readRunnerState,
           this.options.archiveExternalRunnerState,
+          this.options.resumeColdCheckpoint,
         );
       }
       identity = desiredIdentity;
@@ -5740,6 +5749,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           desiredIdentity,
           this.options.readRunnerState,
           this.options.archiveExternalRunnerState,
+          this.options.resumeColdCheckpoint,
         );
       }
       identity = desiredIdentity;

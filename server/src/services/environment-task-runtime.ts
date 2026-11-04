@@ -6,7 +6,7 @@ import { readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
-import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult,
+import { freshWorkspaceSchema, environmentTaskOperationSchema, environmentTaskColdCheckpointSchema, parseEnvironmentTaskResult,
   type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -37,6 +37,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   executionContext?: unknown;
 }) {
   const operation = environmentTaskOperationSchema.parse(input.operation);
+  if ("resumeCheckpoint" in operation && operation.resumeCheckpoint && !("resumeFrom" in operation && operation.resumeFrom)) {
+    throw new Error("Plugin Runner cold checkpoint requires its retained task");
+  }
   const [row] = await db.select({ lease: environmentLeases, environment: environments, run: heartbeatRuns })
     .from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
@@ -57,7 +60,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const activeProbe = lease.heartbeatRunId === null && lease.issueId === null && probe
     && typeof probe.runId === "string" && typeof probe.sessionId === "string"
     && typeof probe.expiresAtMs === "number" && probe.expiresAtMs > Date.now();
-  const checkpointIdentity = operation.kind === "read_state" || operation.kind === "read_file" ? operation.identity
+  const checkpointIdentity = operation.kind === "read_state" || operation.kind === "read_file" || operation.kind === "checkpoint" ? operation.identity
     : operation.kind === "archive_state" ? operation.priorIdentity : null;
   const runner = checkpointIdentity ? { runnerId: checkpointIdentity.runnerInstanceId, leaseId: checkpointIdentity.environmentLeaseId,
     runId: checkpointIdentity.runId, sessionId: checkpointIdentity.normalizedSessionId } : operation.kind === "submit" ? operation.runner : operation.kind === "prepare" ? {
@@ -76,7 +79,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     identity.normalizedSessionId === saved.sessionId && identity.runId === saved.runId &&
     identity.turnId === saved.turnId && identity.itemId === saved.itemId;
   const ownCheckpoint = checkpointIdentity && !resumeFrom &&
-    (matches(checkpointIdentity,savedIdentity) || operation.kind !== "read_file" && matches(checkpointIdentity,priorSaved));
+    (matches(checkpointIdentity,savedIdentity) || !["read_file", "checkpoint"].includes(operation.kind) && matches(checkpointIdentity,priorSaved));
   if (checkpointIdentity && !resumeFrom && !ownCheckpoint) throw new Error("Plugin Runner state identity mismatch");
   const retainedCheckpointRead = operation.kind === "read_state" && ownCheckpoint &&
     lease.leasePolicy === "reuse_by_environment" && ["retained", "expired"].includes(lease.status) &&
@@ -88,8 +91,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     metadata.runnerTaskDispatched === true && metadata.runnerTaskExecutionStopped !== true &&
     metadata.runnerTaskRetiring !== true && (!lease.expiresAt || lease.expiresAt.getTime() > Date.now()) &&
     (metadata.runnerTaskLifecyclePolicy as { mode?: unknown } | undefined)?.mode === "warm";
-  if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || (operation.kind === "connection" && !retainedConnection) || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
+  if ((operation.kind === "checkpoint" || operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || (operation.kind === "connection" && !retainedConnection) || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
       (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
+  if (operation.kind === "checkpoint" && (process.env.PAPERCLIP_HOSTED_WARM_CHECKPOINT !== "1" || activeProbe ||
+      !matches(operation.identity, savedIdentity) || (metadata.runnerTaskLifecyclePolicy as {mode?:unknown}|undefined)?.mode !== "warm")) {
+    throw new Error("Plugin Runner cold checkpoint unavailable");
+  }
   if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
   const warmAttachment = !!prior && metadata.runnerTaskReused === true &&
     (matches(prior, savedIdentity) || matches(prior, priorSaved) && operation.kind === "prepare" && matches(operation.requirements.identity, savedIdentity)) && runner?.runnerId === prior.runnerInstanceId &&
@@ -104,7 +111,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const sources = await db.select({ id: environmentLeases.id, runId: environmentLeases.heartbeatRunId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
       eq(environmentLeases.providerLeaseId, resumeFrom),
-      inspectCheckpoint ? undefined : sql`${environmentLeases.metadata}->>'runnerTaskSessionRetained' = 'true'`,
+      inspectCheckpoint ? undefined : sql`(${environmentLeases.metadata}->>'runnerTaskSessionRetained' = 'true' or ${environmentLeases.metadata}->'runnerTaskColdCheckpoint' is not null)`,
       checkpointIdentity ? eq(environmentLeases.heartbeatRunId, checkpointIdentity.runId) : undefined,
     )).limit(2);
     const priorRunId = sources.length === 1 ? sources[0]!.runId : null;
@@ -116,9 +123,14 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         runId: priorRunId, normalizedSessionId: runner.sessionId },
       inspectCheckpoint,
     })) throw new Error("Plugin Runner resume identity mismatch");
+    const resumeCheckpoint = "resumeCheckpoint" in operation ? operation.resumeCheckpoint : undefined;
+    const savedCheckpoint = sources[0]!.metadata?.runnerTaskColdCheckpoint == null ? undefined
+      : environmentTaskColdCheckpointSchema.parse(sources[0]!.metadata!.runnerTaskColdCheckpoint);
+    if (savedCheckpoint && JSON.stringify(savedCheckpoint) !== JSON.stringify(resumeCheckpoint) ||
+        resumeCheckpoint && !savedCheckpoint) throw new Error("Plugin Runner cold checkpoint selection changed");
     // Older providers misclassified suspended checkpoints. A fresh provider
     // attestation may repair availability, but never supplies stop/owner authority.
-    if (inspectCheckpoint && sources[0]!.metadata?.runnerTaskSessionRetained !== true) {
+    if (inspectCheckpoint && !savedCheckpoint && sources[0]!.metadata?.runnerTaskSessionRetained !== true) {
       const status = await executeEnvironmentTask(db, workers, { companyId: input.companyId,
         leaseId: sources[0]!.id, operation: { kind: "status" } });
       if (status.kind !== "status" || status.executionStopped !== true || status.sessionStateAvailable !== true ||
@@ -367,16 +379,33 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     };
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
       : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now()) : 15_000;
+    if (operation.kind === "checkpoint" || operation.kind === "prepare" && savedIdentity && savedIdentity.runId !== operation.requirements.identity.runId) {
+      // Once a successor owns the live task, earlier turn snapshots are not selectable.
+      await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskColdCheckpoint'` })
+        .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
+          eq(environmentLeases.providerLeaseId, taskId)));
+    }
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
-    if (operation.kind === "read_file") {
+    if (operation.kind === "read_file" || operation.kind === "checkpoint") {
       const [current] = await db.select({ lease: environmentLeases, run: heartbeatRuns }).from(environmentLeases)
         .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, environmentLeases.companyId)))
         .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId))).limit(1);
       if (!current || current.lease.status !== "active" || current.run?.status !== "running" ||
         current.lease.metadata?.runnerTaskRetiring === true || current.lease.metadata?.runnerTaskExecutionStopped === true ||
         current.lease.expiresAt && current.lease.expiresAt.getTime() <= Date.now()) throw new Error("Plugin Runner file lease expired during transfer");
+    }
+    if (operation.kind === "checkpoint" && parsed.kind === "checkpoint") {
+      if (parsed.checkpoint.providerSessionId !== operation.providerSessionId ||
+          Object.entries(operation.identity).some(([key, value]) => parsed.checkpoint.identity[key as keyof typeof operation.identity] !== value)) {
+        throw new Error("Plugin Runner cold checkpoint identity mismatch");
+      }
+      const saved = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskColdCheckpoint: parsed.checkpoint })}::jsonb` })
+        .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+          eq(environmentLeases.status, "active"), sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`,
+          sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
+      if (saved.length !== 1) throw new Error("Plugin Runner cold checkpoint owner changed");
     }
     if (freshWorkspace && parsed.kind === "description" && parsed.freshWorkspaceVersion !== 1)
       throw new Error("Plugin-provided fresh workspace preparation unavailable");
@@ -483,7 +512,7 @@ export async function resolvePluginTaskResume(db: Db, input: {
   const candidates = rows.filter(row => {
     const identity = row.lease.metadata?.runnerTaskIdentity as Record<string, unknown> | undefined;
     return row.lease.id !== input.leaseId && row.run.id === input.priorIdentity.runId &&
-      (input.inspectCheckpoint || row.lease.metadata?.runnerTaskSessionRetained === true) &&
+      (input.inspectCheckpoint || row.lease.metadata?.runnerTaskSessionRetained === true || environmentTaskColdCheckpointSchema.safeParse(row.lease.metadata?.runnerTaskColdCheckpoint).success) &&
       identity?.runnerId === input.priorIdentity.runnerInstanceId && identity.leaseId === input.priorIdentity.environmentLeaseId &&
       identity.sessionId === input.priorIdentity.normalizedSessionId && identity.runId === input.priorIdentity.runId &&
       !rows.some(successor => successor.lease.id !== input.leaseId &&
@@ -510,4 +539,22 @@ export async function resolvePluginTaskResume(db: Db, input: {
     throw new Error("Plugin Runner retained session is not authorized");
   }
   return old.lease.providerLeaseId;
+}
+
+/** The exact receipt selected from the prior owner; never discover a newer artifact on the provider. */
+export async function resolvePluginTaskColdCheckpoint(db: Db, input: {
+  companyId: string; resumeFrom: string;
+  priorIdentity: { runnerInstanceId: string; environmentLeaseId: string; runId: string; normalizedSessionId: string };
+}) {
+  const rows = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.providerLeaseId, input.resumeFrom),
+    eq(environmentLeases.heartbeatRunId, input.priorIdentity.runId))).limit(2);
+  if (rows.length !== 1) throw new Error("Plugin Runner cold checkpoint owner ambiguous");
+  const value = rows[0]!.metadata?.runnerTaskColdCheckpoint;
+  if (value == null) return undefined;
+  const checkpoint = environmentTaskColdCheckpointSchema.parse(value);
+  if (Object.entries(input.priorIdentity).some(([key, value]) => checkpoint.identity[key as keyof typeof checkpoint.identity] !== value)) {
+    throw new Error("Plugin Runner cold checkpoint identity mismatch");
+  }
+  return checkpoint;
 }

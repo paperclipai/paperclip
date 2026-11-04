@@ -36,8 +36,9 @@ import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
 import { registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
-import { resolvePluginTaskResume } from "../environment-task-runtime.js";
-import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
+import { resolvePluginTaskResume, resolvePluginTaskColdCheckpoint } from "../environment-task-runtime.js";
+import { assertColdCheckpointRunnerState } from "../../vendor/paperclip-runner/index.js";
+import { environmentTaskResultSchema, environmentTaskColdCheckpointSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -2199,6 +2200,16 @@ function savePluginRunnerCheckpoint(root: string, state: Record<string, unknown>
   writeFileSync(temporary, JSON.stringify({ schema: state.schema, lifecycle: state.lifecycle,
     ...Object.fromEntries(fields.map(key => [key, state[key]])) }), { flag: "wx", mode: 0o600 });
   renameSync(temporary, path);
+}
+
+function pluginColdCheckpointVerified(root: string, identity: RunnerdDurableIdentity): boolean {
+  try {
+    const value = record(JSON.parse(readBoundedNativeFile(resolve(root, "plugin-runner-cold-checkpoint.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "runner_state_too_large").toString("utf8")));
+    const checkpoint = environmentTaskColdCheckpointSchema.parse(value.checkpoint);
+    assertColdCheckpointRunnerState(record(value.state), checkpoint.identity, checkpoint);
+    return Object.entries(identity).every(([key, field]) => checkpoint.identity[key as keyof typeof checkpoint.identity] === field);
+  } catch { return false; }
 }
 
 function pluginRunnerdAuthorityLifecycle(
@@ -4598,7 +4609,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
         nativeSessionScopeKey(input.execution);
     if (!sameScope) return "scope_mismatch";
     const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
-    if (lifecycle === "suspended") return "verified";
+    if (lifecycle === "suspended" || (lifecycle === "not_suspended" && pluginColdCheckpointVerified(input.root, input.identity))) return "verified";
     const directLifecycle = runnerdAuthorityLifecycle(
       input.root,
       input.identity,
@@ -5097,16 +5108,17 @@ async function recoverPluginRunnerCheckpoint(input: {
     return;
   }
   const direct = runnerdAuthorityLifecycle(root, identity);
+  const verifiedColdReceipt = direct === "not_suspended" && pluginColdCheckpointVerified(root, identity);
   const verifiedPluginReceipt = direct === "suspended" &&
     !existsSync(resolve(root, "runner", "runner-state.json")) && pluginRunnerdAuthorityLifecycle(root, identity) === "suspended";
   // Never hide contradictory direct authority behind a remote checkpoint.
-  if (direct !== "absent" && !(quarantined && direct === "suspended") && !verifiedPluginReceipt) {
+  if (direct !== "absent" && !(quarantined && direct === "suspended") && !verifiedPluginReceipt && !verifiedColdReceipt) {
     if (quarantined) return deny("quarantined_authority_conflict");
     return;
   }
   await assertCleanupActivationCommitted(input.db, root, input.execution);
   const prior = await verifyPriorRunnerdStateForSessionScope({ ...input, root, identity, allowVerifiedBackup: true });
-  if (prior !== "terminal_state_indeterminate" && !((quarantined || verifiedPluginReceipt) && prior === "verified")) {
+  if (prior !== "terminal_state_indeterminate" && !((quarantined || verifiedPluginReceipt || verifiedColdReceipt) && prior === "verified")) {
     if (quarantined) return deny("quarantined_prior_owner_unverified");
     return;
   }
@@ -5115,8 +5127,18 @@ async function recoverPluginRunnerCheckpoint(input: {
   if (!isSettledRemoteWarmControlState(control, identity)) return deny("journal_not_settled");
   const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
     leaseId: target.leaseId, priorIdentity: identity, inspectCheckpoint: true });
-  const checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom }));
-  if (checkpoint.kind !== "state" || checkpoint.state.lifecycle !== "suspended" ||
+  const resumeCheckpoint = await resolvePluginTaskColdCheckpoint(input.db, { companyId: input.execution.binding.companyId,
+    resumeFrom, priorIdentity: identity });
+  const checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom,
+    ...(resumeCheckpoint ? { resumeCheckpoint } : {}) }));
+  if (checkpoint.kind === "state" && resumeCheckpoint) {
+    assertColdCheckpointRunnerState(checkpoint.state, resumeCheckpoint.identity, resumeCheckpoint);
+    const path = resolve(root, "plugin-runner-cold-checkpoint.json");
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, JSON.stringify({ checkpoint: resumeCheckpoint, state: checkpoint.state }), { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  }
+  if (checkpoint.kind !== "state" || (!resumeCheckpoint && checkpoint.state.lifecycle !== "suspended") ||
       !Array.isArray(checkpoint.state.outbox) || checkpoint.state.outbox.length !== 0 ||
       checkpoint.state.pendingTerminalDelivery != null || checkpoint.state.pendingProviderCleanup != null ||
       checkpoint.state.warmTransition != null) return deny("checkpoint_not_settled");
@@ -5139,6 +5161,7 @@ const NATIVE_CONTINUITY_STATE_ENTRIES: readonly string[] = [
   "acpx",
   "failover-backups",
   "provider-pack-authority.json",
+  "plugin-runner-cold-checkpoint.json",
 ];
 
 function moveNativeContinuityState(root: string, archiveRoot: string): void {
@@ -10340,6 +10363,18 @@ async function executePaperclipNativeSessionWithinScope(
         expectedCurrentWakeComments,
       );
     }
+    if (native.terminal.runTerminalState === "succeeded" && lifecyclePolicy.mode === "warm" && warmSessionId !== null) {
+      const entry = warmNativeSessions.get(warmSessionId);
+      const owner = entry?.ownerToken === warmSessionOwnerToken ? pluginTaskSessionOwners.get(entry.session) : undefined;
+      if (owner?.warmCheckpointEnabled) {
+        try {
+          const snapshot = await entry!.session.snapshot();
+          await timeController("warm_checkpoint", () => owner.checkpointWarmTurn(snapshot.sessionId));
+        } catch {
+          try { await input.onLog?.("stderr", "[paperclip-runner] completed turn has no verified cold checkpoint; live session retained.\n"); } catch {}
+        }
+      }
+    }
     await leaseRenewal.stop();
     await trace.record({
       name: "native.result.finalize",
@@ -13206,6 +13241,9 @@ async function createRunnerdBackendWithinSessionClaim(
     const resumeFrom = !retainedOwner && !adopting && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
+    const resumeCheckpoint = resumeFrom && prior ? await resolvePluginTaskColdCheckpoint(input.db, {
+      companyId: input.execution.binding.companyId, resumeFrom, priorIdentity: prior,
+    }) : undefined;
     const credentials = await preparePluginRunnerCredentials({
       provider: provider.kind === "acpx" ? provider.agent : provider.kind,
       identity: input.managedAiCredentialIdentity, accountIdentity: input.managedAiAccountIdentity,
@@ -13222,6 +13260,9 @@ async function createRunnerdBackendWithinSessionClaim(
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
       onCredentials: input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
       warmTaskVersion: description.warmTaskVersion,
+      warmCheckpointVersion: process.env.PAPERCLIP_HOSTED_WARM_CHECKPOINT === "1" && provider.kind === "codex"
+        ? description.warmCheckpointVersion : undefined,
+      resumeCheckpoint,
       adoptIdentity: adoptionIdentity ?? (adopting && prior ? {
         runnerInstanceId: prior.runnerInstanceId, environmentLeaseId: prior.environmentLeaseId,
         runId: prior.runId, normalizedSessionId: prior.normalizedSessionId,

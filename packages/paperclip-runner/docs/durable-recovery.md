@@ -57,6 +57,36 @@ PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
 protocol validation before execution; ordinary persisted v1 summaries remain
 compatible.
 
+## Completed warm turns and cold continuation
+
+The opt-in `PAPERCLIP_HOSTED_WARM_CHECKPOINT=1` controller gate issues a
+completed-turn checkpoint only for hosted native Codex tasks whose environment
+provider advertises `warmCheckpointVersion: 1`. After a successful turn, while
+its controller lease is still held, Core requires a settled PRP journal and asks
+the provider to capture an immutable cold source. The live Runner remains ready
+and available for warm reuse. A checkpoint failure preserves the completed
+result, records that no cold source was verified, and cannot reuse an older
+turn's receipt. Other harnesses retain their existing lifecycle.
+
+The versioned receipt binds the full Runner/run/lease/session/turn/item identity,
+the native Codex thread, an opaque immutable source, the complete artifact hash,
+and a canonical Runner-state hash. State hashing writes object members in UTF-8
+key order, preserves negative zero, and uses Go-compatible JSON escaping with
+HTML escaping disabled. The provider owns coherent capture and verification of
+Runner state, provider state, and native history under the selected account and
+workspace. A ready checkpoint does not assert that the live process stopped and
+must never be relabelled suspended.
+
+Cold activation requires the existing stopped-predecessor and scoped lease
+checks, the exact persisted receipt, a settled controller journal, and an exact
+state digest with no outbox, cleanup, or warm-transition work. The external
+archive protocol returns the captured ready state and rotates to a new authority
+before launch. A later live run invalidates earlier selectable receipts. Turning
+off issuance still permits already-issued receipts to be consumed. This provides
+process-cold continuation when the provider preserves the selected native
+history; it does not establish recovery from loss of that storage or qualify a
+hosted deployment.
+
 ## Adoption and retired launch artifacts
 
 A live runner is adopted with its admitted artifact binding and authenticated

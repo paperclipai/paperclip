@@ -1,3 +1,4 @@
+import { coldCheckpointStateDigest } from "../control-plane/cold-checkpoint.js";
 import {
   bindRunnerLaunchResources,
   createRunnerProviderLaunch,
@@ -1525,6 +1526,49 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+it.each(["provider", "thread"])("refuses a cold checkpoint with different %s identity", mode => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "prior",
+    normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const proof = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: `sha256:${"b".repeat(64)}`, identity, providerSessionId: "original-thread" };
+  expect(() => createCapabilityRunnerdCodexTransport({ provider: mode === "provider" ? "opencode" : "codex",
+    resumeColdCheckpoint: proof, resumeProviderSession: { driverSessionId: mode === "thread" ? "other-thread" : "original-thread" },
+  })).toThrow("cold_checkpoint_provider_identity_mismatch");
+});
+
+it.each(["before", "after", "corrupt", "missing"] as const)("rotates a receipt-backed ready cold source: %s", async mode => {
+  const root = await mkdtemp(join(tmpdir(), "runner-cold-rotation-"));
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "prior",
+    normalizedSessionId: "session", turnId: "prior-turn", itemId: "prior-item" };
+  const desired = { ...identity, runId: "next", turnId: "next-turn", itemId: "next-item" };
+  const controller = { schema: "paperclip.runner.durable.control-plane-state.v1", identity };
+  const state = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready", outbox: [] };
+  const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "immutable-source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: coldCheckpointStateDigest(state), identity, providerSessionId: "thread" };
+  let attempts = 0;
+  const archive = vi.fn(async () => {
+    attempts++;
+    if (attempts === 1 && ["before", "after"].includes(mode)) throw new Error(`archive interrupted ${mode}`);
+    return { ...state, ...(mode === "corrupt" ? { turnId: "changed" } : {}) };
+  });
+  try {
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(controller));
+    const rotate = () => runnerdRecoveryInternals.rotateExternalAuthorityEpoch(root, controller, desired,
+      async () => state, archive, mode === "missing" ? undefined : checkpoint);
+    if (mode === "missing") {
+      await expect(rotate()).rejects.toThrow("requires_settled_state");
+      expect(archive).not.toHaveBeenCalled();
+    } else if (mode === "corrupt") await expect(rotate()).rejects.toThrow("cold_checkpoint_integrity_mismatch");
+    else {
+      await expect(rotate()).rejects.toThrow("archive interrupted");
+      await expect(rotate()).resolves.toEqual(controller);
+      expect(archive).toHaveBeenCalledTimes(2);
+      expect(state.lifecycle).toBe("ready");
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
