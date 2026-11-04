@@ -1877,8 +1877,9 @@ rejection. When admission attempted the retirement, the error names the first
 proof that failed, for example
 `prior_owner_terminal_state_indeterminate; retirement_refused=owner_observed` or
 `retirement_refused=journal_commands_unsettled(runner.suspend.pending)`. The
-reason uses only closed protocol names: command and event types, statuses,
-lifecycle states, and fence reasons. It never includes payloads or paths.
+reason uses only fixed lists of known names: command types, command statuses,
+owner phases, recovery states, lifecycle states, and fence reasons. Any other
+stored value appears as `other`. The reason never includes payloads or paths.
 
 Resume source selection skips a failed follow-up that never started provider
 work. Such a run holds only the provider checkpoint that it inherited. Without

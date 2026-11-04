@@ -5197,9 +5197,9 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
       return refuse("journal_identity_mismatch");
     }
     if (!isSettledRemoteWarmControlState(control, identity)) {
-      // Closed protocol vocabulary only: command and event types, never payloads.
+      // Closed vocabulary only: known command types and statuses, never payloads.
       const pending = commands.filter(command => command.status !== "completed")
-        .map(command => `${safeProtocolName(command.type)}.${safeProtocolName(command.status)}`);
+        .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
       return refuse(pending.length > 0 ? `journal_commands_unsettled(${[...new Set(pending)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");
     }
@@ -5212,8 +5212,23 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
   }
 }
 
-function safeProtocolName(value: unknown): string {
-  return typeof value === "string" && /^[a-z][a-z0-9_.]{0,63}$/.test(value) ? value : "unknown";
+// Refusal reasons reach run errors, so they draw only from these closed sets.
+// Any other persisted value reports as "other".
+const RETIREMENT_REASON_NAMES = {
+  commandType: new Set(["run.prepare", "run.attach", "run.cancel", "session.open", "session.resume", "session.close",
+    "session.destroy", "session.goal.get", "session.goal.set", "session.goal.clear", "turn.start", "turn.stop",
+    "semantic_tool.result", "request.resolve", "runner.drain", "runner.suspend", "runner.shutdown"]),
+  commandStatus: new Set(["pending", "dispatched", "running", "failed", "rejected", "cancelled"]),
+  ownerPhase: new Set(["observed", "committed", "retryable_failure", "terminal_failure", "workspace_finalizing",
+    "recovery_needed"]),
+  recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
+  controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
+    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity"]),
+  sandboxOutcome: new Set(["created", "resumed", "replacement"]),
+} as const;
+
+function retirementReasonName(kind: keyof typeof RETIREMENT_REASON_NAMES, value: unknown): string {
+  return typeof value === "string" && RETIREMENT_REASON_NAMES[kind].has(value) ? value : "other";
 }
 
 /**
@@ -5244,7 +5259,7 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     return refuse("target_not_sandbox_runner");
   }
   if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
-    return refuse(`sandbox_${safeProtocolName(target.sandboxLeaseAcquisition?.outcome ?? "acquisition_unknown")}`);
+    return refuse(`sandbox_${retirementReasonName("sandboxOutcome", target.sandboxLeaseAcquisition?.outcome)}`);
   }
   const identity: Record<string, string> = {};
   for (const key of ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"]) {
@@ -5270,16 +5285,16 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   }
   if (!prior || prior.run.runtimeMode !== "native") return refuse("owner_missing");
   if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.run.status)) return refuse("owner_run_not_terminal");
-  if (prior.owner.phase !== "committed" || !prior.owner.resultId) return refuse(`owner_${safeProtocolName(prior.owner.phase)}`);
+  if (prior.owner.phase !== "committed" || !prior.owner.resultId) return refuse(`owner_${retirementReasonName("ownerPhase", prior.owner.phase)}`);
   if (prior.owner.leaseOwner) return refuse("owner_lease_held");
-  if (prior.owner.recoveryState) return refuse(`owner_recovery_${safeProtocolName(prior.owner.recoveryState)}`);
+  if (prior.owner.recoveryState) return refuse(`owner_recovery_${retirementReasonName("recoveryState", prior.owner.recoveryState)}`);
   // A durable controller is fenced by its released database lease; a legacy
   // controller still needs process evidence, exactly as for warm recovery.
   const profile = record(prior.run.runnerProfileJson);
   const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(),
     requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
-  if (!stopped.allowed) return refuse(`controller_${safeProtocolName(stopped.reason)}`);
+  if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
   // Earlier rejected admissions can quarantine the same projection. Each copy
   // must pass the same proof: a rebuilt root never carries the local Runner
   // evidence that held an earlier attempt, so that evidence stays decisive.
