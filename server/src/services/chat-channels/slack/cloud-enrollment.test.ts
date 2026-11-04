@@ -11,8 +11,8 @@ function configureCloud() {
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "https://cloud.example.test");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "instance");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT", "test");
-  for (const [name, algorithm] of [["SIGN", "ed25519"], ["SEAL", "x25519"]] as const)
-    vi.stubEnv(`PAPERCLIP_CLOUD_CONNECTOR_${name}_PRIVATE_KEY`, generateKeyPairSync(algorithm).privateKey.export({ format: "jwk" }).d!);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY", generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }).d!);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY", generateKeyPairSync("x25519").privateKey.export({ format: "jwk" }).d!);
 }
 function jsonValues(value: unknown): unknown[] {
   if (typeof value === "string") { try { return [JSON.parse(value)]; } catch { return []; } }
