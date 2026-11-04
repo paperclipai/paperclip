@@ -94,3 +94,17 @@ it("classifies existing reporter and packaging carriers without exposing private
   ]);
   expect(JSON.stringify(diagnostic)).not.toMatch(/private-(?:test|hash|path|reason)/);
 });
+
+
+it("reports fixed embedded HTML and reporter text bounds while excluding unknown reasons", () => {
+  const diagnostic = privateAttemptDiagnostic({ stage: "package-original", observation: { privacy: { issues: [
+    { file: "html-report/index.html", reason: "embedded report exceeded its byte bound" },
+    { file: "html-report/index.html", reason: "reporter text exceeds inspection bound" },
+    { file: "html-report/index.html", reason: "zip could not be inspected: private-error" },
+  ] } } });
+  expect(diagnostic.carrierReasons).toEqual([
+    { source: "reporter", carrier: "embedded-html", reason: "embedded report exceeded its byte bound", count: 1 },
+    { source: "reporter", carrier: "embedded-html", reason: "reporter text exceeds inspection bound", count: 1 },
+  ]);
+  expect(JSON.stringify(diagnostic)).not.toMatch(/private-error|html-report/);
+});
