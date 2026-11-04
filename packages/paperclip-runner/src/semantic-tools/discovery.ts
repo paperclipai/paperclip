@@ -21,6 +21,7 @@ const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
   set_task_title: "active_task",
+  send_chat_message: "active_task",
   handoff_case: "delegation",
   read_case: "delegation", update_case: "delegation",
   create_case: "delegation",

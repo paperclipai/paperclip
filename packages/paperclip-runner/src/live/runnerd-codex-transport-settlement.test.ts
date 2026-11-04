@@ -46,6 +46,7 @@ import {
   settleRetainedRunnerdSession,
   retainedRunnerdCleanupProofIsCurrent,
   retainedRunnerdMaintenanceIsIdle,
+  waitForRetainedRunnerdMaintenanceIdle,
 } from "./runnerd-codex-transport.js";
 
 // Explicit private-artifact test lane; production/default dist is never changed.
@@ -605,6 +606,11 @@ it.each([
             authorize: () => stuckAuthorization,
           });
           const observed = blocked.catch((error: unknown) => error);
+          let idle = false;
+          const idleWait = waitForRetainedRunnerdMaintenanceIdle(copy).then(() => { idle = true; });
+
+          await waitForRetainedRunnerdMaintenanceIdle(join(copy, "unrelated"));
+          expect(idle).toBe(false);
           if (interruption === "abort") abort.abort();
           else await vi.advanceTimersByTimeAsync(30_000);
           expect(await observed).toMatchObject({
@@ -623,9 +629,11 @@ it.each([
           // The bounded wrapper has already failed, but its original callback
           // remains owned until it actually settles. No retry/proof is granted.
           expect(drained).toBe(false);
+          expect(idle).toBe(false);
           releaseAuthorization();
-          await drain;
+          await Promise.all([drain, idleWait]);
           expect(drained).toBe(true);
+          expect(idle).toBe(true);
           expect(retainedRunnerdMaintenanceIsIdle(copy)).toBe(true);
         } finally {
           releaseAuthorization();
@@ -724,6 +732,8 @@ it.each([
               command.result?.result?.message?.includes("no rollout found"),
           ),
         ).toBe(true);
+        expect(failed.commands.find((command: { type: string }) => command.type === "turn.stop")?.result?.result?.providerFailure)
+          .toMatchObject({ provider: "openai", phase: "startup", category: "unknown", message: "no rollout found for thread id" });
         expect(await readFile(fakeState)).toEqual(originalProviderHome);
         expect(
           await Promise.all(files.map((file) => readFile(join(original, file)))),

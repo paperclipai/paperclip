@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { activityLog, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -55,7 +55,7 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
     expect(run.issueId).toBe(binding === "scoped" ? sourceId : null);
     expect(run.nativeIssueId).toBeNull();
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues }, capture);
     try {
       const result = await resolveIssueCreationSource(observed, child);

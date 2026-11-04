@@ -19,6 +19,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   progress, and next action without requiring a raw-log interpretation.
 - `bounded-continuation`: `recovery/bounded-continuation` — supported interrupted work continues with preserved
   conversation context and bounded attempts, without blindly replaying tools.
+  Remote native runners can retain their active turn across main-server replacement
+  using the encrypted Postgres controller journal. See the five-minute contract
+  and qualification recipe in [remote continuity](../../doc/testing-native-remote-continuity.md#replacing-the-main-server).
   Restart recovery respects live heartbeat preparation before workspace
   synchronization finishes. PostgreSQL regressions cover unchanged ownership,
   no duplicate dispatch, and later recovery after preparation leaves the registry.
@@ -40,9 +43,6 @@ Agent access: [companion](../agent-access-map/recovery.md).
   for the same stop-and-save workflow before Retry admits another executor.
   Retry reconstructs missing preservation for historical failures only from an
   exact prepared source without a live finalization owner.
-  New messages and orphan cleanup can register missing preservation automatically
-  and wake the existing worker. Saved input still waits for verified stop and file
-  persistence, then enters ordinary admission once.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once
@@ -54,6 +54,13 @@ Agent access: [companion](../agent-access-map/recovery.md).
   the agent itself restarted or that a failed run succeeded.
 
 ## How to get to it (user POV)
+For `recovery/reconnect`, interrupt a write response after the server accepts it.
+Verify that task, document, and decision drafts survive reload and that retrying
+the saved request does not create a duplicate. After the bounded retry budget
+ends, use **Resend now** to continue. Check that drafts remain private to their
+original account and task. See [durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx)
+and the [disconnect recovery journey](../../tests/e2e/disconnect-write-recovery.spec.ts).
+
 
 ### `source-task`
 
@@ -84,10 +91,7 @@ Open the agent's run (`/agents/:agentId/runs/:runId`) from activity or the task'
 run link. The run page hosts workspace repair controls only for a failed run
 with error code `workspace_validation_failed` and a linked source task that still
 has a live `workspace_validation` recovery action. Use the source task for other
-stopped-run recovery checks. Native workspace export failures also offer the
-read-only **Inspect recovery** control described in the
-[run diagnostic recipe](activity.md#activity-audit-1). It observes one selected
-source's recorded identity and does not retry, repair, or authorize execution.
+stopped-run recovery checks.
 
 ### `operator-retry`
 
@@ -310,7 +314,9 @@ tests this host; it is component coverage, not an end-to-end repair.
 
 Manual: prepare a failed run with error code `workspace_validation_failed`, a
 linked source task, and a live `workspace_validation` recovery action on that
-task. Open that exact run and compare its recovery diagnosis to the source task.
+task. For retained-file export recovery, use a matching active source action and
+terminal run; compare Recover saved files on the task and run inspector.
+Open that exact run and compare its recovery diagnosis to the source task.
 Use an eligible action from the run surface, return to the task,
 and verify the same action state, persisted outcome, and restored execution.
 Repeat with an actor who lacks authority. Verify that the run-page controls are

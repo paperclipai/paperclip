@@ -23,6 +23,7 @@ const apiPrefixes: Record<string, string> = {
   "agents.ts": "/api",
   "agent-project-access.ts": "/api",
   "agent-commentary.ts": "/api",
+  "agent-chat-messages.ts": "/api",
   "agent-avatars.ts": "/api",
   "agent-profile-avatar.ts": "/api",
   "announcements.ts": "/api",
@@ -47,6 +48,7 @@ const apiPrefixes: Record<string, string> = {
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
+  "connection-event-wake.ts": "/",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
@@ -63,6 +65,7 @@ const apiPrefixes: Record<string, string> = {
   "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "ready.ts": "/api/ready",
   "liveness.ts": "/api/liveness",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
@@ -93,6 +96,7 @@ const apiPrefixes: Record<string, string> = {
   "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
+  "workspace-preferences.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -112,6 +116,8 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
+  "POST /api/instance/connector-events/wake",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -179,6 +185,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "connection-event-wake.ts") return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -196,7 +203,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   ) {
     return routePath;
   }
-  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "liveness.ts" || file === "ready.ts") && routePath === "/") {
     return prefix;
   }
   if (file === "companies.ts" || file === "health.ts") {
@@ -314,6 +321,90 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
+    const spec = buildOpenApiSpec();
+    const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Source-Run-Token", required: false }),
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Idempotency-Scope", required: false }),
+    ]));
+    for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
+    expect(operation.requestBody.content).toHaveProperty("application/json");
+    expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
+  });
+  it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
+    const response = operation.responses["200"].content["application/json"].schema;
+    expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
+    expect(response.properties.generatedAt).toMatchObject({ format: "date-time" });
+    expect(response.properties.items).toBeUndefined();
+    expect(response.properties.nextCursor).toBeUndefined();
+    if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
+    for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths["/api/issues/{id}/pending-questions"].get;
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
+    const response = operation.responses["200"].content["application/json"].schema;
+    expect(response).toMatchObject({ type: "array", items: { type: "object", properties: {
+      sourceKind: { enum: ["issue_thread_interaction"] },
+      detail: { properties: { kind: { enum: ["questions"] } } },
+    } } });
+    for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it("documents owned conversation reads and exact revision access separately", () => {
+    const spec = buildOpenApiSpec() as any;
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    for (const path of [
+      "/api/issues/{id}/decision-receipts",
+      "/api/issues/{id}/chat-handoffs",
+      "/api/companies/{companyId}/attention/history",
+    ]) {
+      const operation = spec.paths[path].get;
+      expect(operation.security).toEqual(boardSecurity);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      const query = Object.fromEntries(operation.parameters
+        .filter((parameter: { in: string }) => parameter.in === "query")
+        .map((parameter: { name: string; schema: unknown }) => [parameter.name, parameter.schema]));
+      expect(query.cursor).toMatchObject({ type: "string", maxLength: 1000 });
+      expect(query.limit).toMatchObject({ type: "integer", minimum: 1, maximum: 100 });
+      if (path.endsWith("/history")) {
+        expect(query.search).toMatchObject({ maxLength: 200 });
+        expect(query.outcome).toMatchObject({ maxLength: 40 });
+        expect(query.agentId).toMatchObject({ format: "uuid" });
+        expect(query.projectId).toMatchObject({ format: "uuid" });
+        expect(query.sort).toMatchObject({ enum: ["newest", "oldest"] });
+        expect(query.since).toMatchObject({ format: "date-time" });
+      } else {
+        expect(Object.keys(query).sort()).toEqual(["cursor", "limit"]);
+        expect(operation.responses["404"]).toBeDefined();
+      }
+      for (const code of ["200", "400", "401", "403"]) {
+        expect(operation.responses[code]).toBeDefined();
+      }
+    }
+
+    const revision = spec.paths["/api/issues/{id}/documents/{key}/revisions/{revisionId}"].get;
+    expect(revision.security).toEqual([...boardSecurity, { AgentBearerAuth: [] }]);
+    const params = Object.fromEntries(revision.parameters.map(
+      (parameter: { name: string; schema: unknown }) => [parameter.name, parameter.schema],
+    ));
+    expect(params.key).toMatchObject({ minLength: 1, maxLength: 64, pattern: "^[a-z0-9][a-z0-9_-]*$" });
+    expect(params.revisionId).toMatchObject({ type: "string", format: "uuid" });
+    for (const code of ["200", "400", "401", "403", "404"]) {
+      expect(revision.responses[code]).toBeDefined();
+    }
+  });
+
   it("removes Pipelines discovery while retaining Cases and Routines", () => {
     const spec = buildOpenApiSpec() as any;
     const paths = Object.keys(spec.paths);
@@ -1336,4 +1427,22 @@ describe("heartbeat run ID OpenAPI contract", () => {
     }
     expect(checked).toBe(12);
   });
+});
+
+
+it("documents explicit owner removals in the timeline response event enum", () => {
+  const spec = buildOpenApiSpec() as any;
+  const schema = spec.paths["/api/companies/{companyId}/timeline"].get.responses["200"].content["application/json"].schema;
+  expect(schema.properties.events.items.properties.kind.enum).toEqual([
+    "created", "commented", "approved", "delegated", "assigned", "unassigned",
+  ]);
+});
+
+it("documents canonical saved-resource links in catalog team install responses", () => {
+  const operation = buildOpenApiSpec().paths["/api/companies/{companyId}/teams/catalog/{catalogId}/install"].post;
+  expect(operation.description).toContain("resourceLinks");
+  const schema = operation.responses[201].content["application/json"].schema;
+  expect(schema.required).toContain("resourceLinks");
+  expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
+  expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
 });

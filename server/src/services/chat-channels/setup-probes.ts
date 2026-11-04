@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import type { EndpointRow, DbOrTransaction } from "./runtime-types.js";
 
@@ -299,7 +300,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
             )).limit(1).then((rows) => rows[0]);
             if (!linked || !(await lockCurrentPrincipalAuthorization(tx, endpoint, linked.principalId)).allowed) throw forbidden("Your connected account is no longer authorized");
           }
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const [activated] = await tx
             .update(chatEndpoints)
             .set({
@@ -329,6 +330,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
               code: "chat_endpoint_test_superseded",
             });
           }
+          await notifyChatConnectionHealth(tx, endpoint);
           await tx
             .update(toolConnections)
             .set({

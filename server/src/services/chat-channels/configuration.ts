@@ -1,3 +1,5 @@
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
@@ -195,7 +197,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             code: "chat_endpoint_not_active",
           });
         }
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -207,6 +210,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: pausedAt,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({ status: "disabled", enabled: false, updatedAt: new Date() })
@@ -332,7 +336,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
                 inArray(chatDeliveries.state, ["received", "retry"]),
               ),
             );
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointConfiguration(tx, endpoint);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           [activatedEndpoint] = await tx
             .update(chatEndpoints)
             .set({
@@ -351,6 +356,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             })
             .where(eq(chatEndpoints.id, endpoint.id))
             .returning();
+          await notifyChatConnectionHealth(tx, endpoint);
           await tx
             .update(toolConnections)
             .set({
@@ -378,9 +384,10 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           const failure = redactError(error);
           const failedAt = new Date();
           await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+          await db.transaction(async (tx) => {
             await credentialLease.assertOwned(tx);
-            await notifyChatEndpointWork(tx, endpoint.connectionId);
+            await notifyChatEndpointConfiguration(tx, endpoint);
+            await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
             await tx
               .update(chatEndpoints)
               .set({
@@ -396,6 +403,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
                   sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(activatedEndpoint.setup)}`,
                 ),
               );
+            await notifyChatConnectionHealth(tx, endpoint);
             await tx
               .update(toolConnections)
               .set({
@@ -483,7 +491,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             code: "chat_endpoint_already_removed",
           });
         }
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -500,6 +509,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           .update(chatConversations)
           .set({ state: "endpoint_removed", updatedAt: new Date() })
           .where(eq(chatConversations.endpointId, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({ status: "archived", enabled: false, updatedAt: new Date() })
@@ -716,7 +726,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await managementContext?.reauthorize();
         const claimed = await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointConfiguration(tx, endpoint);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const rows = await tx
             .update(chatEndpoints)
             .set({
@@ -795,7 +806,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await installSpekoVoiceTools(tx, endpoint, actorUserId);
       }
         const preserveSlackVerification = preservesProvisionedSlackVerification(current.setup, credentials.signingSecret ?? "", `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`);
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -829,6 +841,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({
@@ -881,7 +894,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
-        await notifyChatEndpointWork(tx, endpoint.connectionId);
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -891,6 +905,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({

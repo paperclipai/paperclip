@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,7 +163,10 @@ test("workspaces-c runs the db project alone and workspaces-b no longer carries 
   assert.ok(!workspacesB.workspaceProjects.includes("@paperclipai/db"), "db must not run twice");
   assert.ok(workspacesB.workspaceProjects.length > 0, "workspaces-b must still run its other projects");
   for (const workflow of ["pr-trusted.yml", "release-verify.yml"]) {
-    const entries = matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
+    const entries = workflow === "pr-trusted.yml"
+      ? JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8")).general_tests
+        .map((entry) => ({ ...entry, keys: Object.keys(entry) }))
+      : matrixEntries(readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8"));
     // The parser must demonstrably see shard keys in this workflow, otherwise
     // the unsharded assertions below could pass for the wrong reason.
     const sharded = entries.filter(entry => entry.group === "general-workspaces-a");
@@ -317,9 +320,13 @@ test("the real serialized shard partition is complete, non-overlapping and durat
 const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
 const nativeRunnerSuitePath =
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const ingressRetrySuitePath = "server/src/services/native-runtime/native-ingress-bootstrap-retry.integration.test.ts";
+const usageDeliverySuitePath = "server/src/services/native-runtime/native-usage-delivery.integration.test.ts";
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+const restartWaitSuites = ["lease-renewal", "preparation", "checkpoint-cost", "diskless"]
+  .map(name => `server/src/services/native-runtime/native-runner-restart-${name}.integration.test.ts`);
 
 // Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
 // "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
@@ -358,9 +365,11 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
   assert.ok(!files.includes(chatSuitePath));
   assert.ok(!files.includes(nativeRunnerSuitePath));
+  assert.ok(!files.includes(ingressRetrySuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.ok(!files.includes(usageDeliverySuitePath));
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -407,8 +416,11 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   assert.deepEqual(lane.selectedGeneralServerSuites, [
     "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+    ingressRetrySuitePath,
     dotRunnerSuitePath,
     restartRecoverySuitePath,
+    ...restartWaitSuites,
+    usageDeliverySuitePath,
   ]);
 });
 
@@ -427,9 +439,10 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   assert.match(prWorkflow, /^name: PR$/m,
     "renaming pr.yml silently moves the native-runner suite back into the uncached server shards");
 
-  const trustedWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
-  const lanes = [...trustedWorkflow.matchAll(/command: test:typescript:vitest --shard=(\d+)\/(\d+)/g)]
-    .map((match) => [Number(match[1]), Number(match[2])]);
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"));
+  const lanes = matrix.verify_paperclip_runner
+    .map((entry) => /test:typescript:vitest --shard=(\d+)\/(\d+)/.exec(entry.command))
+    .filter(Boolean).map((match) => [Number(match[1]), Number(match[2])]);
   assert.ok(lanes.length > 0, "expected sharded test:typescript:vitest lanes in pr-trusted.yml");
   assert.equal(new Set(lanes.map(([, count]) => count)).size, 1, "vitest lanes must agree on the shard count");
   const shardCount = lanes[0][1];
@@ -459,25 +472,24 @@ function wrapperPlan(args, envOverrides = {}) {
   return JSON.parse(result.stdout);
 }
 
-test("the PR vitest lane wrapper runs the native-runner group exactly on the final PR shard", () => {
-  for (const [args, envOverrides, expected] of [
-    [["--shard=1/2"], { GITHUB_WORKFLOW: "PR" }, false],
-    [["--shard=2/2"], { GITHUB_WORKFLOW: "PR" }, true],
-    [[], { GITHUB_WORKFLOW: "PR" }, true],
-    [["--shard=2/2"], { GITHUB_WORKFLOW: "Release" }, false],
-    [["--shard=2/2"], {}, false],
-    [[], {}, false],
+test("the PR lanes separate complete package and native workloads without changing local shards", () => {
+  for (const [args, envOverrides, packageArgs, native] of [
+    [["--shard=1/2"], { GITHUB_WORKFLOW: "PR" }, [], false],
+    [["--shard=2/2"], { GITHUB_WORKFLOW: "PR" }, null, true],
+    [[], { GITHUB_WORKFLOW: "PR" }, [], true],
+    [["--shard=2/3"], { GITHUB_WORKFLOW: "PR" }, ["--shard=2/3"], false],
+    [["--shard=3/3"], { GITHUB_WORKFLOW: "PR" }, ["--shard=3/3"], true],
+    [["--shard=2/2"], { GITHUB_WORKFLOW: "Release" }, ["--shard=2/2"], false],
+    [["--shard=2/2"], {}, ["--shard=2/2"], false],
+    [[], {}, [], false],
   ]) {
     const plan = wrapperPlan(args, envOverrides);
-    assert.equal(plan.runNativeRunnerGroup, expected,
-      `args ${JSON.stringify(args)} env ${JSON.stringify(envOverrides)}`);
-    const commands = plan.plannedCommands.map((planned) => planned.args.join(" "));
-    assert.ok(commands.some((command) => command.startsWith(`exec vitest run${args.length ? ` ${args.join(" ")}` : ""}`)),
-      "the wrapper must pass shard flags through to vitest");
-    assert.equal(
-      commands.some((command) => command.includes("--group general-server-native-runner")),
-      expected,
-    );
+    assert.equal(plan.runNativeRunnerGroup, native);
+    assert.equal(plan.runPackageTests, packageArgs !== null);
+    const vitest = plan.plannedCommands.find(command => command.args[0] === "exec");
+    assert.deepEqual(vitest?.args ?? null, packageArgs === null ? null : ["exec", "vitest", "run", ...packageArgs]);
+    assert.equal(plan.plannedCommands.some(command => command.args.includes("general-server-native-runner")), native);
+    assert.ok(plan.plannedCommands.some(command => command.args.includes("build:rust")), "both workloads require debug fixtures");
   }
 
   const malformed = spawnSync(process.execPath, [laneWrapper, "--shard=nonsense", "--dry-run"], {
@@ -546,6 +558,136 @@ test("shared-database and unsharded chat runs retain one serial partition", () =
     { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, [{ index: 0, count: 1 }]);
 });
 
+test("default chat isolation covers six partitions without dropping native suites", () => {
+  for (const args of [[], ["--mode", "general"]]) {
+    for (const workflow of ["PR", "Release", ""]) {
+      const env = { GITHUB_WORKFLOW: workflow, PAPERCLIP_TEST_DATABASE_URL: "" };
+      const plan = dryRunJson(args, env);
+      const full = dryRunJson(["--mode", "general", "--group", "general-server",
+        "--shard-index", "0", "--shard-count", "1"], env);
+      assert.deepEqual(plan.chatVitestShards, Array.from({ length: 6 }, (_, index) => ({ index, count: 6 })));
+      assert.ok(!plan.selectedGeneralServerSuites.includes(chatSuitePath));
+      assert.equal(new Set(plan.selectedGeneralServerSuites).size, plan.selectedGeneralServerSuites.length);
+      assert.deepEqual([...plan.selectedGeneralServerSuites, chatSuitePath].sort(), full.selectedGeneralServerSuites.sort());
+    }
+  }
+});
+
+test("default chat isolation leaves explicit groups and shared databases unchanged", () => {
+  for (const args of [[], ["--mode", "general"]]) {
+    const shared = dryRunJson(args, { PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test", GITHUB_WORKFLOW: "PR" });
+    assert.equal(shared.chatVitestShards, null);
+    assert.equal(shared.selectedGeneralServerSuites, null);
+  }
+  const full = dryRunJson(["--mode", "general", "--group", "general-server",
+    "--shard-index", "0", "--shard-count", "1"], { PAPERCLIP_TEST_DATABASE_URL: "", GITHUB_WORKFLOW: "PR" });
+  assert.equal(full.chatVitestShards, null);
+  assert.ok(full.selectedGeneralServerSuites.includes(chatSuitePath));
+  assert.ok(full.selectedGeneralServerSuites.includes(nativeRunnerSuitePath));
+  assert.deepEqual(dryRunJson(["--mode", "general", "--group", "general-chat"],
+    { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, [{ index: 0, count: 1 }]);
+  assert.equal(dryRunJson(["--mode", "serialized"], { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards, null);
+});
+
+function defaultLauncher({ shared = false, failureIndex = null } = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "default-chat-launch-"));
+  const file = path.join(repoRoot, chatSuitePath);
+  const lines = readFileSync(file, "utf8").split("\n")
+    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []).slice(0, 6);
+  assert.equal(lines.length, 6);
+  const cases = lines.map(line => ({ file, projectName: "@paperclipai/server",
+    name: `default launcher fixture ${line}`, location: { line } }));
+  const receipt = path.join(directory, "events.ndjson");
+  const active = path.join(directory, "active");
+  const fakePnpm = path.join(directory, "pnpm");
+  try {
+    writeFileSync(fakePnpm, `#!${process.execPath}
+      const fs = require('node:fs');
+      const args = process.argv.slice(2);
+      const tests = ${JSON.stringify(cases)};
+      const selected = args.flatMap(arg => {
+        const match = arg.match(/chat-channels\\.integration\\.test\\.ts:(\\d+)$/);
+        return match ? [Number(match[1])] : [];
+      });
+      if (args.includes('list')) {
+        const output = args.find(arg => arg.startsWith('--json=')).slice(7);
+        fs.writeFileSync(output, JSON.stringify(selected.length
+          ? tests.filter(test => selected.includes(test.location.line)) : tests));
+      } else {
+        const entry = { args, selected, home: process.env.PAPERCLIP_HOME,
+          config: process.env.PAPERCLIP_CONFIG, instance: process.env.PAPERCLIP_INSTANCE_ID,
+          tmpdir: process.env.TMPDIR };
+        const record = edge => fs.appendFileSync(${JSON.stringify(receipt)}, JSON.stringify({ ...entry, edge }) + '\\n');
+        record('begin');
+        if (fs.existsSync(${JSON.stringify(active)})) process.exit(91);
+        fs.writeFileSync(${JSON.stringify(active)}, 'running');
+        setTimeout(() => {
+          record('end');
+          fs.unlinkSync(${JSON.stringify(active)});
+          process.exit(selected.includes(${JSON.stringify(failureIndex === null ? null : lines[failureIndex])}) ? 7 : 0);
+        }, selected.length ? 200 : 0);
+      }
+    `);
+    chmodSync(fakePnpm, 0o755);
+    const result = spawnSync(process.execPath, [script, "--mode", "general"], {
+      cwd: repoRoot, encoding: "utf8", timeout: 30_000,
+      env: workflowEnv({ GITHUB_WORKFLOW: "PR", PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        PAPERCLIP_TEST_DATABASE_URL: shared ? "postgresql://shared/test" : "", PAPERCLIP_CI_PROFILE: "false" }),
+    });
+    const events = existsSync(receipt) ? readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+    return { result, events, lines };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("default chat isolation executes every partition sequentially before other groups", { skip: process.platform === "win32" }, () => {
+  const { result, events, lines } = defaultLauncher();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const chat = events.filter(event => event.selected.length > 0);
+  assert.deepEqual(chat.map(event => event.edge), Array.from({ length: 6 }, () => ["begin", "end"]).flat());
+  const starts = chat.filter(event => event.edge === "begin");
+  assert.deepEqual(starts.flatMap(event => event.selected).sort((a, b) => a - b), lines);
+  for (const event of starts) {
+    assert.ok(event.args.includes("--no-file-parallelism"));
+    assert.deepEqual(event.args.filter(arg => arg.startsWith("--maxWorkers")), ["--maxWorkers=1"]);
+  }
+  for (const field of ["home", "config", "instance", "tmpdir"]) {
+    assert.equal(new Set(starts.map(event => event[field])).size, 6, `${field} must be isolated per child`);
+  }
+  assert.equal(events.findIndex(event => event.selected.length === 0), 12);
+  const server = events[12];
+  assert.ok(server.args.includes("@paperclipai/server"));
+  const excluded = server.args.flatMap((arg, index) => arg === "--exclude" ? [server.args[index + 1]] : []);
+  assert.equal(excluded.filter(file => file === chatSuitePath.replace(/^server\//, "")).length, 1);
+  for (const file of [nativeRunnerSuitePath, ingressRetrySuitePath, usageDeliverySuitePath, dotRunnerSuitePath, restartRecoverySuitePath,
+    "server/src/services/native-runtime/plugin-runner-probe.test.ts"]) {
+    assert.ok(!excluded.includes(file.replace(/^server\//, "")), `default must retain ${file}`);
+  }
+});
+
+test("default chat isolation propagates failure without starting another partition or group", { skip: process.platform === "win32" }, () => {
+  const { result, events } = defaultLauncher({ failureIndex: 2 });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /failed \(7\)/);
+  assert.equal(events.length, 6);
+  assert.ok(events.every(event => event.selected.length === 1));
+  assert.deepEqual(events.map(event => event.edge), ["begin", "end", "begin", "end", "begin", "end"]);
+});
+
+test("default chat isolation keeps shared-database execution monolithic and serial", { skip: process.platform === "win32" }, () => {
+  const { result, events } = defaultLauncher({ shared: true });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(events.every(event => event.selected.length === 0));
+  assert.ok(events[0].args.includes("@paperclipai/server"));
+  assert.ok(events[0].args.includes("--no-file-parallelism"));
+  assert.deepEqual(events[0].args.filter(arg => arg.startsWith("--maxWorkers")), ["--maxWorkers=1"]);
+  const excluded = events[0].args.flatMap((arg, index) => arg === "--exclude" ? [events[0].args[index + 1]] : []);
+  assert.ok(!excluded.includes(chatSuitePath.replace(/^server\//, "")));
+  assert.ok(!excluded.includes(nativeRunnerSuitePath.replace(/^server\//, "")));
+  assert.deepEqual(events.map(event => event.edge), Array.from({ length: events.length / 2 }, () => ["begin", "end"]).flat());
+});
+
 
 test("a failed chat child fails the job after its sibling finishes", { skip: process.platform === "win32" }, () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "chat-launch-proof-"));
@@ -586,4 +728,38 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+for (const [group, parallelWorkers, shardArgs] of [
+  ["general-server-native-runner", 4, []],
+  ["general-server-without-chat-or-native-runner", 3, ["--shard-index", "0", "--shard-count", "12"]],
+]) test(`${group} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
+  const receipt = path.join(directory, "args.json");
+  const fakePnpm = path.join(directory, "pnpm");
+  writeFileSync(fakePnpm, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)));\n`);
+  chmodSync(fakePnpm, 0o755);
+  try {
+    for (const [databaseEnv, workers] of [
+      [{}, parallelWorkers],
+      [{ PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test" }, 1],
+      [{ PAPERCLIP_ISSUE_RECOVERY_TEST_DATABASE_URL: "postgresql://shared/recovery_test" }, 1],
+      [{ PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgresql://owned/postgres" }, parallelWorkers],
+    ]) {
+      const env = workflowEnv({ PATH: `${directory}${path.delimiter}${process.env.PATH}`, PAPERCLIP_CI_PROFILE: "false" });
+      for (const key of Object.keys(env)) if (key.endsWith("_TEST_DATABASE_URL")) delete env[key];
+      Object.assign(env, databaseEnv);
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", group, ...shardArgs], {
+        cwd: repoRoot, encoding: "utf8", env,
+      });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const args = JSON.parse(readFileSync(receipt, "utf8"));
+      assert.ok(args.includes(`--maxWorkers=${workers}`));
+      assert.ok(args.includes(workers > 1 ? "--fileParallelism" : "--no-file-parallelism"));
+      if (workers > 1) assert.ok(args.includes("--pool=forks") && args.includes("--isolate"));
+      if (group === "general-server-native-runner") {
+        for (const file of [restartRecoverySuitePath, ...restartWaitSuites]) assert.ok(args.includes(file));
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

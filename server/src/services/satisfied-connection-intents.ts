@@ -1,3 +1,5 @@
+import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
+import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
@@ -154,8 +156,10 @@ export function satisfiedConnectionIntentService(db: Db) {
             }
             const connection = await findSatisfiedToolConnection(txDb, task, intent);
             if (!connection) return false;
+            await notifyIssueReviewState(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
+            await notifyChatConfirmationResolution(tx, intent);
             const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
                 reason: "An already authorized connection is available to the requesting agent." },

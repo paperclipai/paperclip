@@ -26,7 +26,7 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
-  CompanySkillVersion,
+  CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
 import { foldersApi } from "../api/folders";
@@ -2187,7 +2187,7 @@ function AttachAgentsPopover({
 }: {
   agents: AttachAgentOption[];
   attachedAgentIds: string[];
-  versions: CompanySkillVersion[];
+  versions: CompanySkillVersionSummary[];
   selectedVersionId: string | null;
   pending: boolean;
   onSubmit: (nextIds: string[], versionId: string | null) => void;
@@ -2481,12 +2481,12 @@ function currentVersionSelection(detail: CompanySkillDetail | null | undefined) 
   return selected ?? null;
 }
 
-function versionLabel(version: CompanySkillVersion | null | undefined) {
+function versionLabel(version: CompanySkillVersionSummary | null | undefined) {
   if (!version) return "Latest";
   return `v${version.revisionNumber}${version.label ? ` · ${version.label}` : ""}`;
 }
 
-export function getSkillVersionDiffSelection(versions: CompanySkillVersion[], targetVersionId?: string | null) {
+export function getSkillVersionDiffSelection(versions: CompanySkillVersionSummary[], targetVersionId?: string | null) {
   const sorted = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
   const right = targetVersionId
     ? sorted.find((version) => version.id === targetVersionId) ?? null
@@ -2511,15 +2511,27 @@ function SkillVersionDiffDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  versions: CompanySkillVersion[];
+  versions: CompanySkillVersionSummary[];
   leftVersionId: string | null;
   rightVersionId: string | null;
   onLeftVersionChange: (id: string | null) => void;
   onRightVersionChange: (id: string | null) => void;
 }) {
   const sorted = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
-  const left = sorted.find((version) => version.id === leftVersionId) ?? null;
-  const right = sorted.find((version) => version.id === rightVersionId) ?? null;
+  const selectedLeft = sorted.find((version) => version.id === leftVersionId);
+  const selectedRight = sorted.find((version) => version.id === rightVersionId);
+  const leftQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(selectedLeft?.companyId ?? "", selectedLeft?.companySkillId ?? ""), leftVersionId],
+    queryFn: () => companySkillsApi.version(selectedLeft!.companyId, selectedLeft!.companySkillId, selectedLeft!.id),
+    enabled: open && Boolean(selectedLeft),
+  });
+  const rightQuery = useQuery({
+    queryKey: [...queryKeys.companySkills.versions(selectedRight?.companyId ?? "", selectedRight?.companySkillId ?? ""), rightVersionId],
+    queryFn: () => companySkillsApi.version(selectedRight!.companyId, selectedRight!.companySkillId, selectedRight!.id),
+    enabled: open && Boolean(selectedRight),
+  });
+  const left = leftQuery.data ?? null;
+  const right = rightQuery.data ?? null;
   const allPaths = useMemo(() => {
     const paths = new Set<string>();
     for (const file of left?.fileInventory ?? []) paths.add(file.path);
@@ -2561,6 +2573,8 @@ function SkillVersionDiffDialog({
         <div className="flex flex-wrap items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>Diff · skill files</DialogTitle>
+            {(leftQuery.error || rightQuery.error) && <p role="alert" className="text-sm text-destructive">{(leftQuery.error ?? rightQuery.error)?.message}</p>}
+            {(leftQuery.isLoading || rightQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading selected versions…</p>}
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
@@ -2813,7 +2827,7 @@ export function SkillDetailPage({
   setDraft: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
-  versions: CompanySkillVersion[];
+  versions: CompanySkillVersionSummary[];
   versionsLoading: boolean;
   attachAgents: AttachAgentOption[];
   onSubmitAttach: (ids: string[], versionId: string | null) => void;
@@ -3649,7 +3663,7 @@ function SkillPane({
   onSave: () => void;
   savePending: boolean;
   attachAgents: AttachAgentOption[];
-  versions: CompanySkillVersion[];
+  versions: CompanySkillVersionSummary[];
   onSubmitAttach: (ids: string[], versionId: string | null) => void;
   attachPending: boolean;
 }) {

@@ -37,6 +37,42 @@ Save & exit keeps its configuration; Finish setup on the agent returns to the
 same record. Final submission requests approval when required, then follows the
 existing preparation and verification lifecycle.
 
+For **Cursor Cloud**, choose its card in Cloud when native Runner is enabled and
+the qualified controller is available. Its held setup draft uses the API
+controller without a Computer, before model or credential selection. Local
+operators can choose **Paperclip Runner** in Advanced. Bind a Cursor Cloud
+API key, enter the exact model and select a repository/ref or a named Cursor
+cloud environment. Cursor hosts the agent's environment; this native setup has
+no Paperclip Computer selection. Save, reopen, and run Test. Test checks the
+account catalog and callback authentication gate without a prompt; the effective-model
+warning remains visible for this experimental integration. Finish setup repeats
+that account check and reaches Ready without preparing or leasing a Computer,
+even when the instance has a default plugin Computer. The Cursor lifecycle stays
+per-turn. Assign a real task
+and verify its output, question continuation, Plan approval and Stop separately.
+Managed-sandbox-only policy stays enabled. It continues to deny local agent code.
+Kubernetes-only execution is not supported by this API controller.
+
+When the native Runner adapter is available, **Google Antigravity** appears in the ordinary
+adapter picker. Before runtime acceptance, its card says **Not available yet**.
+Selecting it opens Google account setup and model configuration without saving
+an unqualified native execution configuration. The existing inactive draft stays
+held; Test and Finish remain unavailable, and the page says model and connection settings are not
+saved. The selected adapter is retained with the draft: **Back to agents**, reload,
+and **Finish setup** return to the same Google setup. Pending roster rows identify
+Google Antigravity without implying a configured connection or runnable model.
+**Change adapter** returns to the picker with the saved choice selected and allows
+switching that same held draft to another supported adapter.
+Verify discovery, Google-specific setup, draft preservation and the
+disabled actions separately from a successful Antigravity hire or task run.
+
+On an isolated host with a current operator candidate authorization, company-scoped
+adapter inventory can expose **Candidate** with one exact model. That company can
+connect, save, reopen, Test and Finish setup while the global release stays pending.
+Test verifies native account/model admission and cleanup without a model turn.
+Other companies, remote targets, expired authority and other models stay blocked.
+Verify this scoped path separately from production qualification and real task acceptance.
+
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its
 setup hold until hiring finishes. Changing environments keeps the selected
@@ -47,7 +83,46 @@ resource allocation waits for approval.
 
 ### `agent-configuration`
 
+On Harness / Runtime, select an installed healthy AI account or change its model
+and save. The save checks current access and compatibility without starting a
+computer or provider hello test. **Test** still verifies the runtime. Unverified
+legacy accounts, task connection adoption and Copilot model checks retain live
+validation. Verify saved configuration separately from runtime readiness.
+
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
+The agent nav has two sections: **Agent** (Overview, Identity at
+`/agents/:agentId/identity`, Harness / Runtime, Secrets & variables,
+Permissions / Trust, Advanced) and **Audit** (Activity, Runs, Costs, Budgets),
+which render inside the agent, filtered to it. Skills, Tools, Channels, API Keys
+and Revisions are not in the nav but still open by URL. Edit the name and title
+in place in the header (Enter or blur saves, Escape cancels); while a tab has
+unsaved changes, the header refuses the edit and asks to save or discard first.
+Assign task is the header's one button (Finish setup while setup is pending);
+Run now, Pause/Resume, Clear error, **Agent history** (a dialog listing
+revisions with a confirmed Restore), Duplicate, Copy ID, Reset sessions and
+Terminate are in the actions menu. On Identity, **Advanced settings** →
+**Load profile** switches to an external root only when the root directory and
+entry file already exist; otherwise the server refuses and the panel shows why.
+
+Open **Advanced** at `/agents/:agentId/advanced` for the compact agent
+[YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
+runtime setting, and adapter key; save, reload, and check the ordinary settings
+and Agent history. Try malformed YAML, an unknown field, omitted settings, a removed adapter key,
+and a concurrent settings edit. Errors must retain the draft; stale saves return
+a conflict. Unchanged secret markers must preserve their stored values. Following
+a link away from a draft must open the Discard unsaved changes? dialog; Back/Forward
+keeps the browser confirmation. **Reload saved**
+discards the draft. Also edit instruction text, skill pins, direct tool installs,
+channel settings/resources, permissions/trust/project boundaries, secret operations,
+and API key operations. Verify each result in its owning tab. Revision restore is
+an isolated save. Default YAML excludes catalogs, inherited definitions, history, and instruction
+contents. Verify profile-key references, named instruction-file patches (`null`
+deletes one file), omitted-setting preservation, and explicit clears. Adding
+unrelated company profiles must not grow this agent’s YAML. Inherited access and
+history remain in their owning tabs. An
+interrupted multi-resource save must report partial progress, preserve returned
+one-time keys, and require reload before another save. Domain APIs retain their
+existing authorization; a multi-resource save is not atomic.
 
 For a low-trust agent, open **Permissions / Trust → Allowed projects**. An operator
 with agent-management permission can select additional projects and explicitly
@@ -76,12 +151,17 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
+Native API discovery explains this human-only profile/crown control and the
+replacement confirmation. The Chat agent picker opens a conversation; it does
+not set the person's primary preference. This guidance grants no agent write
+authority.
+
 Open an agent profile and choose **Set as my primary**. Inspect its crown on the
 profile/roster and its position in the Agents sidebar, then open a new task or Chat.
 
 ### `agent-api-keys`
 
-Open `/agents/:agentId/api-keys` → **API Keys** with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
+Open `/agents/:agentId/api-keys` → **API Keys** (by URL; it is not in the agent nav) with an authenticated person who can manage agents. The operator CLI also supports `paperclipai token agent create -C <company-id> --agent <agent-id> --name <label>`, `token agent list -C <company-id> --agent <agent-id>`, and `token agent revoke <key-id> -C <company-id> --agent <agent-id>`.
 
 ### `managed-agent-cli`
 
@@ -156,7 +236,7 @@ Manual: Save a harmless instruction edit, reload, and verify its revision and ef
 
 For failed setup, use an unavailable model or invalid command on a disposable agent.
 Confirm the profile names the failed verification step and gives a relevant action.
-Check that it explains automatic retry and offers **Retry now**. Fix the configuration,
+Check that it explains that verification is paused and offers **Retry now**. Fix the configuration,
 retry, and reload; the failure must disappear only after readiness commits.
 Provider output and credentials must not appear in the lifecycle message.
 
@@ -167,7 +247,7 @@ Selecting another runner must not silently discard security settings or change a
 recorded execution. Keep runner choice in Advanced and verify the next eligible
 run separately from historical transcripts.
 
-Existing legacy Claude and Codex agents on qualified default environments, or
+Existing legacy Claude, Codex, and Grok Build agents on qualified default environments, or
 probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
 pending edits and an environment-variable draft. An unsaved change to a different
 effective computer must disable the action and explain that the computer change

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectExecution } from "./execution-projection.js";
+import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
 
 type Run = Parameters<typeof projectExecution>[0];
 type Coordinator = NonNullable<Parameters<typeof projectExecution>[1]>;
@@ -37,6 +38,16 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("shows maintenance only for admission that has not started", () => {
+    startTaskDrain();
+    try {
+      expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+        .toMatchObject({ phase: "queued", label: "Waiting for maintenance", cause: "task_drain" });
+      expect(project().phase).toBe("working");
+    } finally { stopTaskDrain(); }
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+      .toMatchObject({ phase: "queued", label: "Queued", cause: null });
+  });
   it.each(["queued", "recovering", "blocked", "recovered"] as const)("shows the exact saved workspace recovery state instead of stale repair instructions: %s", status => {
     const sourceRunId = "ec036e06-90a3-4b69-81db-a8eab7dbfbac";
     const source = run({ id: sourceRunId, status: "failed", errorCode: "native_continuation_requires_reconciliation" });

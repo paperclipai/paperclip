@@ -174,7 +174,7 @@ export function SidebarAccountMenu({
   }
 
   return (
-    <div className="bg-border/50 px-3 py-2 dark:bg-muted">
+    <div data-sidebar-account="" className="bg-border/50 px-3 py-2 dark:bg-muted">
       <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
@@ -199,7 +199,7 @@ export function SidebarAccountMenu({
             side="top"
             align="start"
             sideOffset={10}
-            className="min-h-(--profile-popover-min-height) w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+            className="w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
           >
             {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
             <FlyoutHeader data-flyout-profile data-marquee-surface className="relative flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
@@ -235,7 +235,7 @@ export function SidebarAccountMenu({
               </div>
             </FlyoutHeader>
 
-            <FlyoutOptions className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+            <FlyoutOptions className="flex flex-col gap-0.5 border-t border-border p-2.5">
               <MenuAction
                 label="Settings"
                 icon={Settings}

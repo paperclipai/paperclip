@@ -62,7 +62,8 @@ it("fails closed before paid work if disabled, missing project identity, or pref
     const prepared = await prepareScheduledCampaign(env, input.now);
     expect(prepared.manifest.limits.campaignId).toBe(prepared.campaignId);
     const forecast = JSON.parse(await readFile(path.join(path.dirname(prepared.manifestPath), "forecast.json"), "utf8"));
-    expect(forecast.measurements.historicalSuccessfulSelection).toEqual({ modelUsd: "0.427624800", summedAttemptMs: 72757 });
+    expect(forecast.measurements.historicalSuccessfulSelection).toEqual({ modelUsd: "0.428650100", summedAttemptMs: 107286 });
+    expect(forecast.measurements.historicalHostedSelection).toEqual({ modelUsd: "0.428650100", summedAttemptMs: 107286 });
     expect(forecast.measurements.hostedAttemptMs).toBeNull();
     expect(forecast.maxUsd).toBe("20");
     await expect(prepareScheduledCampaign(env, input.now)).rejects.toThrow("EEXIST");

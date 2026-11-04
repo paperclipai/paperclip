@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_SCHEMA, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2EResult } from "./types.js";
 import { classifyLatency, observationTiming } from "./latency-timing.js";
+import { projectTaskChatThread } from "./task-chat.js";
+import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -21,6 +23,44 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("retains task conversations through aggregation and public dashboard regeneration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-task-chat-report-"));
+    cleanupDirectories.push(root);
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const at = "2026-10-28T12:00:00Z";
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility", attempt: 1,
+      status: "passed", profileId: "runner-codex", environmentId: "local", caseId: "message-marker",
+      provider: "codex", model: "fixture", runtimeMode: "native", startedAt: at, finishedAt: at,
+      durationMs: 0, cleanup: "passed", taskChat: {
+        schema: "paperclip.runner-e2e.task-chat/v1", capturedAt: at, status: "complete", missing: [],
+        threads: [projectTaskChatThread({ id: "task", title: "Saved task conversation", description: "Original user request", createdAt: at },
+          [{ id: "reply", authorAgentId: "agent", createdAt: at, body: "Entire persisted response <script>unsafe()</script>" }], [], new Map([["agent", "Morgan"]]))],
+      },
+    };
+    await writeFile(path.join(directory, "result.json"), JSON.stringify(result));
+    await writeFile(path.join(directory, "final-state.png"), "fixture-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+        PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    });
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized.results[0].taskChat).toEqual(result.taskChat);
+    const regenerated = path.join(root, "regenerated");
+    await regenerateRunnerDashboard({ bundle: output, outputDirectory: regenerated, historyFile: null });
+    for (const folder of [output, regenerated]) {
+      const page = await readFile(path.join(folder, "index.html"), "utf8");
+      expect(page).toContain('aria-label="Task chat"');
+      expect(page).toContain("Original user request");
+      expect(page).toContain("Entire persisted response &lt;script&gt;unsafe()&lt;/script&gt;");
+      expect(page).not.toContain("<script>unsafe()</script>");
+    }
+  });
+
   it("publishes retained passing results but exits unsuccessfully when the request journal is damaged", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-damaged-ledger-report-"));
     cleanupDirectories.push(root);
@@ -184,7 +224,7 @@ describe("runner E2E report aggregation", () => {
     expect(normalized.results[0].startupReuse).toHaveLength(runIds.length);
     expect(normalized.results[0].startupReuse.every((reuse: { warmth: string; providerLaunchCount: number | null }) =>
       reuse.warmth === "unknown" && reuse.providerLaunchCount === null)).toBe(true);
-    expect(dashboard).toContain("Startup reuse evidence");
+    expect(dashboard).not.toContain("<caption>Startup reuse evidence</caption>");
   });
 
   it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {
@@ -398,7 +438,7 @@ describe("runner E2E report aggregation", () => {
       path.join(output, "dashboard.html"),
       "utf8",
     );
-    expect(dashboard).toContain("Runner Full-Stack E2E");
+    expect(dashboard).toContain("E2E tests");
     expect(dashboard).toMatch(/\$0\.0250*<\/strong><span>LLM reported subtotal/);
     expect(dashboard).toContain("<strong>2s</strong><span>Summed attempt time</span>");
     expect(dashboard).toContain("Carried-forward evidence can span older runs");

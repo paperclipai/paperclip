@@ -9,6 +9,11 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Google runtime setup offers a Gemini API key or a separate local Antigravity
+browser sign-in. The browser redirect requires no pasted code; setup displays
+the verified Google email before Connect. Connection setup does not qualify the
+pending Antigravity execution profile. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Feature ID: `connection-setup`.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).
@@ -247,18 +252,6 @@ the same resource, saved access choices, human ownership and acting-agent audit
 remain. Complete the step, verify the exact task continues, and confirm that
 revoked authority or cancelled work prevents continuation. An ordinary bot-token
 repair or an unchanged credential must not complete a signing-key request.
-
-For Google, request a specific service set, leave and reopen setup, and inspect
-the addressed user's pending choices. Another user's or organization grant must
-not supply those choices. A newer actual consent supersedes the saved request;
-a token refresh does not. A failed grant read must not broaden the selection.
-For Vercel personal setup, verify the selected credential belongs to the
-responsible person and new bindings record the configuring human as creator.
-Agent-initiated API changes retain the acting agent in audit; the human callback
-retains its actual human actor.
-Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
-field-specific credential entry and saved rotation recovery, and the
-[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
 
 ## Gotchas
 

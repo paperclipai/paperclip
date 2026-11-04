@@ -54,6 +54,7 @@ export const CACHED_PATHS = [
 export const HASHED_INPUTS = [
   `${RUNNER_PACKAGE}/rust-toolchain.toml`,
   `${RUNNER_PACKAGE}/acpx-profiles.json`,
+  `${RUNNER_PACKAGE}/antigravity-distributions.json`,
   `${RUNNER_PACKAGE}/runner/Cargo.toml`,
   `${RUNNER_PACKAGE}/runner/Cargo.lock`,
   `${RUNNER_PACKAGE}/runner/crates/**`,
@@ -102,10 +103,10 @@ export function computeScope({ workspace = process.env.GITHUB_WORKSPACE ?? proce
   return `${keySafe(os.platform())}-${keySafe(os.arch())}-${keySafe(rustcVersion)}-${root}`;
 }
 
-function readRustcVersion(env = process.env) {
+export function readRustcVersion(env = process.env, cwd = process.cwd()) {
   let output;
   try {
-    output = execFileSync("rustc", ["--version", "--verbose"], { encoding: "utf8", env });
+    output = execFileSync("rustc", ["--version", "--verbose"], { encoding: "utf8", env, cwd });
   } catch {
     return "no-rustc";
   }
@@ -155,12 +156,13 @@ function walk(target, visit) {
  * older than the build. When the set is incomplete, remove whatever was
  * restored and report it: cargo then compiles the crate as on a miss.
  */
-export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd(), now = new Date() } = {}) {
-  const missing = REQUIRED.find(({ glob, exclude }) => expandGlob(root, glob).filter((entry) => !exclude?.test(entry)).length === 0);
-  const matched = CACHED_PATHS.flatMap((pattern) => expandGlob(root, pattern));
+export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd(), now = new Date(),
+  required = REQUIRED, cachedPaths = CACHED_PATHS, schema = SCHEMA } = {}) {
+  const missing = required.find(({ glob, exclude }) => expandGlob(root, glob).filter((entry) => !exclude?.test(entry)).length === 0);
+  const matched = cachedPaths.flatMap((pattern) => expandGlob(root, pattern));
   if (missing) {
     for (const target of matched) rmSync(target, { recursive: true, force: true });
-    return { schema: SCHEMA, action: "discarded", reason: `incomplete: ${missing.label} is missing`, removed: matched.length };
+    return { schema, action: "discarded", reason: `incomplete: ${missing.label} is missing`, removed: matched.length };
   }
   let files = 0;
   let bytes = 0;
@@ -180,7 +182,7 @@ export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd
       }
     });
   }
-  return { schema: SCHEMA, action: "marked", files, bytes };
+  return { schema, action: "marked", files, bytes };
 }
 
 function main(argv) {

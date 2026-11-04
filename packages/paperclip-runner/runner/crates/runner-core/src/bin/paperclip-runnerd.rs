@@ -7,12 +7,14 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
-    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    CursorCloudLaunchProfile, DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
+use paperclip_runner_core::oom_score::{parse_oom_score_adj, set_own_oom_score_adj};
 use serde_json::json;
 
 const RUNNERD_BUILD_METADATA_SCHEMA: &str = "paperclip-runner/runnerd-build-metadata/v1";
@@ -249,6 +251,9 @@ fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerE
 }
 
 fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, LocalRunnerError> {
+    let candidate_admission = optional_value(args, "--acpx-candidate-admission-json")?
+        .map(|encoded| AcpxCandidateAdmission::parse_json(&encoded))
+        .transpose()?;
     let authority_digest = optional_value(args, "--acpx-launch-authority-digest")?;
     let command = optional_value(args, "--acpx-sidecar-command")?;
     let command_sha256 = optional_value(args, "--acpx-sidecar-command-sha256")?;
@@ -261,7 +266,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
         sidecar,
         sidecar_sha256,
     ) {
-        (None, None, None, None, None) => Ok(None),
+        (None, None, None, None, None) if candidate_admission.is_none() => Ok(None),
         (
             Some(authority_digest),
             Some(command),
@@ -272,6 +277,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
             let command = PathBuf::from(command);
             let sidecar = PathBuf::from(sidecar);
             Ok(Some(AcpxLaunchProfile {
+                candidate_admission,
                 authority_digest,
                 command: command.clone(),
                 args: vec![sidecar.to_string_lossy().into_owned()],
@@ -334,6 +340,33 @@ fn opencode_launch_profile(
         })),
         _ => Err(LocalRunnerError::invalid(
             "OpenCode launch profile requires command, proxy, executable, and all SHA-256 digests",
+        )),
+    }
+}
+
+fn cursor_cloud_launch_profile(
+    args: &[String],
+) -> Result<Option<CursorCloudLaunchProfile>, LocalRunnerError> {
+    let command = optional_value(args, "--cursor-cloud-proxy-command")?;
+    let command_sha256 = optional_value(args, "--cursor-cloud-proxy-command-sha256")?;
+    let proxy_script = optional_value(args, "--cursor-cloud-proxy-script")?;
+    let proxy_script_sha256 = optional_value(args, "--cursor-cloud-proxy-script-sha256")?;
+    match (command, command_sha256, proxy_script, proxy_script_sha256) {
+        (None, None, None, None) => Ok(None),
+        (Some(command), Some(command_sha256), Some(proxy_script), Some(proxy_script_sha256)) => {
+            Ok(Some(CursorCloudLaunchProfile {
+                command: QualifiedLaunchArtifact {
+                    path: PathBuf::from(command),
+                    sha256: command_sha256,
+                },
+                proxy_script: QualifiedLaunchArtifact {
+                    path: PathBuf::from(proxy_script),
+                    sha256: proxy_script_sha256,
+                },
+            }))
+        }
+        _ => Err(LocalRunnerError::invalid(
+            "Cursor Cloud launch profile requires command, proxy, and both SHA-256 digests",
         )),
     }
 }
@@ -419,6 +452,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         runner_digest: value(args, "--runner-digest")?,
         acpx_launch_profile: acpx_launch_profile(args)?,
         opencode_launch_profile: opencode_launch_profile(args)?,
+        cursor_cloud_launch_profile: cursor_cloud_launch_profile(args)?,
         max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
         p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
@@ -426,12 +460,57 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
     };
+    #[cfg(unix)]
+    std::env::set_var(
+        paperclip_runner_core::runtime_notifications::CONTEXT_ENV,
+        paperclip_runner_core::runtime_notifications::context_path(
+            &std::path::absolute(&state_dir)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?,
+        ),
+    );
+    #[cfg(unix)]
+    {
+        let key = paperclip_runner_core::runtime_notifications::HELPER_ENV;
+        std::env::remove_var(key);
+        if let Ok(executable) = std::env::current_exe() {
+            std::env::set_var(key, executable);
+        }
+    }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
+fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(value) = optional_value(args, "--oom-score-adj")? else {
+        return Ok(());
+    };
+    let score = parse_oom_score_adj(&value).ok_or_else(|| {
+        LocalRunnerError::invalid("invalid --oom-score-adj: expected -1000..=1000")
+    })?;
+    // Without the privilege, Runner is only less protected than requested.
+    if let Err(error) = set_own_oom_score_adj(score) {
+        eprintln!("paperclip-runnerd: failed to set --oom-score-adj: {error}");
+    }
+    Ok(())
+}
+
+fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
+    if let Some(path) = optional_value(args, "--task-memory-cgroup")? {
+        paperclip_runner_core::task_memory::set_task_cgroup(PathBuf::from(path));
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(unix)]
+    if matches!(
+        args.first().map(String::as_str),
+        Some("notification-context" | "record-activity")
+    ) {
+        return paperclip_runner_core::runtime_notifications::run_cli(args)
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()));
+    }
     if args.first().map(String::as_str) == Some("--stdio-mcp")
         && (args.len() == 2 || (args.len() == 3 && args[2] == "--content-images"))
     {
@@ -442,12 +521,22 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
     }
+    apply_oom_score_adj(args)?;
+    apply_task_memory_cgroup(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")
         || args.iter().any(|argument| argument == "--listen-path")
     {
         return run_durable(args);
+    }
+    if args
+        .iter()
+        .any(|argument| argument == "--acpx-candidate-admission-json")
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX candidate admission requires trusted durable runner startup",
+        ));
     }
     run_local_runner(RunnerConfig {
         run_id: value(args, "--run-id")?,
@@ -492,6 +581,39 @@ fn run_main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_cloud_launch_flags_are_optional_as_a_whole_and_required_as_an_exact_pin_set() {
+        assert!(cursor_cloud_launch_profile(&[]).unwrap().is_none());
+        let complete = vec![
+            "--cursor-cloud-proxy-command",
+            "/runtime/node",
+            "--cursor-cloud-proxy-command-sha256",
+            "sha256:node",
+            "--cursor-cloud-proxy-script",
+            "/runtime/cursor-cloud-proxy.cjs",
+            "--cursor-cloud-proxy-script-sha256",
+            "sha256:proxy",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let profile = cursor_cloud_launch_profile(&complete).unwrap().unwrap();
+        assert_eq!(profile.command.path, PathBuf::from("/runtime/node"));
+        assert_eq!(
+            profile.proxy_script.path,
+            PathBuf::from("/runtime/cursor-cloud-proxy.cjs")
+        );
+        for missing in (0..complete.len()).step_by(2) {
+            let partial = complete
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < missing || *index > missing + 1)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>();
+            assert!(cursor_cloud_launch_profile(&partial).is_err());
+        }
+    }
 
     #[test]
     fn listener_port_is_configurable_and_defaults_to_43127() {
@@ -550,6 +672,42 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_startup_requires_a_complete_trusted_launch_profile() {
+        let profiles: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../acpx-profiles.json")).unwrap();
+        let distributions: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../antigravity-distributions.json"
+        ))
+        .unwrap();
+        let encoded = json!({
+            "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1", "agent":"antigravity", "model":"exact-model",
+            "profileDigest":profiles["profiles"]["antigravity"]["commandDigest"],
+            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
+            "platform":"darwin", "architecture":"arm64", "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+            "runId":"run-1", "normalizedSessionId":"session-1"
+        }).to_string();
+        let mut args = vec!["--acpx-candidate-admission-json".to_owned(), encoded];
+        assert!(acpx_launch_profile(&args).is_err());
+        assert!(run(&args).is_err());
+        args.extend([
+            "--acpx-launch-authority-digest".to_owned(),
+            format!("sha256:{}", "a".repeat(64)),
+            "--acpx-sidecar-command".to_owned(),
+            "/qualified/node".to_owned(),
+            "--acpx-sidecar-command-sha256".to_owned(),
+            format!("sha256:{}", "b".repeat(64)),
+            "--acpx-sidecar-script".to_owned(),
+            "/qualified/sidecar.cjs".to_owned(),
+            "--acpx-sidecar-script-sha256".to_owned(),
+            format!("sha256:{}", "c".repeat(64)),
+        ]);
+        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
+        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        assert!(acpx_launch_profile(&[]).unwrap().is_none());
+    }
+
+    #[test]
     fn pack_inventory_rejects_task_owned_roots_and_writable_aliases() {
         let directory =
             std::env::temp_dir().join(format!("pack-inventory-{}", uuid::Uuid::new_v4()));
@@ -598,10 +756,15 @@ mod tests {
             args.extend(options.into_iter().map(str::to_owned));
             assert!(metadata_with_provider_packs(&args).is_err());
         }
+        let missing_root = if cfg!(windows) {
+            r"C:\missing-provider-pack"
+        } else {
+            "/missing-provider-pack"
+        };
         let metadata = metadata_with_provider_packs(&[
             "--build-metadata".to_owned(),
             "--provider-pack-root".to_owned(),
-            "/missing-provider-pack".to_owned(),
+            missing_root.to_owned(),
         ])
         .unwrap();
         assert_eq!(metadata["binaryContractVersion"], 2);

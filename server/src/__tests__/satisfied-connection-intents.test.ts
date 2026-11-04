@@ -1,3 +1,5 @@
+import type { ConnectionIntentPayload } from "@paperclipai/shared";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
@@ -20,16 +22,17 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 import { reserveRunBudget } from "../services/budget-reservations.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SATISFIED_CONNECTION_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
 describePostgres("already available connection requests", () => {
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
-    db = createDb(temp.connectionString);
-    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    if (!externalUrl) temp = await startEmbeddedPostgresTestDatabase("paperclip-satisfied-connections-");
+    db = createDb(externalUrl ?? temp.connectionString);
+    await db.insert(authUsers).values({ id: "connection-owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   }, 20_000);
   beforeEach(async () => { await db.execute(sql`truncate table companies cascade`); });
   afterAll(async () => { await db.$client.end({ timeout: 1 }); await temp?.cleanup(); });
@@ -60,6 +63,34 @@ describePostgres("already available connection requests", () => {
     return run!;
   }
 
+  it("wakes governed response recovery only when automatic cleanup retires a connection card", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeReviewResponse, notified);
+    try {
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+      expect(notified).toHaveBeenCalledOnce();
+      expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+      expect(notified).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
+  it("notifies terminal confirmation recovery after existing-access retirement commits", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTerminalConfirmations, notified);
+    try {
+      await db.transaction(async tx => {
+        expect(await satisfiedConnectionIntentService(tx as unknown as typeof db).sweepPending()).toMatchObject({ satisfied: 1 });
+        expect(notified).not.toHaveBeenCalled();
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("pending");
+      });
+      expect(notified).toHaveBeenCalledOnce();
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    } finally { unsubscribe(); }
+  });
+
   it("settles a published Slack card when existing access retires the connection request", async () => {
     const f = await seed();
     const endpointId = randomUUID();
@@ -83,7 +114,7 @@ describePostgres("already available connection requests", () => {
 
   it("ignores an already available connection before the worker retires its card", async () => {
     const f = await seed(); const run = await retry(f);
-    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: true });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, retryReasonOverride: "transient_failure", now: new Date() })).toMatchObject({ allowed: true });
     expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
   });
 
@@ -112,7 +143,7 @@ describePostgres("already available connection requests", () => {
   it("keeps a retry under another user's identity waiting for its response", async () => {
     const f = await seed(); const run = await retry(f);
     await db.update(heartbeatRuns).set({ responsibleUserId: "someone-else" }).where(eq(heartbeatRuns.id, run.id));
-    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, retryReasonOverride: "transient_failure", now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
   });
 
   it("notifies an idle worker when a new connection request commits", async () => {
@@ -125,7 +156,7 @@ describePostgres("already available connection requests", () => {
     const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.connection, notified);
     try {
       await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
-        payload: f.intent.payload, sourceRunId: source.id, addresseeUserId: "connection-owner", idempotencyKey: "new-card",
+        payload: f.intent.payload as ConnectionIntentPayload, sourceRunId: source.id, addresseeUserId: "connection-owner", idempotencyKey: "new-card",
       });
       expect(notified).toHaveBeenCalledOnce();
       expect(await worker.hasPending()).toBe(true);
@@ -167,7 +198,7 @@ describePostgres("already available connection requests", () => {
         }, nextRunAt: service.nextRunAt,
       }).ready;
       const card = await issueThreadInteractionService(db).createConnectionIntent({ id: f.issueId, companyId: f.companyId }, {
-        payload: f.intent.payload, sourceRunId: source!.id, addresseeUserId: "connection-owner", idempotencyKey: "passive-setup-card",
+        payload: f.intent.payload as ConnectionIntentPayload, sourceRunId: source!.id, addresseeUserId: "connection-owner", idempotencyKey: "passive-setup-card",
       });
       cardId = card.id;
       await wait(passive);
@@ -196,7 +227,7 @@ describePostgres("already available connection requests", () => {
     if (reason === "disabled") await db.update(toolConnections).set({ enabled: false });
     if (reason === "removed_member") await db.delete(companyMemberships);
     if (reason === "denied_policy") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block this task", policyType: "block", selectors: { issueId: f.issueId } });
-    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, retryReasonOverride: "transient_failure", now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
   });
 
   it.each(["company", "issue", "project"] as const)("uses %s policy when deciding whether tools are ready", async (scope) => {
@@ -274,8 +305,8 @@ describePostgres("already available connection requests", () => {
     const replacement = await replaceAccount(f);
     await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "connection_intent",
       status: "accepted", payload: f.intent.payload, addresseeUserId: "connection-owner", resolvedByUserId: "connection-owner",
-      result: { version: 1, outcome: "accepted", connectionId: replacement.id }, resolvedAt: new Date() });
-    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: true });
+      result: { version: 1, outcome: "connected", connectionId: replacement.id }, resolvedAt: new Date() });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, retryReasonOverride: "transient_failure", now: new Date() })).toMatchObject({ allowed: true });
   });
 
   it("refreshes only the system observation for an already authorized replacement", async () => {
@@ -352,7 +383,7 @@ describePostgres("already available connection requests", () => {
       return (table: Parameters<typeof db.update>[0]) => {
         const builder = db.update(table);
         if (table !== connectionIntentDeliveries) return builder;
-        return { set(values: Parameters<typeof builder.set>[0]) {
+        return { set(values: Parameters<typeof builder.set>[0] & { deliveredAt?: Date }) {
           const update = builder.set(values);
           if (!values.deliveredAt) return update;
           return { async where(condition: Parameters<typeof update.where>[0]) {
@@ -378,7 +409,7 @@ describePostgres("already available connection requests", () => {
 
   it("records a system completion and one durable continuation with a one-connection pool", async () => {
     const f = await seed();
-    const single = createDb(temp.connectionString, { maxConnections: 1 });
+    const single = createDb(externalUrl ?? temp.connectionString, { maxConnections: 1 });
     try {
       const outcomes = await Promise.all([satisfiedConnectionIntentService(single).sweepPending(), satisfiedConnectionIntentService(db).sweepPending()]);
       expect(outcomes.reduce((sum, outcome) => sum + outcome.satisfied, 0)).toBe(1);
@@ -461,7 +492,7 @@ describePostgres("already available connection requests", () => {
   it("keeps a real question blocking even when a sibling connection is available", async () => {
     const f = await seed(); const run = await retry(f);
     await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } });
-    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
+    expect(await createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId: f.companyId, runId: run.id, retryReasonOverride: "transient_failure", now: new Date() })).toMatchObject({ allowed: false, errorCode: "issue_waiting_for_response" });
   });
 
   it("does not bypass a retained workspace hold after connecting", async () => {

@@ -5,6 +5,22 @@ instance-wide `idleSleepSafety` report for instance administrators and signed
 Cloud control callers. Ordinary task drains keep their existing behavior.
 Company members and agents cannot read this report.
 
+Instance administrators and signed Cloud control callers may add
+`idleSleepDiagnostics=1` to an owned safety request for fixed-key blocker
+diagnostics. This explicit one-shot read evaluates all current predicates in
+the same bounded snapshot, and can reconnect/wake the database. Do not poll it
+during a suspension observation window. The normal report and its early local
+and plugin short circuits are unchanged when the option is absent.
+
+The optional `diagnostics` field reports `none`, `present`, `unknown`, or
+`not_checked` per reason. `complete` describes applicable read-inspection
+coverage, never stop authorization. Diagnostics do not initiate backup dumps
+or unsafe plugin RPCs. Skipped checkpoints remain `not_checked`; unknown or
+skipped checks never grant a safety `none`. A changed hold or tracked-work
+generation invalidates the observation. Only fixed keys and states are
+returned, with no tenant records or error details. See the
+[complete reason and traffic inventory](plans/2026-11-02-sleep-blocker-inventory.md).
+
 ## Hosting protocol
 
 1. Hold external admission at the hosting layer. Queue user requests for wake or
@@ -81,6 +97,101 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Retained completion history
+
+The retained chat, tool-review, browser, decision, transfer, public-MCP and
+external-agent families use their owning domain's completion receipts. Inspection
+does not delete history, expire credentials, cancel work or shorten retention.
+A terminal label alone is insufficient. Missing, contradictory, malformed or
+foreign company/task/run/binding references keep the instance awake.
+
+Chat input can remain work after processing because its exact wake still owns
+the conversation head. Publications retain provider ambiguity, endpoint leases
+and file-transfer obligations. Tool reviews retain invocation completion,
+interaction projection and continuation delivery. Browser runs require drained
+events and settled/released accounting; a stopped browser must belong to the
+same closed session. Decision success requires the selected option's full effect
+manifest, matching ordinal/type/target receipts and audit records. The owning
+dismissal, explicit recovery stop and reviewed archive paths have separate proofs.
+Their continuation and archive-notification outboxes remain independent barriers.
+Failed company transfers remain resumable. Completed transfers require their
+recorded manifest, exact part receipts and matching counts. Completed/cancelled
+transfers still block while their registered local spool contains cleanup work.
+
+Chat control tokens can remain issued or become expired after another actor
+resolves their canonical interaction. Their exact interaction, publication and
+conversation receipts establish completion; a token status alone does not.
+Provider submission receipts do not exempt pending source wakes or publications.
+Photon attachment provenance remains immutable history after ordinary attachment
+removal, but any surviving metadata must agree with its recorded identities and
+hashes. This proof establishes completed registration, not storage cleanup.
+
+Public-MCP upload cleanup requires both the existing cleanup stamp and a new
+verified-cleanup stamp. Ordinary attachment and issue removal write this proof
+only after successful object deletion and an absence readback. Legacy cleanup
+stamps are not backfilled: the existing bounded opportunistic sweep can verify
+expired or orphaned uploads. Reissuing an uncommitted upload clears both stamps;
+a committed/deleted request replay preserves them. An expired or cleaned upload
+cannot accept a still-valid old transport ticket.
+
+Voice report refresh remains work for the owner's full 24-hour window after a
+provider session ends, even when the report is available. Live session recovery,
+unconfirmed inbound cleanup and ambiguous reply submission still block. A
+completed provider submission does not prove spoken playback. Speko setup also
+requires the existing successful whole-configuration receipt after its individual
+tool and webhook writes. Discord command registration retains its own future
+check; a completed command invocation does not retire that deadline.
+
+Waiting agent conversations can be passive containers under both ordinary and
+scheduled inspection. The same narrow proof requires the exact conversation
+agent/company/user, waiting state, no checkout, active run, accounting, monitor
+or pending delivery, and a finished wake for every accepted user-comment outbox
+entry. An idle presentation state does not exempt an ordinary runnable task.
+
+Sandbox creation records in `pending` or `needs_reconciliation` remain blockers,
+including manual uncertainty after company deletion. The pending-only catalog
+omission predates the new startup-cleanup recovery path; no complete-instance
+unsafe sleep outcome has been demonstrated. A late identified resource transfers
+its obligation to the exact cleanup lease, and only the owning successful cleanup
+can resolve that creation. Settled startup cancellations without a committed
+native result manifest remain conservatively blocked by native finalization;
+their cleanup marker alone is not a history exemption.
+
+Workspace runtime inspection also reads the owner's process-local resource
+state. Startup reconstruction must succeed before that probe becomes quiet.
+Adopted/live services, provisioning/control/replacement work, live allocation
+claims and quarantined exposure ports remain barriers alongside durable rows.
+Reset, failed reconstruction and unresolved desired-state restart cannot reuse an
+earlier quiet proof. The probe performs no SQL, network request or cleanup and
+adds no timer. A stopped row cannot hide a surviving registered process.
+
+MCP completion receipts do not exempt their downstream task, subscription or
+upload cleanup. Active grants/subscriptions and Dot/Muse bindings/credentials
+retain their transport/deadline blockers. Revoked or expired credential history
+does not grant authority on the next request. A fenced external assignment is
+not worker termination proof, and Muse transport notification is not input
+consumption. Released Muse holds require their actual settlement/attestation
+path. Dot stop holds remain unsupported because that owner has no completed
+worker-stop receipt. Grok Bot shares Dot tables but has independent routine and
+dispatch/recovery obligations; even revoked Grok bindings retain their blocker.
+
+Action/provider variants without an established receipt proof remain blocked.
+This includes Photon notice lineage and unqualified legacy action results,
+adapter-managed runtime resources, and active persistent transports. These
+limits are not evidence of deployed wake support. Existing hosting admission,
+generation, accounting, finalization and resource-cleanup checks still apply.
+
+## Native reply recovery
+
+Committed native replies use the shared delivery coordinator and its persisted
+retry deadlines. One pass checks at most four independent tasks at a time.
+Checks for the same company and task run in candidate order within the batch.
+Other scoped deadline workers remain serial unless their owner enables concurrency.
+Drain retains unstarted checks, and shutdown waits for every admitted check before
+releasing tracked work. Completed history creates no recurring discovery reads;
+new committed work reactivates the existing notification path. Pending reply
+obligations keep their existing sleep blockers.
+
 ## Scheduled routine wake protocol
 
 Historical failed ephemeral leases and terminal custom-image setup sessions can
@@ -101,6 +212,17 @@ The manager permits at most two outstanding inspection RPCs across workers.
 Caller timeouts retain their slots until the actual worker reply or exit;
 timeouts cannot accumulate additional provider reads in later sweeps.
 
+If a failed ephemeral lease has no usable local inspection path, a managed
+Daytona instance can ask Cloud for a cleanup-only absence receipt. Cloud checks
+the stack's historical credential organization and reads the exact allocation
+with its manager credential. Only confirmed absence can produce a signed receipt
+bound to the stack, company, environment, lease, provider handle and nullable run.
+The separate cleanup type and audience cannot authorize run recovery. Older
+Cloud servers, unsupported providers, invalid signatures, changed organizations
+and failed reads leave the lease unresolved. Existing bounded cleanup batches
+and retry deadlines own these reads; no new idle polling is added. An explicit
+local provider observation is retained rather than replaced by this fallback.
+
 Host-owned verification metadata binds the company, environment, resource,
 provider handle, optional run, and exact row version. Concurrent resume,
 replacement, cleanup, or configuration changes invalidate verification.
@@ -110,6 +232,17 @@ Normal setup cancellation and timeout preserve the host's recorded config
 fingerprint and RPC company scope for later read-only verification.
 Retained allocations, unfinished runs/accounting/retries, export intents and
 live setup credentials continue to block sleep.
+
+For a reused remote allocation, a completed predecessor can resolve termination
+through the final owner's destruction receipt only when the full host-recorded
+lease handoff chain matches. Company, agent, task, workspace, environment, provider
+and allocation identities must agree. A stopped successor, broken handoff or
+unrelated owner grants no cleanup authority. This resolution does not rewrite
+historical leases, execute remotely or claim that uncollected files were saved.
+The normal agent-file recovery worker retains the no-save outcome and completes
+cleanup after confirmed destruction. A completed cleanup receipt with a stale
+retry deadline is reconciled once through the existing deadline worker. Clearing
+that deadline compares the receipt so a concurrent cleanup obligation is kept.
 
 Pending human-only connection setup can wait asleep when no active enabled
 connection of the requested purpose exists. Available access reblocks sleep so
@@ -306,6 +439,59 @@ This does not replace filesystem backups, encryption-key recovery or off-provide
 disaster recovery. Validate restoration of a staging checkpoint before enabling
 the flag on customer instances.
 
+#### Repeatable local checkpoint qualification
+
+Run the qualification command only against two dedicated, disposable PostgreSQL
+DBs with names that end in `_test`. Provision the source and an empty restore
+DB first. Use a migrated source when testing the full sleep-safety scan. The
+command does not create, drop, or migrate databases. It creates a small fixture
+schema in the source. It refuses an existing fixture and any nonempty restore
+target. The restore engine uses `--clean`, so never use a DB that holds work.
+
+Set `PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL` and
+`PAPERCLIP_BACKUP_CHECKPOINT_RESTORE_TEST_DATABASE_URL`. The command rejects
+partial configuration, unsafe database names, URL database overrides, and the
+same actual server/database even through different host names. Set
+`PAPERCLIP_PG_DUMP_PATH` and `PAPERCLIP_PSQL_PATH` when the matching PostgreSQL
+binaries are outside `PATH`.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/qualify-idle-database-backup.ts /absolute/new/output-directory pg_dump
+```
+
+Use a fresh source/restore pair and output directory for a second run with
+`javascript` as the last argument. This exercises the supported fallback engine
+separately. The command verifies the full archive, syncs its bytes and directory,
+restores it, checks relational, Unicode and null values, and verifies binary
+scalars and one- and two-dimensional arrays, including empty bytes, empty arrays
+and null elements, with array dimensions and bounds preserved. It enforces the
+restored foreign key and checks identity sequence progress. It writes a JSON
+receipt with binary versions, database names, archive size/hash, and results.
+Archive hashing reads a bounded stream rather than loading the archive into memory.
+It does not write credentials to the receipt. The fixture rows remain available
+for inspection. Dispose of these owned databases through the normal test-owner
+workflow after closing their clients.
+
+The integration suite is
+`server/src/__tests__/database-backup-checkpoint-qualification.integration.ts`. Local
+runs use `pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts`, require the same explicit URL pair, and use
+bounded clients. The dedicated Backup checkpoint qualification CI job provisions
+both fixtures and matching PostgreSQL clients. Missing URLs or clients fail this
+required integration invocation; it is separate from the default unit suite. The suite
+also tests the production backup owner under slow dumps, changed drain ownership,
+lease expiry, changed work generation, interrupted checkpoint creation, failed
+wake backup, and successful marker recovery. The filesystem and scheduling
+suites separately verify sync ordering, integrity failure, retry, drain/resume,
+and the normal interval after wake. Set `PAPERCLIP_BACKUP_QUALIFICATION_RECEIPT`
+to retain its JSON evidence and temporary archives.
+
+These results prove a local logical backup and restore. A writable directory and
+successful `fsync` do not prove that a provider volume stays attached across a
+compute stop. Before enabling checkpoint mode, separately verify the deployed
+backup flags, provider volume identity and mount, and archive continuity across
+a real stop/restart. A missing mount can appear as a new writable local directory;
+local tests must not certify that as persistent storage.
+
 The report inspects accounting and sandbox-cleanup spools directly. Any entry,
 including malformed JSON, temporary files and failed write probes, blocks sleep.
 Read errors and invalid spool paths return unknown. Recovery readers that skip
@@ -380,8 +566,9 @@ the same termination and run checks above. Missing cleanup evidence,
 `cleanup_pending`, and live login flows
 remain blockers. A finished coalesced wake is history only when its exact
 company/agent's linked run has finished without retry or accounting debt.
-Image-setup history still blocks: promotion can succeed before teardown is
-confirmed, so a terminal label does not prove that its provider resource is gone.
+Image-setup history requires a known terminal state, finish timestamp, cleared
+connection secret and exact host-owned resource cleanup verification. Promotion
+can succeed before teardown is confirmed, so a terminal label alone still blocks.
 
 Completed question-answer deliveries permit sleep only after acknowledgement
 and completion of their exact target run in the same company, without retry or
@@ -415,8 +602,9 @@ operation by itself. Multiple replicas require shared fencing. The protocol
 does not make existing in-memory-only debt survive an unplanned process crash.
 
 Related public PR #13413 adds runtime-service controller requirements and uses
-the same `purpose: "idle"` / `ownerId` vocabulary. This report conservatively
-blocks all retained runtime-service state instead of approving such services.
+the same `purpose: "idle"` / `ownerId` vocabulary. Retained stopped local-process
+rows use the domain and process-reconstruction proof described above; live,
+uncertain and adapter-managed runtime resources remain blockers.
 
 ## Muse maintenance
 
@@ -445,3 +633,24 @@ timer remains; an empty buffer performs no database work. Existing Muse durable
 sleep blockers, external worker stop evidence, and ingress requirements remain
 unchanged. This change establishes database quiet for inactive Muse, not host
 sleep eligibility for a configured Muse connection.
+
+## Skill package maintenance
+
+The package delivery worker automatically converts legacy snapshots and versions.
+Legacy contents remain authoritative until conversion is verified. Unfinished or
+failed conversions, including rows retained while package storage is disabled,
+may wait for the next ingress wake and do not block idle sleep. Their persisted
+retry dates and package/object/native-asset retention timestamps are earliest
+maintenance eligibility, not promised delivery deadlines. Workers reconstruct persisted rows and filesystem
+access leases on startup, and use the existing coordinator's drain/standby/shutdown
+controls. No external Cloud alarm or provider suspension is established by these tests.
+
+
+## Negotiated incoming work
+
+A signed, stack/owner-scoped Cloud incoming-wake capability can produce a version-3
+safety report for saved API keys and exactly bound brokered GitHub bot endpoints.
+Tenant authorization still runs after wake. Personal GitHub credential continuity
+and unsupported transports retain their blockers. See [authenticated incoming
+wake proof](idle-incoming-wake.md) for scope, HTTP versus durable-event guarantees,
+rate/availability bounds, compatibility and remaining transport dependencies.

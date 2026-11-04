@@ -1,3 +1,7 @@
+import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
+import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
@@ -14,6 +18,7 @@ import { isOAuthEndpointRejection } from "./tool-access/catalog/failures.js";
 import { createCatalogDefaultAccess, toPolicy } from "./tool-access/catalog/default-access.js";
 import { createToolCatalogDiscovery } from "./tool-access/catalog/discovery.js";
 import { createConnectionHealth } from "./tool-access/catalog/health.js";
+import { getToolConnectionReviewCounts } from "./tool-access/catalog/review-counts.js";
 import { createToolAppAttention } from "./tool-access/catalog/attention.js";
 import { createToolCatalogPublication } from "./tool-access/catalog/publication.js";
 import { createToolCatalogReader } from "./tool-access/catalog/reader.js";
@@ -784,7 +789,7 @@ export function toolAccessService(
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
   const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
   const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
-  const { refreshManagedGitHubGrantAccess, sweepGitHubConnectionContinuity } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
+  const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
   const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
@@ -808,7 +813,7 @@ export function toolAccessService(
   const finishOAuthCatalogWithRecommendedDefaults = createOAuthCatalogCompletion(db, finishGalleryAppConnection);
   const startOAuth = createOAuthAuthorizationStart(db, { now, getConnectionRow, setupPolicy, fixedPersonalIdentityForReconnect, currentCloudConnector, vercelConnect, ensureOAuthClient, oauthEndpointsForConnection, assertOAuthEndpointUrl });
   const completeOAuthCallback = createDirectOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, setupPolicy, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, checkConnectionHealth, ensureDefaultOrganizationGrant, oauthEndpointsForConnection, exchangeOAuthToken });
-  const completePaperclipCloudConnectorCallback = createCloudOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, currentCloudConnector });
+  const completePaperclipCloudConnectorCallback = createCloudOAuthCallback(db, { now, getConnectionRow, state: oauthState, store: credentialStore, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, currentCloudConnector, syncGitHubGrantBindings });
   const completeVercelConnectCallback = createVercelOAuthCallback(db, { now, getConnectionRow, state: oauthState, refreshCatalog, finishOAuthCatalogWithRecommendedDefaults, vercelConnect });
   const finalizeOAuthAccess = createOAuthAccessFinalization(db, { getConnectionRow, secrets, store: credentialStore, assertAgentsInCompany, finishGalleryAppConnection });
   const runtimeHealth = createToolRuntimeHealth(db, options, now, trustedRuntimeHost);
@@ -1219,8 +1224,12 @@ export function toolAccessService(
       safeDefault: true,
     };
     if (existing) {
-      const [updated] = await db
-        .update(toolApplications)
+      const [updated] = await db.transaction(async tx => {
+        const [current] = await tx.select({ type: toolApplications.type }).from(toolApplications)
+          .where(and(eq(toolApplications.id, existing.id), eq(toolApplications.companyId, companyId)))
+          .for("no key update");
+        if (current && current.type !== "mcp_stdio") await notifyToolConnectionHealth(tx, { companyId, applicationId: existing.id });
+        return tx.update(toolApplications)
         .set({
           name: definition.applicationName,
           description: definition.applicationDescription,
@@ -1232,6 +1241,7 @@ export function toolAccessService(
         })
         .where(eq(toolApplications.id, existing.id))
         .returning();
+      });
       return { row: updated, created: false };
     }
     const [created] = await db
@@ -1262,11 +1272,46 @@ export function toolAccessService(
       quarantineNewEntries: true,
     };
     if (existing) {
-      const [updated] = await db
-        .update(toolConnections)
-        .set({
+      const updated = await writeToolConnectionHealthChange(db, existing, async tx => {
+        const [updated] = await tx
+          .update(toolConnections)
+          .set({
+            applicationId,
+            name: definition.connectionName,
+            transport: "local_stdio",
+            status: "active",
+            enabled: true,
+            config,
+            transportConfig: config,
+            credentialRefs: [],
+            credentialSecretRefs: [],
+            updatedAt: new Date(),
+          })
+          .where(eq(toolConnections.id, existing.id))
+          .returning();
+        await ensureDefaultOrganizationGrant(updated, tx);
+        await syncCredentialBindings(updated, [], tx);
+        await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(updated);
+        return updated;
+      });
+      emitConnectionUpdated(updated, existing, "example");
+      return { row: updated, created: false };
+    }
+    const connectionId = randomUUID();
+    const created = await writeToolConnectionHealthChange(db, { companyId, id: connectionId }, async tx => {
+      const [created] = await tx
+        .insert(toolConnections)
+        .values({
+          id: connectionId,
+          companyId,
           applicationId,
           name: definition.connectionName,
+          uid: connectionUid(
+            "paperclip",
+            definition.connectionName,
+            connectionId,
+          ),
+          connectionKind: "managed",
           transport: "local_stdio",
           status: "active",
           enabled: true,
@@ -1274,42 +1319,13 @@ export function toolAccessService(
           transportConfig: config,
           credentialRefs: [],
           credentialSecretRefs: [],
-          updatedAt: new Date(),
         })
-        .where(eq(toolConnections.id, existing.id))
         .returning();
-      await ensureDefaultOrganizationGrant(updated);
-      await syncCredentialBindings(updated);
-      await ensureRuntimeSlot(updated);
-      emitConnectionUpdated(updated, existing, "example");
-      return { row: updated, created: false };
-    }
-    const connectionId = randomUUID();
-    const [created] = await db
-      .insert(toolConnections)
-      .values({
-        id: connectionId,
-        companyId,
-        applicationId,
-        name: definition.connectionName,
-        uid: connectionUid(
-          "paperclip",
-          definition.connectionName,
-          connectionId,
-        ),
-        connectionKind: "managed",
-        transport: "local_stdio",
-        status: "active",
-        enabled: true,
-        config,
-        transportConfig: config,
-        credentialRefs: [],
-        credentialSecretRefs: [],
-      })
-      .returning();
-    await ensureDefaultOrganizationGrant(created);
-    await syncCredentialBindings(created);
-    await ensureRuntimeSlot(created);
+      await ensureDefaultOrganizationGrant(created, tx);
+      await syncCredentialBindings(created, [], tx);
+      await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(created);
+      return created;
+    });
     emitConnectionCreated(created, "example");
     return { row: created, created: true };
   }
@@ -1676,8 +1692,8 @@ export function toolAccessService(
       // application/connection rows. A fresh gallery click has no
       // applicationId, so recover that retained identity by its company-unique
       // name and source instead of inserting a duplicate application that the
-      // unique index rejects. Active applications are excluded: connecting a
-      // second account still requires its own name/application identity.
+      // unique index rejects. Archived personal identities are excluded below.
+      // Active applications also require a separate application identity.
       const requestedName =
         input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
       const recoverableApplicationStatuses = galleryEntry
@@ -1825,6 +1841,19 @@ export function toolAccessService(
       retainedConnection = undefined;
       existingApplication = null;
     }
+    // A fresh setup must not revive a personal identity found only by name.
+    // Keep its application, grants, credentials, and history archived, and let
+    // normal name allocation create a separate application/connection below.
+    // Explicit reconnects still use the fixed personal-owner check.
+    if (
+      !requestedConnectionId &&
+      !input.applicationId &&
+      retainedConnection?.status === "archived" &&
+      retainedConnection.credentialPolicy === "per_user"
+    ) {
+      existingApplication = null;
+      retainedConnection = undefined;
+    }
     let applicationName = existingApplication?.name ?? requestedName;
     let name = retainedConnection?.name ?? requestedName;
     if (!existingApplication) {
@@ -1860,8 +1889,8 @@ export function toolAccessService(
           : "organization"
       : null;
     // An explicit resume/application reconnect continues the retained identity.
-    // A fresh gallery connect may still reuse an archived row for stable history
-    // and company-unique naming, but an explicit Access choice is a new identity
+    // A fresh gallery connect may still reuse an archived non-personal row for
+    // stable history, but an explicit Access choice is a new identity
     // decision and must replace the archived policy. Without this distinction,
     // removing a dedicated-agent connection and reconnecting the default personal
     // account leaves `per_agent` behind and the OAuth callback cannot persist its
@@ -2098,6 +2127,9 @@ export function toolAccessService(
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
+          ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
+            ? { workspaceSetup: retainedConnection.config.workspaceSetup }
+            : {}),
           ...(method?.defaults?.mcpSessionRequired === true
             ? { mcpSessionRequired: true }
             : {}),
@@ -2475,7 +2507,7 @@ export function toolAccessService(
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
-        [connectionRow] = await db
+        [connectionRow] = await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
           .update(toolConnections)
           .set({
             name,
@@ -2497,7 +2529,7 @@ export function toolAccessService(
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, revivedConnectionPrevious.id))
-          .returning();
+          .returning());
       } else {
         const connectionId = randomUUID();
         [connectionRow] = await db
@@ -2920,6 +2952,7 @@ export function toolAccessService(
                 connectionSetupMutationFingerprint(attemptedConnection),
             );
             if (connectionMutationIsStillCurrent) {
+              await notifyToolConnectionHealth(tx, revivedConnectionPrevious);
               await tx
                 .update(toolConnections)
                 .set({
@@ -2995,7 +3028,7 @@ export function toolAccessService(
           // surface the restoration failure instead of returning only the
           // original provider error.
           try {
-            await db
+            await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
               .update(toolConnections)
               .set({
                 status: "draft",
@@ -3011,7 +3044,7 @@ export function toolAccessService(
                   eq(toolConnections.id, revivedConnectionPrevious.id),
                   eq(toolConnections.companyId, companyId),
                 ),
-              );
+              ));
           } catch (quarantineError) {
             identityRollbackError = new AggregateError(
               [rollbackError, quarantineError],
@@ -3020,9 +3053,10 @@ export function toolAccessService(
           }
         }
       } else if (connectionRow) {
-        await db
+        const failedConnectionId = connectionRow.id;
+        await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
           .delete(toolConnections)
-          .where(eq(toolConnections.id, connectionRow.id))
+          .where(eq(toolConnections.id, failedConnectionId)))
           .catch(() => undefined);
       }
       if (
@@ -3136,6 +3170,8 @@ export function toolAccessService(
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
           .for("update");
+        await notifyGitHubCredentialChange(tx, connection);
+        await notifyToolConnectionHealth(tx, connection);
         const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
           .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
         await tx.update(toolApplications).set({ status: "active", updatedAt: new Date() }).where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)));
@@ -3493,6 +3529,8 @@ export function toolAccessService(
         },
         tx,
       );
+      await notifyGitHubCredentialChange(tx, connection);
+      await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
@@ -4525,40 +4563,43 @@ export function toolAccessService(
       await actor?.managementContext?.reauthorize();
       const connectionId = randomUUID();
       const binding = actorBinding(actor);
-      const [row] = await db
-        .insert(toolConnections)
-        .values({
-          id: connectionId,
-          companyId,
-          applicationId,
-          name: input.name,
-          uid: connectionUid(applicationNamespace, input.name, connectionId),
-          connectionKind: input.connectionKind ?? "managed",
-          ownership: input.ownership ?? "customer",
-          transport,
-          authKind: input.authKind ?? "none",
-          credentialPolicy:
-            input.credentialPolicy ??
-            (input.authKind === "oauth" ? "per_user" : "shared"),
-          status: input.status ?? "draft",
-          enabled: input.enabled ?? false,
-          agentInstructions: input.agentInstructions !== undefined ? input.agentInstructions : defaultConnectionAgentInstructions(
-            typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey)?.agentInstructions : null,
-          ),
-          config,
-          transportConfig: isGoogleSheetsConnectionConfig(config)
-            ? config
-            : (input.transportConfig ?? config),
-          credentialRefs: input.credentialRefs ?? [],
-          credentialSecretRefs: input.credentialSecretRefs ?? [],
-          createdByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          createdByUserId: connectionActorUserId(actor),
-        })
-        .returning();
-      await ensureDefaultOrganizationGrant(row);
-      await syncCredentialBindings(row);
-      await ensureRuntimeSlot(row);
+      const row = await writeToolConnectionHealthChange(db, { companyId, id: connectionId }, async tx => {
+        const [row] = await tx
+          .insert(toolConnections)
+          .values({
+            id: connectionId,
+            companyId,
+            applicationId,
+            name: input.name,
+            uid: connectionUid(applicationNamespace, input.name, connectionId),
+            connectionKind: input.connectionKind ?? "managed",
+            ownership: input.ownership ?? "customer",
+            transport,
+            authKind: input.authKind ?? "none",
+            credentialPolicy:
+              input.credentialPolicy ??
+              (input.authKind === "oauth" ? "per_user" : "shared"),
+            status: input.status ?? "draft",
+            enabled: input.enabled ?? false,
+            agentInstructions: input.agentInstructions !== undefined ? input.agentInstructions : defaultConnectionAgentInstructions(
+              typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey)?.agentInstructions : null,
+            ),
+            config,
+            transportConfig: isGoogleSheetsConnectionConfig(config)
+              ? config
+              : (input.transportConfig ?? config),
+            credentialRefs: input.credentialRefs ?? [],
+            credentialSecretRefs: input.credentialSecretRefs ?? [],
+            createdByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            createdByUserId: connectionActorUserId(actor),
+          })
+          .returning();
+        await ensureDefaultOrganizationGrant(row, tx);
+        await syncCredentialBindings(row, [], tx);
+        await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(row);
+        return row;
+      });
       emitConnectionCreated(row, "api");
       return toConnection(row);
     },
@@ -4644,16 +4685,24 @@ export function toolAccessService(
         .returning();
       const [row] = existing.transport === "chat_sdk"
         ? await db.transaction(async tx => {
-            await notifyChatEndpointWork(tx, existing.id);
+            await notifyChatEndpointWork(tx, existing.id, existing.companyId);
             const rows = await write(tx as unknown as Db);
             // Credential resolution must never observe the binding rebuild's
             // delete/insert gap after a configuration wake.
             await syncCredentialBindings(rows[0]!, [], tx);
             return rows;
           })
-        : await write(db);
-      if (existing.transport !== "chat_sdk") await syncCredentialBindings(row);
-      await ensureRuntimeSlot(row);
+        : await writeToolConnectionHealthChange(db, existing, async tx => {
+            if (input.enabled !== undefined || input.status !== undefined || input.config !== undefined || input.transportConfig !== undefined || input.credentialSecretRefs !== undefined || input.credentialRefs !== undefined) {
+              await notifyGitHubCredentialChange(tx, existing);
+              await notifyGitHubCredentialChange(tx, { companyId: existing.companyId, config });
+            }
+            if (existing.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: existing.id });
+            const rows = await write(tx);
+            await syncCredentialBindings(rows[0]!, [], tx);
+            await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(rows[0]!);
+            return rows;
+          });
       emitConnectionUpdated(row, existing, "api");
       return toConnection(row);
     },
@@ -4702,10 +4751,14 @@ export function toolAccessService(
     },
 
     listAppsNeedingAttention,
+    getConnectionReviewCounts: (companyId: string, connectionId: string) => getToolConnectionReviewCounts(db, companyId, connectionId),
 
     sweepConnectionHealth,
+    scheduledHealth: connectionHealthSchedule(db, checkConnectionHealth),
 
     sweepGitHubConnectionContinuity,
+    nextGitHubConnectionContinuityAt,
+    githubConnectionContinuitySchedule,
     ...catalogReader,
     ...toolActionReviewQueue,
     ...profileService,

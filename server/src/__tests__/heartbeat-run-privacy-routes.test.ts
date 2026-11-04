@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,6 +18,7 @@ import {
   heartbeatRuns,
   issueAccessGrants,
   issues,
+  nativeRunFinalizations,
   toolApplications,
   toolConnections,
   workspaceOperations,
@@ -32,8 +33,11 @@ import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
 import { authorizationService } from "../services/authorization.js";
 import { canActorReadWorkspaceOperation, getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { claimCancellationRequest } from "../services/native-runtime/native-cancellation-request.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_LOG_PRIVACY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, () => {
@@ -42,8 +46,8 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
   const previousPrivacyMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-privacy-routes-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-privacy-routes-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString);
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
   }, 120_000);
 
@@ -54,6 +58,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     await db.delete(heartbeatRunEvents);
     await db.delete(issueAccessGrants);
     await db.delete(agentRuntimeState);
+    await db.delete(nativeRunFinalizations);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -66,6 +71,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     if (previousPrivacyMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousPrivacyMode;
     await tempDb?.cleanup();
+    if (externalDatabaseUrl) await db.$client.end({ timeout: 1 });
   });
 
   async function seedFixture() {
@@ -264,8 +270,8 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       runnerProfileJson: { instructions: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
     }).where(eq(heartbeatRuns.id, f.privateRunId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
-    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const observed = createDb(externalDatabaseUrl ?? tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const app = createApp(f.companyId, f.grantedAgentId, observed);
@@ -281,13 +287,15 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     } finally { capture.flush(); await observed.$client.end(); }
   });
 
-  it("returns 404 for direct private-run content and metadata-only list stubs to a non-member", async () => {
+  it.each(["local_file", "s3_segments"])("returns 404 for private %s run content and metadata-only list stubs", async (logStore) => {
     const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ logStore }).where(eq(heartbeatRuns.id, fixture.privateRunId));
     const app = createApp(fixture.companyId, fixture.otherAgentId);
 
     for (const path of [
       `/api/heartbeat-runs/${fixture.privateRunId}`,
       `/api/heartbeat-runs/${fixture.privateRunId}/events`,
+      `/api/heartbeat-runs/${fixture.privateRunId}/events?view=plugin-panels`,
       `/api/heartbeat-runs/${fixture.privateRunId}/log`,
       `/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`,
       `/api/workspace-operations/${fixture.operationId}/log`,
@@ -444,6 +452,54 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       .get(`/api/heartbeat-runs/${fixture.privateRunId}/issues`);
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
+  });
+
+  it("returns an actor-bound saved native Stop claim through the real run detail", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: fixture.issueId, resultJson: null })
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.insert(nativeRunFinalizations).values({ runId: fixture.privateRunId, companyId: fixture.companyId,
+      issueId: fixture.issueId, phase: "retryable_failure" });
+    const requestId = randomUUID();
+    await claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.ownerUserId);
+    const detail = await request(createBoardApp(fixture.companyId, fixture.ownerUserId)).get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.execution.canStop).toBe(true);
+    expect(detail.body.resultJson.startupCancellation).toMatchObject({ cancellationRequestId: requestId,
+      requestedBy: { type: "board", userId: fixture.ownerUserId } });
+    expect(detail.body.resultJson.nativeCancellation).toBeUndefined();
+    await expect(claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.otherUserId))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.ownerUserId))
+      .resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("rejects stale failed-native Stop correlation before cancellation activity is recorded", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: fixture.issueId,
+      driverKind: "codex_app_server", resultJson: null,
+    }).where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.insert(nativeRunFinalizations).values({ runId: fixture.privateRunId, companyId: fixture.companyId,
+      issueId: fixture.issueId, phase: "retryable_failure" });
+    const app = createBoardApp(fixture.companyId, fixture.ownerUserId);
+    const detail = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.execution.canStop).toBe(true);
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "retry_authority_revoked" })
+      .where(eq(nativeRunFinalizations.runId, fixture.privateRunId));
+    const before = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    const unchanged = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
+    expect(unchanged.status).toBe(200);
+    expect(unchanged.body).toMatchObject({ status: "failed", resultJson: null });
+    const recorded = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    expect(recorded).toHaveLength(before.length + 1);
+    expect(recorded.at(-1)?.action).toBe("heartbeat.cancelled");
+    const denied = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`)
+      .send({ cancellationRequestId: randomUUID() });
+    expect(denied.status).toBe(409);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId))).toEqual(recorded);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0])
+      .toMatchObject({ status: "failed", resultJson: null });
   });
 
   it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {

@@ -275,7 +275,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
         }
         if (requested.size > 0 && connection.connectionPurpose !== "ai") {
           const profile = await appProfileForConnection(tx, connection);
-          for (const install of requested.values()) {
+          for (const install of additions) {
             const [binding] = await tx
               .insert(toolProfileBindings)
               .values({

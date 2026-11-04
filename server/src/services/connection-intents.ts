@@ -214,7 +214,7 @@ export function connectionIntentService(db: Db) {
       throw forbidden("Runtime tool token is no longer active");
     }
     if (run.activeIdentityContextId && !failedAuthRun) {
-      const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+      const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id }, { readScope: "identity" });
       run = { ...run, responsibleUserId: current.run.responsibleUserId };
     }
     if (!run.responsibleUserId) throw forbidden("This task needs a responsible user to connect a service");

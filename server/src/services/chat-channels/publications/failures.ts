@@ -1,3 +1,6 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
+import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { isOutboundAttachmentHydrationError, isOutboundAttachmentValidationError } from "../outbound-attachments.js";
 
 import type { EndpointRow, DbTransaction, LifecycleRuntimeFence } from "../runtime-types.js";
@@ -118,7 +121,8 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
             : disposition.kind === "resource_unavailable"
               ? "cancelled"
               : "failed";
-      await notifyChatPublicationWork(tx);
+      await notifyChatPublicationWork(tx, state === "failed" || state === "cancelled" ? publication : undefined);
+      if (state === "retry" || state === "delivery_unknown") await notifyChatResponseAvailability(tx, publication);
       const [ownedPublication] = await tx
         .update(chatPublications)
         .set({
@@ -188,6 +192,7 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
           : null;
 
       if (disposition.kind === "endpoint_attention" && currentEndpoint) {
+        await notifyChatEndpointConfiguration(tx, currentEndpoint);
         await tx
           .update(chatEndpoints)
           .set({
@@ -197,6 +202,7 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, currentEndpoint.id));
+        await notifyChatConnectionHealth(tx, currentEndpoint);
         await tx
           .update(toolConnections)
           .set({

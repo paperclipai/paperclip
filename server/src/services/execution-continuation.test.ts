@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  applyPendingMigrations,
   companies,
   createDb,
   heartbeatRuns,
@@ -15,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { StaleExecutionContinuationError, buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
 
 const expectStaleContinuation = async (
@@ -29,7 +31,8 @@ const expectMissingContinuationContext = async (run: () => Promise<unknown>) => 
   await expect(result).rejects.toThrow("continuation_source_context_missing");
   await expect(result).rejects.not.toBeInstanceOf(StaleExecutionContinuationError);
 };
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_CONTINUATION_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
   () => {
@@ -44,13 +47,16 @@ const support = await getEmbeddedPostgresTestSupport();
       laterId = randomUUID(),
       interactionId = randomUUID();
     beforeAll(async () => {
-      database = await startEmbeddedPostgresTestDatabase(
+      if (externalUrl) {
+        await applyPendingMigrations(externalUrl);
+        database = { connectionString: externalUrl, cleanup: async () => {} };
+      } else database = await startEmbeddedPostgresTestDatabase(
         "paperclip-continuation-context-",
       );
       db = createDb(database.connectionString);
       await db
         .insert(companies)
-        .values({ id: companyId, name: "Continuation", issuePrefix: "CTX" });
+        .values({ id: companyId, name: "Continuation", issuePrefix: `CTX${companyId.replaceAll("-", "")}` });
       await db
         .insert(agents)
         .values({

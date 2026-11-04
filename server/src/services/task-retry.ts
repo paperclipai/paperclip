@@ -1,20 +1,28 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
-import { conflict, forbidden, notFound } from "../errors.js";
+import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { authorizationService } from "./authorization.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-chat-wakeup.js";
+import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
+import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
+import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
+import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
 
 export async function taskRetryMutationAllowed(db: Db, input: {
   companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
@@ -43,6 +51,7 @@ const taskRetryIntentSchema = z.object({
   schema: z.literal("paperclip.task-retry.v1"), generationId: z.string().uuid(), sourceRunId: z.string().uuid(),
   actorId: z.string().min(1), actorSource: z.enum(["local_implicit", "session", "board_key", "cloud_tenant"]).default("session"), strategy: z.enum(["evaluate", "continue", "fresh_isolated_workspace", "finalize_result"]),
   chatActionId: z.string().uuid().optional(), canonicalIntentId: z.string().uuid().optional(),
+  queuedChatRequestId: z.string().uuid().optional(),
   boardMessageOrigin: z.object({ commentId: z.string().uuid(), identityContextId: z.string().uuid() }).optional(),
 });
 export type TaskRetryIntent = z.infer<typeof taskRetryIntentSchema>;
@@ -157,7 +166,7 @@ async function readBoardMessageRetrySource(db: Db, input: {
     sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`));
   const intent = readTaskRetryIntent(receipt?.payload);
   if (!intent?.boardMessageOrigin || intent.generationId !== receipt!.id || intent.actorId !== input.actorId ||
-      intent.chatActionId || intent.canonicalIntentId || intent.sourceRunId !== successor.previousRunId) return null;
+      intent.chatActionId || intent.queuedChatRequestId || intent.canonicalIntentId || intent.sourceRunId !== successor.previousRunId) return null;
   const [identity] = await db.select({ id: runIdentityContexts.id }).from(runIdentityContexts).where(and(
     eq(runIdentityContexts.id, successor.identityContextId), eq(runIdentityContexts.companyId, input.companyId),
     eq(runIdentityContexts.runId, input.sourceRunId), eq(runIdentityContexts.responsibleUserId, input.actorId),
@@ -182,6 +191,13 @@ export async function retireSupersededTaskRetry(db: Db, input: {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
   )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   if (latest?.id === input.sourceRunId) return false;
+  const [wake] = await db.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
+    inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
+  )).for("update");
+  if (!wake) return false;
+  await notifyStrandedAgentStatus(db, { companyId: input.companyId, agentId: wake.agentId });
+  await notifyExternalConversationSettlement(db, input);
   const retired = await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
     finishedAt: new Date(), updatedAt: new Date() }).where(and(
     eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
@@ -192,14 +208,39 @@ export async function retireSupersededTaskRetry(db: Db, input: {
   return retired.length > 0;
 }
 
-/** Persist a deliberate click under dispatch's issue-first lock order. This
- * transaction never contacts a provider. The normal wake queue owns execution. */
-export async function requestTaskRetry(input: {
+type TaskRetryRequest = {
   db: Db; companyId: string; issueId: string; actorId: string;
   idempotencyKey: string; observedRunId: string | null; actorSource?: string;
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
-}) {
+};
+
+const TASK_RETRY_CONTENTION_ATTEMPTS = 10;
+const TASK_RETRY_CONTENTION_DELAY_MS = 100;
+
+function isTaskRetryContention(error: unknown) {
+  return error instanceof NativeChatReviewPresentationContentionError || isExternalChatWaitAuthorizationContention(error);
+}
+
+/** Persist a deliberate click under dispatch's issue-first lock order. This
+ * transaction never contacts a provider. The normal wake queue owns execution. */
+export async function requestTaskRetry(input: TaskRetryRequest) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await admitTaskRetry(input);
+    } catch (error) {
+      if (!isTaskRetryContention(error)) throw error;
+      // Chat authorization for the same principal is briefly locked. The whole
+      // admission rolled back, so a fresh attempt rereads every fact.
+      if (attempt >= TASK_RETRY_CONTENTION_ATTEMPTS)
+        throw conflict("Retry is busy because chat authorization is in progress. Try again.",
+          { code: "task_retry_busy", retryable: true });
+    }
+    await new Promise(resolve => setTimeout(resolve, TASK_RETRY_CONTENTION_DELAY_MS));
+  }
+}
+
+function admitTaskRetry(input: TaskRetryRequest) {
   return writeExecutionControl(input.db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const db = tx as unknown as Db;
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
@@ -242,6 +283,7 @@ export async function requestTaskRetry(input: {
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
+      await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
       // Historical deadline failures can predate their preservation record.
       // Register the exact prepared source; this proves neither a stopped
       // executor nor permission to replay its work.
@@ -270,6 +312,7 @@ export async function requestTaskRetry(input: {
       sourceRunId: latest.id, actorId: input.actorId,
       actorSource: taskRetryIntentSchema.shape.actorSource.parse(input.actorSource ?? "session"), strategy: "evaluate",
       ...(active && activeIntent?.chatActionId ? { chatActionId: activeIntent.chatActionId } : {}),
+      ...(active && activeIntent?.queuedChatRequestId ? { queuedChatRequestId: activeIntent.queuedChatRequestId } : {}),
       ...(active ? { canonicalIntentId: active.id } : {}) };
     // Preserve external chat authority through its existing admission owner.
     // Generic board Retry must never manufacture a chat-inbound request.
@@ -281,7 +324,20 @@ export async function requestTaskRetry(input: {
       ? await readTaskRetryBoardMessageOrigin(db, { companyId: issue.companyId,
         issueId: issue.id, agentId: issue.assigneeAgentId, sourceRunId: latest.id, actorId: input.actorId }) : null;
     if (boardMessageOrigin) intent.boardMessageOrigin = boardMessageOrigin;
-    if (chat && !active && !busy && !boardMessageOrigin && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
+    if (chat && !active && latest.status === "succeeded") {
+      const [savedInput] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), sql`${agentWakeupRequests.runId} is null`,
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`, deferredChatInputPredicate(db),
+      )).orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)).limit(1).for("update");
+      // A completed turn stays history. Only independently admitted input can
+      // continue, with its original identity and current inbound authorization.
+      if (savedInput) {
+        intent.queuedChatRequestId = savedInput.id;
+        await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: id });
+      }
+    }
+    if (chat && !active && !busy && !boardMessageOrigin && !intent.queuedChatRequestId && (latest.contextSnapshot?.source === "issue.comment.reopen" || latest.contextSnapshot?.boardMessageRetry === true) &&
         latest.responsibleUserId === input.actorId) {
       throw conflict("This saved message cannot be retried safely. Send a new message on the task to continue from saved work.",
         { code: "chat_failed_run_retry_not_authorized", reason: "saved_board_message_not_replayable" });
@@ -292,7 +348,7 @@ export async function requestTaskRetry(input: {
       status: active || busy ? "coalesced" : "deferred_issue_execution",
       runId: active?.runId ?? (busy ? latest.id : null),
       payload: { issueId: issue.id, taskRetry: intent }, finishedAt: active || busy ? new Date() : null });
-    if (chat && !boardMessageOrigin && !active && !busy) {
+    if (chat && !boardMessageOrigin && !intent.queuedChatRequestId && !active && !busy) {
       if (!input.prepareChatRetry) throw conflict("Retry is unavailable for this connected conversation.");
       intent.chatActionId = (await input.prepareChatRetry(db, { companyId: issue.companyId, issueId: issue.id,
         agentId: issue.assigneeAgentId, failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id })).actionId;
@@ -302,8 +358,11 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
-        if (previous.state === "running") {
+        if (!previous) continue;
+        // A completed preservation still owns its snapshot evidence. Bind the
+        // new intent so sibling holds can select that same continuation, without
+        // repeating recovery or renewing its attempt budget.
+        if (previous.state === "complete" || previous.state === "running") {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;
@@ -332,29 +391,68 @@ export async function requestTaskRetry(input: {
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
-  });
+  }, { companyId: input.companyId });
 }
 
 /** Chat owns admission and authorization. The task receipt follows that
  * durable outcome; it never launches a parallel generic board execution. */
-export async function reconcileTaskChatRetryReceipts(db: Db) {
+export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?: string; requestId?: string; settleOnly?: boolean } = {}) {
   const pending = await db.select().from(agentWakeupRequests).where(and(
+    scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+    scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
     eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`,
+    or(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`,
+      sql`${agentWakeupRequests.payload}#>>'{taskRetry,queuedChatRequestId}' is not null`),
   )).orderBy(agentWakeupRequests.updatedAt).limit(50);
   for (const wake of pending) {
     const intent = readTaskRetryIntent(wake.payload);
-    if (!intent?.chatActionId) continue;
+    if (!intent || (!intent.chatActionId && !intent.queuedChatRequestId)) continue;
+    const actionId = intent.queuedChatRequestId ?? intent.chatActionId!;
     const [chat] = await db.select().from(chatActions).where(and(eq(chatActions.companyId, wake.companyId),
-      eq(chatActions.id, intent.chatActionId), eq(chatActions.kind, "failed_run_retry"),
+      eq(chatActions.id, actionId), eq(chatActions.kind, intent.queuedChatRequestId ? "inbound_wakeup" : "failed_run_retry"),
       sql`${chatActions.payload}->>'issueId' = ${String(wake.payload?.issueId)}`));
-    const [receipt] = chat ? await db.select().from(agentWakeupRequests).where(and(
+    let [receipt] = chat ? await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.id, chat.id),
       eq(agentWakeupRequests.agentId, wake.agentId))) : [];
+    let inputDenied = false;
+    if (intent.queuedChatRequestId && !scope.settleOnly && !receipt?.runId) {
+      const issueId = String(wake.payload?.issueId);
+      const admission = await db.transaction(async tx => {
+        if (intent.generationId !== wake.id || intent.canonicalIntentId ||
+            wake.requestedByActorType !== "user" || wake.requestedByActorId !== intent.actorId ||
+            !wake.idempotencyKey?.startsWith("task-retry:")) return "denied";
+        const [issue] = await tx.select().from(issues).where(and(eq(issues.id, issueId),
+          eq(issues.companyId, wake.companyId))).for("update");
+        if (!issue || issue.assigneeAgentId !== wake.agentId || ["done", "cancelled"].includes(issue.status)) return "denied";
+        if (await retireSupersededTaskRetry(tx as unknown as Db, { companyId: wake.companyId, issueId,
+          requestId: wake.id, sourceRunId: intent.sourceRunId })) return "denied";
+        if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: wake.companyId, issueId,
+          actorId: intent.actorId, actorSource: intent.actorSource })) return "denied";
+        if (issue.conversationAgentId && (issue.conversationUserId !== intent.actorId ||
+            !(await instanceSettingsService(tx as unknown as Db).getExperimental()).enableAgentChat)) return "denied";
+        if (adapterExecutionControls.has(intent.sourceRunId) ||
+            await hasPendingRunCleanup(tx as unknown as Db, wake.companyId, intent.sourceRunId)) return "waiting";
+        return "ready";
+      });
+      inputDenied = admission === "denied" || !chat || !receipt;
+      if (!inputDenied && admission === "ready" && receipt?.status === "deferred_issue_execution") {
+        try {
+          await resumeDeferredChatWake(db, { companyId: wake.companyId, agentId: wake.agentId, issueId, requestId: actionId });
+        } catch (error) {
+          if (!(error instanceof PersistedExecutionWaitRefusal)) {
+            if (!(error instanceof HttpError) || ![403, 404, 409].includes(error.status)) throw error;
+            inputDenied = true;
+          }
+        }
+        [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.id, actionId), eq(agentWakeupRequests.agentId, wake.agentId)));
+      }
+      inputDenied ||= Boolean(receipt && ["failed", "skipped", "cancelled"].includes(receipt.status));
+    }
     // A deferred chat receipt is admitted input, not a completed dispatch.
     // Re-stage that exact action through chat's owner; it rechecks authority
     // and normal queue policy before updating the existing receipt.
-    if (chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
+    if (!intent.queuedChatRequestId && !scope.settleOnly && chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
         chat.payload.failedRunId === intent.sourceRunId && receipt?.status === "deferred_issue_execution" &&
         !receipt.runId && receipt.payload?.taskRetryRequestId === wake.id) {
       await db.transaction(async tx => {
@@ -364,11 +462,18 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
             eq(chatActions.status, "processed"), eq(chatActions.updatedAt, chat.updatedAt)));
       });
     }
-    const failed = chat && ["failed", "cancelled"].includes(chat.status);
-    await db.update(agentWakeupRequests).set({
+    const failed = inputDenied || (chat && ["failed", "cancelled"].includes(chat.status));
+    const write = (writer: Pick<Db, "update">) => writer.update(agentWakeupRequests).set({
       ...(receipt?.runId ? { status: "coalesced", runId: receipt.runId, finishedAt: new Date() }
         : failed ? { status: "failed", finishedAt: new Date() } : {}),
       updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    if (receipt?.runId || failed) await db.transaction(async tx => {
+      await notifyStrandedAgentStatus(tx, { companyId: wake.companyId, agentId: wake.agentId });
+      await notifyExternalConversationSettlement(tx, { companyId: wake.companyId,
+        issueId: typeof wake.payload?.issueId === "string" ? wake.payload.issueId : undefined });
+      await write(tx);
+    });
+    else await write(db);
   }
 }

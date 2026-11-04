@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import * as remoteGateway from "./eval-remote-gateway.js";
 import { runnerMatrix } from "./catalog.js";
 import { validateEvalOperationsManifest, openEvalOperations, type EvalOperationsManifest } from "./operations.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
@@ -17,7 +18,7 @@ function manifest(): EvalOperationsManifest {
     models: [{ provider: "openai", maximumInputTokens: 1000, maximumOutputTokens: 100, timeoutMs: 1000,
       price: { provider: "openai", model: cell.profile.model, version: "fixture-only", sourceUrl: "https://provider.invalid/fixture", inputUsdPerMillion: "2", cachedReadUsdPerMillion: "1", outputUsdPerMillion: "10", cacheWrite30mUsdPerMillion: "2", cacheWrite12hUsdPerMillion: "2" } }] };
 }
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 it("admits only the exact bounded local selection and explicitly priced models", () => {
   expect(validateEvalOperationsManifest(manifest(), [cell], 1)).toMatchObject({ route: "direct" });
   expect(() => validateEvalOperationsManifest({ ...manifest(), executionIds: [] }, [cell], 1)).toThrow("selection");
@@ -163,16 +164,23 @@ it.each([
   cell.id,
   "feedback-persistence.runner-codex.local.complaint-and-suggestion",
   "feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion",
+  "feedback-persistence.runner-codex.daytona.complaint-and-suggestion",
+  "feedback-persistence.runner-acpx-claude.daytona.complaint-and-suggestion",
+  "core-compatibility.runner-acpx-claude.daytona.message-marker",
 ])("routes %s through a shared connection without ambient provider bindings", async executionId => {
   const selected = runnerMatrix.find(execution => execution.id === executionId)!;
   const anthropic = selected.profile.credential === "ANTHROPIC_API_KEY";
-  const admitted = manifest(); admitted.executionIds = [selected.id];
+  const remote = selected.environment.id === "daytona";
+  const origin = remote ? "https://fixture.trycloudflare.com" : "http://127.0.0.1:43123";
+  const admitted = manifest();
+  if (remote) admitted.remoteGateway = "cloudflare"; admitted.executionIds = [selected.id];
   admitted.models[0]!.provider = anthropic ? "anthropic" : "openai";
   admitted.models[0]!.price.provider = admitted.models[0]!.provider;
   admitted.models[0]!.price.model = selected.profile.model;
   if (anthropic) Object.assign(admitted.models[0]!.price, { cacheWrite5mUsdPerMillion: "2", cacheWrite1hUsdPerMillion: "2" });
   expect(validateEvalOperationsManifest(admitted, [selected], 0)).toBe(admitted);
-  vi.stubEnv("PAPERCLIP_E2E_GATEWAY_BASE_URL", "http://127.0.0.1:43123");
+  vi.stubEnv("PAPERCLIP_E2E_GATEWAY_BASE_URL", origin);
+  if (remote) vi.stubEnv("PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN", origin);
   vi.stubEnv("PAPERCLIP_E2E_GATEWAY_TOKEN", "ephemeral-fixture-token");
   const id = "11111111-1111-4111-8111-111111111111", grantId = "22222222-2222-4222-8222-222222222222";
   let connection: unknown, agent: Record<string, any> | undefined, company: Record<string, unknown> | undefined;
@@ -180,14 +188,58 @@ it.each([
     async get() { return [{ id, driver: "local" }]; },
     async postSensitive(url: string, body: unknown) { if (url.endsWith("/ai-connections")) { connection = body; return { connectionId: id, grantId }; } return { id }; },
     async post(url: string, body: Record<string, unknown>) { if (url.endsWith("/agents")) agent = body; if (url === "/api/companies") company = body; return { id, name: "fixture" }; },
+    async delete() {},
   } as unknown as RunnerApi;
-  const fixtures = await setupLiveFixtures({ api, execution: selected, executionNonce: "fixture", workspacePath: "/tmp/fixture", credentials: { [selected.profile.credential]: "ephemeral-fixture-token" } });
+  const fixtures = await setupLiveFixtures({ api, execution: selected, executionNonce: "fixture", workspacePath: "/tmp/fixture", credentials: { [selected.profile.credential]: "ephemeral-fixture-token", ...(remote ? { DAYTONA_API_KEY: "fixture-daytona" } : {}) },
+    ...(remote ? { daytonaImage: `ghcr.io/paperclip/image@sha256:${"a".repeat(64)}` } : {}) });
   await fixtures.teardown();
-  expect(createAiConnectionSchema.parse(connection)).toMatchObject({ ownership: "shared", apiKey: "ephemeral-fixture-token", routing: { kind: "gateway", protocol: anthropic ? "messages" : "responses", baseUrl: `http://127.0.0.1:43123${anthropic ? "" : "/v1"}`, auth: "bearer" } });
+  expect(createAiConnectionSchema.parse(connection)).toMatchObject({ ownership: "shared", apiKey: "ephemeral-fixture-token", routing: { kind: "gateway", protocol: anthropic ? "messages" : "responses", baseUrl: `${origin}${anthropic ? "" : "/v1"}`, auth: "bearer" } });
   expect(aiConnectionBindingSchema.parse(agent!.runtimeConfig.aiConnection)).toEqual({ provider: anthropic ? "anthropic" : "openai", method: "api_key", mode: "shared", connectionId: id, grantId });
   expect(agent!.adapterConfig.env).toBeUndefined();
+  expect(agent!.adapterConfig.helloProbeTimeoutSec).toBe(remote ? 300 : undefined);
   if (selected.suite.id === "feedback-persistence") {
     expect(company!.budgetMonthlyCents).toBe(1_000);
     expect(agent!.budgetMonthlyCents).toBe(1_000);
   }
+});
+
+
+it("requires explicit remote gateway admission and infrastructure credentials before opening a journal", async () => {
+  const remote = runnerMatrix.find(e => e.suite.id === cell.suite.id && e.profile.id === cell.profile.id && e.environment.id === "daytona")!;
+  const value = { ...manifest(), executionIds: [remote.id], remoteGateway: "cloudflare" as const };
+  expect(validateEvalOperationsManifest(value, [remote], 0)).toBe(value);
+  const root = await mkdtemp(path.join(tmpdir(), "eval-remote-preflight-"));
+  try {
+    value.ledgerPath = path.join(root, "ledger.jsonl");
+    const file = path.join(root, "manifest.json"); await writeFile(file, JSON.stringify(value));
+    await expect(openEvalOperations(file, [remote], 0, { OPENAI_API_KEY: "synthetic" })).rejects.toThrow("credential");
+    await expect(access(value.ledgerPath)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("gives remote workers scoped gateway/relay URLs and closes both local listeners and the tunnel", async () => {
+  const remote = runnerMatrix.find(e => e.suite.id === cell.suite.id && e.profile.id === cell.profile.id && e.environment.id === "daytona")!;
+  const root = await mkdtemp(path.join(tmpdir(), "eval-remote-operation-"));
+  const close = vi.fn(async () => {}), origin = "https://synthetic-owned.trycloudflare.com";
+  const start = vi.spyOn(remoteGateway, "startEvalRemoteGateway").mockResolvedValue({ baseUrl: origin, close });
+  const value = { ...manifest(), executionIds: [remote.id], remoteGateway: "cloudflare" as const, ledgerPath: path.join(root, "ledger.jsonl") };
+  value.limits.deadlineAt = new Date(Date.now() + 24 * 3_600_000).toISOString();
+  const file = path.join(root, "manifest.json"), env = { OPENAI_API_KEY: "provider-private", DAYTONA_API_KEY: "infra-private",
+    BRAINTRUST_API_KEY: "trace-private", PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: "11111111-1111-4111-8111-111111111111" };
+  let operations: Awaited<ReturnType<typeof openEvalOperations>> | undefined;
+  try {
+    await writeFile(file, JSON.stringify(value)); operations = await openEvalOperations(file, [remote], 0, env);
+    const endpoint = await operations.start(remote, "remote-one", 1);
+    const worker: NodeJS.ProcessEnv = { ...env }; applyEvalGatewayEnvironment(worker, remote.profile.credential, endpoint);
+    expect(worker).toMatchObject({ PAPERCLIP_E2E_GATEWAY_BASE_URL: origin, PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN: origin,
+      PAPERCLIP_E2E_OTLP_RELAY_URL: `${origin}/otel`, OPENAI_API_KEY: endpoint.token, BRAINTRUST_API_KEY: endpoint.observability!.token });
+    expect(JSON.stringify(worker)).not.toMatch(/provider-private|infra-private|trace-private/);
+    const local = start.mock.calls[0]![0];
+    expect(local.gateway.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(local.deadlineAt).toBeLessThanOrEqual(Date.now() + 4 * 3_600_000);
+    expect(local.deadlineAt).toBeLessThan(Date.parse(value.limits.deadlineAt));
+    await operations.close(); operations = undefined; expect(close).toHaveBeenCalledOnce();
+    await expect(fetch(local.gateway.baseUrl)).rejects.toThrow();
+    await expect(fetch(local.observability!.baseUrl)).rejects.toThrow();
+  } finally { await operations?.close(); await rm(root, { recursive: true, force: true }); }
 });

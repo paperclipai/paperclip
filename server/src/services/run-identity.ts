@@ -11,7 +11,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden } from "../errors.js";
-import { boundRunIssueId, runTaskContextColumn } from "./run-task-binding.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { boundRunIssueId, boundRunIssueIdSql, runTaskContextColumn } from "./run-task-binding.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
@@ -138,6 +139,13 @@ async function append(
 }
 
 async function activate(executor: Executor, context: RunIdentityContext) {
+  const [binding] = await executor.select({ issueId: boundRunIssueIdSql() })
+    .from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, context.runId), eq(heartbeatRuns.companyId, context.companyId),
+    ));
+  if (binding?.issueId) {
+    await notifyChatRunMilestones(executor, { companyId: context.companyId, issueId: binding.issueId });
+  }
   const [run] = await executor
     .update(heartbeatRuns)
     .set({
@@ -447,6 +455,7 @@ export async function rejectSteeredIdentity(
     );
 }
 
+/** Accept within the caller's task/run transaction; standalone recovery uses reconcileSteeredIdentity. */
 export async function acceptSteeredIdentity(
   executor: Executor,
   context: RunIdentityContext,
@@ -465,16 +474,71 @@ export async function acceptSteeredIdentity(
   if (accepted) await activate(executor, accepted);
 }
 
-export async function captureRunIdentity(
+const runIdentityFields = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status, responsibleUserId: heartbeatRuns.responsibleUserId,
+  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+};
+
+export const runIdentityTaskFields = {
+  ...runIdentityFields, nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+      'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
+      'paperclipSkillTest', ${heartbeatRuns.contextSnapshot}->'paperclipSkillTest') else null end`,
+};
+
+export const runIdentityBrokerFields = {
+  ...runIdentityFields, invocationSource: heartbeatRuns.invocationSource,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'projectId', ${heartbeatRuns.contextSnapshot}->'projectId', 'routineId', ${heartbeatRuns.contextSnapshot}->'routineId',
+      'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'responsibleUserId',
+      'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'responsible_user_id',
+      'paperclipIssue', case when jsonb_typeof(${heartbeatRuns.contextSnapshot}->'paperclipIssue') = 'object'
+        then jsonb_build_object('id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'id',
+          'projectId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'projectId',
+          'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsibleUserId',
+          'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsible_user_id') else null end)
+    else null end`,
+};
+
+const runIdentityProjectFields = {
+  ...runIdentityTaskFields, runtimeMode: heartbeatRuns.runtimeMode,
+  runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+    then case when ${heartbeatRuns.runnerProfileJson} ? 'nativeExecutionInput'
+      then jsonb_build_object('nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput')
+      else '{}'::jsonb end else null end`,
+};
+
+type FullIdentityRun = typeof heartbeatRuns.$inferSelect;
+type IdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityFields>;
+type TaskIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityTaskFields>;
+type BrokerIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityBrokerFields>;
+type ProjectIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityProjectFields>;
+export type RunIdentityReadScope = "github_credentials" | "request_authentication" | "identity" | "task_authorization" | "token_broker" | "project_execution";
+export type RunIdentityCapture<Scope extends RunIdentityReadScope | undefined = undefined> = {
+  run: Scope extends "identity" ? IdentityRun : Scope extends "task_authorization" ? TaskIdentityRun :
+    Scope extends "token_broker" ? BrokerIdentityRun : Scope extends "project_execution" ? ProjectIdentityRun : FullIdentityRun;
+  context: RunIdentityContext | null;
+};
+
+export async function captureRunIdentity<Scope extends RunIdentityReadScope | undefined = undefined>(
   db: Db,
   input: { companyId: string; runId: string; agentId: string },
-  options?: { readScope: "github_credentials" | "request_authentication" },
-) {
+  options?: { readScope: Scope },
+): Promise<RunIdentityCapture<Scope>> {
   // Lock acquisition serializes with steering delivery and its durable acknowledgement.
   return db.transaction(async (tx) => {
     await lockIdentityTask(tx, input.companyId, input.runId);
     const [run] = await tx
-      .select(options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
+      .select(options?.readScope === "identity" ? runIdentityFields :
+        options?.readScope === "task_authorization" ? runIdentityTaskFields :
+        options?.readScope === "token_broker" ? runIdentityBrokerFields :
+        options?.readScope === "project_execution" ? runIdentityProjectFields :
+        options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
         ...getTableColumns(heartbeatRuns),
         contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
           then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
@@ -528,7 +592,7 @@ export async function captureRunIdentity(
             ),
           )
       : [];
-    return { run, context: context ?? null };
+    return { run, context: context ?? null } as RunIdentityCapture<Scope>;
   });
 }
 

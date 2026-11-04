@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, plugins } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, plugins } from "@paperclipai/db";
 import type { Environment } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -95,6 +95,39 @@ describe("native workspace export warm reuse fence", () => {
       getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }) } as unknown as PluginWorkerManager });
     await expect(runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
     expect(f.call).not.toHaveBeenCalled();
+  });
+
+  it.each(["native", "legacy"])("fences a historical modern %s writer in one allocation read", async runtimeMode => {
+    const f = await seed(true), workspaceId = randomUUID();
+    const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: f.lease.id,
+      providerLeaseId: f.lease.providerLeaseId!, remoteCwd: "/work", epoch: 1, state: "prepared", snapshotId: null };
+    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null, source: { kind: "empty" },
+      writerRunId: f.runId, dirty: true, location: { environmentId: f.input.environment.id,
+        leaseId: f.lease.id, providerLeaseId: f.lease.providerLeaseId!, remoteCwd: "/work" } };
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.input.companyId,
+      sourceIssueId: f.input.issueId, name: "Unsaved remote source", cwd: "/work", providerRef: "/work",
+      providerType: "cloud_sandbox", mode: "isolated_workspace", strategyType: "git_worktree",
+      status: "active", metadata: { remoteWorkspace: authority } });
+    await db.update(environmentLeases).set({ executionWorkspaceId: workspaceId }).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(heartbeatRuns).set({ runtimeMode, nativeIssueId: runtimeMode === "native" ? f.input.issueId : null,
+      runnerProfileJson: { remoteWorkspace: reference } }).where(eq(heartbeatRuns.id, f.runId));
+    const [rebound] = await db.insert(environmentLeases).values({ companyId: f.input.companyId, environmentId: f.input.environment.id,
+      issueId: f.input.issueId, heartbeatRunId: f.nextRunId, provider: f.lease.provider, providerLeaseId: f.lease.providerLeaseId,
+      leasePolicy: "reuse_by_environment", status: "retained", metadata: f.lease.metadata }).returning();
+    const reads = vi.spyOn(db, "select");
+    expect(await nativeWorkspaceExportPendingForResource(db, rebound, f.nextRunId)).toBe(true);
+    expect(reads).toHaveBeenCalledTimes(1);
+    reads.mockRestore();
+    await expect(f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
+    expect(f.call).not.toHaveBeenCalled();
+    // A saved descriptor or a changed writer cannot keep fencing an allocation.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: { ...reference, state: "saved" } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await nativeWorkspaceExportPendingForResource(db, rebound, f.nextRunId)).toBe(false);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: reference } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...authority, writerRunId: f.nextRunId } } })
+      .where(eq(executionWorkspaces.id, workspaceId));
+    expect(await nativeWorkspaceExportPendingForResource(db, rebound, f.nextRunId)).toBe(false);
   });
 
   it("rechecks a prepared export after selecting a stale candidate and before resuming it", async () => {

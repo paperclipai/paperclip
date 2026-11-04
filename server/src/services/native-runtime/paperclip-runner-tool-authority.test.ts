@@ -2,6 +2,8 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
@@ -19,8 +21,8 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
@@ -32,11 +34,12 @@ import { CURRENT_WAKE_COMMENTS_BINDING_SCHEMA, READ_CURRENT_WAKE_COMMENTS_TOOL_N
 import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-read.js";
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
   let temporary: Awaited<
-    ReturnType<typeof startEmbeddedPostgresTestDatabase>
+    ReturnType<typeof startRecoveryPostgres>
   > | null = null;
   let db: ReturnType<typeof createDb>;
   const companyId = "00000000-0000-4000-8000-000000000101";
@@ -51,7 +54,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
+    temporary = await startRecoveryPostgres(
       "paperclip-runner-tools-",
     );
     db = createDb(temporary.connectionString);
@@ -101,6 +104,46 @@ describe("PaperclipRunnerToolAuthority", () => {
     await temporary?.cleanup();
   });
 
+  it("routes call_api through the private controller instead of the public callback origin", async () => {
+    const privateRequests: Array<{ path: string | undefined; authenticated: boolean }> = [];
+    const callbackRequests: string[] = [];
+    const controller = createPaperclipHttpServer((request, response) => {
+      privateRequests.push({ path: request.url, authenticated: /^Bearer /.test(request.headers.authorization ?? "") });
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ workProducts: [] }));
+    }, { apiUrl: "https://advertised.example.test" });
+    const callback = createServer((request, response) => {
+      callbackRequests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await Promise.all([controller, callback].map(server => new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))));
+    try {
+      const controllerAddress = controller.address();
+      const callbackAddress = callback.address();
+      if (!controllerAddress || typeof controllerAddress === "string" || !callbackAddress || typeof callbackAddress === "string") throw new Error("Expected owned TCP listeners");
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "private-controller-test-secret");
+      vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", "true");
+      vi.stubEnv("PAPERCLIP_API_URL", `http://127.0.0.1:${callbackAddress.port}`);
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://callback-only.example.test");
+      vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(controllerAddress.port));
+      vi.stubEnv("PORT", "3100");
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiUrl: resolveLocalRuntimeApiUrl() });
+      const result = await authority.execute({ tool: "call_api", callId: "private-controller-read", arguments: {
+        operationId: "GET /api/issues/{id}/work-products", pathParams: { id: issueId },
+      } });
+      expect(result).toMatchObject({ ok: true, status: 200 });
+      expect(privateRequests).toEqual([{ path: `/api/issues/${issueId}/work-products`, authenticated: true }]);
+      expect(callbackRequests).toEqual([]);
+      expect(process.env.PAPERCLIP_API_URL).toBe(`http://127.0.0.1:${callbackAddress.port}`);
+    } finally {
+      await Promise.all([controller, callback].map(server => new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close(error => error ? reject(error) : resolve());
+      })));
+    }
+  });
+
   it("registers pinned connector definitions without discovery and rejects revoked assignments at use", async () => {
     const connectorAssignments = connectorRuntime.connectorToolDefinitionsForSkills(new Set([
       "paperclipai/paperclip/slack", "paperclipai/paperclip/browser-use-cloud", "custom/agentmail",
@@ -120,7 +163,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(50);
+    expect(authority.definitions()).toHaveLength(51);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
     ]));
@@ -248,7 +291,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -291,7 +334,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -451,6 +494,41 @@ describe("PaperclipRunnerToolAuthority", () => {
       await db.update(heartbeatRuns).set({ contextSnapshot: originalRun!.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       await db.update(issues).set({ executionPolicy: originalIssue!.executionPolicy }).where(eq(issues.id, issueId));
       await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it("paginates complete native task inventories beyond one hundred results", async () => {
+    const ids = Array.from({ length: 205 }, () => randomUUID()).sort();
+    const foreignCompanyId = randomUUID();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign inventory", issuePrefix: "FINV" });
+    await db.insert(issues).values({ id: foreignId, companyId: foreignCompanyId, title: "synthetic-inventory-key foreign canary", status: "done" });
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId, title: `Inventory pagination ${index}`,
+      description: "synthetic-inventory-key", status: index < 200 ? "done" : "blocked",
+    })));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const search = (arguments_: Record<string, unknown>) => authority.execute({
+      tool: "search_tasks", callId: randomUUID(), arguments: { query: "synthetic-inventory-key", ...arguments_ },
+    }) as Promise<{ tasks: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null }>;
+    try {
+      const first = await search({ limit: 200 });
+      expect(first.tasks).toHaveLength(200);
+      expect(JSON.stringify(first)).not.toContain(foreignId);
+      expect(first).toMatchObject({ limit: 200, returnedCount: 200, hasMore: true, nextCursor: ids[199] });
+      expect(first.tasks.map(task => task.id)).toEqual(ids.slice(0, 200));
+      const last = await search({ limit: 200, cursor: first.nextCursor });
+      expect(last.tasks.map(task => task.id)).toEqual(ids.slice(200));
+      expect(last).toMatchObject({ limit: 200, returnedCount: 5, hasMore: false, nextCursor: null });
+      expect(new Set([...first.tasks, ...last.tasks].map(task => task.id)).size).toBe(205);
+      expect(await search({ cursor: ids[204] })).toMatchObject({ tasks: [], limit: 50, returnedCount: 0, hasMore: false, nextCursor: null });
+      expect(await search({ statuses: ["blocked"], limit: 200 })).toMatchObject({ tasks: ids.slice(200).map(id => ({ id })), returnedCount: 5, hasMore: false });
+      expect(await search({})).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+      expect((await search({ limit: 200, cursor: ids[199]!.toUpperCase() })).tasks.map(task => task.id)).toEqual(ids.slice(200));
+      await expect(search({ cursor: "invalid" })).rejects.toThrow("paperclip_runner_tool_input_invalid");
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [...ids, foreignId]));
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
     }
   });
 
@@ -1676,5 +1754,29 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+});
+
+describe("deliverable tool location guidance", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", workspaceRoot: "/task-workspace", apiToolsEnabled: false };
+  const db = new Proxy({} as ConstructorParameters<typeof PaperclipRunnerToolAuthority>[0], {
+    get() { throw new Error("Tool definitions must not query the database"); },
+  });
+  it.each(["local", "remote"] as const)("directs %s workspace-only deliverables to the task cwd", (executionTargetKind) => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind,
+      ...(executionTargetKind === "remote" ? { readRemoteWorkspaceFile: async () => Buffer.alloc(0) } : {}),
+    });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("get_workspace.cwd");
+    expect(description).toContain("AGENT_HOME");
+    expect(description).toContain("Create or copy");
+  });
+  it("preserves the granted-location reader contract", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind: "remote", readRemoteTaskFile: async () => Buffer.alloc(0) });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("absolute within a location granted to this task");
+    expect(description).toContain("including its agent home");
   });
 });

@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import {
@@ -268,7 +269,7 @@ export function emailConnectionService(
           actorSource: actor.localImplicit ? "local_implicit" : "session",
         },
       );
-      await db
+      await writeToolConnectionHealthChange(db, connection, tx => tx
         .update(toolConnections)
         .set({
           uid: `agentmail-account-${input.idempotencyKey}`,
@@ -276,7 +277,7 @@ export function emailConnectionService(
           healthMessage: "Connected",
           healthCheckedAt: new Date(),
         })
-        .where(eq(toolConnections.id, connection.id));
+        .where(eq(toolConnections.id, connection.id)));
       if (input.grantKind === "user")
         await db
           .update(connectionGrants)

@@ -109,7 +109,7 @@ describe("batched run secret redaction", () => {
     expect(result.every(run => run.stdoutExcerpt === REDACTED_EVENT_VALUE)).toBe(true);
     expect(result[0].contextSnapshot).toEqual({});
     const dialect = new PgDialect();
-    const predicate = dialect.sqlToQuery(where.mock.calls[0][0]);
+    const predicate = dialect.sqlToQuery(where.mock.calls[0][0]!);
     expect(predicate.params).toContain("company-1");
     expect(predicate.sql).toContain('"company_id"');
     expect(dialect.sqlToQuery(select.mock.calls[0][0].contextSnapshot).sql).toContain("-> 'paperclipSecretRedactions'");
