@@ -669,7 +669,11 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       .resolves.toMatchObject({ acceptedPlan: { revisionId: p.plan!.latestRevisionId } });
   });
 
-  it.each([[], ["unapproved"], ["execute", "execute"]])("does not publish or decompose an invalid checkbox selection %j", async selectedOptionIds => {
+  it.each([
+    { selectedOptionIds: [] },
+    { selectedOptionIds: ["unapproved"] },
+    { selectedOptionIds: ["execute", "execute"] },
+  ])("does not publish or decompose an invalid checkbox selection $selectedOptionIds", async ({ selectedOptionIds }) => {
     const f = await fixture();
     const p = await proposal(f, true);
     await accept(f, p);
