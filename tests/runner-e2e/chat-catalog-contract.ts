@@ -252,6 +252,11 @@ export function chatCatalogHumanHistoryMatches(input: {
         && input.human.length + (input.questionAnswer ? 1 : 0) === (input.implementation.expectedHumanMessageCount ?? 1));
 }
 
+export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown; requestedResolverPolicy?: unknown; effectiveResolverPolicy?: unknown }): boolean {
+  return [row.resolverPolicy, row.requestedResolverPolicy ?? row.resolverPolicy, row.effectiveResolverPolicy ?? row.resolverPolicy]
+    .every(policy => policy === "anyone" || policy === "human_only");
+}
+
 export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
@@ -268,8 +273,9 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
   if (rows.length !== 1 || !row || b.userId !== input.canonicalComment.authorUserId
     || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId
     || row.createdByAgentId !== input.agentId || row.createdByUserId || row.addresseeUserId !== b.userId || row.addresseeAgentId
-    || row.kind !== "ask_user_questions" || row.status !== "answered" || row.resolverPolicy !== "human_only"
-    || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1) return;
+    || row.kind !== "ask_user_questions" || row.status !== "answered" || !chatCatalogHumanQuestionPolicies(row)
+    || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1
+    || row.result.answers.some(answer => !!answer.otherText)) return;
   const resolvedAt = Date.parse(String(row.resolvedAt));
   const audits = input.activity.filter(event => event.details?.interactionId === b.interactionId && event.action === "issue.thread_interaction_answered");
   const audit = audits[0];
