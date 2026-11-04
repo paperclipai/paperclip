@@ -24,7 +24,10 @@ describe("prepared bound-chat authorization", () => {
     ({ binding, context, companyId, issueId, otherIssueId, endpointId, conversationId,
       principalId, commentId, deliveryId, userId } = fixture);
   });
-  afterAll(async () => { await temporary?.cleanup(); });
+  afterAll(async () => {
+    try { await db?.$client.end({ timeout: 1 }); }
+    finally { await temporary?.cleanup(); }
+  });
 
   it("binds changed values and array arities while reading current authorization", async () => {
     await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
@@ -100,6 +103,15 @@ describe("prepared bound-chat authorization", () => {
     await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
     await db.transaction(async (tx) => {
       await expect(authorize(tx as unknown as Db)).resolves.toEqual({ endpointId, conversationId });
+    });
+  });
+
+  it("executes every lock mode on the same transaction handle and PostgreSQL session", async () => {
+    await db.transaction(async (tx) => {
+      for (const mode of ["read", "blocking", "nonblocking", "read"] as const) {
+        await expect(authorizeChatConversationForBoundRun(tx as unknown as Db, binding, context, mode))
+          .resolves.toEqual({ endpointId, conversationId });
+      }
     });
   });
 
