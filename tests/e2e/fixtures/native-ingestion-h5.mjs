@@ -7,8 +7,8 @@ export const H4E_PROTOCOL = 'v4e-independent-agents-settlement-original-deadline
 export const H5_TOPOLOGY = Object.freeze({ mode: 'one-normal-agent-per-concurrent-participant',
   fullRemoteAgentPoolSize: 100, agentSetupConcurrency: 8, maxConcurrentRuns: 50,
   poolReuse: 'only-across-sequential-cases' });
-export const H5_BASELINE_REVISIONS = Object.freeze({ B0: 'bac53ec3bfeaf6546e7aaeaee516487b30534654',
-  B1: '07061a601cdc20603c8c7a46f9ddbad7ac5f5939' });
+export const H5_BASELINE_REVISIONS = Object.freeze({ B0: '7550ffa5d6447d2615bc89fc5313f4cbb958b615',
+  B1: '2cf1454406cbd582a11f04476713eceb746eada5' });
 export const ORIGINAL_BUDGETS = Object.freeze({ providerReadinessMs: 300_000, fullInvocationMs: 900_000,
   streamingMs: 120_000, terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 });
 export const H5_LIMITS = Object.freeze({ streamingMs: 600_000, terminalDrainageMs: 180_000, fullInvocationMs: 1_200_000 });

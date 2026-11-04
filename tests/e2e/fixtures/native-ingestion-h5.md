@@ -8,9 +8,10 @@ concurrent remote participant and waits for the product's canonical settlement,
 including supported same-run recovery, within the same terminal deadline.
 It does not optimize the product or turn earlier failures into passes.
 
-The aligned fresh application baselines are B0 `bac53ec3bfeaf6546e7aaeaee516487b30534654`
-and B1 `07061a601cdc20603c8c7a46f9ddbad7ac5f5939`. Raw B2
-`ca7cba171cd5198ed569d75012edc858041cbc44` is the unoptimized batching base,
+The aligned fresh application baselines are B0 `7550ffa5d6447d2615bc89fc5313f4cbb958b615`
+and B1 `2cf1454406cbd582a11f04476713eceb746eada5`. Both normally include common
+upstream `cf51936587963c26e3ddc7eb1365a07b2f8df5a6`. Raw B2
+`0b616ccc90bf43cb26adac056a22ff01a84f982b` is the unoptimized batching base,
 not a qualified future performance candidate. A later candidate needs its actual
 new immutable revision, normal build receipt and inventory; no candidate reference
 or matching binary is presumed before those artifacts exist. The historical

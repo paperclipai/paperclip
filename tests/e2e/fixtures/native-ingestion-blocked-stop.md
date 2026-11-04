@@ -1,9 +1,21 @@
-# Existing-history blocked Stop companion (prospective instrumentation v3)
+# Existing-history blocked Stop companion (prospective CF inputs v4)
 
-Status: v3 local source and pure oracle calibration only. No v3 application, browser,
+Status: v4 source preparation only. No v4 application, browser,
 PostgreSQL, VM or quantitative arm has run. No runtime qualification or performance
 claim follows from the pure tests. Execution needs lead release after independent
-source review. This is separate from the immutable H5c 50-arm campaign.
+source review. V4 starts from immutable V3 `bc33f09cae26404352848169d92a20c89480a5f5`;
+that revision's one functional qualification remains historical evidence. V4 changes
+only the common baseline input references and registration documentation. Its V3
+oracle, precision rule, workload and deadlines are unchanged. The inherited main
+source remains H5c; V4 is not rebased onto H5d or H5e. Fresh V4 qualification and
+separate B0/B1 A/A are required for the integrated runtime.
+
+The common upstream is `cf51936587963c26e3ddc7eb1365a07b2f8df5a6`. Fresh source
+baselines are B0 `7550ffa5d6447d2615bc89fc5313f4cbb958b615` and B1
+`2cf1454406cbd582a11f04476713eceb746eada5`. Unoptimized B2 base
+`0b616ccc90bf43cb26adac056a22ff01a84f982b` is not a final candidate. No normal
+build receipt, native binary hash, inventory or execution release is asserted by
+these source pins. The old 4a83 campaign supplies no V4 arm or noise sample.
 
 ## Preserved v1/v2 qualification failures and prospective corrections
 
@@ -86,7 +98,9 @@ model or a real Cloud provider. This companion grants no Cloud Stop qualificatio
 No resolver override, HTTP/API change, persisted outcome seeding or app/product
 code change is included. Authority/gate/paint code is a bounded copy from H5c
 `e431ec63d41fe90c6fd68bd2fc2bb969feeca917`; the original nine measured files stay
-unchanged. The new files have their own source identity and review.
+functionally unchanged. Eight retain exact bytes; `native-ingestion-h5.mjs` differs
+only in its two baseline revision literals. The new files have their own source
+identity and review.
 
 ## Fixed workload and functional gate
 
@@ -227,18 +241,21 @@ node tests/e2e/fixtures/native-ingestion-blocked-stop-validate.mjs --registratio
 ```
 
 Before runtime, the lead must review/freeze the companion source, workload digest,
-registration, validator and companion-only release descriptor. Keep the reviewed
+registration, validator and companion-only release descriptor. Preserve the old
 H5c private runner `6b6376b01de6cdc15ca05343a0bdd5c00424f1d6c546b9b4d61cd76716b253c4`
-unchanged. A companion orchestrator should import its checked exported
+unchanged as historical source. Prepare and independently review a new helper
+clone only after actual CF normal-build receipts and inventories exist; its old
+4a83 build constants cannot authorize the new source pins. A companion
+orchestrator should import the new clone's checked exported
 `validateVariantBuild`, `validateActualInventory`, `assertNoPreferredUiShadow`,
 `physicalQuietGuard`, `sealArmArtifacts` and `verifyRawArtifactSeals`; it must not
 invoke or alter the original stage plan. Bind each arm to exact source/build/UI,
 qualified receipt, full inventory manifest, Node/dependency/native pins, unchanged
 frozen fixture hashes, companion hashes, recording-off flags and a clean source.
-Use original B0 `bac53ec3`, B1 `07061a60`, unoptimized B2 `ca7cba17` only where
-explicitly released; a future optimized B2 needs its own qualified descriptor.
-The existing build receipt `a1259ba7…`, full inventory `d3766fc4…` and native binary
-`abb65bdc…` are provenance, not substitutes for current artifact validation.
+Use the full CF B0/B1 source references above only after actual normal-build
+qualification and explicit release; a future optimized B2 needs its own qualified
+descriptor. The old build receipt `a1259ba7…`, full inventory `d3766fc4…` and native
+binary `abb65bdc…` remain historical provenance and cannot qualify CF artifacts.
 
 Only the performance owner may stage/execute on the sole benchmark VM, after
 lead release. First do discovery, narrow static typecheck, and one smallest
