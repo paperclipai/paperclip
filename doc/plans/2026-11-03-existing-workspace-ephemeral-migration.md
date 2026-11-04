@@ -137,3 +137,10 @@ test resumes that same queued run after deleting the old disk, verifies saved
 workspace bytes and instructions at provider dispatch, and checks one result and
 one wake consumption even after a second queue sweep. Its sandbox transport and
 provider session are scripted; database, S3, admission and restoration are real.
+
+A failed follow-up can also have no warm supervisor and retain the preceding
+successful run in its controller file. Archive this source only after the Runner
+parser validates that older authority and scoped history confirms the same
+Runner, session, provider thread and an earlier successful finish. Keep current
+snapshots, ownership and typed checkpoints unchanged. The archive cannot become
+executable recovery authority. Foreign, invalid and active sources remain blocked.

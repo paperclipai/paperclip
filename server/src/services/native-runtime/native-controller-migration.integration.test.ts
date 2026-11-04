@@ -10,7 +10,7 @@ import { nativeToolContractFingerprintForTarget } from "./native-session-resume.
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasLocalNativeControllerObligations, migrateNativeControllers } from "./native-controller-migration.js";
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { createNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import { nativeSha256 } from "./canonical.js";
@@ -21,7 +21,8 @@ import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
-  "stale_confirmed", "stale_foreign", "stale_changed", "stale_success", "stale_busy", "stale_durable"])("offline native controller migration (%s)", scenario => {
+  "stale_confirmed", "stale_foreign", "stale_changed", "stale_success", "stale_busy", "stale_durable",
+  "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
   async function fixture(commandCount = 1, warm = false) {
@@ -298,6 +299,68 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     expect(await readFile(join(replacement, "current", "supervisor.json"), "utf8")).toBe(supervisor);
     expect((await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
       issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId })).kind).not.toBe("recoverable");
+  });
+  if (scenario.startsWith("controller_")) it("preserves failed legacy files only with proven older controller lineage", async () => {
+    const f = await fixture(), priorId = randomUUID();
+    const priorSnapshot = { ...f.snapshot, identity: { ...f.snapshot.identity, runId: priorId } };
+    if (scenario === "controller_foreign") priorSnapshot.identity.agentId = randomUUID();
+    const priorProfile = { ...f.profile, nativeExecutionInput: { ...f.profile.nativeExecutionInput,
+      binding: { ...f.profile.nativeExecutionInput.binding, runId: priorId } }, sessionCheckpoint: priorSnapshot };
+    await f.db.insert(heartbeatRuns).values({ id: priorId, companyId: f.companyId,
+      agentId: f.agentId,
+      nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId,
+      runnerInstanceId: scenario === "controller_runner" ? randomUUID() : f.native.runnerInstanceId,
+      runtimeMode: "native", status: "succeeded", createdAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(Date.now() - 50_000), runnerProfileJson: scenario === "controller_thread"
+        ? { ...priorProfile, sessionCheckpoint: { ...priorSnapshot, sessionId: "foreign-provider-thread" } } : priorProfile });
+    const state = JSON.parse(f.source);
+    state.identity = { ...state.identity, runId: priorId, turnId: `turn-${priorId}`, itemId: `item-${priorId}` };
+    if (scenario === "controller_invalid") state.schema = "unrecognized";
+    const source = JSON.stringify(state);
+    await writeFile(f.file, source, { mode: 0o600 });
+    if (scenario === "controller_success") await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+    if (scenario === "controller_busy") await f.db.update(nativeRunFinalizations).set({ leaseOwner: "live-owner",
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "controller_durable") {
+      const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, f.identity,
+        { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
+      await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx,
+        { companyId: f.companyId, issueId: f.issueId, runId: f.runId }, checkpoint));
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.profile, nativeControllerRecovery:
+        createNativeControllerRecovery(f.snapshot, { configDigest: f.paths.configDigest, processConfigDigest: null },
+          { runId: f.runId, runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId }) } })
+        .where(eq(heartbeatRuns.id, f.runId));
+    }
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
+    const options = { storage, writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
+    if (scenario === "controller_durable") {
+      expect(await migrateNativeControllers(f.db, options)).toMatchObject({ unchanged: 1, archivedFailed: 0 });
+    } else if (scenario !== "controller_confirmed") {
+      await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
+      expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
+    } else {
+      const put = vi.spyOn(storage, "putFile").mockRejectedValue(new Error("storage unavailable"));
+      await expect(migrateNativeControllers(f.db, options)).rejects.toThrow("storage unavailable");
+      put.mockRestore();
+      expect(await migrateNativeControllers(f.db, options)).toMatchObject({ archivedFailed: 1, imported: 0 });
+      expect(await migrateNativeControllers(f.db, options)).toMatchObject({ archivedFailed: 1, imported: 0 });
+      expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(false);
+      expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toHaveLength(0);
+      await rm(f.paperclipHome, { recursive: true, force: true });
+      const descriptor = legacyNativeControllerArchive({ companyId: f.companyId, issueId: f.issueId, runId: f.runId, controller: source });
+      const replacement = join(f.runtimeRoot, "archived-older-controller");
+      expect(await restoreDurableNativeHarnessBackup({ db: f.db, storage, companyId: f.companyId,
+        scopeDigest: descriptor.scopeDigest, backupRoot: replacement })).toBe(true);
+      expect(await readFile(join(replacement, "current", "control-plane-state.json"), "utf8")).toBe(source);
+      expect((await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
+        issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId })).kind).not.toBe("recoverable");
+    }
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(run);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
+    expect((await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, f.session.id)))[0].lastRunId).toBe(f.runId);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.queuedId);
   });
   if (scenario === "success") it("does not substitute a failure archive for a successful retained session", async () => {
     const f = await fixture();
