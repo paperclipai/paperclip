@@ -33,6 +33,8 @@ it("counts one independently verified UI answer as the second declared credentia
   const input = { implementation: { scenarioId: "secrets.personal-secret", expectedHumanMessageCount: 2 }, human, questionAnswer,
     runIds: ["initial", "confirmed"], boundary: { humanCommentIds: [], runIds: [] }, renderedQuery: "Original query" };
   expect(chatCatalogHumanHistoryMatches(input)).toBe(true); expect(human).toHaveLength(1);
+  expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "secrets.configure-company-secret", expectedHumanMessageCount: 2 } })).toBe(true);
+  expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "secrets.company-secret", expectedHumanMessageCount: 2 } })).toBe(false);
   expect(chatCatalogHumanHistoryMatches({ ...input, questionAnswer: undefined })).toBe(false);
   expect(chatCatalogHumanHistoryMatches({ ...input, human: [...human, { id: "extra", body: "Hidden nudge" }] })).toBe(false);
   expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "questions-and-approvals.multi-part-question", expectedHumanMessageCount: 2 } })).toBe(false);
