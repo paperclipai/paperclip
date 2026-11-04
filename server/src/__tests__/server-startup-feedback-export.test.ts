@@ -2062,6 +2062,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     cloudRuntimeStartupMocks.bootstrap.mockReturnValue({ databaseMode: "postgres", databaseUrl: buildTestConfig().databaseUrl, databaseMigrationUrl: undefined });
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
   });
 
   afterEach(() => {
@@ -2095,6 +2097,32 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       expect.arrayContaining(["http://custom-api:3100"]),
     );
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+  });
+
+  it("leads the runtime candidates with a pre-set PAPERCLIP_RUNTIME_API_URL", async () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9999";
+    process.env.PAPERCLIP_API_URL = "http://custom-api:3100";
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:9999");
+    const candidates = JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]") as string[];
+    expect(candidates[0]).toBe("http://127.0.0.1:9999");
+    expect(candidates[1]).toBe("http://custom-api:3100");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://custom-api:3100");
+  });
+
+  it("keeps a PAPERCLIP_API_URL override as the runtime URL when a public base URL is configured and nothing is pinned", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ authPublicBaseUrl: "https://pc.tailnet.test" }));
+    process.env.PAPERCLIP_API_URL = "http://10.0.0.5:3100";
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://10.0.0.5:3100");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://10.0.0.5:3100");
+    const candidates = JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]") as string[];
+    expect(candidates[0]).toBe("http://10.0.0.5:3100");
+    expect(candidates).toContain("https://pc.tailnet.test");
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {

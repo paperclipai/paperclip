@@ -73,7 +73,8 @@ bash skills/paperclip/scripts/paperclip-upload-artifact.sh path/to/output.webm \
 The helper uses the authenticated Paperclip API from the current heartbeat
 environment:
 
-- `PAPERCLIP_API_URL`
+- `PAPERCLIP_RUNTIME_API_URL` (preferred; the internal callback origin, which
+  equals `PAPERCLIP_API_URL` unless an operator pinned it) or `PAPERCLIP_API_URL`
 - `PAPERCLIP_API_KEY`
 - `PAPERCLIP_COMPANY_ID`
 - `PAPERCLIP_TASK_ID`

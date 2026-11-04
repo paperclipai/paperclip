@@ -39,6 +39,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const originalApiUrl = process.env.PAPERCLIP_API_URL;
+  const originalRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-runtime-mcp-");
@@ -48,6 +49,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = originalApiUrl;
+    if (originalRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    else process.env.PAPERCLIP_RUNTIME_API_URL = originalRuntimeApiUrl;
     await db.delete(toolMcpGatewayTokens);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
@@ -70,7 +73,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   });
 
   it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {
-    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    process.env.PAPERCLIP_API_URL = "https://dashboard.example.test";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
       issuePrefix: `RM${randomUUID().slice(0, 5).toUpperCase()}`,
@@ -149,6 +153,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       url: expect.stringMatching(/^https:\/\/paperclip\.example\.test\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
       token: expect.stringMatching(/^pcgw_/),
     });
+    expect(first[0]!.url).not.toContain("dashboard.example.test");
     expect(JSON.stringify(first)).not.toContain(uninstalledConnection!.id);
     expect(second).toHaveLength(1);
     expect(second[0]!.connectionId).toBe(first[0]!.connectionId);

@@ -154,6 +154,7 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   // wait), not through this callback, so nothing is lost.
   if (!trimNullable(env.PAPERCLIP_API_KEY)) {
     delete env.PAPERCLIP_API_URL;
+    delete env.PAPERCLIP_RUNTIME_API_URL;
     delete env.PAPERCLIP_API_BRIDGE_MODE;
   }
 

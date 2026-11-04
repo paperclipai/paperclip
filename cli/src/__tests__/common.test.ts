@@ -17,6 +17,7 @@ describe("resolveCommandContext", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
     delete process.env.PAPERCLIP_AUTH_STORE;
@@ -111,7 +112,11 @@ describe("resolveCommandContext", () => {
     expect(resolveApiBase({ apiBase: "http://explicit:1", config: configPath }, { apiBase: "http://profile:2" }))
       .toBe("http://explicit:1");
 
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://runtime:4/";
     process.env.PAPERCLIP_API_URL = "http://env:3/";
+    expect(resolveApiBase({ config: configPath }, { apiBase: "http://profile:2" })).toBe("http://runtime:4");
+
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     expect(resolveApiBase({ config: configPath }, { apiBase: "http://profile:2" })).toBe("http://env:3");
 
     delete process.env.PAPERCLIP_API_URL;

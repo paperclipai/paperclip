@@ -409,8 +409,9 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+effective_api_url="${PAPERCLIP_RUNTIME_API_URL:-${PAPERCLIP_API_URL:-}}"
+if [[ -z "$effective_api_url" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
+  printf 'Missing PAPERCLIP_API_URL (or PAPERCLIP_RUNTIME_API_URL), PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
   exit 1
 fi
 
@@ -419,7 +420,7 @@ if [[ -z "$issue_id" || -z "$company_id" ]]; then
   exit 1
 fi
 
-api_root="${PAPERCLIP_API_URL%/}"
+api_root="${effective_api_url%/}"
 case "$api_root" in
   */api) api_base="$api_root" ;;
   *) api_base="$api_root/api" ;;

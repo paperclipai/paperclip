@@ -870,7 +870,11 @@ export function configuredPaperclipApiBaseUrl(): string | null {
     : null;
 }
 
-export function paperclipApiBaseUrl(): string {
+export function paperclipRuntimeApiBaseUrl(): string {
+  const runtime = readNonEmptyString(process.env.PAPERCLIP_RUNTIME_API_URL);
+  if (runtime) {
+    return runtime.replace(/\/+$/, "").replace(/\/api$/, "");
+  }
   const configured = configuredPaperclipApiBaseUrl();
   if (!configured) {
     throw new Error(
@@ -1214,7 +1218,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${paperclipRuntimeApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -1249,8 +1253,8 @@ export function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
-  if (!baseUrl) return undefined;
+  if (!configuredPaperclipApiBaseUrl()) return undefined;
+  const baseUrl = paperclipRuntimeApiBaseUrl();
   return Object.freeze({
     version: 1,
     guidance: CONNECTION_INTENT_AGENT_GUIDANCE,

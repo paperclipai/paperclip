@@ -135,9 +135,12 @@ async function readPersistedIdentity(db: RuntimeIdentityDb): Promise<PersistedRu
 
 function applyCompatibilityEnvironment(identity: CloudRuntimeIdentitySnapshot, env: NodeJS.ProcessEnv) {
   const hostname = new URL(identity.canonicalOrigin).hostname;
+  const runtimeApiUrlFollowsApiUrl = env.PAPERCLIP_RUNTIME_API_URL !== undefined
+    && env.PAPERCLIP_RUNTIME_API_URL === env.PAPERCLIP_API_URL;
   env.PAPERCLIP_PUBLIC_URL = identity.canonicalOrigin;
   env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = identity.canonicalOrigin;
   env.PAPERCLIP_API_URL = identity.canonicalOrigin;
+  if (runtimeApiUrlFollowsApiUrl) env.PAPERCLIP_RUNTIME_API_URL = identity.canonicalOrigin;
   env.PAPERCLIP_PRIMARY_HOST = hostname;
   env.PAPERCLIP_STACK_SLUG = identity.stackSlug;
 

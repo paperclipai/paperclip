@@ -111,6 +111,7 @@ export function resolveCommandContext(
 export function resolveApiBase(options: Pick<BaseClientOptions, "apiBase" | "config">, profile: ClientContextProfile = {}): string {
   return normalizeApiBase(
     options.apiBase?.trim() ||
+    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
     process.env.PAPERCLIP_API_URL?.trim() ||
     profile.apiBase ||
     inferApiBaseFromConfig(options.config),
