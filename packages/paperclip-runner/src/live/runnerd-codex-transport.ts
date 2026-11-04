@@ -6182,7 +6182,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#assertStartupOpen();
     const bootstrapTicket = adoptedRunner
-      ? null
+      ? this.options.claimParkedRunner ? core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS) : null
       : warmRecovery
         ? core.issueWarmTransitionBootstrapTicket(
             {
@@ -6193,6 +6193,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           )
         : core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
     await core.flushCheckpoint();
+    if (adoptedRunner && this.options.claimParkedRunner) {
+      try { await this.options.claimParkedRunner({ identity, bootstrapTicket: bootstrapTicket! }); }
+      catch {
+        throw new Error("native_adopted_runner_authentication_timeout: parked Runner claim remains unconfirmed; reconcile this saved task");
+      }
+      this.#assertStartupOpen();
+    }
     if (warmRecovery) {
       await this.options.authorizeWarmTransitionRecovery?.("before_spawn");
     }

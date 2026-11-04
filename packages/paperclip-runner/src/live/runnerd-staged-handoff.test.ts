@@ -1,13 +1,15 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import type { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import {
   DurablePrpControlPlane, inspectStagedRunAttachmentHeader,
-  type DurablePrpCheckpoint, type RunnerProcessConnection, type PrpWireConnection,
+  type RunnerProcessLaunchSpec, type DurablePrpCheckpoint, type RunnerProcessConnection, type PrpWireConnection,
 } from "../control-plane/durable-prp-control-plane.js";
 import {
   createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary,
@@ -276,3 +278,199 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
     }
   } finally { http.closeAllConnections(); await new Promise<void>(done => http.close(() => done())); await rm(root, { recursive: true, force: true }); }
 }, 90_000);
+
+it.skipIf(process.platform === "win32")(
+  "authenticates a parked process to a replacement controller before a follow-up turn",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "runnerd-parked-adoption-"));
+    const listener = createServer();
+    await new Promise<void>((ok) => listener.listen(0, "127.0.0.1", ok));
+    const port = (listener.address() as { port: number }).port;
+    await new Promise<void>((ok) => listener.close(() => ok()));
+    const identity = {
+      runnerInstanceId: "runner",
+      environmentLeaseId: "lease",
+      runId: "source",
+      normalizedSessionId: "session",
+      turnId: "turn",
+      itemId: "item",
+    };
+    let agreedExpiry = 0;
+    const { DurablePrpControlPlane: OriginalCore } = await vi.importActual<
+      typeof import("../control-plane/durable-prp-control-plane.js")
+    >("../control-plane/durable-prp-control-plane.js");
+    const module = await import("../control-plane/durable-prp-control-plane.js");
+    const shortLease = vi.spyOn(module, "DurablePrpControlPlane").mockImplementation(function (
+      opts: ConstructorParameters<typeof OriginalCore>[0],
+    ) {
+      return new OriginalCore({ ...opts, connectionLeaseTtlMs: 60_000 });
+    } as unknown as typeof OriginalCore);
+    let controls: Duplex | undefined;
+    let replies: AsyncIterator<string> | undefined;
+    let processHandle: ReturnType<typeof spawn> | undefined;
+
+    const hostRequest = async (message: Record<string, unknown>) => {
+      controls!.write(JSON.stringify(message) + "\n");
+      const response = await replies!.next();
+      if (response.done) throw new Error("Runner closed host control");
+      return JSON.parse(response.value);
+    };
+    const callLog = join(root, "calls");
+    const options = {
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
+      codexArgs: ["--state-file", join(root, "provider.json"), "--durable-turn-ids", "--call-log", callLog],
+      stateDirectory: root,
+      prpIdentity: identity,
+      lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+      runnerProcessReconnectGraceMs: null,
+      runnerReconnectGraceMs: 5_000,
+      warmTransitionRegistrationMode: "routed_same_endpoint" as const,
+      onRecoveryAccountingEvent: async () => {},
+      controlPlaneRegistration: async (core: DurablePrpControlPlane, target = core.store.state.identity) => {
+        const path = `/api/runner/v1/connect/${target.runId}`;
+        let stopped = false;
+        let peer: Awaited<ReturnType<typeof openOwnedWire>> | undefined;
+        let connected!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          connected = resolve;
+        });
+        async function connect() {
+          while (!stopped) {
+            try {
+              peer = await openOwnedWire(`ws://127.0.0.1:${port}${path}`);
+              if (stopped) {
+                peer.close();
+                return;
+              }
+              core.attachWireConnection(peer.wire);
+              connected();
+              await peer.closed;
+            } catch {
+              /* The new listener binds after the old attachment drains. */
+            }
+            if (!stopped) await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        return {
+          connection: {
+            mode: "listen" as const,
+            listenAddress: "0.0.0.0" as const,
+            listenPort: port,
+            listenPath: path,
+          },
+          activate: () => {
+            void connect();
+          },
+          ready: () => ready,
+          release: () => {
+            agreedExpiry ||= Math.max(
+              ...Object.values(core.store.state.leases).map((lease) => lease.expiresAtUnixMs),
+            );
+            stopped = true;
+            peer?.close();
+          },
+        };
+      },
+      runnerProcessLauncher: (spec: RunnerProcessLaunchSpec) => {
+        if (processHandle) throw new Error("Unexpected second process");
+        const child = spawn(spec.command, [...spec.args, "--host-control-fd", "4"], {
+          cwd: spec.cwd,
+          env: spec.environment,
+          detached: true,
+          stdio: ["ignore", "ignore", "pipe", "ignore", "pipe"],
+        });
+        child.stderr?.resume();
+        controls = child.stdio[4] as Duplex;
+        replies = createInterface({ input: controls })[Symbol.asyncIterator]();
+        processHandle = child;
+        const completion = new Promise<{
+          code: number | null;
+          signal: NodeJS.Signals | null;
+          stdout: string;
+          stderr: string;
+        }>((ok, fail) => {
+          child.once("error", fail);
+          child.once("exit", (code, signal) => ok({ code, signal, stdout: "", stderr: "" }));
+        });
+        return { child, processGroupId: child.pid ?? null, completion };
+      },
+    };
+    const first = createCapabilityRunnerdCodexTransport(options);
+    let second: typeof first | undefined;
+    const complete = async (bundle: typeof first, text: string) => {
+      await bundle.transport.request("turn/start", { input: [{ type: "text", text }] });
+      for await (const e of bundle.transport.notifications()) if (e.method === "turn/completed") return;
+      throw new Error("Missing terminal turn");
+    };
+    try {
+      const { thread } = (await first.transport.request("thread/start", { cwd: root, dynamicTools: [] })) as {
+        thread: { id: string; sessionId: string };
+      };
+      await complete(first, "first");
+      const file = join(root, "runner", "runner-state.json");
+      const readState = async () =>
+        JSON.parse(await readFile(file, "utf8")) as {
+          outbox: unknown[];
+          lastControllerCommandSeq: number;
+          ackedSourceSeq: number;
+        };
+      await vi.waitFor(async () => expect((await readState()).outbox).toEqual([]));
+      const state = await readState();
+      const parkId = "park1";
+      const parked = await hostRequest({
+        op: "park",
+        id: parkId,
+        identity,
+        lastControllerCommandSeq: state.lastControllerCommandSeq,
+        ackedSourceSeq: state.ackedSourceSeq,
+      });
+      expect(parked).toEqual({ id: parkId, status: "parked" });
+      const pid = first.evidence().runnerPid!,
+        providerPid = first.evidence().providerPid;
+      await first.detachControllerForRestart();
+      expect(agreedExpiry).toBeGreaterThan(Date.now());
+      await new Promise((done) => setTimeout(done, agreedExpiry - Date.now() + 100));
+      second = createCapabilityRunnerdCodexTransport({
+        ...options,
+        resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId },
+        adoptExistingRunner: {
+          pid,
+          processGroupId: pid,
+          startedAt: null,
+          isAlive: () => processHandle?.exitCode === null,
+          signal: async (signal) => processHandle?.kill(signal) ?? false,
+        },
+        claimParkedRunner: async ({ bootstrapTicket }) => {
+          expect(await hostRequest({ op: "claim", id: "claim1", parkId, bootstrapTicket })).toEqual({
+            id: "claim1",
+            status: "claimed",
+          });
+        },
+      });
+      expect((await second.transport.request("thread/read", {})).thread).toMatchObject({ id: thread.id });
+      await second.transport.attachRun!({ runId: "second", turnId: "next-turn", itemId: "next-item" });
+      await complete(second, "follow-up");
+      expect(second.evidence().providerPid).toBe(providerPid);
+      expect(second.evidence().runnerPid).toBe(pid);
+      expect(
+        (await readFile(callLog, "utf8")).split("\n").filter((method) => method === "turn/start"),
+      ).toHaveLength(2);
+    } finally {
+      try {
+        await second?.detachControllerForRestart();
+      } finally {
+        await first.detachControllerForRestart().catch(() => {});
+        shortLease.mockRestore();
+        controls?.destroy();
+        if (processHandle?.pid && processHandle.exitCode === null) {
+          try {
+            process.kill(-processHandle.pid, "SIGKILL");
+          } catch {}
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  },
+  90_000,
+);

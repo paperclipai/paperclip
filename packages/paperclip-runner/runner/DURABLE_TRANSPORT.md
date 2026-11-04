@@ -65,6 +65,22 @@ P0 reserve is an explicit unrecoverable condition.
 
 ## Current boundary
 
+Unix builds advertise `hostedParkingVersion: 1` in `--build-metadata`. A trusted
+listen-mode launcher may pass `--host-control-fd 4`, a connected Unix stream
+carrying newline-delimited JSON frames up to 16 KiB. Parking requires an exact
+source identity and command/ACK cut plus a settled, live native Codex process.
+While parked, Runner waits only for private control, stream closure, or its
+existing hard lifetime. A claim installs a fresh bootstrap ticket in memory;
+the `claimed` reply precedes PRP authentication and `run.attach`.
+
+An unscoped `{op:"retire",id,parkId}` applies only while parked. Retiring an
+unused claim additionally requires `claimId`, all six `identity` fields,
+`lastControllerCommandSeq`, and `ackedSourceSeq`. Runner atomically rechecks
+the current claim, unchanged source cut, absence of pending operations, and
+settled provider proof before shutdown. Missing, stale, attached, or active
+claim requests return `conflict`; exact successful retries replay their receipt.
+Stream EOF still retires the owned process regardless of claim state.
+
 Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
 completion contract through `run.prepare`, owns the provider process group,
@@ -73,3 +89,10 @@ provider notifications to PRP events. The server supplies the bootstrap ticket
 only through the child environment, stores the process identity for bounded
 cancellation, and waits for the durable result and terminal pair. The existing
 local fake-runner mode remains unchanged.
+
+For conditional retirement, the task host persists an unpredictable request ID
+before delivery. After checking the claim and journal cut, Runner atomically
+records the lowercase SHA-256 of that ID in `host-retirement-proof.v1` beside
+its journal and syncs it before provider shutdown. All paths after acceptance
+exit the Runner loop. The host can match this proof after a lost socket reply.
+It must still confirm physical termination before admitting a cold successor.
