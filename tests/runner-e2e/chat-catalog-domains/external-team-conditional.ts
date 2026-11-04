@@ -174,17 +174,20 @@ export function verifiedTeamSkillRecovery(state: Record<string, unknown>, compan
       && (selection.versionId === null || selection.versionId === version.id);
   });
 }
+function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): string[] {
+  const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
+  return reply.split(/[.!?;\n]+/).filter(clause => names.some(name => clause.toLowerCase().includes(name)));
+}
 function truthfulTeamRecovery(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  return [skill.slug, skill.slug.replaceAll("-", " "), skill.name].some(name => reply.toLowerCase().includes(name.toLowerCase()))
-    && /\b(?:installed|available|resolved|recovered)\b/i.test(reply)
-    && !/\b(?:not installed|still (?:blocked|missing|unavailable)|remains (?:blocked|missing|unavailable))\b/i.test(reply);
+  return namedTeamSkillClauses(reply, skill).some(clause => [...clause.matchAll(/\b(?:installed|available|resolved|recovered)\b/gi)].some(match =>
+    !/\b(?:not|never|isn.t|aren.t|wasn.t|weren.t)\s+(?:(?:be|been|yet|currently|still)\s+){0,2}$/i.test(clause.slice(0, match.index))))
+    && !claimsRecoveredSkillMissing(reply, skill);
 }
 function claimsRecoveredSkillMissing(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
-  return reply.split(/[.!?;\n]+/).some(clause => names.some(name => clause.toLowerCase().includes(name))
-    && [...clause.matchAll(/\b(?:not installed|uninstalled|missing|unavailable|blocked)\b/gi)].some(match => {
+  return namedTeamSkillClauses(reply, skill).some(clause =>
+    [...clause.matchAll(/\b(?:not installed|uninstalled|missing|unavailable|blocked)\b/gi)].some(match => {
       const before = clause.slice(0, match.index);
-      return !/\b(?:was|were|had been)\s+(?:still\s+)?$/i.test(before)
+      return !/\b(?:was|were|had been)\s+(?:(?:previously|initially|formerly|earlier|still)\s+){0,2}$/i.test(before)
         && (match[0].toLowerCase() === "not installed" || /\b(?:is|are|remains?|still)\s+(?:currently\s+)?$/i.test(before));
     }));
 }
