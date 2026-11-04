@@ -2773,7 +2773,9 @@ An already claimed wake keeps its source unchanged for its existing recovery
 and replay path; this change does not grant it a new claim.
 Ordinary mixed-author comments keep their existing coalescing behavior. The
 primary wake retains its original actor, and each new receipt records its own
-actual actor. Same-named agents with different IDs retain separate authority;
+actual actor. Coalescing updates the queued batch while preserving the original
+trigger comment fields, so recovery still verifies the original source actor.
+Same-named agents with different IDs retain separate authority;
 their new input is deferred without changing the other agent's queued work.
 
 ### Queued input after a native Stop

@@ -995,7 +995,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
             || primary.payload?.issueId !== input.mergedContextSnapshot.issueId)) return null;
       await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.activeExecutionRunId });
       if (synchronizeBatch && primary) await tx.update(agentWakeupRequests).set({
-        payload: withQueuedCommentIdsInWakePayload(primary.payload, commentIds), updatedAt: now,
+        payload: withQueuedCommentIdsInWakePayload(primary.payload, commentIds, { preserveSource: true }), updatedAt: now,
       }).where(and(eq(agentWakeupRequests.id, primary.id), eq(agentWakeupRequests.companyId, input.companyId),
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx

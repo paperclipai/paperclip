@@ -345,7 +345,8 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       agentId: originalPrimary.agentId, source: originalPrimary.source, requestedByActorType: originalPrimary.requestedByActorType,
       requestedByActorId: originalPrimary.requestedByActorId, idempotencyKey: originalPrimary.idempotencyKey, requestedAt: originalPrimary.requestedAt });
     if (scenario === "legacy-envelope" || scenario === "claimed-primary") expect(updatedPrimary.payload).toEqual(originalPrimary.payload);
-    else expect(updatedPrimary.payload?.retainedSource).toBe("original-source");
+    else expect(updatedPrimary.payload).toMatchObject({ retainedSource: "original-source", commentId: oldComment.id,
+      _paperclipWakeContext: { commentId: oldComment.id, wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id, newComment.id] } });
     if (scenario === "claimed-primary") {
       deps.canStartNewExternalBotWork.mockResolvedValue(true);
       expect(await queue.claimQueuedRun(scanned)).toBeNull();
