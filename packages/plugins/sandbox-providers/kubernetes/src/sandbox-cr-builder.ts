@@ -32,11 +32,6 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
-  /**
-   * When true, always use `IfNotPresent` regardless of tag shape — for
-   * air-gapped/offline clusters that preload runtime images onto nodes
-   * out-of-band and have no registry path at pod-start time.
-   */
   preloadedImages?: boolean;
 }
 
