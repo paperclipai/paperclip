@@ -46,7 +46,7 @@ async function workspaceArchive(input: {
       signal: input.signal, timeout: 300_000, maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0",
         GIT_DIR: undefined, GIT_COMMON_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
-        GIT_OBJECT_DIRECTORY: undefined, GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_CONFIG_PARAMETERS: undefined, GIT_CONFIG_COUNT: "0",
+        GIT_OBJECT_DIRECTORY: undefined, GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_CONFIG_PARAMETERS: undefined, GIT_CONFIG_COUNT: "0", GIT_TEMPLATE_DIR: undefined,
         GIT_AUTHOR_NAME: "Paperclip", GIT_COMMITTER_NAME: "Paperclip", GIT_AUTHOR_EMAIL: "workspace@paperclip.invalid", GIT_COMMITTER_EMAIL: "workspace@paperclip.invalid",
         GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000", GIT_NO_LAZY_FETCH: "1" },
     }, (error, stdout) => error ? reject(error) : resolve(stdout));
@@ -275,15 +275,15 @@ async function workspaceArchive(input: {
           // A shallow local clone uses upload-pack. It drops index-only objects
           // and asks a filtered source for promised blobs it never downloaded.
           // Preserve its existing stores and promisor boundaries without fetch.
-          await git(repo, ["-c", "protocol.allow=never", "fsck", "--connectivity-only", "--no-dangling"]);
+          await git(repo, ["fsck", "--full", "--no-dangling"]);
           const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
           if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
-          await git(root, ["init", "--bare", `--object-format=${format}`, normalized]);
+          await git(root, ["init", "--bare", "--template=", `--object-format=${format}`, normalized]);
           const { objects, files } = await gitObjectFiles(repo);
           for (const file of files) await copyGitFile(path.join(objects, file.path), path.join(normalized, "objects", file.path));
         } else {
           // Dissociation brings borrowed objects into the private repository.
-          await git(root, ["-c", "protocol.file.allow=always", "clone", "--mirror", "--no-hardlinks", "--dissociate", "--", repo, normalized]);
+          await git(root, ["-c", "protocol.file.allow=always", "clone", "--mirror", "--no-hardlinks", "--dissociate", "--template=", "--", repo, normalized]);
         }
         const destination = path.join(tree, relative, ".git");
         await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
@@ -315,7 +315,7 @@ async function workspaceArchive(input: {
         }).join("");
         if (updates) await git(restoredRepo, ["update-ref", "--stdin"], updates);
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
-        await git(restoredRepo, ["-c", "protocol.allow=never", "fsck", "--connectivity-only", "--no-dangling"]);
+        await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
         if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
       }
       const originals = new Map(before.map(entry => [entry.path, entry]));

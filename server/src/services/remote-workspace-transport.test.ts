@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
@@ -553,9 +554,12 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const beforeStatus = (await git(repo, "status", "--porcelain=v2")).stdout;
     const beforeHead = (await git(repo, "rev-parse", "HEAD")).stdout;
     await fs.rm(origin, { recursive: true });
+    const template = path.join(scratch, "unrelated-template"); await fs.mkdir(path.join(template, "hooks"), { recursive: true });
+    await fs.writeFile(path.join(template, "config"), "[credential]\n helper = SYNTHETIC_PRIVATE_TEMPLATE\n[http]\n extraHeader = SYNTHETIC_PRIVATE_TEMPLATE\n");
+    await fs.writeFile(path.join(template, "hooks", "template-hook"), "SYNTHETIC_PRIVATE_TEMPLATE\n", { mode: 0o700 });
     // Only local file transport is permitted. Capture must not fetch promised
     // blobs or replace the original partial checkout with extra remote history.
-    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file", GIT_INDEX_FILE: path.join(scratch, "unrelated-index") }, "one-shot");
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file", GIT_INDEX_FILE: path.join(scratch, "unrelated-index"), GIT_TEMPLATE_DIR: template }, "one-shot");
     const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
     try {
       expect(await missing(repo)).toEqual(missingBefore);
@@ -571,6 +575,8 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       expect((await git(restoredRepo, "status", "--porcelain=v2")).stdout).toBe(beforeStatus);
       expect((await git(restoredRepo, "rev-parse", "--is-shallow-repository")).stdout.trim()).toBe(String(shallow));
       expect(await missing(restoredRepo)).toEqual(missingBefore);
+      expect(await fs.readFile(path.join(restoredRepo, ".git", "config"), "utf8")).not.toContain("SYNTHETIC_PRIVATE_TEMPLATE");
+      await expect(fs.access(path.join(restoredRepo, ".git", "hooks", "template-hook"))).rejects.toMatchObject({ code: "ENOENT" });
       if (partial) {
         expect((await git(restoredRepo, "config", "--get", "remote.origin.promisor")).stdout.trim()).toBe("true");
         expect((await git(restoredRepo, "config", "--get", "remote.origin.partialclonefilter")).stdout.trim()).toBe("blob:none");
@@ -597,6 +603,25 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("accepted work remains available\n");
+  });
+
+  it.each(["full", "shallow", "partial"] as const)("rejects corrupt available objects in %s Git before publishing a receipt", async kind => {
+    const origin = await repository({ revisions: true }); await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    await git(scratch, "clone", "-q", ...(kind === "shallow" ? ["--depth=1"] : []),
+      ...(kind === "partial" ? ["--filter=blob:none"] : []), pathToFileURL(origin).href, repo);
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    await fs.writeFile(path.join(repo, "staged.txt"), "accepted staged work\n"); await git(repo, "add", "staged.txt");
+    const oid = (await git(repo, "rev-parse", ":staged.txt")).stdout.trim();
+    const file = path.join(repo, ".git", "objects", oid.slice(0, 2), oid.slice(2)), corrupt = Buffer.from("different bytes\n");
+    await fs.chmod(file, 0o600); await fs.writeFile(file, deflateSync(Buffer.concat([Buffer.from(`blob ${corrupt.length}\0`), corrupt])));
+    // Valid zlib with the wrong object hash passes connectivity-only fsck.
+    // A successful receipt must also establish available object integrity.
+    await git(repo, "fsck", "--connectivity-only", "--no-dangling");
+    await expect(git(repo, "fsck", "--full", "--no-dangling")).rejects.toThrow();
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
+    expect(await fs.readFile(path.join(repo, "staged.txt"), "utf8")).toBe("accepted staged work\n");
   });
 
   it.each(["unsupported-filter", "alternate-store", "object-symlink"] as const)("retains a partial source with unsupported %s state", async fault => {
