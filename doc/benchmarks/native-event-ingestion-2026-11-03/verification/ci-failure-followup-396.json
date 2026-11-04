@@ -41,7 +41,16 @@
     "sourceOriginalSha256": "9fc9bd0810b4622f849a2549a8e6b373a09553906a603caf3426428839f6053d",
     "sourceCorrectedSha256": "43838f5e62e5ea8611d4e7a87a146802fdd11b979327c80848c29d9786f9b12e",
     "redLogSha256": "55d03a23cd495ed711cdbfedc3fc81c48b3b06046dcbd8f995dc34620804572b",
-    "greenLogSha256": "e97f466245fb6c983b18a45ed3e65a24adf56bdcb22d1d2435ff013c62e7bb51"
+    "greenLogSha256": "e97f466245fb6c983b18a45ed3e65a24adf56bdcb22d1d2435ff013c62e7bb51",
+    "deliveryDisposition": {
+      "status": "LOCAL_DUPLICATE_SUPERSEDED_BY_UPSTREAM",
+      "upstreamPr": 18984,
+      "upstreamCommit": "04a24f4e06",
+      "actualMasterAtDiagnosis": "e968131efa7e63d321f3bcca8d47a62513c2efb4",
+      "reason": "Upstream independently aligned the same fixture with retained-allocation readiness. Remove the overlapping local fixture patch so the PR merge inherits that upstream fixture. Pinned396 branch retains its original correct inspection-only fixture.",
+      "localRedGreenEvidenceRetained": true,
+      "productionUpstreamMergePerformed": false
+    }
   },
   "nativeStartupInvestigation": {
     "status": "CAUSE_NOT_YET_ESTABLISHED_IN_CI",
@@ -67,6 +76,7 @@
   "limits": [
     "No current-head CI pass claimed; replacement checks are required.",
     "This change is limited to three test files and this evidence record; production/native inputs and timed measurement drivers are unchanged.",
-    "The earlier failed application A/A remains failed. No application repeatability or performance gain is accepted."
+    "The earlier failed application A/A remains failed. No application repeatability or performance gain is accepted.",
+    "After the upstream fixture repair landed, the duplicate local retention patch was removed; the two failure-only native test diagnostics remain. Merge-tree checks against the observed master verify this avoids the conflict without moving the pinned application sources."
   ]
 }
