@@ -1767,6 +1767,15 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
+Reattachment readies the exact retained sandbox lease through the provider's
+bounded lifecycle resume before running short preparation commands such as the
+managed project-authentication check. The resume receipt must confirm the same
+provider allocation without reporting expiration. Missing or mismatched receipts
+hold recovery; this path never acquires a replacement sandbox. The validated
+lease retains its recorded working directory, since optional provider metadata
+can describe the allocation root. A resume setup failure preserves the retained
+sandbox and saved work. Plugin task reattachment remains with its task owner.
+
 After a remote sandbox session passes provider recovery and durable run admission,
 its local suspension receipt is removed. This applies to built-in sandbox runners
 and plugin tasks. The running session then owns authority;
