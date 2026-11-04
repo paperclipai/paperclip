@@ -5250,9 +5250,6 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   }
   // A durable controller is fenced by its released database lease; a legacy
   // controller still needs process evidence, exactly as for warm recovery.
-  // The controller runs in this webserver, so when this process finished the
-  // owner its PID is necessarily alive. The exact boot identity and the absence
-  // of an in-process session or startup for that run prove it stopped instead.
   const finishedHere = () => isCurrentNativeControllerProcess(prior!.owner) &&
     !activeNativeSessions.has(identity.runId) && !nativeSessionStartups.has(identity.runId);
   const profile = record(prior.run.runnerProfileJson);

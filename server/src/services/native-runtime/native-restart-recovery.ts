@@ -179,9 +179,6 @@ export async function currentNativeControllerIdentity(): Promise<NativeControlle
   };
 }
 
-/** True when this exact controller instance recorded the owner. The boot
- * identity is per process start, so a recycled PID or another container never
- * matches. Process liveness then says nothing about the owner's controller. */
 export function isCurrentNativeControllerProcess(owner: {
   controllerBootId: string | null;
   controllerPid: number | null;

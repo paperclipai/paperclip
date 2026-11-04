@@ -220,12 +220,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
     }, 60_000);
 
-  /** A controller that finished in this container leaves its file-backed
-   * journal in the local session root, and an owner without a database
-   * recovery pointer can only be admitted from that root. */
   async function keepLocalRootWithoutPointer(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
     followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
-    // Learn the scope key from a held attempt, then put its rebuilt journal back.
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
     expect(await followUp.start()).toBe(STRANDED);
     const [copy] = await quarantined();
@@ -237,9 +233,6 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
   }
 
-  /** The controller runs inside the webserver, so a follow-up served by the
-   * same process sees the finished owner's PID alive with its exact start
-   * time. A committed owner that released its lease in this process stopped. */
   it.each(["recovery pointer", "local journal only"] as const)(
     "admits a follow-up in the process that finished the owner: %s", async evidence => {
       const prior = await seedRecoveredPriorRun("settled", { controller: await currentNativeControllerIdentity() });
@@ -267,7 +260,6 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         expect(startedAt).toBeTruthy();
         const controller = scenario === "another live controller"
           ? { bootId: randomUUID(), pid: child.pid!, processStartedAt: new Date(startedAt!) }
-          // Same PID and start, but not this module instance's boot identity.
           : { ...self, bootId: randomUUID() };
         const prior = await seedRecoveredPriorRun("settled", { controller });
         const followUp = await admitFollowUp(prior);
