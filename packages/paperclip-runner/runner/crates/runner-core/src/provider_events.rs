@@ -1210,9 +1210,14 @@ fn normalize_acpx_status(
         };
         let turn_cost = payload.pointer("/cost/basis").and_then(Value::as_str) == Some("turn");
         let provider_cost = if cost_is_usd {
-            payload.pointer("/cost/amount").and_then(Value::as_f64)
-                .filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(0.0)
-        } else { 0.0 };
+            payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1511,7 +1516,10 @@ mod tests {
         assert_eq!(next[0].payload["runDelta"]["providerCostUsd"], 0.001);
         second["cost"].as_object_mut().unwrap().remove("basis");
         let cumulative = normalize_acpx_status(&second, "legacy", "turn-3", 3);
-        assert_eq!(cumulative[0].payload["cumulative"]["providerCostUsd"], 0.001);
+        assert_eq!(
+            cumulative[0].payload["cumulative"]["providerCostUsd"],
+            0.001
+        );
         assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
     }
 
