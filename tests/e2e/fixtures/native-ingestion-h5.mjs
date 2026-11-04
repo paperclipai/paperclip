@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
-export const H5_MODE = 'h5-observe-original-sla';
-export const H5_PROTOCOL = 'v5-complete-observation-original-sla';
-export const H5_BASELINE_REVISIONS = Object.freeze({ B0: 'a36567f9fbf805ad72207d54f539516e3121741e',
-  B1: 'd8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310' });
+export const H5_MODE = 'h5b-observe-original-sla-independent-agents';
+export const H5_PROTOCOL = 'v5b-independent-agents-complete-observation-original-sla';
+export const H4D_PROTOCOL = 'v4d-independent-agents-original-deadlines';
+export const H5_TOPOLOGY = Object.freeze({ mode: 'one-normal-agent-per-concurrent-participant',
+  fullRemoteAgentPoolSize: 100, agentSetupConcurrency: 8, maxConcurrentRuns: 50,
+  poolReuse: 'only-across-sequential-cases' });
+export const H5_BASELINE_REVISIONS = Object.freeze({ B0: 'bac53ec3bfeaf6546e7aaeaee516487b30534654',
+  B1: '07061a601cdc20603c8c7a46f9ddbad7ac5f5939' });
 export const ORIGINAL_BUDGETS = Object.freeze({ providerReadinessMs: 300_000, fullInvocationMs: 900_000,
   streamingMs: 120_000, terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 });
 export const H5_LIMITS = Object.freeze({ streamingMs: 600_000, terminalDrainageMs: 180_000, fullInvocationMs: 1_200_000 });
@@ -18,17 +22,88 @@ export const H5_WORKLOADS = Object.freeze([
 ]);
 export const H5_REGISTRATION = Object.freeze({ mode: H5_MODE, protocolVersion: H5_PROTOCOL,
   baselineRevisions: H5_BASELINE_REVISIONS,
+  topology: H5_TOPOLOGY, originalDeadlineProtocol: H4D_PROTOCOL,
   originalBudgets: ORIGINAL_BUDGETS, observationLimits: H5_LIMITS, workloads: H5_WORKLOADS,
   pairs: 5, order: 'baseline-first on even pair index; candidate-first on odd pair index',
   stages: ['B0 A/A', 'B1 A/A', 'B0→B1 nonregression', 'B1→B2 improvement', 'B0→B2 improvement'],
   knownBaselineMisses: ['burst512:streaming120', 'invocation:observed-total-duration900'],
-  baselineEligibility: 'Finite complete correct observation; SLA misses remain failures of H4c',
+  baselineEligibility: 'Finite complete correct observation; SLA misses remain failures of the H4d original deadlines',
   cursorCandidateEligibility: 'Nonregression; only the paired baseline exact registered known misses may be inherited',
-  finalCandidateEligibility: 'Every original SLA passes in every arm; independently assessed total duration <900s; later unchanged H4c full functional PASS required',
+  finalCandidateEligibility: 'Every original SLA passes in every arm; independently assessed total duration <900s; later H4d default-mode functional PASS on the same harness source and independent-agent geometry required',
   noise: 'Fresh B0 and B1 A/A frozen before any further product implementation; no old abort/profile samples',
   performance: 'Loaded p95 emission/intended-to-visible and terminal drainage improve beyond frozen noise in median and at least4/5 pairs; all other metrics nonregress',
 });
 export const H5_WORKLOAD_SHA256 = createHash('sha256').update(JSON.stringify(H5_REGISTRATION)).digest('hex');
+
+/** Agent setup settles in full before any case activation; its time remains
+ * inside the owning invocation and outside the existing admission300s window. */
+export async function prepareParticipantAgents({ count, createAndReady, now = Date.now, onOutcome = _value => {} }) {
+  assert.ok(Number.isSafeInteger(count) && count > 0 && count <= H5_TOPOLOGY.fullRemoteAgentPoolSize);
+  const agents = new Array(count), failures = [];
+  const outcome = { count, concurrency: H5_TOPOLOGY.agentSetupConcurrency, startedAtMs: now(), settledAtMs: null,
+    complete: false, attempts: [] };
+  onOutcome(outcome);
+  let next = 0;
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(count, outcome.concurrency) }, async () => {
+    for (;;) {
+      const index = next++; if (index >= count) return;
+      const attempt = { index, startedAtMs: now(), settledAtMs: null, status: 'pending', agentId: null };
+      outcome.attempts.push(attempt); onOutcome(outcome);
+      try {
+        agents[index] = await createAndReady(index);
+        assert.ok(typeof agents[index]?.id === 'string', 'Missing ready participant agent');
+        attempt.agentId = agents[index].id; attempt.status = 'fulfilled';
+      } catch (error) {
+        failures.push(error); attempt.status = 'rejected'; attempt.error = String(error);
+      } finally { attempt.settledAtMs = now(); onOutcome(outcome); }
+    }
+  }));
+  for (const worker of workers) if (worker.status === 'rejected') failures.push(worker.reason);
+  if (!failures.length) try { assert.equal(new Set(agents.map(agent => agent.id)).size, count, 'Participant agents must be distinct'); }
+  catch (error) { failures.push(error); }
+  outcome.settledAtMs = now(); outcome.complete = failures.length === 0; onOutcome(outcome);
+  if (failures.length) throw new AggregateError(failures, 'Participant agent setup failed; no case may activate');
+  return agents;
+}
+
+export function assertParticipantSetup(report) {
+  assert.deepEqual(report.agentTopology, { ...H5_TOPOLOGY, remoteAgentPoolSize: report.qualificationOnly ? 3 : 100 });
+  const ids = report.remote?.agentIds;
+  assert.equal(ids?.length, report.agentTopology.remoteAgentPoolSize, 'Incomplete independent participant agent pool');
+  assert.equal(new Set(ids).size, ids.length, 'Duplicate participant agent pool identity');
+  const setup = report.remote.agentSetup;
+  assert.equal(setup?.complete, true, 'Agent setup must settle successfully before any case');
+  assert.equal(setup.count, ids.length); assert.equal(setup.concurrency, H5_TOPOLOGY.agentSetupConcurrency);
+  assert.ok(Number.isSafeInteger(report.bodyStartedAtMs) && report.bodyStartedAtMs > 0);
+  assert.ok(Number.isSafeInteger(setup.startedAtMs) && setup.startedAtMs >= report.bodyStartedAtMs);
+  assert.ok(Number.isSafeInteger(setup.settledAtMs) && setup.settledAtMs >= setup.startedAtMs);
+  assert.equal(setup.attempts?.length, ids.length);
+  assert.deepEqual(setup.attempts.map(attempt => attempt.index).sort((a, b) => a - b), ids.map((_id, index) => index));
+  const boundaries = [];
+  for (const attempt of setup.attempts) {
+    assert.equal(attempt.status, 'fulfilled', 'Rejected agent setup cannot qualify');
+    assert.equal(attempt.agentId, ids[attempt.index]);
+    assert.ok(Number.isSafeInteger(attempt.startedAtMs) && attempt.startedAtMs >= setup.startedAtMs);
+    assert.ok(Number.isSafeInteger(attempt.settledAtMs) && attempt.settledAtMs >= attempt.startedAtMs && attempt.settledAtMs <= setup.settledAtMs);
+    if (attempt.settledAtMs > attempt.startedAtMs) boundaries.push([attempt.startedAtMs, 1], [attempt.settledAtMs, -1]);
+  }
+  let active = 0;
+  for (const [_time, delta] of boundaries.sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+    active += delta; assert.ok(active <= setup.concurrency, 'Agent setup exceeded the fixed concurrency');
+  }
+  for (const item of report.cases) assert.ok(item.activations?.[0]?.startedAtMs >= setup.settledAtMs,
+    'Agent setup must finish before every case activation');
+}
+
+export function assertParticipantTopology(report, result) {
+  const ids = report.remote?.agentIds;
+  if (!result.stop) {
+    const rows = result.controllerAuthority?.rows;
+    assert.equal(rows?.length, result.runs, 'Missing participant authority rows');
+    assert.equal(new Set(rows.map(row => row.agent_id)).size, result.runs, 'Concurrent participants must use distinct normal agents');
+    assert.ok(rows.every(row => ids.includes(row.agent_id)), 'Participant authority is outside the normal agent pool');
+  }
+}
 
 export function h5Enabled(value) {
   assert.ok(value === undefined || value === H5_MODE, 'Explicit supported H5 observation mode required');

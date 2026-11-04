@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { H5_MODE, H5_PROTOCOL, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, originalTerminal, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
+import { H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS,
+  originalTerminal, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -79,17 +80,23 @@ const workloads = [
 function browserReport(revision, latency) {
   const companyId = "00000000-0000-4000-8000-000000000001", environmentId = "00000000-0000-4000-8000-000000000002";
   const localEnvironmentId = "00000000-0000-4000-8000-000000000003", controlAgentId = "00000000-0000-4000-8000-000000000004";
-  const remoteAgentId = "00000000-0000-4000-8000-000000000005";
   const id = (kind, caseIndex, index) => `00000000-0000-4000-8000-${(kind * 100000 + caseIndex * 1000 + index).toString(16).padStart(12, "0")}`;
+  const remoteAgentIds = Array.from({ length: 100 }, (_, index) => id(9, 0, index));
   const transportPolicy = { streaming: "sandbox-remote", operatorStop: "local",
     realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" };
-  return { protocolVersion: "v4-remote-streaming-original-local-stop-clock-stream", transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
+  return { protocolVersion: H4D_PROTOCOL, transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
+    bodyStartedAtMs: 1, agentTopology: { ...H5_TOPOLOGY, remoteAgentPoolSize: 100 },
+    harnessProvenance: { sourceRevision: "b".repeat(40), sourceStatus: "", driverLockSha256: "8".repeat(64),
+      sourceHashes: { "native-event-ingestion.journey.ts": "9".repeat(64), "fixtures/native-ingestion-h5.mjs": "a".repeat(64) } },
     resourceBudgets: { providerReadinessMs: 300000, fullInvocationMs: 900000, streamingMs: 120000,
       terminalDrainageMs: 180000, stopAcknowledgementMs: 30000, remoteLeaseCleanupMs: 30000 },
     local: { transport: "local", environmentId: localEnvironmentId, controlAgentId,
       selection: "Normal local environment + separate control agent defaultEnvironmentId; existing test-only Codex leaf command fixture",
       commandSha256: "6".repeat(64), loaderSha256: "7".repeat(64) },
-    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId, agentIds: [remoteAgentId],
+    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId, agentIds: remoteAgentIds,
+      agentSetup: { count: 100, concurrency: 8, complete: true, startedAtMs: 2, settledAtMs: 40,
+        attempts: remoteAgentIds.map((agentId, index) => ({ index, agentId, status: "fulfilled",
+          startedAtMs: 3 + Math.floor(index / 8) * 2, settledAtMs: 4 + Math.floor(index / 8) * 2 })) },
       runnerPublicUrl: "wss://127.0.0.1:32100",
       selection: "Normal plugin install + sandbox environment + agent defaultEnvironmentId; no runtime resolver override",
       plugin: { pluginKey: "paperclip.fake-sandbox-provider", assetHashes: Object.fromEntries(["worker.js", "plugin.js", "manifest.js", "lease-cleanup.js"].map(file => [file, "5".repeat(64)])) },
@@ -106,7 +113,7 @@ function browserReport(revision, latency) {
         observedReadOnly: "on", observedIsolation: "repeatable read", kind: stop ? "host-file-journal" : "database-controller-checkpoint" };
       const rows = Array.from({ length: workload.runs }, (_, index) => ({
         run_id: id(1, caseIndex, index), issue_id: id(2, caseIndex, index), company_id: companyId,
-        agent_id: stop ? controlAgentId : remoteAgentId,
+        agent_id: stop ? controlAgentId : remoteAgentIds[index],
         lease_id: id(3, caseIndex, index), environment_id: actualEnvironmentId, runtime_mode: "native", provider: stop ? "local" : "fake-plugin",
         provider_lease_id: stop ? null : `fake-plugin://${id(1, caseIndex, index)}/fixture`,
         checkpoint_part: stop ? null : "header", checkpoint_header_bytes: stop ? null : 256,
@@ -263,16 +270,16 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
   }
   try {
     const proof = JSON.parse(JSON.stringify(h5Report("B2", 1000)).replaceAll("00000000-", "10000000-"));
-    proof.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream";
-    proof.measurementSha256 = "5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b";
-    proof.harnessProvenance = { sourceRevision: "7d7e7a88d562a95a1d407b76474763b666c181f5", sourceStatus: "" };
+    proof.protocolVersion = H4D_PROTOCOL;
+    proof.measurementSha256 = "h5-synthetic-fixed-fixture";
+    // H4d defaults use the same frozen source/geometry as the observation arms.
     for (const field of ["observationMode", "observationLimits", "observationComplete", "workloadSha256", "actualPlaywrightTimeoutMs"]) delete proof[field];
     for (const item of proof.cases) { delete item.h5; delete item.terminalStatuses; for (const row of item.durable) delete row.resultAcceptedEvents; }
-    const originalProof = await save("original-h4c-playwright.json", { suites: [{ tests: [{ timeout: 900000, expectedStatus: "passed", results: [{
+    const originalProof = await save("original-h4d-playwright.json", { suites: [{ tests: [{ timeout: 900000, expectedStatus: "passed", results: [{
       status: "passed", retry: 0, duration: 5000, startTime: "2026-11-04T00:00:00.000Z", errors: [], attachments: [{
         name: "native-ingestion-evidence", body: Buffer.from(JSON.stringify(proof)).toString("base64") }] }] }] }] });
     const originalInventory = await inventory(proof, originalProof, "original-h4c");
-    const finalProofArgs = [`--original-h4c-proof=${originalProof}`, `--original-h4c-inventory=${originalInventory}`];
+    const finalProofArgs = [`--original-h4d-proof=${originalProof}`, `--original-h4d-inventory=${originalInventory}`];
     const noise = path.join(directory, "aa.json");
     const aa = run(["--phase=aa", `--pairs=${await manifest("aa", 181000, { sameRevision: true })}`, `--output=${noise}`]);
     assert.equal(aa.status, 0, aa.stderr);
@@ -312,18 +319,34 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     for (const [name, change, message] of [
       ["h4c-too-early", (_value, owner) => { owner.results[0].startTime = "2026-11-02T00:00:00.000Z"; }, /follow all candidate/],
       ["h4c-wrong-sut", value => { value.sourceRevision = H5_BASELINE_REVISIONS.B0; value.compiledBuildRevision = value.sourceRevision; }, /strictly equal/],
-      ["h4c-observation-mode", value => { value.observationMode = H5_MODE; }, /unchanged original H4c/],
+      ["h4c-observation-mode", value => { value.observationMode = H5_MODE; }, /H4d default deadlines/],
+      ["old-h4c-proof", value => { value.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream";
+        value.harnessProvenance.sourceRevision = "7d7e7a88d562a95a1d407b76474763b666c181f5"; }, /Old H4c geometry/],
+      ["h4d-wrong-harness", value => { value.harnessProvenance.sourceRevision = "d".repeat(40); }, /same frozen harness source/],
+      ["h4d-wrong-measurement", value => { value.measurementSha256 = "old-h5a"; }, /same measured harness bytes/],
+      ["h4d-shared-agent", value => { value.cases[3].controllerAuthority.rows[1].agent_id = value.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
+      ["h4d-missing-stop-proof", value => { delete value.cases[5].localStopProof; }, /physical Stop/],
+      ["h4d-provider-still-alive", value => { value.cases[5].localStopProof.processes.providerAbsent = false; }, /provider remains alive/],
+      ["h4d-pending-local-lease", value => { value.cases[5].localStopProof.lease.status = "active"; }, /lease cleanup remains unsettled/],
+      ["h4d-wrong-local-lease", value => { value.cases[5].localStopProof.lease.id = value.cases[3].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4d-ack-timing-mismatch", value => { value.cases[5].stopAcknowledgedAtMs++; }, /acknowledgement timing boundary/],
+      ["h4d-missing-remote-leases", value => { delete value.cases[3].remoteLeases; }, /post-timing lease cleanup proof/],
+      ["h4d-pending-remote-lease", value => { value.cases[3].remoteLeases[0].cleanupStatus = "pending"; }, /lease cleanup remains unsettled/],
+      ["h4d-wrong-remote-lease", value => { value.cases[3].remoteLeases[0].id = value.cases[5].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4d-premature-remote-cleanup-proof", value => { value.cases[3].remoteLeasesCheckedAtMs = value.cases[3].settledAtMs - 1; }, /leases after recorded timing/],
+      ["h4d-wrong-authority-company", value => { value.cases[3].controllerAuthority.rows[0].company_id = "00000000-0000-4000-8000-000000099999"; }, /authority company mismatch/],
+      ["h4d-wrong-authority-run", value => { value.cases[3].controllerAuthority.rows[0].run_id = value.cases[5].runIds[0]; }, /authority run set mismatch/],
     ]) {
       const report = JSON.parse(await readFile(originalProof, "utf8")), owner = report.suites[0].tests[0],
         value = JSON.parse(Buffer.from(owner.results[0].attachments[0].body, "base64").toString());
       change(value, owner); owner.results[0].attachments[0].body = Buffer.from(JSON.stringify(value)).toString("base64");
       const file = await save(`${name}-playwright.json`, report), sidecar = await inventory(value, file, name), output = path.join(directory, `${name}-result.json`);
       const attempt = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`,
-        `--original-h4c-proof=${file}`, `--original-h4c-inventory=${sidecar}`, `--output=${output}`, "--require-acceptance"]);
+        `--original-h4d-proof=${file}`, `--original-h4d-inventory=${sidecar}`, `--output=${output}`, "--require-acceptance"]);
       assert.notEqual(attempt.status, 0, name);
       const rejected = JSON.parse(await readFile(output, "utf8"));
       assert.equal(rejected.performancePassed, true); assert.equal(rejected.acceptancePassed, false);
-      assert.match(rejected.originalH4cConfirmation.reason, message);
+      assert.match(rejected.originalH4dConfirmation.reason, message);
     }
     const badOutput = path.join(directory, "still-misses.json");
     const bad = run(["--candidate-policy=final-b2", `--pairs=${await manifest("still-misses", 150000)}`,
@@ -333,6 +356,7 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     assert.equal(rejected.acceptancePassed, false);
     assert.equal(rejected.h5Assessments[0].candidateSlaPolicyPassed, false);
     for (const [name, mutate, message] of [
+      ["old-h5a-protocol", report => { report.protocolVersion = "v5-complete-observation-original-sla"; }, /strictly equal/],
       ["censored", report => { report.cases[3].h5.streaming.observation.censored = true; }, /false/],
       ["terminal-failed", report => { report.cases[3].terminalStatuses[99].status = "failed"; }, /successful drainage/],
       ["result-missing", report => { report.cases[3].durable[99].resultAcceptedEvents = 0; }, /persisted result/],
@@ -404,9 +428,18 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["profile", report => { report.diagnosticOnly = true; }, /Diagnostic profiles/],
       ["profile-ineligible", report => { report.performanceAcceptanceEligible = false; }, /Profile-only evidence/],
       ["missing-retained-prelude", report => { report.cases.find(row => row.prelude).preludeProof.individualDeltas--; }, /stored prelude deltas/],
-      ["legacy-protocol", report => { delete report.protocolVersion; }, /v4 mixed clock protocol/],
-      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /v4 mixed clock protocol/],
-      ["old-remote-protocol", report => { report.protocolVersion = "v3-supported-remote-original-clock-stream"; }, /v4 mixed clock protocol/],
+      ["legacy-protocol", report => { delete report.protocolVersion; }, /independent-agent/],
+      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /independent-agent/],
+      ["old-remote-protocol", report => { report.protocolVersion = "v3-supported-remote-original-clock-stream"; }, /independent-agent/],
+      ["old-h4c-geometry", report => { report.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream"; }, /independent-agent/],
+      ["shared-participant-agent", report => { report.cases[3].controllerAuthority.rows[1].agent_id = report.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
+      ["participant-outside-pool", report => { report.cases[3].controllerAuthority.rows[1].agent_id = "00000000-0000-4000-8000-000000099999"; }, /outside the normal agent pool/],
+      ["incomplete-agent-pool", report => { report.remote.agentIds.pop(); }, /Incomplete independent/],
+      ["unfinished-agent-setup", report => { report.remote.agentSetup.complete = false; }, /settle successfully/],
+      ["rejected-agent-setup", report => { report.remote.agentSetup.attempts[0].status = "rejected"; }, /Rejected agent setup/],
+      ["agent-setup-concurrency", report => { report.remote.agentSetup.concurrency = 9; }, /strictly equal/],
+      ["agent-setup-overlap", report => { for (const row of report.remote.agentSetup.attempts.slice(0, 9)) { row.startedAtMs = 3; row.settledAtMs = 39; } }, /exceeded the fixed concurrency/],
+      ["late-agent-setup", report => { report.remote.agentSetup.settledAtMs = 60; }, /before every case activation/],
       ["wrong-transport", report => { report.transport = "local"; }, /original local Stop transport/],
       ["missing-transport-policy", report => { delete report.transportPolicy; }, /explicit transport/],
       ["fake-remote-stop", report => { report.cases[5].transport = "sandbox-remote"; }, /Wrong per-case transport/],

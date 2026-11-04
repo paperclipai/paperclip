@@ -7,8 +7,8 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
-import { h5Enabled, H5_MODE, H5_PROTOCOL, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
-  observeStreaming, originalTerminal } from "./fixtures/native-ingestion-h5.mjs";
+import { h5Enabled, H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
+  observeStreaming, originalTerminal, prepareParticipantAgents, assertParticipantTopology } from "./fixtures/native-ingestion-h5.mjs";
 
 type SeenMarker = { markerCode: string; index: number; visibleMs: number };
 type Emission = { nonce: string; markerCode: string; index: number; intendedMs: number; emittedMs: number; receivedAtMs: number };
@@ -275,9 +275,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const browserRecording = { trace: captureMode(info.project.use.trace), video: captureMode(info.project.use.video),
     screencast: captureMode(info.project.use.trace) !== "off" || captureMode(info.project.use.video) !== "off" };
   const report: Record<string, unknown> = {
-    protocolVersion: h5 ? H5_PROTOCOL : "v4-remote-streaming-original-local-stop-clock-stream", transport,
+    protocolVersion: h5 ? H5_PROTOCOL : H4D_PROTOCOL, transport, bodyStartedAtMs,
+    agentTopology: { ...H5_TOPOLOGY, remoteAgentPoolSize: Math.max(...cases.map(item => item.runs)) },
     ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, observationLimits: H5_LIMITS,
-      observationComplete: false, bodyStartedAtMs, actualPlaywrightTimeoutMs: info.timeout,
+      observationComplete: false, actualPlaywrightTimeoutMs: info.timeout,
       originalInvocationBudgetAssessment: "Requires independent owning Playwright observed total duration; conservative original900 assessment, not exact timeout expiration" } : {}),
     transportPolicy: { streaming: "sandbox-remote", operatorStop: "local",
       realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" },
@@ -315,7 +316,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const protocolFiles = ["native-event-ingestion.journey.ts", "playwright-native-ingestion.config.ts", "fixtures/in-feed-codex.mjs",
     "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs", "fixtures/native-ingestion-bootstrap.mjs",
     "fixtures/native-ingestion-remote-server.mjs", "fixtures/native-ingestion-protocol-qualification.mjs",
-    ...(h5 ? ["fixtures/native-ingestion-h5.mjs"] : [])];
+    "fixtures/native-ingestion-h5.mjs"];
   const protocolSources = await Promise.all(protocolFiles.map(async file => ({ file, bytes: await readFile(path.resolve(import.meta.dirname, file)) })));
   report.measurementSha256 = createHash("sha256").update(Buffer.concat(protocolSources.map(source => source.bytes))).digest("hex");
   const harnessRoot = path.resolve(import.meta.dirname, "../..");
@@ -357,9 +358,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     expect(localEnvironments).toHaveLength(1);
     const localEnvironment = localEnvironments[0];
     expect(localEnvironment.driver).toBe("local");
-    const agents: Array<{ id: string; name: string }> = [];
-    const agentCount = Math.ceil(Math.max(...cases.map(item => item.runs)) / 50);
-    for (let index = 0; index < agentCount; index++) {
+    const agentCount = Math.max(...cases.map(item => item.runs));
+    const agents = await prepareParticipantAgents({ count: agentCount,
+      onOutcome: (value: unknown) => { (report.remote as any).agentSetup = value; },
+      createAndReady: async (index: number) => {
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { timeout: 120_000, data: {
         name: `Ingestion ${index + 1}`, role: "engineer", adapterType: "paperclip_runner",
         defaultEnvironmentId: remoteEnvironment.id,
@@ -369,8 +371,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       } }));
       await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState,
         { timeout: 60_000 }).toBe("ready");
-      agents.push(agent);
-    }
+      return agent;
+    } }) as Array<{ id: string; name: string }>;
     (report.remote as any).agentIds = agents.map(agent => agent.id);
     const controlAgent = await json(await request.post(`/api/companies/${company.id}/agents`, { timeout: 120_000, data: {
       name: "Ingestion local Stop control", role: "engineer", adapterType: "paperclip_runner",
@@ -437,7 +439,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         register(backgroundToken, backgroundCode);
         const background = await json(await request.post(`/api/companies/${company.id}/issues`, { data: {
           title: `Ingestion background ${key} ${index}`, description: prompt(backgroundToken, backgroundCode, 0),
-          status: "backlog", assigneeAgentId: caseAgents[Math.floor(index / 50)].id,
+          status: "backlog", assigneeAgentId: caseAgents[index].id,
         } }));
         issueIds.push(background.id);
         issuedTokens.set(background.id, backgroundToken);
@@ -516,6 +518,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         appRoot, companyId: company.id, environmentId: caseEnvironment.id, issueIds, transport: caseTransport,
       });
       active.controllerAuthority = controllerAuthority;
+      assertParticipantTopology(report, { ...workload, stop, controllerAuthority });
       const providerClocks = controllerAuthority.rows.map((row: any) => {
         const token = issuedTokens.get(row.issue_id)!, stream = state.streams.get(token)!;
         return { runId: row.run_id, nonce: token, launcher: stream.launcher, providerPid: stream.providerPid };

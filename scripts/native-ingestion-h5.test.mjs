@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { h5Enabled, H5_MODE, observeStreaming, originalTerminal, requireH5Candidate,
-  H5_LIMITS, ORIGINAL_BUDGETS } from '../tests/e2e/fixtures/native-ingestion-h5.mjs';
+  H5_LIMITS, ORIGINAL_BUDGETS, prepareParticipantAgents } from '../tests/e2e/fixtures/native-ingestion-h5.mjs';
 
 const timeout = milliseconds => Object.assign(new Error(`Timeout ${milliseconds}ms exceeded while waiting on the predicate`),
   { matcherResult: { name: 'toBeGreaterThanOrEqual', pass: false } });
@@ -39,9 +39,31 @@ test('real frozen Playwright can report its configured timeout before the nomina
     assessedAtMs, elapsedMs, observations, matcherName: failure.matcherResult.name, matcherPassed: failure.matcherResult.pass }));
 });
 
-test('H5 requires explicit mode and leaves default H4c selected', () => {
+test('H5b requires its explicit mode and leaves default H4d selected', () => {
   assert.equal(h5Enabled(undefined), false); assert.equal(h5Enabled(H5_MODE), true);
   assert.throws(() => h5Enabled('almost-h5'));
+  assert.throws(() => h5Enabled('h5-observe-original-sla'), 'Old H5a observations use a different geometry');
+});
+
+for (const fail of [false, true]) test(`participant setup uses at most8 workers, preserves index order and settles all attempts${fail ? ' after a failure' : ''}`, async () => {
+  const count = 20, pending = [], records = []; let active = 0, maximum = 0, finished = 0;
+  const completion = prepareParticipantAgents({ count, onOutcome: value => records.push(structuredClone(value)),
+    createAndReady: async index => {
+      active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => pending.push(resolve)); active--; finished++;
+      if (fail && index === 3) throw new Error('actual agent readiness failed');
+      return { id: `agent-${index}` };
+    } }).then(value => ({ value }), error => ({ error }));
+  while (finished < count) {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(active <= 8); pending.splice(0).reverse().forEach(resolve => resolve());
+  }
+  const result = await completion, last = records.at(-1);
+  assert.equal(maximum, 8); assert.equal(active, 0); assert.equal(last.attempts.length, count);
+  assert.ok(last.attempts.every(attempt => attempt.status !== 'pending'));
+  assert.equal(last.complete, !fail);
+  if (fail) { assert.match(result.error.message, /setup failed/); assert.equal(last.attempts.filter(value => value.status === 'rejected').length, 1); }
+  else assert.deepEqual(result.value.map(agent => agent.id), Array.from({ length: count }, (_, index) => `agent-${index}`));
 });
 
 test('first successful observation uses only the original wait with no collection delay', async () => {

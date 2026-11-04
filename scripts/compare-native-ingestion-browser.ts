@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
-import { H5_MODE, H5_PROTOCOL, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, ORIGINAL_BUDGETS, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
+import { H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, ORIGINAL_BUDGETS,
+  assessH5Arm, requireH5Candidate, assertParticipantSetup, assertParticipantTopology } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { validateArmInventory } from "./native-ingestion-h5-inventory.mjs";
 
 // Each manifest entry points at native-ingestion-evidence JSON attachments
@@ -16,6 +17,7 @@ const phase = arg("phase") ?? "compare", expectation = arg("expect") ?? "improve
 const h5 = arg("observation-mode") === H5_MODE;
 assert.ok(arg("observation-mode") === undefined || h5, "Unknown observation mode");
 const candidatePolicy = arg("candidate-policy");
+assert.ok(!arg("original-h4c-proof") && !arg("original-h4c-inventory"), "Old H4c proof arguments cannot confirm the new independent-agent geometry");
 assert.ok(["aa", "compare"].includes(phase));
 assert.ok(["improvement", "nonregression"].includes(expectation));
 const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Array<{ baselineFile: string; candidateFile: string;
@@ -107,10 +109,128 @@ const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floo
 const first = pairs[0];
 const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
+function assertCaseAuthority(report: any, result: any) {
+  const remote = report.remote, local = report.local;
+  const authority = result.controllerAuthority;
+  assert.equal(authority?.checkedBeforeMeasuredEpoch, true, "Missing controller authority proof before the measured epoch");
+  assert.equal(authority?.kind, result.stop ? "host-file-journal" : "database-controller-checkpoint", "Wrong checkpoint authority for actual transport");
+  assert.equal(authority?.observedReadOnly, "on", "Remote authority proof must observe a read-only transaction");
+  assert.equal(authority?.observedIsolation, "repeatable read", "Remote authority proof must observe repeatable-read isolation");
+  assert.ok(Number.isSafeInteger(authority?.checkedAtMs) && authority.checkedAtMs > 0
+    && Number.isSafeInteger(authority.connectionClosedAtMs) && authority.connectionClosedAtMs > 0
+    && authority.checkedAtMs <= authority.connectionClosedAtMs && authority.connectionClosedAtMs < result.epochMs,
+  "Close the actual remote authority snapshot before the measured epoch");
+  assert.equal(authority.rows?.length, result.runs, "Every remote run needs its controller checkpoint and lease proof");
+  assertParticipantTopology(report, result);
+  assert.deepEqual(authority.rows.map((row: any) => row.run_id).sort(), [...result.runIds].sort(), "Remote authority run set mismatch");
+  assert.equal(new Set(authority.rows.map((row: any) => row.issue_id)).size, result.runs, "Duplicate remote issue authority");
+  const authorityByRun = new Map<string, any>();
+  for (const row of authority.rows) {
+    assert.ok(uuid(row.issue_id) && uuid(row.lease_id), "Missing actual task/lease UUID");
+    assert.equal(row.company_id, report.companyId, "Remote authority company mismatch");
+    assert.equal(row.environment_id, result.environmentId, "Remote authority environment mismatch");
+    assert.equal(row.runtime_mode, "native");
+    if (!result.stop) {
+      assert.ok(remote.agentIds.includes(row.agent_id), "Remote run did not use its normal remote agent");
+      assert.equal(row.provider, "fake-plugin");
+      assert.match(row.provider_lease_id, /^fake-plugin:\/\//);
+      assert.equal(row.checkpoint_part, "header", "Missing actual database controller checkpoint header");
+      assert.ok(Number.isSafeInteger(row.checkpoint_header_bytes) && row.checkpoint_header_bytes > 0);
+    } else {
+      assert.equal(row.agent_id, local.controlAgentId, "Stop did not use its separate local control agent");
+      assert.equal(row.provider, "local", "Stop requires its normal local lease");
+      assert.equal(row.provider_lease_id, null); assert.equal(row.checkpoint_part, null, "Local Stop must retain host-file authority without a database header");
+      assert.ok(BigInt(String(row.process_identity_seq)) > 0n);
+      assert.equal(row.process_identity_source_event_id, null, "Local identity must be server-authored");
+      assert.equal(row.process_identity?.targetKind, "local");
+      assert.equal(row.process_identity?.processPid, row.process_pid);
+      assert.equal(row.process_identity?.processGroupId, row.process_group_id);
+      assert.equal(row.process_identity?.processStartedAt, row.process_started_at);
+      assert.ok(uuid(row.admitted_execution_workspace_id), "Missing actual admitted local workspace binding");
+    }
+    authorityByRun.set(row.run_id, row);
+  }
+  return { authority, authorityByRun };
+}
+
+function assertCaseSettlement(report: any, result: any, validated = assertCaseAuthority(report, result)) {
+  const remote = report.remote, local = report.local;
+  const { authority, authorityByRun } = validated;
+  if (result.stop) {
+    assert.equal(result.stopAcknowledgedAtMs, result.stopRequestedAtMs + result.stopThroughAcknowledgementMs, "Stop acknowledgement timing boundary changed");
+    const row = authority.rows[0], journal = authority.localJournal, before = result.localProcesses;
+    assert.equal(journal?.schema, "paperclip.runner.durable.control-plane-state.v1", "Missing owned local journal authority");
+    assert.ok(sha256(journal.sha256) && journal.bytes > 0 && Number.isSafeInteger(journal.checkedAtMs)
+      && journal.checkedAtMs < result.epochMs, "Verify actual local file journal before the measured epoch");
+    assert.notEqual(journal.checkpointEventPolicy, "control-v1", "Preserve the original local raw transport recovery policy");
+    for (const [field, expected] of [["runId", row.run_id], ["runnerInstanceId", row.runner_instance_id],
+      ["normalizedSessionId", row.native_session_id], ["environmentLeaseId", row.admitted_execution_workspace_id]]) assert.equal(journal.identity?.[field], expected, "Local journal identity mismatch");
+    assert.ok(before && before.hostname === row.process_identity.hostname && before.runnerPid === row.process_pid
+      && before.processGroupId === row.process_group_id && before.providerPid === result.providerClocks[0].providerPid,
+    "Local observed process ownership mismatch");
+    assert.ok(before.runnerAlive && before.groupAlive && before.providerAlive && Number.isSafeInteger(before.checkedAtMs)
+      && before.checkedAtMs < result.epochMs, "Independently observe all owned local processes before emission");
+    const stopped = result.localStopProof, database = stopped?.database, after = database?.rows?.[0];
+    assert.ok(stopped && Number.isSafeInteger(stopped.checkedAtMs) && stopped.checkedAtMs >= result.stopAcknowledgedAtMs
+      && stopped.checkedAtMs >= result.settledAtMs, "Verify local physical Stop after timing boundaries");
+    assert.equal(database?.kind, "host-file-journal"); assert.equal(database?.observedReadOnly, "on");
+    assert.equal(database?.observedIsolation, "repeatable read"); assert.equal(database?.rows?.length, 1);
+    assert.equal(database?.checkedBeforeMeasuredEpoch, false);
+    assert.ok(Number.isSafeInteger(database.checkedAtMs) && database.checkedAtMs >= result.stopAcknowledgedAtMs
+      && Number.isSafeInteger(database.connectionClosedAtMs) && database.connectionClosedAtMs >= database.checkedAtMs
+      && database.connectionClosedAtMs <= stopped.checkedAtMs, "Local stopped database proof predates acknowledgement");
+    for (const field of ["run_id", "company_id", "environment_id", "lease_id", "agent_id", "provider", "provider_lease_id",
+      "admitted_execution_workspace_id", "process_identity_seq", "process_identity_source_event_id"]) assert.equal(after?.[field], row[field], "Local stopped database identity mismatch");
+    assert.equal(after.status, "cancelled"); assert.equal(after.cancellation_dispatch_state, "acknowledged");
+    if (!after.process_pid && !after.process_group_id) {
+      assert.ok(BigInt(String(after.process_stopped_seq)) > BigInt(String(row.process_identity_seq)), "Cleared local process identity needs its server stop receipt");
+      assert.equal(after.process_stopped_source_event_id, null);
+      assert.equal(after.process_stopped?.processPid, before.runnerPid);
+      assert.equal(after.process_stopped?.processGroupId, before.processGroupId);
+      assert.equal(after.process_stopped?.processStartedAt, row.process_identity.processStartedAt);
+    } else {
+      assert.equal(after.process_pid, before.runnerPid); assert.equal(after.process_group_id, before.processGroupId);
+    }
+    for (const field of ["runnerPid", "processGroupId", "providerPid", "hostname"]) assert.equal(stopped.processes?.[field], before[field]);
+    assert.equal(stopped.processes.runnerAbsent, true); assert.equal(stopped.processes.groupAbsent, true);
+    assert.equal(stopped.processes.providerAbsent, true, "Local provider remains alive after Stop");
+    const lease = stopped.lease;
+    assert.equal(lease?.id, row.lease_id); assert.equal(lease?.companyId, report.companyId);
+    assert.equal(lease?.environmentId, local.environmentId); assert.equal(lease?.heartbeatRunId, row.run_id);
+    assert.equal(lease?.provider, "local"); assert.equal(lease?.providerLeaseId, null);
+    assert.ok(["released", "expired", "failed"].includes(lease.status) && lease.releasedAt
+      && lease.cleanupStatus !== "failed", "Local Stop lease cleanup remains unsettled");
+    assert.equal(result.remoteLeases, undefined, "Local Stop cannot claim fake remote cleanup");
+  } else {
+    assert.equal(result.localStopProof, undefined, "Streaming cannot claim a local Stop proof");
+    assert.equal(result.remoteLeases?.length, result.runs, "Every remote run needs post-timing lease cleanup proof");
+    assert.deepEqual(result.remoteLeases.map((lease: any) => lease.runId).sort(), [...result.runIds].sort(), "Remote cleanup run set mismatch");
+    assert.ok(Number.isSafeInteger(result.remoteLeasesCheckedAtMs) && result.remoteLeasesCheckedAtMs >= result.settledAtMs,
+      "Verify remote leases after recorded timing boundaries");
+    for (const lease of result.remoteLeases) {
+      const row = authorityByRun.get(lease.runId);
+      assert.equal(lease.id, row.lease_id); assert.equal(lease.companyId, report.companyId);
+      assert.equal(lease.environmentId, remote.environmentId); assert.equal(lease.provider, row.provider);
+      assert.equal(lease.providerLeaseId, row.provider_lease_id);
+      assert.ok(["released", "expired", "failed"].includes(lease.status) && lease.releasedAt
+        && lease.cleanupStatus === "success", "Remote lease cleanup remains unsettled");
+      if (lease.terminationReceipt) {
+        const receipt = lease.terminationReceipt;
+        assert.equal(receipt.schema, "paperclip.remote-termination.v1");
+        assert.equal(receipt.companyId, report.companyId); assert.equal(receipt.runId, lease.runId);
+        assert.equal(receipt.leaseId, lease.id); assert.equal(receipt.provider, lease.provider);
+        assert.equal(receipt.providerLeaseId, lease.providerLeaseId);
+        assert.ok(["stopped", "destroyed"].includes(receipt.state), "Invalid recorded remote termination receipt");
+      }
+    }
+  }
+}
+
+
 for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) {
   const report = pair[arm];
-  assert.equal(report.protocolVersion, h5 ? H5_PROTOCOL : "v4-remote-streaming-original-local-stop-clock-stream",
-    h5 ? "Fresh browser acceptance requires its qualified H5 observation protocol" : "Fresh browser acceptance requires the qualified v4 mixed clock protocol");
+  assert.equal(report.protocolVersion, h5 ? H5_PROTOCOL : H4D_PROTOCOL,
+    "Fresh browser acceptance requires the independent-agent observation or default-deadline protocol");
   assert.equal(report.transport, "sandbox-remote-with-local-stop", "V4 requires remote streaming and the original local Stop transport");
   assert.deepEqual(report.transportPolicy, { streaming: "sandbox-remote", operatorStop: "local",
     realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" }, "Missing explicit transport and real cloud Stop qualification policy");
@@ -161,6 +281,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   assert.equal(report.setupActivationConcurrency, 2, "Keep the qualified setup activation concurrency of two");
   assert.equal(report.setupReadinessPollingMs, 50, "Keep the qualified setup readiness observation interval");
   assert.equal(report.complete, true); assert.equal(report.qualificationOnly, false, "Smoke cannot qualify performance");
+  assertParticipantSetup(report);
   assert.equal(report.cleanup?.complete, true, "Acceptance requires completed fixture cleanup");
   assert.deepEqual(report.cleanup?.errors, [], "Acceptance rejects fixture cleanup errors");
   assert.notEqual(report.diagnosticOnly, true, "Diagnostic profiles cannot qualify unprofiled performance");
@@ -178,6 +299,10 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   if (h5) for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"])
     assert.equal(report.armInventory[field], first[arm].armInventory[field], "Full qualified artifact inventory changed between samples");
   assert.equal(report.measurementSha256, first.baseline.measurementSha256, "Fixture/observer protocol changed between runs");
+  assert.match(report.harnessProvenance?.sourceRevision ?? "", /^[a-f0-9]{40}$/, "Missing frozen harness source revision");
+  assert.equal(report.harnessProvenance.sourceStatus, "");
+  for (const field of ["sourceRevision", "sourceHashes", "driverLockSha256"])
+    assert.deepEqual(report.harnessProvenance[field], first.baseline.harnessProvenance[field], "Harness source changed between arms");
   if (phase === "aa") assert.equal(report.sourceRevision, first.baseline.sourceRevision, "A/A must use one source revision");
   for (const name of names) {
     const result = report.cases.find((item: any) => item.name === name);
@@ -204,44 +329,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     assert.ok(result.runIds.every(uuid), "Missing actual remote run UUID");
     assert.equal(new Set(result.runIds).size, result.runs, "Duplicate remote run identity");
     assert.deepEqual(result.durable.map((proof: any) => proof.runId).sort(), [...result.runIds].sort(), "Durable proof run set mismatch");
-    const authority = result.controllerAuthority;
-    assert.equal(authority?.checkedBeforeMeasuredEpoch, true, "Missing controller authority proof before the measured epoch");
-    assert.equal(authority?.kind, result.stop ? "host-file-journal" : "database-controller-checkpoint", "Wrong checkpoint authority for actual transport");
-    assert.equal(authority?.observedReadOnly, "on", "Remote authority proof must observe a read-only transaction");
-    assert.equal(authority?.observedIsolation, "repeatable read", "Remote authority proof must observe repeatable-read isolation");
-    assert.ok(Number.isSafeInteger(authority?.checkedAtMs) && authority.checkedAtMs > 0
-      && Number.isSafeInteger(authority.connectionClosedAtMs) && authority.connectionClosedAtMs > 0
-      && authority.checkedAtMs <= authority.connectionClosedAtMs && authority.connectionClosedAtMs < result.epochMs,
-    "Close the actual remote authority snapshot before the measured epoch");
-    assert.equal(authority.rows?.length, result.runs, "Every remote run needs its controller checkpoint and lease proof");
-    assert.deepEqual(authority.rows.map((row: any) => row.run_id).sort(), [...result.runIds].sort(), "Remote authority run set mismatch");
-    assert.equal(new Set(authority.rows.map((row: any) => row.issue_id)).size, result.runs, "Duplicate remote issue authority");
-    const authorityByRun = new Map<string, any>();
-    for (const row of authority.rows) {
-      assert.ok(uuid(row.issue_id) && uuid(row.lease_id), "Missing actual task/lease UUID");
-      assert.equal(row.company_id, report.companyId, "Remote authority company mismatch");
-      assert.equal(row.environment_id, result.environmentId, "Remote authority environment mismatch");
-      assert.equal(row.runtime_mode, "native");
-      if (!result.stop) {
-        assert.ok(remote.agentIds.includes(row.agent_id), "Remote run did not use its normal remote agent");
-        assert.equal(row.provider, "fake-plugin");
-        assert.match(row.provider_lease_id, /^fake-plugin:\/\//);
-        assert.equal(row.checkpoint_part, "header", "Missing actual database controller checkpoint header");
-        assert.ok(Number.isSafeInteger(row.checkpoint_header_bytes) && row.checkpoint_header_bytes > 0);
-      } else {
-        assert.equal(row.agent_id, local.controlAgentId, "Stop did not use its separate local control agent");
-        assert.equal(row.provider, "local", "Stop requires its normal local lease");
-        assert.equal(row.provider_lease_id, null); assert.equal(row.checkpoint_part, null, "Local Stop must retain host-file authority without a database header");
-        assert.ok(BigInt(String(row.process_identity_seq)) > 0n);
-        assert.equal(row.process_identity_source_event_id, null, "Local identity must be server-authored");
-        assert.equal(row.process_identity?.targetKind, "local");
-        assert.equal(row.process_identity?.processPid, row.process_pid);
-        assert.equal(row.process_identity?.processGroupId, row.process_group_id);
-        assert.equal(row.process_identity?.processStartedAt, row.process_started_at);
-        assert.ok(uuid(row.admitted_execution_workspace_id), "Missing actual admitted local workspace binding");
-      }
-      authorityByRun.set(row.run_id, row);
-    }
+    const { authority, authorityByRun } = assertCaseAuthority(report, result);
     assert.equal(result.providerClocks?.length, result.runs, "Every actual provider needs its wrapper launcher and PID");
     assert.deepEqual(result.providerClocks.map((clock: any) => clock.runId).sort(), [...result.runIds].sort());
     assert.equal(new Set(result.providerClocks.map((clock: any) => clock.providerPid)).size, result.runs);
@@ -303,74 +391,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
       }
     }
     assert.equal(result.settledAtMs, result.epochMs + result.drainThroughTerminalMs, "Terminal timing boundary changed");
-    if (result.stop) {
-      assert.equal(result.stopAcknowledgedAtMs, result.stopRequestedAtMs + result.stopThroughAcknowledgementMs, "Stop acknowledgement timing boundary changed");
-      const row = authority.rows[0], journal = authority.localJournal, before = result.localProcesses;
-      assert.equal(journal?.schema, "paperclip.runner.durable.control-plane-state.v1", "Missing owned local journal authority");
-      assert.ok(sha256(journal.sha256) && journal.bytes > 0 && Number.isSafeInteger(journal.checkedAtMs)
-        && journal.checkedAtMs < result.epochMs, "Verify actual local file journal before the measured epoch");
-      assert.notEqual(journal.checkpointEventPolicy, "control-v1", "Preserve the original local raw transport recovery policy");
-      for (const [field, expected] of [["runId", row.run_id], ["runnerInstanceId", row.runner_instance_id],
-        ["normalizedSessionId", row.native_session_id], ["environmentLeaseId", row.admitted_execution_workspace_id]]) assert.equal(journal.identity?.[field], expected, "Local journal identity mismatch");
-      assert.ok(before && before.hostname === row.process_identity.hostname && before.runnerPid === row.process_pid
-        && before.processGroupId === row.process_group_id && before.providerPid === result.providerClocks[0].providerPid,
-      "Local observed process ownership mismatch");
-      assert.ok(before.runnerAlive && before.groupAlive && before.providerAlive && Number.isSafeInteger(before.checkedAtMs)
-        && before.checkedAtMs < result.epochMs, "Independently observe all owned local processes before emission");
-      const stopped = result.localStopProof, database = stopped?.database, after = database?.rows?.[0];
-      assert.ok(stopped && Number.isSafeInteger(stopped.checkedAtMs) && stopped.checkedAtMs >= result.stopAcknowledgedAtMs
-        && stopped.checkedAtMs >= result.settledAtMs, "Verify local physical Stop after timing boundaries");
-      assert.equal(database?.kind, "host-file-journal"); assert.equal(database?.observedReadOnly, "on");
-      assert.equal(database?.observedIsolation, "repeatable read"); assert.equal(database?.rows?.length, 1);
-      assert.equal(database?.checkedBeforeMeasuredEpoch, false);
-      assert.ok(Number.isSafeInteger(database.checkedAtMs) && database.checkedAtMs >= result.stopAcknowledgedAtMs
-        && Number.isSafeInteger(database.connectionClosedAtMs) && database.connectionClosedAtMs >= database.checkedAtMs
-        && database.connectionClosedAtMs <= stopped.checkedAtMs, "Local stopped database proof predates acknowledgement");
-      for (const field of ["run_id", "company_id", "environment_id", "lease_id", "agent_id", "provider", "provider_lease_id",
-        "admitted_execution_workspace_id", "process_identity_seq", "process_identity_source_event_id"]) assert.equal(after?.[field], row[field], "Local stopped database identity mismatch");
-      assert.equal(after.status, "cancelled"); assert.equal(after.cancellation_dispatch_state, "acknowledged");
-      if (!after.process_pid && !after.process_group_id) {
-        assert.ok(BigInt(String(after.process_stopped_seq)) > BigInt(String(row.process_identity_seq)), "Cleared local process identity needs its server stop receipt");
-        assert.equal(after.process_stopped_source_event_id, null);
-        assert.equal(after.process_stopped?.processPid, before.runnerPid);
-        assert.equal(after.process_stopped?.processGroupId, before.processGroupId);
-        assert.equal(after.process_stopped?.processStartedAt, row.process_identity.processStartedAt);
-      } else {
-        assert.equal(after.process_pid, before.runnerPid); assert.equal(after.process_group_id, before.processGroupId);
-      }
-      for (const field of ["runnerPid", "processGroupId", "providerPid", "hostname"]) assert.equal(stopped.processes?.[field], before[field]);
-      assert.equal(stopped.processes.runnerAbsent, true); assert.equal(stopped.processes.groupAbsent, true);
-      assert.equal(stopped.processes.providerAbsent, true, "Local provider remains alive after Stop");
-      const lease = stopped.lease;
-      assert.equal(lease?.id, row.lease_id); assert.equal(lease?.companyId, report.companyId);
-      assert.equal(lease?.environmentId, local.environmentId); assert.equal(lease?.heartbeatRunId, row.run_id);
-      assert.equal(lease?.provider, "local"); assert.equal(lease?.providerLeaseId, null);
-      assert.ok(["released", "expired", "failed"].includes(lease.status) && lease.releasedAt
-        && lease.cleanupStatus !== "failed", "Local Stop lease cleanup remains unsettled");
-      assert.equal(result.remoteLeases, undefined, "Local Stop cannot claim fake remote cleanup");
-    } else {
-      assert.equal(result.localStopProof, undefined, "Streaming cannot claim a local Stop proof");
-      assert.equal(result.remoteLeases?.length, result.runs, "Every remote run needs post-timing lease cleanup proof");
-      assert.deepEqual(result.remoteLeases.map((lease: any) => lease.runId).sort(), [...result.runIds].sort(), "Remote cleanup run set mismatch");
-      assert.ok(Number.isSafeInteger(result.remoteLeasesCheckedAtMs) && result.remoteLeasesCheckedAtMs >= result.settledAtMs,
-        "Verify remote leases after recorded timing boundaries");
-      for (const lease of result.remoteLeases) {
-        const row = authorityByRun.get(lease.runId);
-        assert.equal(lease.id, row.lease_id); assert.equal(lease.companyId, report.companyId);
-        assert.equal(lease.environmentId, remote.environmentId); assert.equal(lease.provider, row.provider);
-        assert.equal(lease.providerLeaseId, row.provider_lease_id);
-        assert.ok(["released", "expired", "failed"].includes(lease.status) && lease.releasedAt
-          && lease.cleanupStatus === "success", "Remote lease cleanup remains unsettled");
-        if (lease.terminationReceipt) {
-          const receipt = lease.terminationReceipt;
-          assert.equal(receipt.schema, "paperclip.remote-termination.v1");
-          assert.equal(receipt.companyId, report.companyId); assert.equal(receipt.runId, lease.runId);
-          assert.equal(receipt.leaseId, lease.id); assert.equal(receipt.provider, lease.provider);
-          assert.equal(receipt.providerLeaseId, lease.providerLeaseId);
-          assert.ok(["stopped", "destroyed"].includes(receipt.state), "Invalid recorded remote termination receipt");
-        }
-      }
-    }
+    assertCaseSettlement(report, result, { authority, authorityByRun });
     for (const proof of result.durable) {
       assert.equal(proof.ordered, true); assert.equal(proof.uniqueSourceIdentities, proof.individualDeltas);
       assert.equal(proof.matchedSourceClocks, proof.individualDeltas, "Every durable measured delta needs an original provider clock");
@@ -380,21 +401,25 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     for (const field of ["runs", "events", "intervalMs", "prelude", "stop"]) assert.equal(result[field], reference[field], `Workload changed: ${name}.${field}`);
   }
 }
-let originalH4cConfirmation: Record<string, any> | undefined;
+let originalH4dConfirmation: Record<string, any> | undefined;
 if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
-  originalH4cConfirmation = { required: true, passed: false, reason: "Later unchanged original H4c full functional proof is pending" };
-  if (arg("original-h4c-proof")) {
+  originalH4dConfirmation = { required: true, passed: false, reason: "Later H4d default-mode full functional proof on the same source and geometry is pending" };
+  if (arg("original-h4d-proof")) {
     try {
-      assert.ok(arg("original-h4c-inventory"), "Original H4c proof requires its full artifact inventory sidecar");
-      const { evidence: proof, owner } = await owningResult(path.resolve(arg("original-h4c-proof")!));
+      assert.ok(arg("original-h4d-inventory"), "H4d original-deadline proof requires its full artifact inventory sidecar");
+      const { evidence: proof, owner } = await owningResult(path.resolve(arg("original-h4d-proof")!));
       assert.equal(owner.status, "passed"); assert.equal(owner.retry, 0); assert.deepEqual(owner.errors, []);
       assert.equal(owner.timeoutMs, ORIGINAL_BUDGETS.fullInvocationMs);
       assert.ok(owner.durationMs > 0 && owner.durationMs < ORIGINAL_BUDGETS.fullInvocationMs);
-      assert.equal(proof.protocolVersion, "v4-remote-streaming-original-local-stop-clock-stream");
-      assert.equal(proof.observationMode, undefined, "Confirmation must use unchanged original H4c defaults");
-      assert.equal(proof.harnessProvenance?.sourceRevision, "7d7e7a88d562a95a1d407b76474763b666c181f5");
+      assert.equal(proof.protocolVersion, H4D_PROTOCOL, "Old H4c geometry cannot confirm H5b");
+      assertParticipantSetup(proof);
+      assert.deepEqual(proof.agentTopology, first.candidate.agentTopology);
+      assert.equal(proof.observationMode, undefined, "Confirmation must use H4d default deadlines");
+      assert.equal(proof.harnessProvenance?.sourceRevision, first.candidate.harnessProvenance.sourceRevision, "H4d confirmation must use the same frozen harness source");
+      assert.deepEqual(proof.harnessProvenance.sourceHashes, first.candidate.harnessProvenance.sourceHashes);
+      assert.equal(proof.harnessProvenance.driverLockSha256, first.candidate.harnessProvenance.driverLockSha256);
       assert.equal(proof.harnessProvenance.sourceStatus, "");
-      assert.equal(proof.measurementSha256, "5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b");
+      assert.equal(proof.measurementSha256, first.candidate.measurementSha256, "H4d confirmation must bind the same measured harness bytes");
       assert.deepEqual(proof.resourceBudgets, ORIGINAL_BUDGETS);
       assert.equal(proof.complete, true); assert.equal(proof.qualificationOnly, false); assert.equal(proof.diagnosticOnly, false);
       assert.equal(proof.performanceAcceptanceEligible, true); assert.equal(proof.serverArtifact, "compiled");
@@ -407,6 +432,7 @@ if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
       assert.deepEqual(proof.cases.map((item: any) => item.name), names, "Original confirmation must include all six workloads");
       for (const fixed of workloads) {
         const item = proof.cases.find((item: any) => item.name === fixed.name);
+        assertCaseSettlement(proof, item);
         for (const field of ["runs", "events", "intervalMs", "prelude", "stop"] as const) assert.equal(item[field], fixed[field]);
         assert.equal(item.persistedAfterReload, true); assert.equal(item.durable.length, fixed.runs);
         assert.equal(item.matchedVisibleClocks, item.visible.length);
@@ -421,12 +447,12 @@ if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
       const latestCandidateEnd = Math.max(...pairs.map(pair => Date.parse(pair.candidate.owningPlaywright.startedAt) + pair.candidate.owningPlaywright.durationMs));
       assert.ok(Date.parse(owner.startedAt) > latestCandidateEnd, "Original confirmation must follow all candidate arms");
       assert.ok(pairs.every(pair => proof.companyId !== pair.baseline.companyId && proof.companyId !== pair.candidate.companyId), "Original confirmation needs a fresh disposable company/database");
-      const inventory = await validateArmInventory(path.resolve(arg("original-h4c-inventory")!), { evidence: proof, owningPlaywright: owner });
+      const inventory = await validateArmInventory(path.resolve(arg("original-h4d-inventory")!), { evidence: proof, owningPlaywright: owner });
       for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"] as const)
         assert.equal(inventory[field], first.candidate.armInventory[field], "Original confirmation used a different full qualified artifact inventory");
-      originalH4cConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision };
+      originalH4dConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision };
     } catch (error) {
-      originalH4cConfirmation.reason = error instanceof Error ? error.message : String(error);
+      originalH4dConfirmation.reason = error instanceof Error ? error.message : String(error);
     }
   }
 }
@@ -453,7 +479,8 @@ const measurements = names.flatMap(name => {
   });
 });
 const result: Record<string, any> = {
-  scope: "Compiled-app remote streaming and original local Stop performance; additional real cloud Stop qualification is required separately",
+  scope: "Compiled-app streaming with100 independent normal agents and the original local Stop workload; real cloud Stop is separately required",
+  agentTopology: first.baseline.agentTopology,
   transportPolicy: first.baseline.transportPolicy, additionalRealCloudStopQualificationRequired: true,
   admissionProtocol: first.baseline.admissionProtocol, setupActivationConcurrency: first.baseline.setupActivationConcurrency,
   protocolVersion: first.baseline.protocolVersion, transport: first.baseline.transport,
@@ -465,9 +492,9 @@ const result: Record<string, any> = {
   manifestSha256: createHash("sha256").update(await readFile(manifestPath)).digest("hex"), measurements,
   primaryLoadedWorkload: "burst512", complete: true,
   ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, candidatePolicy, h5Assessments,
-    artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4cConfirmation,
-    originalProtocolAcceptance: "Baseline SLA misses are retained; H5 complete observation is not H4c PASS",
-    finalUnchangedH4cFunctionalPassRequired: candidatePolicy === "final-b2" } : {}),
+    artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4dConfirmation,
+    originalProtocolAcceptance: "Baseline SLA misses are retained; H5b complete observation is not an original-deadline PASS",
+    finalH4dFunctionalPassRequired: candidatePolicy === "final-b2" } : {}),
 };
 if (phase === "compare") {
   assert.ok(arg("noise-report"), "Comparison requires its frozen A/A --noise-report");
@@ -504,12 +531,12 @@ if (phase === "compare") {
   });
   result.performancePassed = result.gates.every((entry: any) => entry.passed)
     && (!h5 || h5Assessments.every(entry => entry.candidateSlaPolicyPassed));
-  result.acceptancePassed = result.performancePassed && (!originalH4cConfirmation || originalH4cConfirmation.passed);
+  result.acceptancePassed = result.performancePassed && (!originalH4dConfirmation || originalH4dConfirmation.passed);
 }
 if (arg("output")) await writeFile(arg("output")!, JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));
 if (process.argv.includes("--require-performance")) {
-  assert.equal(h5, true, "H5 performance-only gating is explicit; original H4c remains unchanged");
+  assert.equal(h5, true, "H5b performance-only gating is explicit; default H4d keeps original deadlines");
   assert.equal(phase, "compare");
   assert.equal(result.performancePassed, true, "H5 performance/SLA gates failed; retain results and diagnose");
 }

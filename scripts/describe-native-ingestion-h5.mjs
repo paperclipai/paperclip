@@ -4,4 +4,4 @@ console.log(JSON.stringify({ dryRun: true, executionAuthorized: false, workloadS
   registration: H5_REGISTRATION, requiredBeforeRelease: ['Root-reviewed exact driver/comparator hashes',
     'New functional observation qualification', 'Fresh B0 and B1 A/A before further product implementation',
     'Root-reviewed frozen A/A report hashes before candidate stages', 'Final B2 every-arm original SLA pass',
-    'Later unchanged original H4c full functional pass on the final SUT'] }, null, 2));
+    'Later H4d default-mode full functional pass on the same source, geometry and final SUT'] }, null, 2));

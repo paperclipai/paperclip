@@ -1,30 +1,87 @@
-# H5 complete observation registration (prospective; no execution release)
+# H5b independent-agent observation registration (prospective; no execution release)
 
 H4c remains frozen at `7d7e7a88d562a95a1d407b76474763b666c181f5`
 (`5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b`).
 Its observed 120-second streaming failures remain failures. Aborted or profiled
-attempts cannot be reused as complete timing arms. H5 repairs observation of the
-final outcome; it does not optimize the product or turn those failures into passes.
+attempts cannot be reused as complete timing arms. H5b uses one normal agent per concurrent remote participant. It repairs the
+experiment topology while preserving observation of original deadline outcomes.
+It does not optimize the product or turn earlier failures into passes.
 
-The fresh application baselines remain B0 `a36567f9fbf805ad72207d54f539516e3121741e`
-and B1 `d8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310`. Current B2
-`914129afb141d81c0d6d8c5f0ea11c20bd69a3da` has an observed original120s failure;
-it is not already qualified. A later candidate uses its exact new immutable
-revision, complete build receipt and inventory; no old binary is presumed equal.
+The aligned fresh application baselines are B0 `bac53ec3bfeaf6546e7aaeaee516487b30534654`
+and B1 `07061a601cdc20603c8c7a46f9ddbad7ac5f5939`. Raw B2
+`ca7cba171cd5198ed569d75012edc858041cbc44` is the unoptimized batching base,
+not a qualified future performance candidate. A later candidate needs its actual
+new immutable revision, normal build receipt and inventory; no candidate reference
+or matching binary is presumed before those artifacts exist. The historical
+a365/d8cd/914 application failures remain evidence of their recorded revisions.
 
 Select H5 explicitly with
-`PAPERCLIP_INGESTION_OBSERVATION_MODE=h5-observe-original-sla`.
-The default code path retains the H4c 120/180/900-second behavior. H5 emits a new
-protocol version, hashes its added helper with the driver sources, and records a
-separate registration/workload SHA. The original comparator mode rejects H5.
+`PAPERCLIP_INGESTION_OBSERVATION_MODE=h5b-observe-original-sla-independent-agents`.
+The new default H4d mode uses the same independent-agent geometry with the original
+120/180/900-second deadlines. Observation mode uses the explicit H5b protocol.
+Both modes hash the same nine source files, including the shared topology helper.
+Their source revision and measurement bytes must match for later confirmation.
+Old H4c/H5a protocols, geometry, arms and noise are ineligible for H5b.
 
 Run `node scripts/describe-native-ingestion-h5.mjs` to inspect the registration.
 This is a dry run only: it starts no app, provider, database or browser and
 accepts no execution arguments. It grants no runtime release.
 
+## Independent participant geometry and setup
+
+Create a pool of100 normal remote agents for the full fixture (three for smoke).
+Each concurrent remote participant receives a distinct pool agent by index; the
+pool is reused only across sequential cases. The100-run case is100 agents × one
+run each. Agent POST, normal environment selection, managed files, permission
+checks and maxConcurrentRuns50 configuration stay enabled. The separate local
+Stop control agent and its normal local environment stay unchanged.
+
+Use exactly eight setup workers, each awaiting normal agent creation and the
+existing60s lifecycle-ready poll. Keep index order despite completion order.
+Attempt and settle the whole pool; any setup error fails the invocation before
+case activation. Record every attempt, start/settlement time and status. No
+partial pool, silent retry or reduced load can qualify. The existing per-case
+READ ONLY authority snapshot must prove distinct agent_id values for every
+remote participant, all drawn from the ready pool. No event polling is added.
+
+Agent creation occurs before the existing300s activation/readiness window starts.
+That start point remains after the pool and background issue creation. All agent
+setup remains inside the owning public900s default/1200s observation invocation;
+no setup work is moved outside those timers or into measured epochs. The existing
+waves of two provider activations, readiness polls and common source epoch stay
+unchanged. All arms use the same geometry and eight-worker setup. Its actual
+setup cost and100-agent full qualification are unverified until measured.
+
+This changes managed-directory contention and agent-list cardinality. A result
+will describe independent-agent ingestion, not50 concurrent runs sharing one
+agent. Do not generalize it to the retained old2×50 failure below.
+
+## Retained H5a negative result
+
+H5a7388 on application B0a365 used two normal agents with50 concurrent runs each.
+All100 participants were admitted and clock-ready. The original120s poll failed
+with54/512 visible markers; all512 became visible296.555s after that wait began.
+All100 runs reached a terminal status55.234s later, with86 succeeded and14 failed.
+Independent read-only PostgreSQL checks found all51,200 expected lossless deltas
+and one accepted result for each run. This did not pass full qualification or A/A.
+
+Each of the14 failed runs recorded native_session_interrupted from a30s
+agent-directory merge-lock timeout; each finalization retained retryable_failure
+with native_workspace_sync_out_failed and an ACTIVE unreleased lease. Seven
+failures mapped to each agent's shared file-sync root. Task workspace and lease
+identities were distinct; no provider failure was recorded. The new geometry
+removes that shared-agent contention from this experiment. It does not fix or
+qualify the product's old2×50 concurrency limit or justify disabling file sync.
+
+A separate background presentation40P01 involved a run that succeeded. The
+retained log shows its coordinator→issue→run wait, but lacks PostgreSQL's full
+opposing lock cycle. Its cause and relationship to other contention are unproved.
+It is not evidence that the14 run failures came from a database deadlock. All
+historical failures remain separate; no failed H4c/H5a arm is reused as H5b noise.
+
 ## Fixed work and observation boundaries
 
-Keep the five streaming cases and original local Stop case exactly as H4c:
+Keep the five streaming event workloads and original local Stop case exactly as H4c:
 paced 1×128 at25ms; burst 1×16; burst10×128; burst100×512; existing-history
 1000 foreground prelude deltas plus measured10×128; local Stop1×512 at100ms,
 clicked after at least three observed markers. Keep normal API/UI activation,
@@ -74,14 +131,14 @@ status, errors and configured timeout. Its observed total duration is an
 independent conservative assessment of the original900s budget; hooks/teardown
 can be treated differently by the original timeout. It is not an exact original
 timer-expiration observation. A final candidate must have total duration<900s
-in every arm and later pass one unchanged original H4c full invocation on the
+in every arm and later pass one unchanged H4d default-mode full invocation on the
 same final SUT revision and full qualified artifact inventory.
 
 ## Complete evidence and eligibility
 
 H5 `observationComplete` means all six cases reached finite correct outcomes,
-with every expected participant and foreground marker. It does not mean H4c
-passed. Every remote run must succeed in native mode, retain every normalized
+with every expected participant and foreground marker. It does not establish a
+pass of the original deadlines. Every remote run must succeed in native mode, retain every normalized
 delta's complete payload/identity/order, have exactly one independently read
 `run.result.accepted`, and pass the existing reload/result/clock/lease checks.
 The100-run case must independently verify all51200 deltas. Stop keeps its
@@ -110,7 +167,7 @@ not itself attest that the live filesystem stayed unchanged.
 | --- | --- | --- |
 | Fresh B0/B1 A/A arms | Known burst512 streaming120 miss; explicit conservative observed-duration900 miss | Complete finite correct observation; root-reviewed noise suitability |
 | B0→B1 cursor-only candidate | Only an exact registered known miss also present in the paired baseline: burst512 streaming120 or conservative observed-duration900 | No additional deadline failures; latency/control nonregression plus separate incremental SQL evidence; never claim SLA fixed |
-| Final B2 candidate in either comparison | None | Every arm meets original streaming/control checks and conservative900 gate; loaded improvements and later unchanged H4c proof |
+| Final B2 candidate in either comparison | None | Every arm meets original streaming/control checks and conservative900 gate; loaded improvements and later H4d proof |
 
 Only burst512's streaming miss is registered as a known workload SLA failure.
 New failures in other workloads require diagnosis. The existing Stop poll
@@ -133,18 +190,23 @@ improve; other fixed latency/control metrics must not regress outside noise.
 Do not infer p99 from sparse observations. There is no new fixed percentage A/A
 cutoff: root must reject unsuitable noisy/nonstationary calibration explicitly.
 
-Use `--observation-mode=h5-observe-original-sla` for the comparator. Candidate
+Use `--observation-mode=h5b-observe-original-sla-independent-agents` for the comparator. Candidate
 comparisons also require `--candidate-policy=cursor-nonregression --expect=nonregression`
 or `--candidate-policy=final-b2`. Final comparisons expose `performancePassed`
-separately; `acceptancePassed` remains false until `--original-h4c-proof` and
-`--original-h4c-inventory` establish the later fresh original functional pass.
-That proof is full, unprofiled, retry0, original900s, on the exact final SUT
-revision/qualified inventory, with a new disposable company and a start time
-after all candidate arms. Prior failed H4c attempts remain in the record.
+separately; `acceptancePassed` remains false until `--original-h4d-proof` and
+`--original-h4d-inventory` establish the later fresh H4d default-deadline functional pass.
+That H4d proof is full, unprofiled, retry0, default mode with original120/180/900s
+bounds, on the same frozen H5b harness source, nine-file measurement bytes and
+independent-agent geometry, and the exact final SUT revision/qualified inventory.
+It uses a new disposable company and starts after all candidate arms. Old7d/H4c
+proofs and H5a observations cannot confirm this geometry. Prior failed H4c attempts remain in the record.
+Confirmation reuses the measured arms' authority, physical Stop, local lease and
+remote lease binding/settlement checks. The original30s polls keep their existing
+ordering; no absolute click-to-acknowledgement deadline is added.
 Use the explicit H5 `--require-performance` gate for the two final comparison
 stages while that later proof is pending; this requires every performance and
 candidate original-SLA gate, but grants no final acceptance. After the one later
-original H4c qualification, recompute both reports against their unchanged paired
+H4d default-mode qualification, recompute both reports against their unchanged paired
 manifests with the proof and `--require-acceptance`. This re-evaluates retained
 evidence; it neither reuses an arm in a different comparison nor reruns failures.
 
