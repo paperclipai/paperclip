@@ -5,7 +5,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, agentWakeupRequests, companies, createDb,
-  environmentLeases, heartbeatRuns, issueRecoveryActions, issues,
+  environmentLeases, heartbeatRuns, issueRecoveryActions, issues, chatConversations, chatEndpoints, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
@@ -93,6 +93,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { app, wake };
   }
 
+  it.each(["active", "unavailable", "endpoint_removed"])("keeps original file recovery instructions for a %s chat", async state => {
+    const f = await seed();
+    const endpointId = randomUUID();
+    const applicationId = randomUUID(), connectionId = randomUUID();
+    await db.insert(toolApplications).values({ id: applicationId, companyId: f.companyId, name: "Chat recovery", type: "chat" });
+    await db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId,
+      name: "Chat recovery", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel", status: "active", enabled: true });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId,
+      provider: "slack", publicId: randomUUID(), assignedAgentId: f.currentAgentId, status: "active" });
+    await db.insert(chatConversations).values({ companyId: f.companyId, endpointId, issueId: f.issueId,
+      externalConversationId: randomUUID(), externalLabel: "Recovery conversation", state });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      recoveryActionId: f.actionId, workspaceRepairRequired: true, canRecordWorkspaceRepair: true,
+      nextAction: "Repair the retained workspace before continuing.", canRetry: false, canContinue: false,
+    });
+  });
+
   async function assertSourceUnchanged(f: Awaited<ReturnType<typeof seed>>) {
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.issueBefore);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(f.leaseBefore);
@@ -100,8 +117,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, [f.sourceRunId, f.currentRunId]))).toHaveLength(2);
   }
 
-  it.each(["reassigned", "conversation_reset", "unassigned"])("records board repair after %s without restarting or changing the current task", async scenario => {
+  it.each(["reassigned", "conversation_reset", "unassigned", "successful_source"])("records board repair after %s without restarting or changing the current task", async scenario => {
     const f = await seed({ conversationReset: scenario === "conversation_reset", noCurrentOwner: scenario === "unassigned" });
+    if (scenario === "successful_source") {
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
+    const [sourceBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     const { app, wake } = appFor();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
     await request(app).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(f.body).expect(200);
@@ -120,6 +141,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).toEqual(auditBefore);
     await assertSourceUnchanged(f);
     expect(wake).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0]).toEqual(sourceBefore);
   });
 
   it.each(["blocked", "done", "cancelled", "backlog"])("records repair without changing the current %s task", async status => {

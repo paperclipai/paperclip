@@ -21,13 +21,23 @@ async function swipeToLastOption(page: Page, picker: Locator, list = picker.getB
   }).toBeLessThanOrEqual(page.viewportSize()!.height);
   expect((await picker.boundingBox())!.y).toBeGreaterThanOrEqual(0);
   const session = await page.context().newCDPSession(page);
+  const targetHandle = await last.elementHandle();
+  expect(targetHandle).not.toBeNull();
   try {
     expect(await list.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      const bounds = (await list.boundingBox())!;
-      const target = (await last.boundingBox())!;
+      // Momentum can finish between protocol round trips. Observe geometry and
+      // scrollTop together so a stale target cannot trigger a swipe at the end.
+      const { bounds, target, before } = await list.evaluate((element, option) => {
+        const container = element.getBoundingClientRect();
+        const item = option!.getBoundingClientRect();
+        return {
+          bounds: { x: container.x, y: container.y, width: container.width, height: container.height },
+          target: { y: item.y, height: item.height },
+          before: element.scrollTop,
+        };
+      }, targetHandle);
       if (target.y >= bounds.y && target.y + target.height <= bounds.y + bounds.height) break;
-      const before = await list.evaluate((element) => element.scrollTop);
       const x = bounds.x + bounds.width / 2;
       const y = bounds.y + bounds.height - 20;
       const distance = Math.min(180, bounds.height - 40);
@@ -49,12 +59,32 @@ async function swipeToLastOption(page: Page, picker: Locator, list = picker.getB
     expect(target.y).toBeGreaterThanOrEqual(bounds.y);
     expect(target.y + target.height).toBeLessThanOrEqual(bounds.y + bounds.height + 1);
   } finally {
+    await targetHandle?.dispose();
     await session.detach();
   }
   return last;
 }
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+test("touch scroll observation stays valid when momentum finishes between browser reads", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Native touch drags use Chromium's input protocol.");
+  await page.setContent(`<div role="dialog" style="position:absolute;top:20px;left:20px;width:300px">
+    <div role="listbox" style="height:150px;overflow-y:auto;touch-action:pan-y">
+      ${Array.from({ length: 12 }, (_, index) => `<div role="option" style="height:40px">Option ${index}</div>`).join("")}
+    </div></div>`);
+  const picker = page.getByRole("dialog"), list = picker.getByRole("listbox"), last = list.getByRole("option").last();
+  const boundingBox = last.boundingBox.bind(last);
+  // Reproduce the observed compositor interleaving: a returned target rectangle
+  // is stale by the next scrollTop read because inertia reached the list end.
+  last.boundingBox = async (options) => {
+    const beforeMomentum = await boundingBox(options);
+    await list.evaluate((element) => { element.scrollTop = element.scrollHeight - element.clientHeight; });
+    return beforeMomentum;
+  };
+  await swipeToLastOption(page, picker, list, last);
+  await expect(picker).toBeVisible();
+});
 
 test("new-task assignee, model, and project sheets scroll by touch and retain the selected values", async ({ page, request, browserName }, testInfo) => {
   test.skip(browserName !== "chromium", "Native touch drags use Chromium's input protocol.");
@@ -65,7 +95,7 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
     await json(await request.post(`/api/companies/${company.id}/agents`, {
       data: {
         name: `Touch Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-        adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+        adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
         runtimeConfig: { heartbeat: { enabled: false } },
       },
     }));
@@ -166,7 +196,7 @@ test.describe("desktop picker scrolling", () => {
       await json(await request.post(`/api/companies/${company.id}/agents`, {
         data: {
           name: `Wheel Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-          adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+          adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
           runtimeConfig: { heartbeat: { enabled: false } },
         },
       }));

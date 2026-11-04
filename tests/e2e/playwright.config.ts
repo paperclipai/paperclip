@@ -95,5 +95,10 @@ export default defineConfig({
     },
   },
   outputDir: "./test-results",
-  reporter: [["list"], ["html", { open: "never", outputFolder: "./playwright-report" }]],
+  reporter: [
+    ["list"], ["html", { open: "never", outputFolder: "./playwright-report" }],
+    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci-profile/playwright-reporter.mjs")] as [string]]
+      : []),
+  ],
 });

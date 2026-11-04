@@ -1,3 +1,10 @@
+import type { TaskWorkspaceSelection } from "./task-workspace.js";
+
+export interface ChatExecutionDefaults {
+  projectId?: string | null;
+  workspace?: TaskWorkspaceSelection | null;
+}
+
 /** Provider-neutral contracts for Paperclip's native external chat subsystem. */
 export const CHAT_PROVIDERS = [
   "slack",
@@ -190,7 +197,8 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
+  slackManagerError?: string;
   slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
   /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
   slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
@@ -221,6 +229,8 @@ export interface ChatEndpointSetupState {
   testSkipped?: boolean;
   /** Set only after the provider has delivered a signed callback challenge. */
   webhookVerifiedAt?: string | null;
+  /** Nonsecret generation used to resume a requested signing-secret rotation. */
+  credentialRotationId?: string | null;
   authorizationUrl?: string | null;
   providerUrl?: string | null;
   command?: string | null;
@@ -237,12 +247,14 @@ export interface ChatEndpointSetupState {
 
 export interface ChatEndpointSetupSecret {
   webhookSecret: string;
+  credentialRotationId?: string;
 }
 
 export type ChannelPublicationMode = "automatic" | "explicit";
 export type ExternalMessageExecutionPolicy = "restricted" | "agent";
 
 export interface ChatEndpoint {
+  executionDefaults?: ChatExecutionDefaults | null;
   /** Additional presentation instructions captured only for newly created tasks. */
   communicationInstructions?: string;
   id: string;
@@ -282,6 +294,7 @@ export interface ChatEndpoint {
 }
 
 export interface ChatEndpointResource {
+  executionDefaults?: ChatExecutionDefaults | null;
   id: string;
   companyId: string;
   endpointId: string;
@@ -331,6 +344,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: ChatIdentityLinkStatus;
   expiresAt?: string | null;
   confirmedAt?: string | null;
@@ -398,6 +412,14 @@ export interface SafeExternalChatCard {
   title: string;
   body?: string;
   actions?: SafeExternalChatCardAction[];
+  /** A compact choice whose opaque option tokens use the normal action ledger. */
+  selection?: {
+    actionId: string;
+    label: string;
+    multiple?: boolean;
+    submitLabel?: string;
+    options: Array<{ actionId: string; label: string; description?: string; selected?: boolean }>;
+  };
 }
 
 export interface SafeChatPublicationPayload {
@@ -508,10 +530,12 @@ export interface CreateChatEndpointInput {
   applicationId?: string;
   name?: string;
   slackApp?: SlackAppConfiguration;
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
 }
 
 export interface UpdateChatEndpointInput {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  executionDefaults?: ChatExecutionDefaults | null;
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
   slackApp?: SlackAppConfiguration;
   communicationInstructions?: string;
   allowDirectMessages?: boolean;

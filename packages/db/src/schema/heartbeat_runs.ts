@@ -1,3 +1,4 @@
+import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -18,6 +19,14 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 import { issues } from "./issues.js";
+
+// Literal allowlist shared by bounded projections and the matching partial index.
+// Constants are quoted here so PostgreSQL can prove the index predicate even
+// when callers use prepared statements.
+export const workspaceRestoreFailureCodesSql = sql.join(
+  WORKSPACE_RESTORE_FAILURE_CODES.map(code => sql.raw(`'${code.replaceAll("'", "''")}'`)),
+  sql`, `,
+);
 
 export const heartbeatRuns = pgTable(
   "heartbeat_runs",
@@ -111,12 +120,30 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    nativeUnpresentedResponseIdx: index("heartbeat_runs_native_unpresented_response_idx")
+      .on(table.companyId, table.nativeIssueId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} in ('succeeded', 'failed', 'timed_out') AND ${table.finishedAt} is not null AND jsonb_typeof(${table.resultJson} #> '{presentationDecision,commentId}') is distinct from 'string'`),
+    cancelledWorkspacePreservationIdx: index("heartbeat_runs_cancelled_workspace_preservation_idx").on(table.id, table.companyId)
+      .where(sql`${table.runtimeMode} = 'native' AND ${table.status} = 'cancelled'
+        AND ${table.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+        AND ${table.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+        AND (${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+          AND ${table.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`),
+    retainedRecoveryAdoptionIdx: index("heartbeat_runs_retained_recovery_adoption_idx")
+      .on(table.id).where(sql`${table.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+        and not (coalesce(${table.resultJson}, '{}'::jsonb) ? 'systemRecoveryAdoption')
+        and ${table.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`),
     scopeBindingCheck: check(
       "heartbeat_runs_scope_binding_check",
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
         OR ${table.scopeKind} = 'issue'`,
     ),
+    scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
+      .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
+    costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
+      .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
+      .where(sql`${table.costAccountingPending} = true and ${table.status} in ('succeeded','failed','timed_out','cancelled','interrupted')`),
     executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
       .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
     executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")
@@ -186,5 +213,17 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
+      .concurrently(),
+    // Match creation provenance precedence, including empty legacy IDs.
+    companyOriginIssueIdx: index("heartbeat_runs_company_origin_issue_idx")
+      .on(table.companyId, sql`coalesce(
+        ${table.nativeIssueId}::text,
+        nullif(${table.contextSnapshot}->>'issueId', ''),
+        nullif(${table.contextSnapshot}->>'taskId', ''),
+        nullif(${table.contextSnapshot}->>'taskKey', '')
+      )`)
+      .concurrently(),
   }),
 );

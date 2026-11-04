@@ -19,6 +19,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -102,6 +103,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "opencode_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -161,6 +163,8 @@ export async function testEnvironment(
         workspaceRemoteDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
+        // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+        workspaceRestoreRetryDelaysMs: [],
         assets: localRuntimeConfigHome
           ? [{
             key: "xdgConfig",
@@ -217,6 +221,7 @@ export async function testEnvironment(
       } catch (err) {
         checks.push({
           code: "opencode_command_unresolvable",
+          ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
           level: "error",
           message: err instanceof Error ? err.message : "Command is not executable",
           detail: command,

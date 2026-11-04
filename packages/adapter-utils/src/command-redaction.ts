@@ -11,16 +11,19 @@ export function isPublicExecutorToolSelector(value: string): boolean {
   return PUBLIC_EXECUTOR_TOOL_SELECTORS.has(value);
 }
 
-const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
+const SECRET_NAME_WORDS = String.raw`(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
+const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*${SECRET_NAME_WORDS}`;
+const SECRET_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
+const SECRET_OPTION_NAME_PATTERN = String.raw`(?:[A-Za-z0-9_]|-(?!-))*${SECRET_NAME_WORDS}`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
-  String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` +
+  String.raw`(\B-{1,2}${SECRET_OPTION_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` +
     "`" +
     String.raw`]+(\2)`,
   "gi",
 );
 const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
-  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(\\["'])([\s\S]*?)\2|(["'])([^"'` +
+  String.raw`(${SECRET_NAME_START}${SECRET_NAME_PATTERN}\s*=\s*)(?:(\\["'])([\s\S]*?)\2|(["'])([^"'` +
     "`" +
     String.raw`\r\n]*)\4|([^\s"'` +
     "`" +
@@ -32,11 +35,16 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =
-  /\b[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
+  /\b(?<![A-Za-z0-9_]-*)[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
 export function looksLikeCredentialJwt(value: string): boolean {
   const segments = value.split(".");
-  if (![3, 5].includes(segments.length) || segments.some((part) => !/^[A-Za-z0-9_-]{8,}$/.test(part))) return false;
+  if (![3, 5].includes(segments.length)) return false;
+  if (segments.some((part, index) => {
+    // Compact JWE direct encryption has no encrypted-key value.
+    if (segments.length === 5 && index === 1 && part === "") return false;
+    return !/^[A-Za-z0-9_-]+$/.test(part);
+  })) return false;
   if (segments[0].startsWith("eyJ")) return true;
   try {
     const header = JSON.parse(atob(segments[0].replace(/-/g, "+").replace(/_/g, "/")));

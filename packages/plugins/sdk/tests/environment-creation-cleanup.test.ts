@@ -92,6 +92,20 @@ describe("acquisition failure observations", () => {
     expect(readEnvironmentAcquisitionDiagnostic({ data: { schema, cleanup: ownership } })).toBeNull();
   });
 
+  it("carries a fixed-enum provider state and omits unknown or private states", async () => {
+    const withState = { ...diagnostic, phase: "create", providerState: "pulling_snapshot" } as const;
+    const response = await invoke("environmentAcquireLease", new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership, withState));
+    if (!("error" in response) || !response.error) throw new Error("Expected RPC error");
+    expect(readEnvironmentAcquisitionDiagnostic(new JsonRpcCallError(response.error))).toEqual(withState);
+    for (const providerState of ["private-state", "STARTED", 3, null]) {
+      const error = new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership,
+        { ...withState, providerState } as unknown as typeof withState);
+      // An unrecognized optional state never invalidates the other observations.
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ ...diagnostic, phase: "create" });
+      expect(JSON.stringify(environmentCreationCleanupErrorData(error, true))).not.toContain("private-");
+    }
+  });
+
   it.each(["environmentDestroyLease", "environmentProbe"])("omits acquisition diagnostics from %s", async method => {
     const response = await invoke(method, new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership, diagnostic));
     expect("error" in response && response.error).not.toHaveProperty("data.acquisitionDiagnostic");

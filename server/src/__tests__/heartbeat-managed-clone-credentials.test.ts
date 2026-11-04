@@ -3,8 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureManagedProjectWorkspace, prepareProjectRepositoryWorkspaces } from "../services/heartbeat.ts";
+import { materializeManagedProjectWorkspace } from "../services/managed-repository-checkout.js";
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
 import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
@@ -100,8 +102,8 @@ exit 128
 `, { mode: 0o755 });
     try {
       process.env.PATH = bin;
-      const failure = await ensureManagedProjectWorkspace({
-        companyId: "checkout-failure-fixture", projectId: "project", repoUrl: "https://example.test/repo.git", repoRef: "missing-branch",
+      const failure = await materializeManagedProjectWorkspace(path.join(bin, "checkout"), {
+        repoUrl: "https://example.test/repo.git", repoRef: "missing-branch",
       }).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain("Authentication failed");
@@ -139,6 +141,76 @@ exit 128
       expect((await execFile("git", ["status", "--porcelain"], { cwd: anchor.cwd })).stdout).toBe("");
     } finally {
       await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
+  it("clones a remote sibling with a missing configured cwd and rechecks destination access on reuse", async () => {
+    const source = await createLocalSourceRepo();
+    const task = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-remote-sibling-"));
+    try {
+      const remote = "https://example.test/remote.git";
+      const resolveGitAuth = vi.fn(async () => ({
+        configArgs: ["-c", `url.${pathToFileURL(source).href}.insteadOf=${remote}`],
+        env: {}, source: "company_secret" as const, secretName: "fixture",
+      }));
+      const prepareLocalSource = vi.fn(async (cwd: string) => {
+        await fs.realpath(cwd);
+        return async () => {};
+      });
+      let destinationReadable = true;
+      const beforePublish = vi.fn(async () => {
+        if (!destinationReadable) throw new Error("Retained private destination is not authorized");
+      });
+      const input = {
+        cwd: task, anchorRepoUrl: null, resolveGitAuth, prepareLocalSource, beforePublish,
+        workspaces: [{ id: "remote", cwd: path.join(task, "missing"), repoUrl: remote, repoRef: null }],
+      };
+      const [repo] = await prepareProjectRepositoryWorkspaces(input);
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("hello\n");
+      expect(prepareLocalSource).not.toHaveBeenCalled();
+      expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+      await fs.writeFile(path.join(repo!.cwd, "README.md"), "retained task edits");
+      beforePublish.mockClear();
+      expect(await prepareProjectRepositoryWorkspaces(input)).toEqual([repo]);
+      expect(beforePublish).toHaveBeenCalledTimes(1);
+      expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("retained task edits");
+      destinationReadable = false;
+      await expect(prepareProjectRepositoryWorkspaces(input)).rejects.toThrow("Retained private destination is not authorized");
+      expect(prepareLocalSource).not.toHaveBeenCalled();
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("retained task edits");
+    } finally {
+      await Promise.all([source, task].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
+  it.each(["file_url", "absolute_path"] as const)("authorizes the actual %s fallback when the configured cwd is missing", async (transport) => {
+    const source = await createLocalSourceRepo();
+    const task = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-sibling-"));
+    try {
+      let sourceReadable = false;
+      const recheck = vi.fn(async () => {});
+      const prepareLocalSource = vi.fn(async (cwd: string) => {
+        expect(cwd).toBe(source);
+        if (!sourceReadable) throw new Error("Private source is not authorized");
+        return recheck;
+      });
+      const input = {
+        cwd: task, anchorRepoUrl: null, prepareLocalSource,
+        workspaces: [{ id: "local", cwd: path.join(task, "missing"),
+          repoUrl: transport === "file_url" ? pathToFileURL(source).href : source, repoRef: null }],
+      };
+      await expect(prepareProjectRepositoryWorkspaces(input)).rejects.toThrow("Private source is not authorized");
+      expect(await fs.readdir(path.join(task, ".paperclip-repositories"))).toEqual([]);
+      sourceReadable = true;
+      await fs.writeFile(path.join(source, "README.md"), "uncommitted source edits");
+      const [repo] = await prepareProjectRepositoryWorkspaces(input);
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("hello\n");
+      expect(recheck).toHaveBeenCalled();
+      sourceReadable = false;
+      await expect(prepareProjectRepositoryWorkspaces(input)).rejects.toThrow("Private source is not authorized");
+    } finally {
+      await Promise.all([source, task].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
     }
   });
 
@@ -361,7 +433,7 @@ exit 128
       source: "company_secret",
       secretName: "GITHUB_TOKEN",
     });
-    const cloneEnv = {
+    const cloneEnv: NodeJS.ProcessEnv = {
       ...sanitizeRuntimeServiceBaseEnv({ ...process.env, [GIT_CREDENTIAL_TOKEN_ENV_KEY]: "stale" }),
       GIT_TERMINAL_PROMPT: "0",
       ...invocation.env,

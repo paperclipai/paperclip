@@ -1,11 +1,12 @@
-import { Link } from "react-router-dom";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
   SlackSearchStatus,
   SlackToolCapabilities,
 } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
 import { slackToolsApi } from "@/api/slackTools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -88,7 +89,7 @@ export function SlackSearchView({
       await action();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Unable to update Slack search",
+        describeError(e).body,
       );
     } finally {
       setPending(false);
@@ -200,31 +201,23 @@ export function SlackSearchView({
 export function SlackToolsSettings({
   companyId,
   endpointId,
-  connectionId,
 }: {
   companyId: string;
   endpointId: string;
-  connectionId?: string | null;
 }) {
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
     queryFn: () => slackToolsApi.capabilities(companyId, endpointId),
     staleTime: 60_000,
   });
+  const view = useQueryView(query);
   return (
     <div className="space-y-3">
       <SlackCapabilitiesView
         capabilities={query.data}
-        error={query.error?.message}
+        error={view.kind === "error" ? describeError(query.error).body : undefined}
       />
-      {connectionId && (
-        <Link
-          className="text-sm underline underline-offset-4"
-          to={`/apps/${connectionId}/permissions`}
-        >
-          Manage action permissions
-        </Link>
-      )}
+
     </div>
   );
 }
@@ -239,11 +232,15 @@ export function SlackSearchAccess({
     queryKey: ["slack-search", companyId, endpointId],
     queryFn: () => slackToolsApi.search(companyId, endpointId),
   });
-  if (query.error)
+  const view = useQueryView(query);
+  if (view.kind === "error")
     return (
-      <p role="alert" className="text-sm text-destructive">
-        {query.error.message}
-      </p>
+      <QueryErrorState
+        error={query.error}
+        action="load Slack search access"
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     );
   if (!query.data)
     return (

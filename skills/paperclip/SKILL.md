@@ -36,7 +36,10 @@ follow that directive for the conversation lifecycle. Research, clarify, and
 revise the conversation's `plan` document here. On an authorized handoff, create
 ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
 relationship back to the conversation. Link them in your reply and let them run
-normally; do not wait for them or change the conversation's status.
+normally; do not wait for them or change the conversation's status. Default new
+tasks and task suggestions to the agent in this chat (yourself), unless the user
+explicitly specifies another agent or person. "For me" alone is not a request to
+assign the task to the user. Do not infer a different owner from task suitability.
 
 Copy the relevant approved plan into each execution task **at creation**, using
 `create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.
@@ -131,6 +134,8 @@ If already checked out by you, returns normally. If owned by another agent: `409
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
+For attribution questions, read `GET /api/issues/{issueId}/activity`. Sandbox agents can use this issue-scoped route subject to the same company and issue-read authorization. Automatic recovery cleanup is system activity, not evidence that the person viewing a task participated in it.
+
 If the run prompt includes a Paperclip wake payload, inspect that section before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.
 
 Use comments incrementally:
@@ -153,6 +158,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 **Step 7 — Do the work.** Use your tools and capabilities. Execution contract:
 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
+- Ask for information only when it prevents the next useful action. Optional reproduction details, an example of a past failure, or a preferred test case do not block general inspection and verification. Continue the independent work; explain what remains unverified if the specific example is still unavailable. Keep real access restrictions and approval gates authoritative.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
@@ -544,6 +550,14 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
 
+## Task Files and Workspace Choices
+
+Use the task's provided working directory for task files. `AGENT_HOME` holds personal instructions and memory; provider home is runtime-managed. A task does not need a project or Git repository. Do not clone unrelated repositories or place task output in home to compensate for a missing project.
+
+Use `get_workspace` to inspect the current folder, pending selection, and capabilities. Use `list_workspaces` for authorized existing folders and `list_project_repositories` for repository choices. `select_workspace` and `prepare_repository` express intent; the harness validates and prepares it. Respect `next_normal_admission` responses: keep the current root, do not claim the requested checkout exists, and do not retry in a loop or interrupt the run. Project assignment alone does not relocate files. See `references/issue-workspaces.md` for the API equivalents.
+
+Prefer a matching configured, authorized source over guessing a repository URL. Inspect available runtime and testing capabilities before claiming that browser or command testing is unavailable. When an authorized repository is pending and unfinished work needs it, finish independent work, explain the remaining work, and yield. Native Runner can select the saved same-agent continuation from current task context; it does not need a timer or a user restart. A request only to stage a repository can finish normally without starting more work.
+
 ## Issue Workspace Runtime Controls
 
 When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself.
@@ -702,6 +716,7 @@ If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and r
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
+| Issue activity and attribution        | `GET /api/issues/:issueId/activity`                                                                                             |
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |

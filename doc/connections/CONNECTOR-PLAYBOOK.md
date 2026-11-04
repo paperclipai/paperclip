@@ -3,8 +3,16 @@
 Audience: agents and engineers researching, implementing, testing, reviewing,
 and shipping Paperclip app connections.
 
-Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
+Status: canonical end-to-end authoring guide for Apps v2 tool connections and
+chat channel connectors.
 
+Experimental voice connections use the same company-scoped channel endpoints,
+vault, task bindings, delivery ledger and publications, with `transport: voice`
+and an explicit runtime rather than Chat SDK. Do not expose voice transport as
+an MCP tool connection. Speko's browser implementation and its remaining phone
+qualification gate are documented in the [native voice report](../plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../plans/2026-09-11-speko-voice-e2e-runbook.md). The optional
+Company Phone Agent is a catalog template; selecting it must remain optional.
 For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
@@ -26,7 +34,12 @@ For chat and email setup, account linking, and ongoing configuration, also follo
 layout, credential instructions, provider handoffs, identity linking, optional
 message tests, and management pages, with examples for other providers.
 
-Use it when Paperclip acts on an external system through a governed connection: a stored credential, a capability catalog, access profiles and policy rules, and audit. Inbound integrations, such as an external client acting on Paperclip, use gateway or webhook guidance instead.
+Use the tool-connection workflow when Paperclip acts on an external system
+through a governed credential and capability catalog. For conversations with
+agents in Slack or another messaging provider, also follow
+[Chat channel connectors](#chat-channel-connectors), including inbound messages,
+questions, responses, and delivery. Other inbound integrations, such as an
+external API client acting on Paperclip, use gateway or webhook guidance.
 
 **A catalog entry is a convenience layer, not a prerequisite.** An operator can connect any
 standards-compliant remote HTTP MCP server from **Connect your own MCP server**
@@ -60,6 +73,72 @@ They authenticate provider execution and never enter MCP discovery or tool/chann
 execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
+## Provider app attribution
+
+When a provider supports application attribution, credit Paperclip for requests
+that Paperclip manages. Research the provider's current attribution contract
+alongside authentication. A harness may identify itself by default; setting an
+API key or model alone does not replace that identity.
+
+For OpenRouter, use the shared policy in
+`packages/shared/src/openrouter-attribution.ts`:
+
+```http
+HTTP-Referer: https://paperclip.ing
+X-OpenRouter-Title: Paperclip
+X-Title: Paperclip
+X-OpenRouter-Categories: cloud-agent,programming-app
+```
+
+The URL is the app identity. Keep it stable across companies, deployments,
+personal keys, and shared keys. Send only public product identity; never put a
+company name, user identifier, task, credential, or instance URL in these fields.
+Preserve authentication, routing headers, and explicit visibility preferences.
+Replace conflicting attribution names case-insensitively. Do not rely on header
+casing or send two different identities under the legacy and current title names.
+See [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution).
+
+Apply this policy to the actual provider endpoint, including a custom connection
+that points to `https://openrouter.ai` or its documented
+[regional endpoints](https://openrouter.ai/docs/guides/features/in-region-routing),
+`https://eu.openrouter.ai` and `https://us.openrouter.ai`. Do not infer OpenRouter from a model name,
+URL substring, or a provider label whose endpoint was changed. A private gateway
+must implement forwarding or attribution itself; Paperclip cannot establish the
+identity of an upstream request it does not control.
+
+Managed AI connections project attribution into Codex provider `http_headers`,
+Claude `ANTHROPIC_CUSTOM_HEADERS`, OpenCode provider `options.headers`, and Hermes
+`model.default_headers`. Native Runner also regenerates Codex headers after its
+config allowlist, preserves Claude headers across environment isolation, sets
+OpenCode proxy headers at the upstream boundary, and attributes Pi's default and
+custom OpenRouter providers in `models.json`. Explicit legacy provider configs
+for Codex, OpenCode, and Pi use the same policy. Legacy Pi also loads a temporary
+extension at execution time, including on remote targets. It applies attribution
+after credential and model-header resolution on Pi 0.74 and at provider dispatch
+on Pi 1.0. This covers bare `OPENROUTER_API_KEY` setups and existing Pi home
+configurations without replacing the home, credentials, settings, or model catalog.
+The extension checks each request's endpoint, including custom aliases and regional
+hosts; a provider named `openrouter` that points elsewhere retains its headers.
+These paths must preserve model
+overrides, helper-model requests, retries, and recovery. The standalone Runner
+keeps its dependency-free copy of the policy under a parity test.
+
+For each new or changed provider path, verify:
+
+- Actual outgoing headers from the supported, pinned harness or SDK. Config
+  snapshots alone do not prove precedence over a harness's own defaults.
+- Custom aliases, conflicting mixed-case attribution, and model-level overrides.
+- An unrelated provider and a repointed built-in provider retain their settings.
+- The credential and unrelated headers survive; secrets never enter test logs.
+- A small live request succeeds and its provider-side record carries the expected
+  app identity, when the provider exposes that record. Keep this evidence separate
+  from public leaderboard visibility, which depends on the provider's processing
+  and ranking rules.
+
+Record coverage limits explicitly. An externally managed agent, an unmanaged
+harness configuration, or a gateway that replaces headers requires separate
+qualification; do not claim that generating Paperclip's configuration covers it.
 
 ## Read/write defaults and credential ownership
 
@@ -123,6 +202,7 @@ read/write proof separately and never describe metadata discovery as live proof.
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
 - [Optional agent instructions](#optional-agent-instructions)
+- [Chat channel connectors](#chat-channel-connectors)
 - [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
@@ -147,6 +227,238 @@ A complete connector proposal produces:
   discover catalog, allowed read call, correctly governed write call,
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
+
+## Chat channel connectors
+
+A tool connection gives an agent actions it can call. A chat channel connector
+makes Slack, Teams, Discord, Telegram, email, or another conversation surface a
+place where a person can conduct work with an agent. It must carry questions,
+decisions, follow-ups, and results through the conversation. Authentication,
+tool discovery, and a successful outbound message alone do not qualify it.
+A provider can offer both kinds of connection; do not assume that its tool
+connection also implements its conversation channel.
+
+Reuse company-scoped endpoints, verified identity links, task/conversation
+bindings, durable interactions, publication queues, and response-delivery receipts.
+Keep provider payloads, UI limits, and callback protocols in their platform module;
+follow [chat channel platform boundaries](../../rules/chat-channel-platform-boundaries.mdc).
+Setup and account linking follow [Chat connector UX](./CHAT-CONNECTOR-UX.md).
+
+### Cover every user-question form
+
+For a new channel, build a capability matrix from the current shared interaction
+kinds, payload validators, and runtime/composer question entry points. For a new
+or changed form, update that matrix for every supported channel. Start with
+`ISSUE_THREAD_INTERACTION_KINDS` in `packages/shared/src/constants.ts` and the
+question contracts in `packages/shared/src/types/issue.ts` and
+`packages/shared/src/validators/issue.ts`; do not treat this list as frozen.
+
+| Request family | Required coverage |
+| --- | --- |
+| `ask_user_questions` and runtime/composer input questions | Free text, single-select, multi-select, multiple questions, custom answers, and editable starting text. Include legacy payloads and canonical `paperclip.question_set.v1` forms. |
+| `request_confirmation` | The decision, supporting context, and accept/reject outcome. |
+| `request_checkbox_confirmation` | The options, selection constraints, and exact submitted selection. |
+| `request_item_verdicts` | Each item, its evidence/context, and individual decisions. |
+| `suggest_tasks` | The proposed tasks and the decision for each proposal. |
+| `connection_intent` | The requested connection/access, why it is needed, and the authorized setup or review path. |
+| Approval or runtime permission requests outside the interaction kinds | An explicit route to the existing authorized approval surface; a chat response must not create new approval authority. |
+
+### Question experience inventory
+
+The request-family table describes contracts; it is not a sufficient UX test
+inventory. Enumerate these eleven experiences separately because the same
+`ask_user_questions` kind can require very different controls. These IDs are
+shared with the [channel question coverage index](./CHAT-QUESTION-COVERAGE.md).
+Add rows when the contracts gain an experience this inventory does not cover.
+
+| ID | Experience | Preferred interaction when the provider supports it |
+| --- | --- | --- |
+| Q01 | Free text | Native text entry with the full prompt, useful context, editable starting text, and multiline support where needed. |
+| Q02 | Short, closed single choice | Direct labeled buttons. Preserve option descriptions and recommendations; do not require a modal just to choose one item. |
+| Q03 | Long option single-select | An inline searchable picker where available; preserve complete labels and the selected value. |
+| Q04 | Multiple selection | Checkboxes or a multi-select with an explicit submit action and visible selection bounds. Selecting one item must not prematurely submit the form. |
+| Q05 | Choice plus custom answer | The appropriate choice controls plus an explicit **Other…** text-entry path. Test both a listed answer and a custom answer. |
+| Q06 | Validated text | Text entry with the expected format/example, field-level errors, and a retained editable draft after invalid input. Cover the contract's pattern, length, and numeric constraints. |
+| Q07 | Ordinary confirmation | Clear accept/reject controls with the decision and context visible. Governed actions and required reasons must retain their canonical review requirements. |
+| Q08 | Checklist confirmation | Labeled selections, descriptions, editable defaults, selection bounds, explicit save, and rejection where supported by the contract. |
+| Q09 | Per-item verdicts | A decision for each item, its evidence/context, conditional reasons, and submission using the canonical atomic or partial-resolution semantics. |
+| Q10 | Suggested tasks | Direct creation for one proposal; selection and **Create selected** for several; dismissal and a review/edit handoff. Show links to the actual created tasks afterward. |
+| Q11 | Connection request | Explain the requested access and purpose. Provide a usable link to the exact authenticated review and a native decline when supported. A link click must never grant access. |
+
+The inventory is a minimum, not eleven happy-path fixtures standing in for all
+behavior. Record applicable variants under each ID:
+
+- Runtime input, composer cards, legacy payloads, and canonical question sets;
+  multiple questions, mixed forms, and repeated labels such as Yes/No in
+  different questions.
+- Required/optional inputs, empty answers, editable defaults, descriptions,
+  recommendations, Unicode, long labels/context, and custom-answer combinations.
+- Every control-selection threshold: just below, at, and above the provider's
+  button, option, text, block, and modal limits. Test a fallback form through its
+  response and continuation, not only the fallback card. Provider limits differ;
+  research the current official documentation and installed SDK.
+- Accepted/rejected/dismissed outcomes, cancelled editing, expired or superseded
+  requests, duplicate callbacks, revoked access, and recovery after publication
+  or finalization failure. Cover document/attachment review and governed
+  permissions separately wherever they affect the question's meaning.
+
+### Choose and record the best available response path
+
+Keep a per-provider matrix linked from the
+[channel question coverage index](./CHAT-QUESTION-COVERAGE.md). For every ID and
+applicable variant, record native controls, a structured reply flow, or an exact
+Paperclip handoff; the provider capability/limit supporting that choice; the
+canonical answer mapping; and the evidence and remaining gaps. Generic adapter
+flags such as `cards` or `modals` are discovery hints, not per-form qualification.
+A provider lacking a native control still needs a usable response path. Mark
+**not applicable** only when the underlying workflow cannot occur, with a reason.
+Do not use it to hide an unimplemented renderer or unavailable test account.
+
+Use the richest practical interaction that preserves meaning, authorization,
+and accessibility. A functional browser fallback is not the best experience
+when a supported native control removes unnecessary work. A richer-looking
+control is also wrong if it drops options, changes validation, or implies new
+authority. Explain unavoidable handoffs before the click and preserve the
+originating conversation through resolution. Do not force all providers to
+Slack's controls or to the least capable provider's interface.
+
+**Every applicable form needs a usable path from the originating conversation.**
+Prefer native controls or a reply flow when the channel can preserve the form's
+meaning, validation, and authorization. Otherwise publish an explicit link to
+the exact Paperclip question or review surface. A fallback is supported behavior;
+silently omitting the request is a defect. Record which path each row uses.
+
+- Show the actual question and relevant context, including descriptions, help,
+  option labels/details, recommendations, and required/optional status. A title
+  such as “Identify the failed runner change” plus **Respond** is insufficient
+  when the payload contains a more specific question.
+- Prefer direct buttons for a few closed choices, a searchable selector for a
+  longer list, and a checklist with an explicit submit action for multiple choices.
+  Use a native modal for free text, custom answers, and per-item verdicts with
+  reasons. Show errors next to the relevant input without discarding the draft.
+  Task suggestions must support selecting which tasks to create and dismissing
+  them. Connection requests may offer a native decline; granting access stays
+  on the authenticated review surface. Keep the saved labels, answers, verdicts,
+  and reasons readable after the controls disappear.
+- Preserve text, numeric, pattern, length, and selection validation. Starting
+  text is editable draft content, never an implicit answer. Preserve repeated
+  choices within separate questions. If native controls cannot do this, use the
+  explicit Paperclip handoff rather than dropping fields or changing semantics.
+- Respect provider message, block, option, and modal limits. For oversized forms,
+  show a useful question/context excerpt, state that the full request is in
+  Paperclip, and provide its link. Do not silently truncate a decision or label
+  a partial form as complete.
+- Apply the existing safe external-text projection and audience rules to prompts,
+  help, drafts, links, and results. Keep secrets and restricted content on the
+  authorized Paperclip surface; explain the handoff without exposing that content.
+- Bind a response to the persisted question, conversation, and verified actor.
+  Recheck current access, resolver audience, target freshness, and endpoint
+  authority. Use the same authoritative resolution service as Paperclip. A
+  channel callback or ordinary reply cannot bypass a governed action's approval.
+- Persist the answer once and use the existing continuation policy and delivery
+  receipts. Duplicate clicks, provider retries, and recovery must not create
+  duplicate decisions or continuations. Preserve task and conversation context.
+  A Paperclip fallback response must retain its authenticated Board receipt;
+  never fabricate a provider callback. Follow each review kind's existing wake
+  or delivery receipt when routing its later result back to the conversation.
+  A settled card alone does not prove that the resumed task delivered its result.
+- Reflect accepted, rejected, expired, and superseded outcomes in the original
+  channel card or an explicit follow-up. Honor the canonical meaning of dismissal
+  or deferral; it is not an answer or permission to resume. Include automatic
+  reconciliation and recovery paths, so resolved requests do not remain actionable.
+
+Apply this contract when adding a channel and whenever a question, card, composer,
+or runtime bridge gains a new form or field. A working Paperclip card does not
+establish channel support. The
+[interaction-authoring skill](../../.agents/skills/create-issue-interaction-ui/SKILL.md)
+must include channel publication, response, and settlement in the same change.
+
+### Verify and grade each experience
+
+Declare the inventory and finish line before implementation. For each affected
+format: implement the best supported interaction, exercise it end to end in the
+actual provider, capture evidence, inspect that evidence yourself, and repair
+any remaining UX gap. Do not wait for the requester to ask separately for real
+provider testing, screenshots, or a judgment about quality.
+
+Start locally with the smallest failing case and exercise the installed SDK,
+serialized provider payloads, authenticated inbound responses, persisted answers,
+and the existing continuation path. Work through one format at a time, using
+focused regressions before the next real-provider attempt. An authorized local
+candidate connected to a dedicated test bot/channel can provide this proof
+before staging deployment. Keep provider webhook ingress, internal API access,
+and human-facing board URLs separate. Use only the necessary authorized callback
+or preview exposure; restore provider configuration and remove temporary access
+at the end. Infrastructure failures remain named blockers, not product passes.
+
+For a new channel, qualify every applicable matrix row. For a behavior change,
+repeat affected rows and shared paths, including native and Paperclip-fallback
+journeys:
+
+request → visible question/context → response → persisted resolution → intended
+continuation → settled card and result in the originating conversation.
+
+Record independent judgments for each row:
+
+| Judgment | Pass standard |
+| --- | --- |
+| Functional result | The exact answer/decision is saved, authorization is preserved, the canonical continuation policy runs without duplicate work, and the intended result is accessible in the originating conversation. |
+| Good experience (✓/✕) | The person can understand the question, answer it, recover from an error, and read the saved outcome without guessing. Inspect unanswered, answering, and settled states. |
+| Best feasible experience (✓/✕) | The chosen controls use the provider's available capabilities well. There is no avoidable modal, browser hop, lost context, or unnecessary interaction. Any handoff has a concrete capability, validation, or authorization reason. |
+
+Use **not run** for missing evidence and explain it; it is not a check mark.
+A native modal is appropriate for substantial text or a multi-item review but
+can be needless friction for a simple choice. A settled “Answered” badge that
+hides the saved choice or text fails the experience check. Publish only the
+safe, authorized answer projection, and make its audience clear at entry;
+sensitive review content may require a clearly explained authenticated handoff.
+
+### Retain inspectable per-format evidence
+
+Produce an HTML gallery or equivalent browsable report with one section per
+format and variant. Capture actual provider screens, not reconstructed cards:
+
+- **Unanswered:** the full question/context and available controls.
+- **Answering:** the open picker/modal or selected values; include invalid input
+  and the preserved draft for validation cases. For a one-click button, the
+  before/after pair is sufficient.
+- **Answered:** the settled card with the permitted saved answer, labels,
+  decisions, and reasons, plus the resumed result or review receipt.
+- **Handoffs and artifacts:** actually click review and created-result links,
+  confirm the correct authenticated destination, and inspect the resulting
+  task/artifact. A valid-looking URL or successful API response is insufficient.
+
+Inspect each captured state yourself. Put functional status, both UX grades,
+a short rationale, and any repair/retest next to the evidence. These are author
+acceptance artifacts for channel qualification, not a blanket screenshot
+request for unrelated UI PRs. Keep material failed attempts and their causes
+alongside successful retries; a retry must not erase the failure history.
+
+Correlate screenshots with the canonical saved response, answer actor/authority,
+continuation count, publication/delivery receipts, and actual created artifacts.
+A visually settled multi-select can still fail continuation authorization; a
+review link can navigate correctly while also firing an erroneous answer
+callback. Test these complete paths. Deterministic coverage must also include
+repeated callbacks, stale requests, revoked membership/identity/access, mixed
+forms, and provider-limit fallback boundaries.
+
+Record the candidate revision, dirty-tree fingerprint if applicable, date,
+provider/adapter configuration, source entry point, test conversation, and
+reproduction steps without secrets. State whether the agent was a deterministic
+protocol fixture or a live model. Keep local simulations, real-provider
+acceptance, live-model behavior, and deployed verification separate. Storybook,
+substituted HTTP, a green run badge, or an agent's success claim cannot establish
+real-channel acceptance. Proof for one channel, one client surface, or eleven
+core cases does not qualify every provider or boundary variant.
+
+Link accessible redacted evidence from the provider record and PR; retain the
+requirements and conclusions in the repository even if a temporary preview
+expires. Update the [coverage index](./CHAT-QUESTION-COVERAGE.md) with precise
+scope and gaps. When later changes affect rendering, authorization, or delivery,
+rerun the affected cases on that candidate; do not relabel old screenshots as
+current proof. A format is complete only when its applicable functional and
+experience checks pass. Report provider limitations and outstanding acceptance
+explicitly; missing evidence leaves the affected qualification pending.
 
 ## Optional agent instructions
 
@@ -452,6 +764,17 @@ IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
 policy the operator has applied.
 
+Saving a connection's installation list grants its app profile only to newly
+added targets. Targets that remain installed keep their existing profile
+assignments. If an operator removes an app profile from an installed agent or
+company, a later installation-list save must preserve that removal. This also
+applies when the list is unchanged or another agent is removed. Removing and
+then reinstalling a target is a new installation and uses the current setup
+defaults.
+Every non-empty installation-list save also removes legacy connection-wide
+include entries from the managed app profile. Keep this cleanup when no targets
+are added, so the selected action entries remain authoritative.
+
 If a destructive provider cannot be safe with those defaults, add a narrowly
 reviewed provider policy with tests. Do not hide a dangerous tool by
 misclassifying it as read, and do not silently change global defaults in a
@@ -471,7 +794,16 @@ This is the implementation sequence an autonomous coding agent should follow.
    task. Do not reset, rewrite, or format unrelated files.
 4. Decide whether the request is research-only, definition-only, or a new
    runtime capability. A store card is not evidence of runtime support.
-5. Write acceptance criteria before editing. At minimum: actionable store card,
+5. Apply [Module boundaries](../../rules/module-boundaries.mdc) before extending
+   shared code. Identify what the existing connection system already supports
+   and which requested features need a new platform capability. Keep new
+   connector-specific protocol behavior in
+   `server/src/services/connectors/<provider>/`; catalog definitions, branding,
+   and registration belong in their established locations. Shared gateway,
+   OAuth, and runtime code should use domain contracts, without interpreting
+   provider tool names or response formats. Separate ordinary MCP calls from
+   optional helpers such as local-file publishing when assessing the footprint.
+6. Write acceptance criteria before editing. At minimum: actionable store card,
    setup completes, credentials are vaulted, tools list, one safe read runs,
    refresh/reconnect works, revoke blocks use, and no secret appears in API or
    logs.
@@ -638,6 +970,12 @@ definitions, resource-assignment resolver, and execution handler. Use names such
 as `agentmail_send` rather than extending core tools with provider-specific
 branches. Existing MCP connectors continue to use their normal MCP tool catalog;
 they do not need a duplicate native wrapper just to supply a skill.
+
+For a gated catalog connector, declare `experimentalFeatureKey` in its
+`AppDefinition`. Shared availability checks resolve the saved application key
+and evaluate that feature before setup, discovery, and execution. Keep the
+feature's settings visibility separate from this enforcement. Do not add
+provider-name checks to the gateway or setup screens.
 
 **Resolve eligibility from current assignments and access.** An AgentMail account
 credential alone does not give an agent email capabilities. An active inbox
@@ -1220,8 +1558,12 @@ unrelated worktree change, or temporary evidence file is staged.
 
 ### Phase 12: Prepare and submit the pull request
 
-1. Keep commits scoped. A typical split is definition/branding, generic runtime
-   capability, and tests/docs. Do not split generated output from its source.
+1. Recheck [Module boundaries](../../rules/module-boundaries.mdc). Explain each
+   substantive shared change in the PR: the missing capability, why the existing
+   contract is insufficient, affected consumers, and behavior with the connector
+   absent or disabled. Separate substantial platform capabilities into reviewable
+   slices with explicit dependencies when appropriate. Keep tests and docs with
+   their behavior and generated output with its source.
 2. Do not commit `pnpm-lock.yaml`; GitHub Actions owns it in this repository.
 3. Read `.github/PULL_REQUEST_TEMPLATE.md` immediately before writing the PR
    body.
@@ -1364,6 +1706,11 @@ A catalog connection is ready only when every applicable item is true:
 - [ ] Official docs and live metadata agree on the endpoint and auth flow.
 - [ ] Self-serve/provider-approval classification is documented.
 - [ ] Every exposed method has completed the full live lifecycle.
+- [ ] Chat channels have an indexed per-format capability/qualification matrix,
+      a justified best-available response path, and inspected real-provider
+      evidence for affected conversation loops. Functional, answering, and
+      settled-state UX checks pass; remaining gaps are explicit under
+      [Chat channel connectors](#chat-channel-connectors).
 - [ ] The default path asks only for required configuration.
 - [ ] Optional own-OAuth and expert fields are folded under Advanced.
 - [ ] Scopes are explicit and contained; caller widening is rejected.
@@ -1643,6 +1990,7 @@ connector proposal or PR. No separate private validation issue is required.
 | Allowed execution | A narrow read succeeds through the gateway; writes follow the effective policy. | Tool, actor, decision, redacted result, and correlated call/audit record. Use a disposable resource for an authorized live write; otherwise mark write execution untested. |
 | Denied execution | Ungranted actors, another company, disallowed resources, revoked connections, and declared blocked/quarantined actions cannot execute. | Expected denial and reason code, with the automated or live test that exercised the boundary. Cover listing where the policy requires tools to be hidden. |
 | Runtime delivery | An actual agent/run-scoped gateway call succeeds when runtime logic changes. Chat/email also routes an incoming message and its reply to the same task. | Redacted task/conversation and call correlation; identify live versus simulated events. |
+| Chat questions and decisions | Every applicable question experience has the best feasible controls or a justified handoff, saves the answer, and delivers the intended continuation result. | [Indexed per-format qualification](./CHAT-QUESTION-COVERAGE.md), actual unanswered/answering/answered captures, separate functional and UX grades, saved-response/delivery evidence, and retained failures. |
 | Refresh and recovery | Catalog refresh, token refresh/reconnect, and recoverable failures preserve the correct identity and policy. | Before/after outcome, redacted error code, and successful retry; no duplicated connection. |
 | Revoke and reconnect | Revocation blocks subsequent execution; supported reconnect reuses the intended identity/history. | Removal or denial evidence followed by reconnect result. |
 | Activity and secret handling | Activity explains what occurred and why; stored responses, logs, and artifacts contain no credential values. | Actor, run/issue context, resource, decision, reason code, outcome, plus redaction-check result. |
@@ -1712,27 +2060,31 @@ The broker implements this in `discoverOAuthEndpoints`
 unconditional. `oauthEndpointsForConnection` resolves endpoints in this
 order:
 
-1. If the manifest's method `defaults` ship a **complete** pair
-   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used
-   unconditionally. `discoverOAuthEndpoints` never runs in this case, so
-   endpoints stored on the connection's own OAuth config and 401 challenge
-   hints are **not consulted at all**.
-2. Otherwise, for `mcp_remote` connections, the broker calls
+1. A method's `defaults.discoveryUrl` is authoritative. The broker resolves
+   that document before cached endpoints, including when a saved connection
+   resumes or reconnects. It must describe the MCP resource or its authorization
+   server, not a separate web/API OAuth service. Failure stops setup.
+2. A complete manifest pair (`authorizationEndpoint` and `tokenEndpoint`)
+   replaces discovery when the method does not support dynamic registration,
+   or when the connection uses an operator-entered client. A method that can
+   register automatically still discovers its MCP authorization server.
+3. Otherwise, for `mcp_remote` connections, the broker calls
    `discoverOAuthEndpoints`, which first checks endpoints already stored on
    the connection's own OAuth config (falling back field-by-field to the 401
    challenge hints); a complete stored/hinted pair is used as-is — no
    `.well-known` fetch.
-3. Only when neither of the above yields a complete pair does the broker run
+4. Only when none of the above yields a complete pair does the broker run
    the RFC 9728 → RFC 8414 discovery chain above.
 
-Consequence: complete manifest endpoint hints are **authoritative, not
-hints** — they override even endpoints that an earlier discovery persisted
-on the connection, and if they go stale the broker keeps using them. For
-discovery-capable vendors, ship only `serverUrl` in `defaults` (as
-`notion.json` does) so the broker discovers fresh endpoints at connect
-time; add explicit `authorizationEndpoint`/`tokenEndpoint` only for vendors
-that do not publish RFC 9728/8414 metadata, and then own keeping them
-current.
+For discovery-capable vendors, prefer `serverUrl` alone (as `notion.json`
+does), or pin the reviewed protected-resource document when the provider
+requires an exact path. Keep explicit metadata and endpoint URLs current.
+When changing discovery precedence, test each affected catalog method against
+its actual metadata shape. Cover both new setup and a saved registration.
+A metadata preflight that finds registration somewhere in its search is not
+proof that sign-in selects that issuer. Sentry's web/API and MCP hosts both
+serve valid metadata, but only its MCP issuer supports automatic registration;
+see [Sentry](./SENTRY.md).
 
 ### Dynamic client registration (RFC 7591)
 
