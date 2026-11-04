@@ -2,7 +2,6 @@ import http from "node:http";
 import https from "node:https";
 import { expect, vi } from "vitest";
 
-/** Test-only wire guard. Unexpected external requests fail before socket creation. */
 export function guardSlackFixtureNetwork() {
   const blocked: string[] = [];
   const check = (value: unknown) => {
@@ -29,7 +28,6 @@ export function guardSlackFixtureNetwork() {
   } };
 }
 
-/** Real pinned WebClient still serializes/authenticates; only its HTTP adapter is synthetic. */
 export function stubSlackFixtureTransport(adapter: unknown) {
   const client = (adapter as { _client: { axios: { defaults: { adapter: unknown } } } })._client;
   const transport = vi.fn(async (config: { url: string; baseURL: string }) => {

@@ -1,7 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-/** Request-local proof, never a caller-controlled HTTP header. Only the sealed
- * connector event consumer below creates it after current-generation checks. */
 const acceptedTimes = new WeakMap<Request, number>();
 export const slackCloudAcceptedAt = (request: Request): number | undefined => acceptedTimes.get(request);
 
@@ -27,11 +25,6 @@ export interface CurrentSlackCloudBinding {
   signingSecret: string;
 }
 
-/** Called only after the existing connector sealed envelope has authenticated
- * the event. The caller snapshots the current binding under its credential
- * lease and passes that exact generation to the normal admission fence.
- * Return for a stale binding (safe to acknowledge); throw for malformed or
- * unaccepted current work so the broker retains its leased delivery for retry. */
 export async function receiveSlackCloudEvent(event: SlackCloudEvent, current: CurrentSlackCloudBinding | null,
   handleWebhook: (request: Request) => Promise<Response>, now = Date.now()): Promise<void> {
   if (!current) return;
@@ -51,8 +44,7 @@ export async function receiveSlackCloudEvent(event: SlackCloudEvent, current: Cu
     || typeof packet.signature !== "string" || !/^v0=[a-f0-9]{64}$/.test(packet.signature))
     throw new Error("Invalid Slack Cloud receipt");
   const acceptedAt = Date.parse(event.createdAt);
-  // Cloud's authenticated receipt attests freshness at original acceptance.
-  // A retry does not renew the 30-day durable transport recovery horizon.
+
   if (packet.acceptedAt !== event.createdAt || !Number.isFinite(acceptedAt) || acceptedAt > now + 300_000 || now - acceptedAt >= 30 * 24 * 60 * 60_000
     || Math.abs(Math.floor(acceptedAt / 1000) - Number(packet.timestamp)) > 300)
     throw new Error("Invalid Slack Cloud acceptance time");

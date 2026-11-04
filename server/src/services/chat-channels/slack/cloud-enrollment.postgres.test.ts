@@ -19,7 +19,6 @@ const appUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SLACK_TEST_DATABASE_URL
 const cloudUrl = resolveExternalTestDatabaseUrl("SLACK_EVENT_TEST_DATABASE_URL");
 const cloudDist = process.env.SLACK_TEST_CLOUD_DIST;
 
-// Explicit paired-checkout acceptance. Never starts an embedded database or contacts Slack.
 it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment producer and reconstructed SDK owner drain the sealed PostgreSQL event lane", async () => {
   const network = guardSlackFixtureNetwork();
   const load = (file: string) => import(/* @vite-ignore */ pathToFileURL(path.resolve(cloudDist!, file)).href);
@@ -29,10 +28,10 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     load("connections/providers.js"), load("provisioner/provisioner.js"), load("providers/fake.js"),
     import(/* @vite-ignore */ pathToFileURL(path.resolve(cloudDist!, "../node_modules/pg/lib/index.js")).href),
   ]);
-  await applyPendingMigrations(appUrl!); // Migration utility's max1 pool ends before runtime pools open.
+  await applyPendingMigrations(appUrl!);
   const db = createDb(appUrl!, { maxConnections: 2, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
-  const pool = new Pool({ connectionString: cloudUrl!, max: 2 }); // app2 + shared Cloud2 =4.
-  // Same private-constructor test seam as Cloud registry/pool-postgres.test.ts.
+  const pool = new Pool({ connectionString: cloudUrl!, max: 2 });
+
   const registry = Reflect.construct(PostgresCloudHarnessRegistry, [pool]);
   try {
     await registry.applyMigrations(path.resolve(cloudDist!, "../migrations"), 30_000);
@@ -117,7 +116,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
       runtimeGeneration: value => Number((value.setup as InternalSetupState).runtimeGeneration ?? 0),
       handleWebhook: async (_publicId, _provider, req, generation) => {
         expect(generation).toBe(1);
-        // Real lifecycle callback can reacquire the credential lease: ingress released it first.
+
         await withLease(await endpoint(), async lease => { await lease.assertOwned(); });
         return runtime!.handleWebhook(req);
       } });
@@ -127,7 +126,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     expect(await connector.acknowledgeEvents({ subject: "actor", companyId, leaseId: leased!.leaseId, deliveryIds: [event.id] })).toBe(1);
     expect(await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 })).toBeNull();
     await db.update(chatEndpoints).set({ setup: { ...saved, runtimeGeneration: 2 } as InternalSetupState }).where(eq(chatEndpoints.id, endpointId));
-    await dispatchSlackCloudEvent(db, event); // Obsolete current identity never reaches the SDK.
+    await dispatchSlackCloudEvent(db, event);
     expect(onMessage).toHaveBeenCalledOnce();
     await withLease(await endpoint(), lease => produce(endpointId, "actor", lease));
     const replacement = ((await endpoint()).setup as InternalSetupState).slackCloudEvents!;

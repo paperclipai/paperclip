@@ -7,9 +7,6 @@ import type { InternalSetupState } from "../runtime-types.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
 
-/** Ordinary configured-credential producer. No periodic enrollment scan, provider
- * credential revocation or user setup replacement. Unavailable Cloud support
- * leaves the existing integration enabled and conservatively sleep-blocked. */
 export function createSlackCloudEnrollment(db: Db, options: {
   resolveCredentials: ReturnType<typeof createChatCredentials>["resolveCredentials"];
   runtimeGeneration(setup: InternalSetupState): number;
@@ -35,8 +32,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
     }
     const [registration] = await db.select({ appId: chatSlackRegistrations.appId }).from(chatSlackRegistrations)
       .where(and(eq(chatSlackRegistrations.endpointId, endpointId), eq(chatSlackRegistrations.companyId, endpoint.companyId))).limit(1);
-    // Existing manually entered setups without a retained verified app identity
-    // remain on their current ingress. Never guess or trust an unsigned app ID.
+
     const appId = registration?.appId ?? previous?.appId;
     if (!appId || !endpoint.providerAccountId || generation < 1) return;
     const credentials = await options.resolveCredentials(endpoint, db, ["signingSecret"]);

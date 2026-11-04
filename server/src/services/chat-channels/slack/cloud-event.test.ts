@@ -57,8 +57,7 @@ describe("authenticated Slack Cloud receipt consumer", () => {
       expect(request.headers.get("x-slack-signature")).toBe(f.signature);
       const body = await request.text();
       expect(body).toBe(f.rawBody.toString());
-      // Exercise the pinned adapter's actual signature verifier with the same
-      // request-local acceptance clock used by the production runtime.
+
       await verifySlackSignature(body, request.headers, { signingSecret: f.binding.signingSecret,
         now: () => slackCloudAcceptedAt(request) ?? acceptedAt + 600_000 });
       await expect(verifySlackSignature(body, request.headers, { signingSecret: f.binding.signingSecret,

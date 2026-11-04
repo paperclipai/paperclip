@@ -9,26 +9,17 @@ import { receiveSlackCloudEvent, type CurrentSlackCloudBinding, type SlackCloudE
 type Handler = (event: SlackCloudEvent) => Promise<void>;
 const handlers = new WeakMap<Db, Handler>();
 
-/** The chat owner installs a handler that holds its existing credential mutation
- * lease, reads the current endpoint/enrollment and calls receiveSlackCloudEvent.
- * Connector queue dispatch remains protocol-independent. */
 export function registerSlackCloudEventIngress(db: Db, handler: Handler) {
   handlers.set(db, handler);
   return () => { if (handlers.get(db) === handler) handlers.delete(db); };
 }
 
-/** Called only for an event authenticated by the sealed connector event lane.
- * An absent runtime owner must retain the Cloud lease, never acknowledge it. */
 export async function dispatchSlackCloudEvent(db: Db, event: SlackCloudEvent): Promise<void> {
   const handler = handlers.get(db);
   if (!handler) throw new Error("Slack Cloud ingress is not ready");
   await handler(event);
 }
 
-/** Installs the actual chat owner. Arrival is the only trigger: merely retaining
- * an enrollment adds no scan or SQL. Existing mutation leases fence current
- * credentials/configuration snapshot. The normal runtime generation fence then
- * owns durable admission; lifecycle callbacks can acquire their own leases. */
 export function createSlackCloudEventIngress(db: Db, options: {
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
   resolveCredentials: ReturnType<typeof createChatCredentials>["resolveCredentials"];
@@ -53,8 +44,7 @@ export function createSlackCloudEventIngress(db: Db, options: {
       if (packet.companyId !== endpoint.companyId || packet.publicId !== endpoint.publicId
         || packet.connectionId !== endpoint.connectionId || packet.runtimeGeneration !== options.runtimeGeneration(endpoint)) return null;
       const enrolled = (endpoint.setup as InternalSetupState).slackCloudEvents;
-      // Enrollment can have committed at Cloud before its response/local save.
-      // Absence on an otherwise-current active endpoint cannot authorize ACK.
+
       if (!enrolled) throw new Error("Slack Cloud enrollment is not locally committed");
       if (enrolled.version !== 1 || enrolled.runtimeGeneration !== options.runtimeGeneration(endpoint)
         || enrolled.teamId !== endpoint.providerAccountId) throw new Error("Slack Cloud enrollment is unsettled");
