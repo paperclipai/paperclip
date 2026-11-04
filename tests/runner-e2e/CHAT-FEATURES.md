@@ -243,7 +243,7 @@ Only `steering.preserve-draft` and `tasks.attachment-brief` may currently declar
 
 `skills.author-skill` v3 follows the normal library card to the exact saved skill.
 It accepts the canonical company-scoped detail route or the exact Studio route.
-The detail view must expose its normal Edit control. Both paths must show the
+The detail view opens Overview first; select Files, then its normal Edit control. Both paths must show the
 editable saved checklist, survive reload, and match the same public current
 version. The receipt identifies the actual editor surface. The original case
 clock, query, and one-human/one-native limits remain unchanged. Older failed

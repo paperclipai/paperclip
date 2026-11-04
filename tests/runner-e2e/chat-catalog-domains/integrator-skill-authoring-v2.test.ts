@@ -12,14 +12,15 @@ function fixture(){
  const skill={id:"skill",companyId:"company",name:"Website review checklist",slug:"website-review-checklist",editable:true,currentVersionId:"revision",markdown,usedByAgents:[]};
  const state:Record<string,unknown>={},o={scenarioId:"skills.author-skill",origin:"https://fixture.test",companyId:"company",leadId:"ceo",state,skills:[skill],versions:{skill:[version]},policy:{},editDecision:{allowed:true},tasks:[],projects:[],goals:[],comments:[],documents:[],revisions:[],humanQueries:["Turn our website review checklist into a reusable skill."],runs:[{id:"native",status:"succeeded",agentId:"ceo",companyId:"company"}],activity:[{action:"company.skill_created",entityId:"skill",agentId:"ceo"}],links:[],reply:"Created the reusable company skill, saved in the library and not assigned to any agent."} as unknown as InternalObservation;
  observed.base=o;
- const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false};const events:string[]=[];
+ const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false};const events:string[]=[];
  const editor={get visible(){return ui.studio && (ui.inEdit || ui.directStudio);},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
  const page={url:()=>current,getByRole:(role:string,options?:{name?:string})=>{
   if(role==="textbox")return editor;
-  if(role==="button" && options?.name==="Edit")return{click:async()=>{if(!ui.editable)throw Error("No Edit control");ui.inEdit=true;events.push("Edit");}};
+  if(role==="tab" && options?.name==="Files")return{click:async()=>{ui.filesSelected=true;events.push("Files");}};
+  if(role==="button" && options?.name==="Edit")return{click:async()=>{if(!ui.editable||!ui.filesSelected)throw Error("No Edit control outside Files");ui.inEdit=true;events.push("Edit");}};
   if(role==="link")return{first:()=>({click:async()=>{events.push(options!.name!);current=options?.name==="Skills"?"https://fixture.test/ACORN/skills":"https://fixture.test/ACORN/skills/studio";}})};
   return{filter:()=>({first:()=>({get visible(){return ui.library;},click:async()=>{events.push("open-skill");current=ui.foreignRoute?"https://fixture.test/FOREIGN/skills/website-review-checklist":ui.wrongRoute?"https://fixture.test/ACORN/skills/other":ui.directStudio?"https://fixture.test/ACORN/skills/studio/skill":"https://fixture.test/ACORN/skills/website-review-checklist";}})})};
- },getByText:()=>({first:()=>({get visible(){return ui.studio;}})}),getByTestId:()=>({get visible(){return current===source;}}),reload:async()=>{reloads++;ui.inEdit=false;events.push("reload");},goto:async(url:string)=>{current=url;events.push("return-chat");}};
+ },getByText:()=>({first:()=>({get visible(){return ui.studio;}})}),getByTestId:()=>({get visible(){return current===source;}}),reload:async()=>{reloads++;ui.inEdit=false;ui.filesSelected=false;events.push("reload");},goto:async(url:string)=>{current=url;events.push("return-chat");}};
  const after=structuredClone(skill),get=vi.fn(async(route:string)=>{
   if(route.endsWith("/skills"))return[{id:"skill"}];
   if(route.endsWith("/skills/skill"))return after;
@@ -34,7 +35,7 @@ function fixture(){
 it("the actual authoring act performs nonmutating canonical-library/Edit inspection and keeps a single native/human turn",async()=>{
  const f=fixture(),d=integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!;
  await d.act!(f.ctx,f.state);
- expect(f.events).toEqual(["Skills","My Skills","open-skill","Edit","reload","Edit","return-chat"]);
+ expect(f.events).toEqual(["Skills","My Skills","open-skill","Files","Edit","reload","Files","Edit","return-chat"]);
  expect(f.state.authoredSkillInspection).toMatchObject({skillId:"skill",versionId:"revision",editorSurface:"detail",editorVisible:true,readbackMatched:true});
  expect(gradeIntegratorSkills({...f.o,state:f.state}).passed).toBe(true);
  expect(d.expectedRunCount).toBe(1);expect(d.expectedHumanMessageCount).toBe(1);
