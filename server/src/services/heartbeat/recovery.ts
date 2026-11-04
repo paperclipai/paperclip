@@ -1013,12 +1013,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "bootstrap_incomplete",
       );
       for (const disposition of dispositions) {
-        if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
+        if ((disposition.kind === "awaiting_evidence" || disposition.kind === "blocked") && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
         }
         // No ownership decision was made for a locked row. Writing an event
         // would wait on that same row and defeat the non-blocking startup scan.
         if (disposition.kind === "awaiting_evidence" && disposition.reason === "recovery_rows_busy") continue;
+        if (disposition.kind === "blocked" && disposition.transitionUnchanged) continue;
         // Claims are already committed and must still dispatch, so one failed
         // audit write cannot stop the rest of the batch.
         const auditFailed = (error: unknown) => {

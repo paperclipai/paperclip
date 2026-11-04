@@ -1965,6 +1965,14 @@ failure notice. They retain the normal Retry permission and admission gates.
 Retained-folder access and trust denials use this explanation; low-trust project
 boundary denials retain their dedicated project-access action.
 
+Remote archive capture retains fixed validation failures and a closed set of
+Node filesystem codes as `remote_workspace_archive_fs_<errno>`. The transport
+accepts exact diagnostic messages from separate or combined command output.
+Paths, filenames, file contents, and unknown errors remain redacted. The existing
+full-disk and unfinished-Git messages keep their priority. These diagnostics
+describe a failed capture attempt; saving and recovery still require their
+ordinary verified receipts.
+
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
 Reservation checks current task/run access and all retained workspace sources.

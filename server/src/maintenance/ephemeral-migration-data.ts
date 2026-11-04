@@ -1,3 +1,7 @@
+import { loadConfig } from "../config.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
@@ -40,6 +44,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   counts.nativeControllersUnchanged = controllers.unchanged;
   counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
   counts.nativeControllersArchivedFailed = controllers.archivedFailed;
+  counts.nativeControllersPreservedFailed = controllers.preservedFailed;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
   phase("workspaces");
@@ -73,6 +78,15 @@ export async function migrateEphemeralServerData(db: Db, input: {
 
   const packages = skillPackageMaintenance(db);
   const skills = skillInstallationMaintenance(db);
+  phase("skill_objects");
+  const localSkillStorage = createStorageService(createLocalDiskStorageProvider(loadConfig().storageLocalDiskBaseDir));
+  after = undefined;
+  for (;;) {
+    const page = await migrateLocalSkillPackageObjects(db, { source: localSkillStorage, destination: storage, writersStopped: true, signal, after });
+    counts.skillObjects = (counts.skillObjects ?? 0) + page.migrated;
+    if (page.inspected < 50 || !page.after) break;
+    after = page.after;
+  }
   for (const [name, migrate] of [["skill_packages", packages.migrateSnapshots], ["skill_versions", packages.migrateVersions]] as const) {
     phase(name);
     after = undefined;

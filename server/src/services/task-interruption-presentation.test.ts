@@ -7,6 +7,38 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("unadmitted chat Retry presentation", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  const wait = { id: "retry", requestedAt: new Date(now), sourceRunId: run.id,
+    preparationStatus: "issued", preparationRetryAt: now + 250 };
+  const input = { run: failed, agent, wait, paused: false, approval: false };
+
+  it.each(["issued", "processing"])("uses the persisted %s outbox deadline without implying provider work", status => {
+    for (const offset of [0, 20_000]) expect(projectTaskInterruption(issue, {
+      ...input, wait: { ...wait, preparationStatus: status },
+    }, now + offset)).toMatchObject({ state: "retry_scheduled", canRetry: false,
+      nextRetryAt: new Date(wait.preparationRetryAt).toISOString() });
+  });
+
+  it.each(["failed", "cancelled"])("keeps terminal %s preparation out of the working state", status => {
+    expect(projectTaskInterruption(issue, { ...input, wait: { ...wait, preparationStatus: status,
+      preparationRetryAt: null } }, now)).toMatchObject({ state: "failed", nextRetryAt: null });
+  });
+
+  it("keeps current gates and admitted execution authoritative", () => {
+    expect(projectTaskInterruption(issue, { ...input, paused: true }, now))
+      .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+    expect(projectTaskInterruption(issue, { ...input, approval: true }, now))
+      .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+    for (const status of ["queued", "running"]) expect(projectTaskInterruption(issue, {
+      ...input, run: { ...failed, id: "successor", status },
+    }, now)).toMatchObject({ state: "working", nextRetryAt: null });
+    expect(projectTaskInterruption(issue, { ...input, wait: { ...wait, sourceRunId: "old-run" } }, now))
+      .toMatchObject({ state: "working", nextRetryAt: null });
+  });
+});
+
 it("explains a persisted Retry wait without exposing the saved payload", () => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id,

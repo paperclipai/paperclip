@@ -1,3 +1,4 @@
+import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
@@ -964,6 +965,8 @@ async function buildReusableSandboxLeaseFingerprint(input: {
     companyId: input.companyId,
     environment: input.environment,
   });
+  const workspaceMigration = input.executionWorkspaceId
+    ? await readNativeWorkspaceMigration(input.db, { companyId: input.companyId, id: input.executionWorkspaceId }) : null;
   return createEffectiveRunConfigFingerprints({
     lease: {
       companyId: input.companyId,
@@ -972,6 +975,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
         driver: input.environment.driver,
       },
       executionWorkspaceId: input.executionWorkspaceId,
+      ...(workspaceMigration ? { workspaceMigrationGeneration: workspaceMigration.operationId } : {}),
       ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
       agentId: input.agentId,
       adapterType: input.adapterType,

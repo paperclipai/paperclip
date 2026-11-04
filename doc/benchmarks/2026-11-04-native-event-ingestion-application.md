@@ -9,14 +9,31 @@ The [current reproduction package](../../scripts/native-ingestion/h5e/README.md)
 contains exact H5e V4/resource V3 sources, fixtures, pure checks and source
 reviews. Its [compact evidence index](../../scripts/native-ingestion/h5e/evidence/current-status.json)
 retains qualification hashes and explicitly pending durable artifact links.
-Main B0 A/A is active under its unchanged V3 helper/release; no completed noise
-verdict or application treatment gain is available. Neutral V4 and resource V3
+The CF main B0 A/A attempt failed in arm 7 under its unchanged V3
+helper/release; it establishes no accepted noise envelope or application
+treatment gain. Neutral V4 and resource V3
 are source-cleared; their next runtime qualifications remain open.
 
 This report records the application inputs and qualification evidence. The
 [source report](2026-11-03-native-event-ingestion-interleaved.md) measures active
 append-service work; it does not establish application burst drainage or browser
 latency. The dependent batching PR owns incremental and combined results.
+
+## Pinned 396 integration: qualification open
+
+The cursor delivery source now integrates only upstream
+`396b7fc62a0a4b1d8aadbda8221c05879d54177c` over the previous CF base.
+Upstream queue/manual-admission, native recovery, accounting and budget work
+remain intact. Upstream migrations `0430_regular_red_skull` and
+`0431_magenta_vanisher` retain their SQL and snapshots; normal generation places
+the byte-identical cursor SQL at `0432_brave_king_cobra` with the combined schema.
+
+The CF baseline A/A failure at arm 7 remains retained; its cause is inconclusive
+and it supplies no noise envelope. Neither the earlier source attribution nor
+CF functional qualifications qualify this changed application runtime. Fresh
+396 baseline/cursor/batching builds, matched calibration, resource qualification
+and affected local OpenCode and real-cloud Stop journeys remain **open**.
+Frozen helpers, workloads, raw evidence and acceptance limits are unchanged.
 
 ## Upstream integration and fresh calibration
 

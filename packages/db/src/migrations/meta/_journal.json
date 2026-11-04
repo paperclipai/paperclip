@@ -3001,8 +3001,22 @@
     {
       "idx": 430,
       "version": "7",
-      "when": 1793787772831,
-      "tag": "0430_mute_may_parker",
+      "when": 1793797974795,
+      "tag": "0430_regular_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 431,
+      "version": "7",
+      "when": 1793798006496,
+      "tag": "0431_magenta_vanisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 432,
+      "version": "7",
+      "when": 1793802983541,
+      "tag": "0432_brave_king_cobra",
       "breakpoints": true
     }
   ]

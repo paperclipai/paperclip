@@ -278,3 +278,4 @@ export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interactio
 
 export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
 export { heartbeatRunEventCursors, heartbeatRunEventSourceRanges } from "./heartbeat_run_event_cursors.js";
+export { budgetEvaluationWork } from "./budget_evaluation_work.js";
