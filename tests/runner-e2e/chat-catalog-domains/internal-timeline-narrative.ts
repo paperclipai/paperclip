@@ -31,10 +31,10 @@ export function truthfulTimelineAccount(input: {
   };
   const handoffMatches = (text: string) => {
     if (differentNamedPerson(text) || /\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text)) return [];
-    const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker)].filter(match =>
+    const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker), ...text.matchAll(successorOwnership)].filter(match =>
       !/\bby\b/i.test(text.slice(match.index + match[0].length))
       && !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
-    return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi")), ...actorUnspecified, ...text.matchAll(successorOwnership)].filter(match => {
+    return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi")), ...actorUnspecified].filter(match => {
       // An explicit other person's role must not become the current human just
       // because earlier milestones share this sentence.
       if (!/^(?:human|person|user|operator|board)\b/i.test(match[0])) return true;

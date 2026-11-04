@@ -47,6 +47,11 @@ it("accepts the successor's natural ownership transition in the ordered account"
   o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then Riley took over the task.");
   expect(gradeWorkTimeline(o).passed).toBe(true);
 });
+it.each(["automatically", "by Morgan"])("keeps unspecified takeover provenance truthful: %s", provenance => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", `Then Riley took over the task ${provenance}.`);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
 it.each([
   "Then the task was reassigned to Riley by Morgan.",
   "Then the task was reassigned to Riley by Jordan.",
