@@ -214,6 +214,7 @@ interface ActorMiddlewareOptions {
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+const managedMcpGatewayProtocolPath = /^\/api\/tool-gateway\/gateways\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/mcp\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -242,6 +243,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+    const hasGatewayBearer = /^bearer\s+pcgw_/i.test(authHeader ?? "");
 
     // Public MCP gateway protocol requests carry a pcgw_* bearer that is
     // validated by the gateway service itself. Do not interpret that bearer as
@@ -250,6 +252,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // restricted to the unguessable public gateway path; all /api routes retain
     // the normal actor authentication path below.
     if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    if (
+      req.method === "POST"
+      && hasGatewayBearer
+      && managedMcpGatewayProtocolPath.test(req.path)
+    ) {
+      req.actor = { type: "none", source: "none" };
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;

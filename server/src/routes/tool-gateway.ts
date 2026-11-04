@@ -16,6 +16,7 @@ import {
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { accessService } from "../services/index.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
@@ -108,6 +109,19 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "notifications/initialized") {
+      try {
+        await toolGateway.verifyNamedGatewayProtocolNotification({
+          ...locator,
+          bearerToken: token,
+          callerHeaders: headers,
+        });
+      } catch (err) {
+        if (!(err instanceof ToolGatewayHttpError)) {
+          logger.error({ err }, "named gateway notification verification failed");
+        }
+        res.status(err instanceof ToolGatewayHttpError ? err.status : 500).end();
+        return;
+      }
       res.status(202).end();
       return;
     }
