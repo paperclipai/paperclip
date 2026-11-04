@@ -1079,14 +1079,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (ownsIssue && issueId && await taskChatRetrySourceCleanupPending(tx, run, issueId)) {
         return { ownsIssue, blocked: true };
       }
-      const previousRunId = run.scheduledRetryReason === "native_provider_overloaded"
+      const executionOwnerId = run.scheduledRetryReason === "native_provider_overloaded"
         ? run.retryOfRunId : ownsIssue ? owner?.executionRunId : null;
-      if (previousRunId && previousRunId !== run.id) {
-        const [previous] = await tx.select({ status: heartbeatRuns.status })
+      for (const previousRunId of new Set([executionOwnerId, ownsIssue ? run.retryOfRunId : null])) {
+        if (!previousRunId || previousRunId === run.id) continue;
+        const [previous] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
+          issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          contextIssueId: sql<unknown>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
+        })
           .from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, previousRunId),
             eq(heartbeatRuns.companyId, run.companyId),
           ));
+        if (previousRunId !== executionOwnerId && (previous?.agentId !== run.agentId ||
+            (previous.nativeIssueId ?? previous.issueId ?? previous.contextIssueId) !== issueId)) continue;
         // A terminal result can precede workspace/lease cleanup on this or
         // another controller. Local absence alone is not a release receipt.
         if (!isHeartbeatRunTerminalStatus(previous?.status) ||
