@@ -6,6 +6,7 @@ import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { nativeSha256 } from "./canonical.js";
+import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/domain/wake-context.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED } from "./native-workspace-finalization-recovery-state.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -75,6 +76,22 @@ function readOwner(value: unknown): Owner | null {
 }
 
 /**
+ * Returns the run id when it is a scheduled workspace_busy retry that waits for
+ * this exact writer. Such a successor has not started work, and the writer's
+ * remote workspace fence stays in place until this recovery saves the files.
+ */
+async function workspaceSaveWaiter(db: Db, companyId: string, runId: string, writerRunId: string) {
+  const [waiting] = await db.select({ id: heartbeatRuns.id, retryOfRunId: heartbeatRuns.retryOfRunId }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+      eq(heartbeatRuns.status, "scheduled_retry"), eq(heartbeatRuns.scheduledRetryReason, WORKSPACE_BUSY_RETRY_REASON)));
+  if (!waiting?.retryOfRunId) return undefined;
+  const [deferred] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, waiting.retryOfRunId),
+    sql`${heartbeatRuns.resultJson}#>>'{workspaceBusy,holderRunId}' = ${writerRunId}`));
+  return deferred ? waiting.id : undefined;
+}
+
+/**
  * The advisory lock serializes controllers without holding row locks across I/O.
  * The durable receipt additionally prevents a disconnected lock session from
  * authorizing takeover while its controller is still doing physical copyback.
@@ -134,11 +151,14 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
             } | undefined;
             const independentRun = continuation?.readiness?.mode === "fresh_isolated_workspace"
               && continuation.readiness.sourceRunId === input.runId ? continuation.runId : undefined;
+            // A successor parked on this writer's save has not started; the save releases it.
+            const waitingRun = issue?.executionRunId && issue.executionRunId !== independentRun
+              ? await workspaceSaveWaiter(db, input.companyId, issue.executionRunId, input.runId) : undefined;
+            const coexisting = (runId: string | null) => !runId || runId === independentRun || runId === waitingRun;
             return currentRun && issue && repair && repair.evidence.runId === currentRun.id
               && repair.evidence.workspaceRecovery && !coordinator?.leaseOwner
               && ["failed", "interrupted", "timed_out", "cancelled", "succeeded"].includes(currentRun.status)
-              && (!issue.executionRunId || issue.executionRunId === independentRun)
-              && (!issue.checkoutRunId || issue.checkoutRunId === independentRun) ? repair : null;
+              && coexisting(issue.executionRunId) && coexisting(issue.checkoutRunId) ? repair : null;
           }
           return coordinator && issue && currentRun ? currentNativeWorkspaceRecoveryResult(db, {
             companyId: input.companyId, coordinator, issue, run: currentRun,
