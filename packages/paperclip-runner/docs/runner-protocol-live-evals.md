@@ -977,3 +977,47 @@ The trusted controller artifact preserves hidden dependency metadata as well as
 code. Its inventory verifier requires every recorded byte, including package
 `.npmignore` files. Only the fresh provider-credential-free controller build uses
 this upload setting; private attempts still use the protected archive path.
+
+## TestOps plan 3
+
+The existing workflow accepts the optional `ALLURE_JOB_RUN_ID` and
+`ALLURE_USERNAME` service inputs. Use `report_to_testops=true`,
+`rosters=protocol-live-testops-claude`, an exact eval commit that includes that
+roster, and an explicit `accounting_mode` for the standing 41-case protocol
+plan. The source must be the trusted current workflow revision. Qualification
+covers that recorded Claude Sonnet 5 configuration and accounting mode.
+Controlled mode preserves its reviewed policy, immutable lock/source/request
+bindings, tracing, private retention, first-attempt and zero-retry gates.
+Its paid workers use `ubuntu-latest`, matching the required GitHub-hosted
+operating origin even when the legacy AWS fleet selector is enabled.
+Legacy mode uses direct-provider credentials. A pass in one mode does not prove
+the other's credential or routing path.
+
+Before provider work, a protected reporting job validates the current GitHub
+job run, launch, standing plan and exact selected case identities. The full
+41-case roster is filtered to that selection before matrix fan-out. A manual
+reporting run validates the complete standing plan and executes only existing
+case 194 (`get-task-context`) to register the GitHub job with real evidence.
+A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
+`full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
+
+The report job creates a closed projection of case identities, checks, numeric
+usage and statuses. For controlled mode this happens inside the existing
+private-history boundary; raw attempts, controller evidence and chat reports
+remain there. Only the closed Allure results and receipt cross into the final
+protected reporting job. It checks source and attempt identity, uploads one result
+per selected case, and verifies the saved case and status bindings. Missing
+execution/report evidence becomes a broken result. A passing campaign row
+without matching successful behavioral checks is rejected. The original
+workflow status and retained attempts remain authoritative.
+
+After the initial upload creates the GitHub job in TestOps, assign that job to
+all 41 existing plan cases and retain its master branch and explicit roster,
+eval revision and accounting parameters. Registration alone is not live
+acceptance. A completed TestOps-triggered attempt provides that evidence.
+
+Failed eval turns retain up to eight operator diagnostics in `artifact.json`
+under `providerFailureDiagnostics`. These contain only the validated provider
+failure phase, category, HTTP status and retryability. Unknown causes remain
+unknown. Messages, request IDs and raw provider data stay outside this field.
+The original machine grade remains unchanged.
