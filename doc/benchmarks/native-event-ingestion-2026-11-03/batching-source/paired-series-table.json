@@ -1,0 +1,833 @@
+{
+  "scope": "Three separate two-arm SOURCE series; not a paired three-arm experiment. Active append sums only.",
+  "series": [
+    {
+      "name": "service-b0-b1",
+      "leftArm": "B0",
+      "rightArm": "B1",
+      "reportSha256": "283eef0a9d5cf3b39bb7ebf7444ced40025f499e51847c2cc205f3101c1f1470",
+      "noiseReport": "service-aa-b0",
+      "noiseReportSha256": "1d88dea61820d5555af08dc1f6079f3820ccb0e3b429105951ad06eca426d08a",
+      "pairedSeriesIndependent": true,
+      "samplesPerArmCase": 5,
+      "cases": [
+        {
+          "history": 1000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3823.2426909999995,
+          "candidateMedianActiveMs": 3554.4297090000036,
+          "baselineMinMaxMs": [
+            3660.1935169999997,
+            3890.539190999989
+          ],
+          "candidateMinMaxMs": [
+            3522.6579420000126,
+            3603.657418999999
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.4079047972212446,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 268.8129819999958,
+          "reductionPercent": 7.031020621128439
+        },
+        {
+          "history": 1000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3164.471254999982,
+          "candidateMedianActiveMs": 3002.7086030000064,
+          "baselineMinMaxMs": [
+            3069.5773009999975,
+            3184.937432000006
+          ],
+          "candidateMinMaxMs": [
+            2943.1245840000047,
+            3046.233085
+          ],
+          "pairedBeyondNoise": 3,
+          "noisePercent": 3.9822120206785225,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 161.7626519999758,
+          "reductionPercent": 5.111838249261541
+        },
+        {
+          "history": 1000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 7.402558999994653,
+          "candidateMedianActiveMs": 9.506674999996903,
+          "baselineMinMaxMs": [
+            4.523847000004025,
+            8.067190000001574
+          ],
+          "candidateMinMaxMs": [
+            8.462973000001512,
+            11.00232299999334
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 15.945874769827368,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -2.10411600000225,
+          "reductionPercent": -28.424170614564098
+        },
+        {
+          "history": 1000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4152.802396999992,
+          "candidateMedianActiveMs": 3542.40763099998,
+          "baselineMinMaxMs": [
+            3944.2845539999835,
+            4266.957552999986
+          ],
+          "candidateMinMaxMs": [
+            3468.830302999995,
+            3605.3644960000674
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.8842439321434798,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 610.3947660000122,
+          "reductionPercent": 14.698382144090573
+        },
+        {
+          "history": 10000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4209.649118000001,
+          "candidateMedianActiveMs": 3530.6375980000594,
+          "baselineMinMaxMs": [
+            4049.0527909999655,
+            4255.424076000025
+          ],
+          "candidateMinMaxMs": [
+            3528.6497000000672,
+            3597.892884000001
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.7474622955774097,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 679.0115199999418,
+          "reductionPercent": 16.129884010915838
+        },
+        {
+          "history": 10000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3575.641203999985,
+          "candidateMedianActiveMs": 3016.318643000035,
+          "baselineMinMaxMs": [
+            3542.3359069999424,
+            3624.188894000021
+          ],
+          "candidateMinMaxMs": [
+            2948.329679999937,
+            3070.961685999995
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.6304743570125815,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 559.3225609999499,
+          "reductionPercent": 15.6425807034064
+        },
+        {
+          "history": 10000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 7.701110000023618,
+          "candidateMedianActiveMs": 8.573146000009729,
+          "baselineMinMaxMs": [
+            7.188416999997571,
+            9.012380000000121
+          ],
+          "candidateMinMaxMs": [
+            6.192671999975573,
+            8.915757999988273
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 23.08985200646279,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -0.8720359999861103,
+          "reductionPercent": -11.323510506711836
+        },
+        {
+          "history": 10000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4614.03645500011,
+          "candidateMedianActiveMs": 3592.809363000095,
+          "baselineMinMaxMs": [
+            4464.443957999989,
+            4736.473729000078
+          ],
+          "candidateMinMaxMs": [
+            3571.7655579999555,
+            3615.229942000122
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 11.830110496052082,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 1021.2270920000155,
+          "reductionPercent": 22.133052089203552
+        },
+        {
+          "history": 100000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 8029.154580999981,
+          "candidateMedianActiveMs": 3540.048427999951,
+          "baselineMinMaxMs": [
+            7985.540289000026,
+            8157.268998000014
+          ],
+          "candidateMinMaxMs": [
+            3503.1252190000378,
+            3586.664618000097
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.0693214938958222,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 4489.10615300003,
+          "reductionPercent": 55.91007257006802
+        },
+        {
+          "history": 100000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 7456.020750999975,
+          "candidateMedianActiveMs": 2989.0107820000267,
+          "baselineMinMaxMs": [
+            7350.074664000131,
+            7471.52871100005
+          ],
+          "candidateMinMaxMs": [
+            2938.5112860000227,
+            3000.5278340000077
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 0.9332642395176317,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 4467.009968999948,
+          "reductionPercent": 59.91144764988548
+        },
+        {
+          "history": 100000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 24.45493699994404,
+          "candidateMedianActiveMs": 9.347156999981962,
+          "baselineMinMaxMs": [
+            23.453166999970563,
+            27.683694000006653
+          ],
+          "candidateMinMaxMs": [
+            8.141280999989249,
+            9.645160000072792
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 39.768871890266304,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": 15.107779999962077,
+          "reductionPercent": 61.77803688472658
+        },
+        {
+          "history": 100000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 8347.43800100009,
+          "candidateMedianActiveMs": 3402.361554999836,
+          "baselineMinMaxMs": [
+            7836.916214999976,
+            8611.93426499993
+          ],
+          "candidateMinMaxMs": [
+            3119.3996940000216,
+            3627.8794139999663
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 0.7615089382403567,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 4945.076446000254,
+          "reductionPercent": 59.240648992035574
+        }
+      ]
+    },
+    {
+      "name": "service-b1-b2",
+      "leftArm": "B1",
+      "rightArm": "B2",
+      "reportSha256": "8342df9d6fdb4310e8106c373a520a306bb98b7cdc61316583ad9c2c28f59e00",
+      "noiseReport": "service-aa-b1",
+      "noiseReportSha256": "a47f34fd05d61bf0e7451b9e6daf486f7bc4563bf98792b7bfb7782af552f8f3",
+      "pairedSeriesIndependent": true,
+      "samplesPerArmCase": 5,
+      "cases": [
+        {
+          "history": 1000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3640.2568239999964,
+          "candidateMedianActiveMs": 144.2716610000025,
+          "baselineMinMaxMs": [
+            3561.9915790000014,
+            3708.2355080000016
+          ],
+          "candidateMinMaxMs": [
+            143.329308999997,
+            148.55845399999998
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 2.168789687380299,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 3495.985162999994,
+          "reductionPercent": 96.03677245932683
+        },
+        {
+          "history": 1000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 2372.143151999997,
+          "candidateMedianActiveMs": 86.69318600001134,
+          "baselineMinMaxMs": [
+            1601.6226590000006,
+            2712.743500999997
+          ],
+          "candidateMinMaxMs": [
+            72.8641480000224,
+            96.94273199999589
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 0.9745222852460368,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 2285.4499659999856,
+          "reductionPercent": 96.34536448919962
+        },
+        {
+          "history": 1000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 8.202860999997938,
+          "candidateMedianActiveMs": 9.430984999999055,
+          "baselineMinMaxMs": [
+            7.507759999993141,
+            9.030245000001742
+          ],
+          "candidateMinMaxMs": [
+            8.361197999998694,
+            13.108338999998523
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 36.93805010441699,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -1.2281240000011167,
+          "reductionPercent": -14.97189821943131
+        },
+        {
+          "history": 1000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3549.657169000013,
+          "candidateMedianActiveMs": 145.07744099998672,
+          "baselineMinMaxMs": [
+            3530.099513000023,
+            3569.183742000001
+          ],
+          "candidateMinMaxMs": [
+            139.94754099997226,
+            147.25357299997995
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.4441765078219375,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 3404.579728000026,
+          "reductionPercent": 95.91291682287005
+        },
+        {
+          "history": 10000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3597.2228469999827,
+          "candidateMedianActiveMs": 147.47877299999527,
+          "baselineMinMaxMs": [
+            3521.308957999994,
+            3622.932176999995
+          ],
+          "candidateMinMaxMs": [
+            145.3091170000116,
+            149.2016310000181
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.3317495214153814,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3449.7440739999874,
+          "reductionPercent": 95.90020470588888
+        },
+        {
+          "history": 10000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3041.947444999969,
+          "candidateMedianActiveMs": 99.43931400001748,
+          "baselineMinMaxMs": [
+            2978.762836000009,
+            3069.0963820000034
+          ],
+          "candidateMinMaxMs": [
+            97.91514399999869,
+            109.85352900002908
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 4.969456624075856,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 2942.5081309999514,
+          "reductionPercent": 96.73106403716918
+        },
+        {
+          "history": 10000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 8.397769000002882,
+          "candidateMedianActiveMs": 8.167332000011811,
+          "baselineMinMaxMs": [
+            6.994527999981074,
+            9.333020999998553
+          ],
+          "candidateMinMaxMs": [
+            7.766100000008009,
+            8.487255000014557
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 27.53149826632843,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": 0.23043699999107048,
+          "reductionPercent": 2.744026419290545
+        },
+        {
+          "history": 10000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3590.6154080000124,
+          "candidateMedianActiveMs": 142.4546069999633,
+          "baselineMinMaxMs": [
+            3533.252829999983,
+            3757.473079999938
+          ],
+          "candidateMinMaxMs": [
+            139.45089100001496,
+            144.63526299994555
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.2042690005355758,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3448.160801000049,
+          "reductionPercent": 96.0325852030109
+        },
+        {
+          "history": 100000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3525.053561000008,
+          "candidateMedianActiveMs": 141.42738699994516,
+          "baselineMinMaxMs": [
+            3467.820240000001,
+            3999.3729169999424
+          ],
+          "candidateMinMaxMs": [
+            139.77092899999116,
+            146.35070700003416
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.6638801248689132,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3383.6261740000627,
+          "reductionPercent": 95.98793650784063
+        },
+        {
+          "history": 100000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 2955.0509930000117,
+          "candidateMedianActiveMs": 101.09857899998315,
+          "baselineMinMaxMs": [
+            2950.274351,
+            2966.188419999962
+          ],
+          "candidateMinMaxMs": [
+            98.16361200000392,
+            112.0074640000239
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 2.396899025317949,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 2853.9524140000285,
+          "reductionPercent": 96.5787873292384
+        },
+        {
+          "history": 100000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 9.144571000011638,
+          "candidateMedianActiveMs": 9.506697000004351,
+          "baselineMinMaxMs": [
+            8.31720900000073,
+            9.639220000011846
+          ],
+          "candidateMinMaxMs": [
+            7.7779110000119545,
+            10.33602599997539
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 33.25663183314169,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -0.36212599999271333,
+          "reductionPercent": -3.9600108085141716
+        },
+        {
+          "history": 100000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3528.6176759999944,
+          "candidateMedianActiveMs": 147.80734200007282,
+          "baselineMinMaxMs": [
+            3468.0976340000634,
+            3543.4974229999934
+          ],
+          "candidateMinMaxMs": [
+            146.99541699991096,
+            150.55280999996467
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.0394306896401793,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3380.8103339999216,
+          "reductionPercent": 95.81118286048984
+        }
+      ]
+    },
+    {
+      "name": "service-b0-b2",
+      "leftArm": "B0",
+      "rightArm": "B2",
+      "reportSha256": "1d8f28f508dc09470b1a7b24df3ec6bb15314a9bdc4f9a41a0e657ab10b87617",
+      "noiseReport": "service-aa-b0",
+      "noiseReportSha256": "1d88dea61820d5555af08dc1f6079f3820ccb0e3b429105951ad06eca426d08a",
+      "pairedSeriesIndependent": true,
+      "samplesPerArmCase": 5,
+      "cases": [
+        {
+          "history": 1000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4022.476887999994,
+          "candidateMedianActiveMs": 146.22627600000123,
+          "baselineMinMaxMs": [
+            3822.4295709999988,
+            4120.211856000002
+          ],
+          "candidateMinMaxMs": [
+            142.26523100000486,
+            151.92092400000547
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.4079047972212446,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 3876.2506119999925,
+          "reductionPercent": 96.36477026291365
+        },
+        {
+          "history": 1000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3200.9667550000013,
+          "candidateMedianActiveMs": 99.1924380000055,
+          "baselineMinMaxMs": [
+            3087.258604999981,
+            3244.233967
+          ],
+          "candidateMinMaxMs": [
+            96.46770899998955,
+            102.08299999999144
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 3.9822120206785225,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 3101.774316999996,
+          "reductionPercent": 96.90117250218036
+        },
+        {
+          "history": 1000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 7.083709999998973,
+          "candidateMedianActiveMs": 8.511925999999221,
+          "baselineMinMaxMs": [
+            6.529521000004024,
+            8.549729999998817
+          ],
+          "candidateMinMaxMs": [
+            6.9068740000002435,
+            9.124029999999038
+          ],
+          "pairedBeyondNoise": 1,
+          "noisePercent": 15.945874769827368,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -1.4282160000002477,
+          "reductionPercent": -20.161977268979882
+        },
+        {
+          "history": 1000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4247.867891000031,
+          "candidateMedianActiveMs": 145.3161140000011,
+          "baselineMinMaxMs": [
+            4089.4654800000135,
+            4276.243285000004
+          ],
+          "candidateMinMaxMs": [
+            141.70743399999628,
+            146.3861699999834
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.8842439321434798,
+          "gate": "nonregression",
+          "passed": true,
+          "absoluteReductionMs": 4102.55177700003,
+          "reductionPercent": 96.57908113602396
+        },
+        {
+          "history": 10000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4136.773576000021,
+          "candidateMedianActiveMs": 145.51087600000028,
+          "baselineMinMaxMs": [
+            4054.8123040000064,
+            4249.535790999973
+          ],
+          "candidateMinMaxMs": [
+            141.01823600000353,
+            147.94934599999397
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.7474622955774097,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3991.262700000021,
+          "reductionPercent": 96.48250325219155
+        },
+        {
+          "history": 10000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 3531.4280059999437,
+          "candidateMedianActiveMs": 96.69450899999356,
+          "baselineMinMaxMs": [
+            3419.0094280000194,
+            3550.921215999988
+          ],
+          "candidateMinMaxMs": [
+            95.36784199994872,
+            111.4834330000158
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.6304743570125815,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 3434.73349699995,
+          "reductionPercent": 97.26188644265979
+        },
+        {
+          "history": 10000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 7.995563999982551,
+          "candidateMedianActiveMs": 8.1081299999787,
+          "baselineMinMaxMs": [
+            7.773790999985067,
+            8.851336000021547
+          ],
+          "candidateMinMaxMs": [
+            7.081283000006806,
+            10.036940999998478
+          ],
+          "pairedBeyondNoise": 0,
+          "noisePercent": 23.08985200646279,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": -0.11256599999614991,
+          "reductionPercent": -1.4078556559161501
+        },
+        {
+          "history": 10000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 4555.812348000036,
+          "candidateMedianActiveMs": 144.60336100001587,
+          "baselineMinMaxMs": [
+            4457.660197999998,
+            4739.208488000004
+          ],
+          "candidateMinMaxMs": [
+            141.70842199993785,
+            159.8448409999546
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 11.830110496052082,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 4411.20898700002,
+          "reductionPercent": 96.82595879824822
+        },
+        {
+          "history": 100000,
+          "scenario": "ordered",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 8153.514350999991,
+          "candidateMedianActiveMs": 145.65450699999928,
+          "baselineMinMaxMs": [
+            7994.820800000016,
+            8191.836291000043
+          ],
+          "candidateMinMaxMs": [
+            144.48262399999658,
+            147.88194899997325
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 1.0693214938958222,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 8007.859843999991,
+          "reductionPercent": 98.21359844688155
+        },
+        {
+          "history": 100000,
+          "scenario": "replay",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 7557.748203999887,
+          "candidateMedianActiveMs": 104.02474000002258,
+          "baselineMinMaxMs": [
+            7556.406562000106,
+            7635.838471999974
+          ],
+          "candidateMinMaxMs": [
+            102.1940749999485,
+            105.073810000089
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 0.9332642395176317,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 7453.723463999864,
+          "reductionPercent": 98.62360140623674
+        },
+        {
+          "history": 100000,
+          "scenario": "late-gap",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 1,
+          "baselineMedianActiveMs": 24.463751000002958,
+          "candidateMedianActiveMs": 9.073600000003353,
+          "baselineMinMaxMs": [
+            22.097215999965556,
+            25.08868300000904
+          ],
+          "candidateMinMaxMs": [
+            8.670910999993794,
+            10.470046999980696
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 39.768871890266304,
+          "gate": "structural-only",
+          "passed": null,
+          "absoluteReductionMs": 15.390150999999605,
+          "reductionPercent": 62.91002144355436
+        },
+        {
+          "history": 100000,
+          "scenario": "warm-suffix",
+          "samplesPerArm": 5,
+          "attemptsPerArm": 512,
+          "baselineMedianActiveMs": 8614.058503000007,
+          "candidateMedianActiveMs": 151.01604899996892,
+          "baselineMinMaxMs": [
+            8491.171793999907,
+            8667.966293999983
+          ],
+          "candidateMinMaxMs": [
+            149.52162400016095,
+            158.1378309999709
+          ],
+          "pairedBeyondNoise": 5,
+          "noisePercent": 0.7615089382403567,
+          "gate": "improvement",
+          "passed": true,
+          "absoluteReductionMs": 8463.042454000039,
+          "reductionPercent": 98.2468652964526
+        }
+      ]
+    }
+  ]
+}

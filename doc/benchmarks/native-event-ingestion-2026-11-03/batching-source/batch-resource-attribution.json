@@ -1,0 +1,398 @@
+{
+  "sourceReportSha256": "8342df9d6fdb4310e8106c373a520a306bb98b7cdc61316583ad9c2c28f59e00",
+  "scope": "SOURCE active-append cost attribution, not whole-app streaming or browser completion",
+  "limitations": [
+    "Timed CPU/latency uses8x64=512attempts perarm; SQL/transaction/lock/plans are separate32attempt diagnostics, not timed SQLcounts",
+    "Diagnostic lock-acquisition query time includes network/row-read cost; pure lock wait bounded0..acquisition-query time",
+    "Held-through-commit is client-observed; pertransaction duration can increase for a batch while totaltransactions/event decreases",
+    "PG CPU eight-block sum has up to80ms quantization per arm (~10ms/tick). Do not infer sub-tick precision; includes owned PG processes, not exact CPU accounting",
+    "Owner CPU/heap/RSS describe a shared harness process; PG summedRSS double-counts shared pages; memory not owned by a variant",
+    "Late-gap is one-operation structural-only, preserve observed regressions without timing acceptance claim"
+  ],
+  "rows": [
+    {
+      "history": 1000,
+      "scenario": "ordered",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3640.2568239999964,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1939.060546875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.7187500000000009,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9950070000013511,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.750787000000855,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 144.2716610000025,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 130.736328125,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.09765625,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.015451999999641,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 18.867740000001504,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "replay",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 2372.143151999997,
+        "diagnosticSqlCallsPerEvent": 4,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1456.4921875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.1328125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9691975000023376,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 4.71618149999631,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 86.69318600001134,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 74.875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.078125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9303460000010091,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 9.702470000003814,
+        "diagnosticHistoryScanRows": [
+          16
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "late-gap",
+      "attemptedEventsPerPairArm": 1,
+      "separateSqlDiagnosticAttemptCountPerArm": 1,
+      "baseline": {
+        "medianActiveAppendMs": 8.202860999997938,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2268.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0252410000030068,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 7.823311000000103,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 9.430984999999055,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2536.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.8426319999998668,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.996727999998257,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "warm-suffix",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3549.657169000013,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1890.1875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.73828125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9831935000038357,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.570182000003115,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 145.07744099998672,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 120.244140625,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.09765625,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.014169000001857,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 11.404420999999274,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "ordered",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3597.2228469999827,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1831.369140625,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.69921875,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9740680000031716,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.989542999996047,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 147.47877299999527,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 128.07421875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.1171875,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9889059999986785,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 11.05949800000235,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "replay",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3041.947444999969,
+        "diagnosticSqlCallsPerEvent": 4,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1541.615234375,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.26953125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9764394999947399,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 4.3123464999953285,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 99.43931400001748,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 73.341796875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0390625,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0798920000088401,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.57102699999814,
+        "diagnosticHistoryScanRows": [
+          16
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "late-gap",
+      "attemptedEventsPerPairArm": 1,
+      "separateSqlDiagnosticAttemptCountPerArm": 1,
+      "baseline": {
+        "medianActiveAppendMs": 8.397769000002882,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2258.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.1894979999924544,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.128256999974838,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 8.167332000011811,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2159.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.915975999989314,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 9.75109799997881,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "warm-suffix",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3590.6154080000124,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1841.40234375,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.69921875,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9779935000115074,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 5.906364499998745,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 142.4546069999633,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 105.21484375,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.1171875,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.020319000002928,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 11.599706000008155,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "ordered",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3525.053561000008,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1785.845703125,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.6992187500000284,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9906805000064196,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.140446499979589,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 141.42738699994516,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 103.818359375,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.078125,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9893319999973755,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 11.951862999994773,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "replay",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 2955.0509930000117,
+        "diagnosticSqlCallsPerEvent": 4,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1566.98046875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.26953125,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.0101949999952922,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 4.804357000000891,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 101.09857899998315,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 72.533203125,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0390625,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.7430600000079721,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 9.014752999995835,
+        "diagnosticHistoryScanRows": [
+          16
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "late-gap",
+      "attemptedEventsPerPairArm": 1,
+      "separateSqlDiagnosticAttemptCountPerArm": 1,
+      "baseline": {
+        "medianActiveAppendMs": 9.144571000011638,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2303.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.2113520000129938,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.102460000023711,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 9.506697000004351,
+        "diagnosticSqlCallsPerEvent": 7,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 2384.0,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.0,
+        "diagnosticMedianLockAcquisitionQueryMs": 1.063564000010956,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 8.16370299999835,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "warm-suffix",
+      "attemptedEventsPerPairArm": 512,
+      "separateSqlDiagnosticAttemptCountPerArm": 32,
+      "baseline": {
+        "medianActiveAppendMs": 3528.6176759999944,
+        "diagnosticSqlCallsPerEvent": 5,
+        "diagnosticTransactionsPerEvent": 1,
+        "medianAppCpuMicrosPerAttempt": 1808.419921875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 1.71875,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.9981740000075661,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 6.3848740000103135,
+        "diagnosticHistoryScanRows": [
+          1
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      },
+      "candidate": {
+        "medianActiveAppendMs": 147.80734200007282,
+        "diagnosticSqlCallsPerEvent": 0.15625,
+        "diagnosticTransactionsPerEvent": 0.03125,
+        "medianAppCpuMicrosPerAttempt": 121.091796875,
+        "medianSampledDatabaseCpuMillisPerAttempt": 0.1171875,
+        "diagnosticMedianLockAcquisitionQueryMs": 0.7315269999671727,
+        "diagnosticMedianClientObservedHeldThroughCommitMsPerTransaction": 13.10272399999667,
+        "diagnosticHistoryScanRows": [
+          32
+        ],
+        "diagnosticStructuralCacheBoundPassed": true
+      }
+    }
+  ]
+}

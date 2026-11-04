@@ -1,0 +1,314 @@
+[
+  {
+    "history": 1000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 3640.2568239999964,
+    "batchMedianActiveMs": 144.2716610000025,
+    "reductionPercent": 96.03677245932683,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 2.168789687380299,
+    "gate": "nonregression",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 1000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 2372.143151999997,
+    "batchMedianActiveMs": 86.69318600001134,
+    "reductionPercent": 96.34536448919961,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 0.9745222852460368,
+    "gate": "nonregression",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 1000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 8.202860999997938,
+    "batchMedianActiveMs": 9.430984999999055,
+    "reductionPercent": -14.97189821943131,
+    "pairedBeyondNoise": 0,
+    "noisePercent": 36.93805010441699,
+    "gate": "structural-only",
+    "passed": null,
+    "timedAttemptCountPerArm": 1,
+    "timedBlockCountPerArm": 1,
+    "timedAttemptsPerBlock": 1,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 1,
+      "sqlCallsPerAttempt": {
+        "baseline": 7,
+        "candidate": 7
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 1000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 3549.657169000013,
+    "batchMedianActiveMs": 145.07744099998672,
+    "reductionPercent": 95.91291682287006,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 1.4441765078219375,
+    "gate": "nonregression",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 10000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 3597.2228469999827,
+    "batchMedianActiveMs": 147.47877299999527,
+    "reductionPercent": 95.90020470588888,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 1.3317495214153814,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 10000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 3041.947444999969,
+    "batchMedianActiveMs": 99.43931400001748,
+    "reductionPercent": 96.73106403716916,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 4.969456624075856,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 10000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 8.397769000002882,
+    "batchMedianActiveMs": 8.167332000011811,
+    "reductionPercent": 2.7440264192905452,
+    "pairedBeyondNoise": 0,
+    "noisePercent": 27.53149826632843,
+    "gate": "structural-only",
+    "passed": null,
+    "timedAttemptCountPerArm": 1,
+    "timedBlockCountPerArm": 1,
+    "timedAttemptsPerBlock": 1,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 1,
+      "sqlCallsPerAttempt": {
+        "baseline": 7,
+        "candidate": 7
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 10000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 3590.6154080000124,
+    "batchMedianActiveMs": 142.4546069999633,
+    "reductionPercent": 96.0325852030109,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 1.2042690005355758,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 100000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 3525.053561000008,
+    "batchMedianActiveMs": 141.42738699994516,
+    "reductionPercent": 95.98793650784063,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 1.6638801248689132,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 100000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 2955.0509930000117,
+    "batchMedianActiveMs": 101.09857899998315,
+    "reductionPercent": 96.5787873292384,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 2.396899025317949,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 100000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 9.144571000011638,
+    "batchMedianActiveMs": 9.506697000004351,
+    "reductionPercent": -3.9600108085141716,
+    "pairedBeyondNoise": 0,
+    "noisePercent": 33.25663183314169,
+    "gate": "structural-only",
+    "passed": null,
+    "timedAttemptCountPerArm": 1,
+    "timedBlockCountPerArm": 1,
+    "timedAttemptsPerBlock": 1,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 1,
+      "sqlCallsPerAttempt": {
+        "baseline": 7,
+        "candidate": 7
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  },
+  {
+    "history": 100000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 3528.6176759999944,
+    "batchMedianActiveMs": 147.80734200007282,
+    "reductionPercent": 95.81118286048984,
+    "pairedBeyondNoise": 5,
+    "noisePercent": 1.0394306896401793,
+    "gate": "improvement",
+    "passed": true,
+    "timedAttemptCountPerArm": 512,
+    "timedBlockCountPerArm": 8,
+    "timedAttemptsPerBlock": 64,
+    "separateSqlDiagnostic": {
+      "attemptedEventsPerArm": 32,
+      "sqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 0.15625
+      },
+      "transactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 0.03125
+      },
+      "scope": "Separate posttiming recorded query plan/call-count diagnostic; NOT SQL counts inside the timed64-eventblocks"
+    }
+  }
+]

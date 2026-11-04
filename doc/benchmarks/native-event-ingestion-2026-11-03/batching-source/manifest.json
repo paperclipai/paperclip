@@ -1,0 +1,277 @@
+{
+  "schema": "paperclip.native-ingestion.source-evidence.v1",
+  "scope": "Incremental and combined SOURCE active append cost only; no application/browser/production/full-task acceptance",
+  "sourceRefs": {
+    "B0": "5337df423e622755d44f3ece5447d1e0beef5f40",
+    "B1": "e9b909015ad3d517f28c45f0c66c8f41d6112b4b",
+    "B2": "fcb5d94848b3c4b0b32096ff5e023618e0f0637b"
+  },
+  "protocolSha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3",
+  "measurementSha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039",
+  "workloadSha256": "ca4894b0723d0bffff0fc88d1596d64aa8fd75aa1dd8d861372ea993db24e164",
+  "gateSha256": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc",
+  "rawProjection": "None. All decoded raw reports/traces/logs and actual command receipts retain exact historical bytes. Display prose identifies owner prepared-query execute counts; legacy JSON SQL-named fields are untouched.",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 3068,
+      "sha256": "ad575f4238e21165328cdee581af896ee52016aecd44b4b57f50f55f1d9f7b89"
+    },
+    {
+      "path": "batch-resource-attribution.json",
+      "bytes": 16520,
+      "sha256": "85766f8e347508e3bff586011caa06d3b645ac4eb22eec93a0c5bcbb7b13b13b"
+    },
+    {
+      "path": "batch-result-table.json",
+      "bytes": 9543,
+      "sha256": "44c6bf8ab8d559dcf1a6fd051faaf9dad839e961c1a274112ac67f78095e832f"
+    },
+    {
+      "path": "combined-resource-attribution.json",
+      "bytes": 16450,
+      "sha256": "d9824a4136b04b39930b7039b4bdd0225ef9f30245b19a5da2fd7216d26f39da"
+    },
+    {
+      "path": "packaging-verification.json",
+      "bytes": 1614,
+      "sha256": "c56454813ce488f7360ff9315018c5450acb81625a7016872f6762339c8a895a"
+    },
+    {
+      "path": "paired-series-table.json",
+      "bytes": 26985,
+      "sha256": "84967bb8d3399de0dedb91c2aba79271514baa6ac74298303a233d3b9e640839"
+    },
+    {
+      "path": "service-aa-b1-commands.json",
+      "bytes": 952,
+      "sha256": "296fd3b5b334f590656c9995393e3df3dad20b4fb6068cc26a21324b81f7aa49"
+    },
+    {
+      "path": "service-aa-b1.json.blocks.jsonl.gz",
+      "bytes": 151633,
+      "sha256": "958c471392ec99d520e58e9f6ee312d7df5403bb775c89ba8741777ce0d94565",
+      "decompressedBytes": 1492835,
+      "decompressedSha256": "3936bcd65573f48e5585e437e1cfaf921153ff00b5951dd14644d25007012f31"
+    },
+    {
+      "path": "service-aa-b1.json.gz",
+      "bytes": 380712,
+      "sha256": "093a8dee12a55c5dd177ca62b91356ead5ad17ee187fca5d2866dc9fb34ea221",
+      "decompressedBytes": 5218637,
+      "decompressedSha256": "a47f34fd05d61bf0e7451b9e6daf486f7bc4563bf98792b7bfb7782af552f8f3"
+    },
+    {
+      "path": "service-aa-b1.quiet.json",
+      "bytes": 311,
+      "sha256": "9d1d5d28240ef9753884824c5de8f80d8a4dbdcb3995917086f5130c1f9a2e1e"
+    },
+    {
+      "path": "service-aa-b1.repeatability.json",
+      "bytes": 2176,
+      "sha256": "e0b0c2ec7c8ed2f36fa097848d555151d05f7cd2da39d30434d35355d40fb5e6"
+    },
+    {
+      "path": "service-aa-b1.started.json",
+      "bytes": 735,
+      "sha256": "38b2b0094a01053730f4b1fe16fa8eeabf9422173ec5ad275ad3451396338a2b"
+    },
+    {
+      "path": "service-b0-b2-commands.json",
+      "bytes": 1064,
+      "sha256": "880298118645045e935ec1b119e5a7baec1f622654515f4c8c84f6af3e19d21f"
+    },
+    {
+      "path": "service-b0-b2-launch.log",
+      "bytes": 196,
+      "sha256": "94b0e672c5af670f78f7e54307f270a2f5bae50e9d4288952b696edd1cad5f47"
+    },
+    {
+      "path": "service-b0-b2.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "service-b0-b2.json.blocks.jsonl.gz",
+      "bytes": 148697,
+      "sha256": "93357a041a441a71f611f74d02e5b539fe9a25a345f7ae52a3dc0a1e3941d117",
+      "decompressedBytes": 1486579,
+      "decompressedSha256": "4c446903fe841242349e8a5b5a7c58fe35a6a2c625a4ea7a22b05740bbb69e17"
+    },
+    {
+      "path": "service-b0-b2.json.gz",
+      "bytes": 356135,
+      "sha256": "6f18cc1368443e7eb254dae9af7a017c263e23048bc2979d5c7e8ac391761cda",
+      "decompressedBytes": 3552114,
+      "decompressedSha256": "1d8f28f508dc09470b1a7b24df3ec6bb15314a9bdc4f9a41a0e657ab10b87617"
+    },
+    {
+      "path": "service-b0-b2.launch.sh",
+      "bytes": 865,
+      "sha256": "bd28671366ee118fe802145383e51634626d591afbd8b9327846573c1083bd82"
+    },
+    {
+      "path": "service-b0-b2.measurement.log.gz",
+      "bytes": 356208,
+      "sha256": "9188536ba0b99f33a982464e21a24781e8b03320195477cf406b2b557b6a39de",
+      "decompressedBytes": 3552533,
+      "decompressedSha256": "17b5119b4812552e1242a25769c21c880d369f7848c7404af0e2791c9f1c3d6c"
+    },
+    {
+      "path": "service-b0-b2.quiet.json",
+      "bytes": 289,
+      "sha256": "1c641afaba1130ccb1d732abe301585a4bfd9713b7c156a7fff74fe4fc8ebb23"
+    },
+    {
+      "path": "service-b0-b2.started",
+      "bytes": 26,
+      "sha256": "f8f26db2a6a806e63b9ea08d06e1be38ea42bf3c7be46645976041207ea7ee84"
+    },
+    {
+      "path": "service-b1-b2-commands.json",
+      "bytes": 1063,
+      "sha256": "87f0ac0904c9c7f04b58cfba394b3cee71128fa9cfb3f69ea7484e43e0261984"
+    },
+    {
+      "path": "service-b1-b2-launch.log",
+      "bytes": 196,
+      "sha256": "0d0d99bc11f409791984b5a90410a0e458641512f3ece5f3b38c98f195d8585f"
+    },
+    {
+      "path": "service-b1-b2.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "service-b1-b2.json.blocks.jsonl.gz",
+      "bytes": 148453,
+      "sha256": "dab20a47e7046fdf2a465568ff58a74b78f0b6a191866cd1d390ea158d84dd65",
+      "decompressedBytes": 1485383,
+      "decompressedSha256": "445ff42f764f3ed9958c2cd7af31f71843b8d5ac1e0f1c64abf792fcbc4d71ff"
+    },
+    {
+      "path": "service-b1-b2.json.gz",
+      "bytes": 366297,
+      "sha256": "a51aa92d393bd16fc40eeea2a2fc8171085888e8f5c35e036d1bbb2a626c3078",
+      "decompressedBytes": 4009821,
+      "decompressedSha256": "8342df9d6fdb4310e8106c373a520a306bb98b7cdc61316583ad9c2c28f59e00"
+    },
+    {
+      "path": "service-b1-b2.launch.sh",
+      "bytes": 865,
+      "sha256": "2a422805c5c9d2430acee0badb495ce500481a77e0c5ffd6edb6b26729d21ba1"
+    },
+    {
+      "path": "service-b1-b2.measurement.log.gz",
+      "bytes": 366299,
+      "sha256": "d10af05e5dc02c5f73cfda4e26dbeecc2fb37669fe671b5905eb06c105c4dd3f",
+      "decompressedBytes": 4009822,
+      "decompressedSha256": "6fae72f514dc325bc8c7e9ee711a14a2658e7de3379104244cba794071971177"
+    },
+    {
+      "path": "service-b1-b2.quiet.json",
+      "bytes": 289,
+      "sha256": "4a4263d992a1a1a7d9d086341f21a4420b4a27ada1c3a0b760d1f627ed22b1b1"
+    },
+    {
+      "path": "service-b1-b2.started",
+      "bytes": 26,
+      "sha256": "602afdd282eba138194b933ba86b1a7958f54b3d4d522873caaa2c688403c61a"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 18955,
+      "sha256": "8497c805b6e25a22d6cc8053023a77b54a01b5b45624f4b23eda444fad244950"
+    }
+  ],
+  "externalOwnedFile": {
+    "repositoryPath": "doc/benchmarks/2026-11-03-native-event-ingestion-batching-source.md",
+    "bytes": 18795,
+    "sha256": "2b47ecf474c42c2f446cef09ffcf9d871959547389e2bcf9320b3d7d23b10e61"
+  },
+  "linkedCommonFiles": [
+    {
+      "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/prospective-protocol.md",
+      "sha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3"
+    },
+    {
+      "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/measurement-source.ts",
+      "sha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039"
+    },
+    {
+      "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/gates.mjs",
+      "sha256": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc"
+    }
+  ],
+  "excludedPriorAa": {
+    "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/excluded-monolithic-service-aa-b0.json.gz",
+    "decompressedSha256": "cfcfeb3c12812dbe48c2afe6013320922d5670a410d033d6ad9a3a2f91236ef8",
+    "calibrationEligible": false
+  },
+  "pending": [
+    "Accepted application A/A and matched application/browser comparisons",
+    "Sparse-stream/control responsiveness and remaining full-plan gates",
+    "Final current-head delivery checks"
+  ],
+  "applicationStatus": "Full H4 acceptance remains failed: latest H4c B0 and B2 both missed the original120-second streaming deadline; no accepted application A/A. H5 prospective/unexecuted; upstream disk/journal evidence diagnostic only.",
+  "ownerQueryCounterScope": "Drizzle preparedQuery.execute calls wrapped by event owner only; excludes driver BEGIN/COMMIT and other wire SQL. Transaction counts separate. Raw JSON field names unchanged.",
+  "allFiveSourceStagesPassed": true,
+  "sourceStages": {
+    "service-aa-b0": {
+      "reportSha256": "1d88dea61820d5555af08dc1f6079f3820ccb0e3b429105951ad06eca426d08a",
+      "cases": 12,
+      "pairs": 60,
+      "complete": true,
+      "cleanupComplete": true,
+      "repeatabilityPassed": true
+    },
+    "service-b0-b1": {
+      "reportSha256": "283eef0a9d5cf3b39bb7ebf7444ced40025f499e51847c2cc205f3101c1f1470",
+      "cases": 12,
+      "pairs": 60,
+      "complete": true,
+      "cleanupComplete": true,
+      "timingCasesPassed": 9,
+      "timingCasesFailed": 0,
+      "structuralCases": 3
+    },
+    "service-aa-b1": {
+      "reportSha256": "a47f34fd05d61bf0e7451b9e6daf486f7bc4563bf98792b7bfb7782af552f8f3",
+      "cases": 12,
+      "pairs": 60,
+      "complete": true,
+      "cleanupComplete": true,
+      "repeatabilityPassed": true
+    },
+    "service-b1-b2": {
+      "reportSha256": "8342df9d6fdb4310e8106c373a520a306bb98b7cdc61316583ad9c2c28f59e00",
+      "cases": 12,
+      "pairs": 60,
+      "complete": true,
+      "cleanupComplete": true,
+      "timingCasesPassed": 9,
+      "timingCasesFailed": 0,
+      "structuralCases": 3
+    },
+    "service-b0-b2": {
+      "reportSha256": "1d8f28f508dc09470b1a7b24df3ec6bb15314a9bdc4f9a41a0e657ab10b87617",
+      "cases": 12,
+      "pairs": 60,
+      "complete": true,
+      "cleanupComplete": true,
+      "timingCasesPassed": 9,
+      "timingCasesFailed": 0,
+      "structuralCases": 3
+    }
+  },
+  "linkedCommonReports": [
+    {
+      "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/service-aa-b0.json.gz",
+      "decompressedSha256": "1d88dea61820d5555af08dc1f6079f3820ccb0e3b429105951ad06eca426d08a"
+    },
+    {
+      "repositoryPath": "doc/benchmarks/native-event-ingestion-2026-11-03/interleaved-source/service-b0-b1.json.gz",
+      "decompressedSha256": "283eef0a9d5cf3b39bb7ebf7444ced40025f499e51847c2cc205f3101c1f1470"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "scope": "Offline artifact/number validation only; no VM, benchmarks, application/provider runs, builds or runtime tests",
+  "allEightCompressedPayloadsEqualOriginalBytes": true,
+  "deterministicGzipMtimeZero": true,
+  "bothFreshAaPassUnchangedNoiseGates": true,
+  "allThreeComparisonsPassUnchangedNoiseGates": true,
+  "comparisonTimingCasesPassed": 27,
+  "comparisonStructuralCases": 9,
+  "allFiveReports600SampleEventCountsAndArmMediansVerified": true,
+  "allThreeIndependentPairedSeriesMediansSpreadsAndCountsVerified": true,
+  "incrementalAndCombined48ResourceArmRowsIndependentlyRecomputed": true,
+  "queryCounterScope": "Owner Drizzle preparedQuery.execute only; excludes driver BEGIN/COMMIT and other wire SQL. Transaction counter separate. Legacy raw JSON field names preserved.",
+  "timedVsDiagnosticDenominators": "Timed ordinary512attempts8x64 versus separate ordinary query diagnostic32; late-gap1",
+  "historicalDirectChildCommandReceipts": "B1AA,B1B2,B0B2 exact receipts now retained; each exit0. Portable recipes use same arguments with supplied paths.",
+  "correctedFrozenDerivationSha256": {
+    "batch-result-table.json": "44c6bf8ab8d559dcf1a6fd051faaf9dad839e961c1a274112ac67f78095e832f",
+    "batch-resource-attribution.json": "85766f8e347508e3bff586011caa06d3b645ac4eb22eec93a0c5bcbb7b13b13b"
+  },
+  "scan": {
+    "files": 31,
+    "decompressedBytes": 24927097,
+    "actualCredentialSourcePresent": true,
+    "actualCredentialMatches": 0,
+    "patternMatches": {
+      "credential_literal": 0,
+      "vault_or_private_user_or_account": 0,
+      "nonloopback_credential_url": 0
+    }
+  }
+}

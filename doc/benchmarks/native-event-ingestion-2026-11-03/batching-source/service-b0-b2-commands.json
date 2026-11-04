@@ -1,0 +1,26 @@
+[
+  {
+    "index": 1,
+    "stage": "service-b0-b2",
+    "cwd": "/home/ubuntu/native-ingestion/fixture2-batching",
+    "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+    "args": [
+      "--import",
+      "./server/node_modules/tsx/dist/loader.mjs",
+      "/home/ubuntu/native-ingestion/helpers/benchmark-native-event-ingestion-interleaved.mts",
+      "--app-root=/home/ubuntu/native-ingestion/fixture2-batching",
+      "--baseline-ref=5337df423e622755d44f3ece5447d1e0beef5f40",
+      "--phase=batch",
+      "--output=/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-b0-b2.json",
+      "--noise-report=/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-aa-b0.json",
+      "--require-acceptance"
+    ],
+    "environmentOverrides": {},
+    "startedAt": "2026-11-04T03:20:19.608Z",
+    "log": "/home/ubuntu/native-ingestion/evidence/fixture2/interleaved-service/service-b0-b2.log",
+    "childPid": 1391638,
+    "finishedAt": "2026-11-04T03:28:14.925Z",
+    "code": 0,
+    "signal": null
+  }
+]
