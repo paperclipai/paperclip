@@ -473,8 +473,6 @@ async function settle(): Promise<void> {
 beforeAll(async () => {
   vi.resetModules();
   registerModuleMocks();
-  // Cold route transforms belong to suite setup, not the first login's 15s budget.
-  // Each test still gets a fresh app and resets its fixture state below.
   appModules = await loadAppModules();
 }, 60_000);
 
