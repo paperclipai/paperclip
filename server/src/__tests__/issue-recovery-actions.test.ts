@@ -435,6 +435,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const input = { companyId, sourceIssueId, kind: "stranded_assigned_issue" as const, ownerType: "agent" as const,
       ownerAgentId: managerId, cause: "stranded_assigned_issue", fingerprint: "concurrent-source",
+      evidence: { sourceRunId: "concurrent-source-run" }, lastAttemptAt: new Date("2026-11-03T12:00:00Z"),
       nextAction: "Restore the existing execution path." };
     let release!: () => void, acquired!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -464,6 +465,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       causeConstraint: result.reason?.cause?.constraint_name,
     }] : [])).toEqual([]);
     expect(results.map(result => result.status === "fulfilled" ? result.value.id : null)).toEqual([active[0]!.id, active[0]!.id]);
+    // The lost insert uses the existing upsert merge, just like a second sequential call.
+    expect(active[0]).toMatchObject({
+      status: "active", attemptCount: 2, maxAttempts: null, timeoutAt: null,
+      ownerType: "agent", ownerAgentId: managerId, ownerUserId: null,
+      evidence: input.evidence, lastAttemptAt: input.lastAttemptAt,
+      nextAction: input.nextAction, wakePolicy: null, monitorPolicy: null,
+    });
   });
 
   it("upserts one active source-scoped action per issue and keeps company scoping explicit", async () => {
