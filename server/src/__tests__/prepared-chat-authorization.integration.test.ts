@@ -57,9 +57,9 @@ describe("prepared bound-chat authorization", () => {
 
   it("rechecks setup generation and credential fences on a reused template", async () => {
     const startedAt = new Date(Date.now() - 10_000);
-    await db.update(chatEndpoints).set({ status: "verifying", setup: {
+    await db.update(chatEndpoints).set({ status: "verifying", setup: sql`${JSON.stringify({
       step: "test", testStartedAt: startedAt.toISOString(), runtimeGeneration: 7,
-    } }).where(eq(chatEndpoints.id, endpointId));
+    })}::jsonb` }).where(eq(chatEndpoints.id, endpointId));
     try {
       await expect(authorize()).rejects.toThrow(denied);
       await db.update(chatDeliveries).set({ normalizedEvent: { runtimeContext: {
@@ -75,7 +75,7 @@ describe("prepared bound-chat authorization", () => {
       } } }).where(eq(chatDeliveries.id, deliveryId));
       await expect(authorize()).rejects.toThrow(denied);
     } finally {
-      await db.update(chatEndpoints).set({ status: "active", setup: {} }).where(eq(chatEndpoints.id, endpointId));
+      await db.update(chatEndpoints).set({ status: "active", setup: sql`'{}'::jsonb` }).where(eq(chatEndpoints.id, endpointId));
     }
   });
 
@@ -83,19 +83,19 @@ describe("prepared bound-chat authorization", () => {
     await authorize();
     await expect(db.transaction(async (tx) => {
       await tx.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, endpointId));
-      await expect(authorize(tx)).rejects.toThrow(denied);
+      await expect(authorize(tx as unknown as Db)).rejects.toThrow(denied);
       await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
       await expect(tx.transaction(async (savepoint) => {
         await savepoint.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpointId));
-        await expect(authorize(savepoint)).resolves.toEqual({ endpointId, conversationId });
+        await expect(authorize(savepoint as unknown as Db)).resolves.toEqual({ endpointId, conversationId });
         throw new Error("rollback-savepoint");
       })).rejects.toThrow("rollback-savepoint");
-      await expect(authorize(tx)).rejects.toThrow(denied);
+      await expect(authorize(tx as unknown as Db)).rejects.toThrow(denied);
       throw new Error("rollback-outer");
     })).rejects.toThrow("rollback-outer");
     await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
     await db.transaction(async (tx) => {
-      await expect(authorize(tx)).resolves.toEqual({ endpointId, conversationId });
+      await expect(authorize(tx as unknown as Db)).resolves.toEqual({ endpointId, conversationId });
     });
   });
 
@@ -115,16 +115,16 @@ describe("prepared bound-chat authorization", () => {
       await acquiredPromise;
       await expect(authorize()).resolves.toEqual({ endpointId, conversationId });
       let contention: unknown;
-      try { await db.transaction((tx) => authorizeChatConversationForBoundRun(tx, binding, context, "nonblocking")); }
+      try { await db.transaction((tx) => authorizeChatConversationForBoundRun(tx as unknown as Db, binding, context, "nonblocking")); }
       catch (error) { contention = error; }
       expect(isExternalChatWaitAuthorizationContention(contention)).toBe(true);
       await expect(db.transaction(async (tx) => {
         await tx.execute(sql`set local lock_timeout = '100ms'`);
-        await authorizeChatConversationForBoundRun(tx, binding, context, "blocking");
+        await authorizeChatConversationForBoundRun(tx as unknown as Db, binding, context, "blocking");
       })).rejects.toThrow();
     } finally { release(); await locker; }
     await db.transaction(async (tx) => {
-      await expect(authorizeChatConversationForBoundRun(tx, binding, context, "nonblocking"))
+      await expect(authorizeChatConversationForBoundRun(tx as unknown as Db, binding, context, "nonblocking"))
         .resolves.toEqual({ endpointId, conversationId });
     });
   });
