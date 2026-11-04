@@ -42,11 +42,15 @@ it("accepts an ordered recorded reassignment without an unrequested human identi
   o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then the task was reassigned to Riley.");
   expect(gradeWorkTimeline(o).passed).toBe(true);
 });
+it("accepts the successor's natural ownership transition in the ordered account", () => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then Riley took over the task.");
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
 it.each([
   "Then the task was reassigned to Riley by Morgan.",
   "Then the task was reassigned to Riley by Jordan.",
   "Then the task was reassigned to Morgan.",
-  "Then Riley took the same task.",
   "Then the task was reassigned to Riley automatically.",
 ])("rejects false or missing handoff provenance: %s", handoff => {
   const o = fixture();

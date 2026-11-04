@@ -129,3 +129,18 @@ it.each([
 ])("does not borrow another actor, paragraph or unrelated result for a repair: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
+
+const coordinatedAccount = bulletedAccount
+  .replace("The task was reassigned to Riley.\n", "")
+  .replace("- Riley added the label while keeping the heading.\n- Verification on the saved bytes passed", "- Riley took the same task, added the label while keeping the heading, and re-ran the check on the saved bytes. It passed");
+it("retains the successor subject through coordinated repair and its nearest command result", () => {
+  expect(grade(coordinatedAccount)).toBe(true);
+});
+it.each([
+  coordinatedAccount.replace("and re-ran", "and Morgan re-ran"),
+  coordinatedAccount.replace("It passed", "Morgan inspected another task. It passed"),
+  coordinatedAccount.replace("It passed", "\n\nIt passed"),
+  coordinatedAccount.replace("added the label", "did not add the label"),
+])("keeps coordinated command ownership and adjacency bounded: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});
