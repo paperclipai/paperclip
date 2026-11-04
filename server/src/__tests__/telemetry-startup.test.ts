@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const stateFactory = vi.hoisted(() => vi.fn(() => ({
@@ -15,6 +18,7 @@ vi.mock("../home-paths.js", () => ({ resolvePaperclipInstanceRoot: () => "/unuse
 vi.mock("../version.js", () => ({ serverVersion: "0.0.0-test" }));
 
 describe("server telemetry startup", () => {
+  const fixtureDirs: string[] = [];
   beforeEach(() => {
     vi.resetModules();
     stateFactory.mockClear();
@@ -31,6 +35,7 @@ describe("server telemetry startup", () => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    for (const dir of fixtureDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
   it("emits the OS family exactly once even when initialization is repeated", async () => {
@@ -47,6 +52,43 @@ describe("server telemetry startup", () => {
     expect(body.events).toEqual([
       { name: "server.started", occurredAt: expect.any(String), dimensions: { os_platform: process.platform } },
     ]);
+  });
+
+  it("disables telemetry after a state failure without aborting startup or retrying", async () => {
+    stateFactory.mockImplementationOnce(() => {
+      throw Object.assign(new Error("private telemetry path cannot be written"), { code: "EACCES" });
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { TelemetryClient } = await import("@paperclipai/shared/telemetry");
+    const periodicFlush = vi.spyOn(TelemetryClient.prototype, "startPeriodicFlush");
+    const { initTelemetry, getTelemetryClient } = await import("../telemetry.js");
+
+    expect(initTelemetry({ enabled: true })).toBeNull();
+    expect(getTelemetryClient()).toBeNull();
+    expect(initTelemetry({ enabled: true })).toBeNull();
+    expect(stateFactory).toHaveBeenCalledTimes(1);
+    expect(periodicFlush).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(warning.mock.calls).toEqual([
+      ["[telemetry] Initialization failed; telemetry is disabled for this process."],
+    ]);
+  });
+
+  it("continues startup when the real state store cannot create its directory", async () => {
+    const fixtureDir = mkdtempSync(path.join(tmpdir(), "paperclip-telemetry-startup-"));
+    fixtureDirs.push(fixtureDir);
+    const blockedStateDir = path.join(fixtureDir, "telemetry");
+    writeFileSync(blockedStateDir, "this file prevents directory creation");
+    const { loadOrCreateState } = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+      "@paperclipai/shared/telemetry",
+    );
+    stateFactory.mockImplementationOnce(() => loadOrCreateState(blockedStateDir, "0.0.0-test"));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { initTelemetry, getTelemetryClient } = await import("../telemetry.js");
+
+    expect(initTelemetry({ enabled: true })).toBeNull();
+    expect(getTelemetryClient()).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("does not initialize state or send when disabled in file configuration", async () => {

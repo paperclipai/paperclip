@@ -70,7 +70,9 @@ helper as well as the separate crash-reporting and local logging sinks.
 The startup helper emits the raw Node.js operating system family once when an
 enabled server telemetry client initializes. It omits OS versions, CPU
 architecture, hostnames, and other machine details. The usual telemetry opt-out
-and CI suppression apply before client initialization. Container and WSL servers
+and CI suppression apply before client initialization. If state storage fails
+at startup, the server disables telemetry for that process and continues to run.
+The warning contains no storage path or underlying error. Container and WSL servers
 report their runtime platform; this does not identify the underlying physical
 host's OS. Count distinct installation identifiers by platform to compare
 installations, since restart event counts also reflect restart frequency.
