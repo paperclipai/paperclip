@@ -4289,6 +4289,47 @@ fn attachment_names_live_work_that_blocks_it() {
 }
 
 #[test]
+fn attachment_refuses_an_active_goal_on_a_running_provider() {
+    let directory = temporary_directory("durable-goal-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids"]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "goal",
+            3,
+            "session.goal.set",
+            json!({"objective": "Keep working.", "status": "active"}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    let error = executor
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("durable_active_goal"), "{error}");
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_attaches_after_a_settled_restore_notice() {
     let directory = temporary_directory("durable-settled-attach");
     let config = provider_config(&directory, &["--durable-turn-ids"]);

@@ -2960,12 +2960,14 @@ impl CodexCommandExecutor {
         if next_state.tool_bridge.pending_calls().next().is_some() {
             blockers.push("durable_pending_tool_calls");
         }
-        // An active goal keeps the run going, and the provider can start its next
-        // turn at any moment even when no turn is running.
-        let goal_active = next_state
-            .goal
-            .as_ref()
-            .is_some_and(|goal| goal.status == "active" || goal.working_now);
+        // An active goal lets a running provider start its next turn at any moment.
+        // A stopped provider starts nothing, and `working_now` can be stale after a
+        // stop, so only the goal's status with a live process counts.
+        let goal_active = self.provider.is_some()
+            && next_state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active");
         if goal_continues_after_turn(&next_state, goal_active) {
             blockers.push("durable_active_goal");
         }
@@ -6012,6 +6014,30 @@ mod tests {
                 payload: json!({}),
             })
             .unwrap();
+        // A paused goal can keep a stale working flag after its provider stops.
+        for (status, working_now) in [("paused", true), ("active", false)] {
+            let mut stopped = state.clone();
+            stopped.goal = Some(SessionGoalSnapshot {
+                objective: "Keep working.".to_owned(),
+                status: status.to_owned(),
+                token_budget: None,
+                tokens_used: 0,
+                elapsed_seconds: 0,
+                iterations: 0,
+                last_reason: None,
+                created_at: None,
+                updated_at: None,
+                completed_at: None,
+                working_now,
+            });
+            let writer = CodexCommandExecutor::new(&directory);
+            writer.persist_state(&stopped).unwrap();
+            let mut executor = CodexCommandExecutor::new(&directory);
+            executor.restore().unwrap();
+            executor
+                .attach_run(&json!({}))
+                .expect("a stopped provider has nothing live");
+        }
         let writer = CodexCommandExecutor::new(&directory);
         writer.persist_state(&state).unwrap();
         let mut executor = CodexCommandExecutor::new(&directory);
@@ -6038,7 +6064,6 @@ mod tests {
             "session_open",
             "active",
             "ambiguous",
-            "goal",
             "thread_missing",
             "generation_missing",
             "profile_changed",
@@ -6049,21 +6074,6 @@ mod tests {
                 "closed" | "session_open" => state.lifecycle = change.to_owned(),
                 "active" => state.active_provider_turn_id = Some("still-active".to_owned()),
                 "ambiguous" => state.ambiguous_turn_start_pending = true,
-                "goal" => {
-                    state.goal = Some(SessionGoalSnapshot {
-                        objective: "Keep working.".to_owned(),
-                        status: "active".to_owned(),
-                        token_budget: None,
-                        tokens_used: 0,
-                        elapsed_seconds: 0,
-                        iterations: 0,
-                        last_reason: None,
-                        created_at: None,
-                        updated_at: None,
-                        completed_at: None,
-                        working_now: false,
-                    })
-                }
                 "thread_missing" => state.thread_id = None,
                 "generation_missing" => state.provider_process_generation = 0,
                 "profile_changed" => {
