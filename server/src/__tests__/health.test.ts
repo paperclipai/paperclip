@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -245,6 +246,37 @@ describe("GET /health", () => {
       ],
     });
     expect(res.body.warnings).toEqual(res.body.databaseBackup.warnings);
+  });
+
+  it("surfaces the truncated-backup warning in full health details", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
+    const olderPath = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
+    const newestPath = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(olderPath, "backup\n".repeat(64));
+    fs.writeFileSync(newestPath, gzipSync(""));
+    fs.utimesSync(olderPath, new Date("2026-07-05T03:17:02Z"), new Date("2026-07-05T03:17:02Z"));
+    fs.utimesSync(newestPath, new Date("2026-07-06T03:17:02Z"), new Date("2026-07-06T03:17:02Z"));
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 48,
+      now: new Date("2026-07-06T13:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      latestBackup: {
+        name: "paperclip-20260706-031702.sql.gz",
+      },
+      warnings: [
+        {
+          code: "database_backup_truncated",
+        },
+      ],
+    });
   });
 
   it("surfaces database backup failure markers in full health details", async () => {

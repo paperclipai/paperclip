@@ -132,24 +132,26 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 // not a finished backup.
 const EMPTY_GZIP_STREAM_BYTES = 20;
 
-function isTierRepresentative(entry: { name: string; fullPath: string; sizeBytes: number }): boolean {
-  if (!entry.name.endsWith(".sql.gz")) return false;
-  if (entry.sizeBytes <= EMPTY_GZIP_STREAM_BYTES) return false;
+type TierBackupStatus = "representative" | "invalid" | "unreadable";
+
+function tierBackupStatus(entry: { name: string; fullPath: string; sizeBytes: number }): TierBackupStatus {
+  if (!entry.name.endsWith(".sql.gz")) return "invalid";
+  if (entry.sizeBytes <= EMPTY_GZIP_STREAM_BYTES) return "invalid";
   try {
     const fd = openSync(entry.fullPath, "r");
     try {
       const header = Buffer.alloc(2);
       const read = readSync(fd, header, 0, 2, 0);
-      return read === 2 && header[0] === 0x1f && header[1] === 0x8b;
+      return read === 2 && header[0] === 0x1f && header[1] === 0x8b ? "representative" : "invalid";
     } finally {
       closeSync(fd);
     }
   } catch {
-    return false;
+    return "unreadable";
   }
 }
 
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+export function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -157,7 +159,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
-  type BackupEntry = { name: string; fullPath: string; mtimeMs: number; sizeBytes: number; representative: boolean };
+  type BackupEntry = { name: string; fullPath: string; mtimeMs: number; sizeBytes: number; tierStatus: TierBackupStatus };
   const entries: BackupEntry[] = [];
 
   for (const name of readdirSync(backupDir)) {
@@ -165,8 +167,8 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    const entry = { name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size, representative: false };
-    entry.representative = isTierRepresentative(entry);
+    const entry = { name, fullPath, mtimeMs: stat.mtimeMs, sizeBytes: stat.size, tierStatus: "invalid" as TierBackupStatus };
+    entry.tierStatus = tierBackupStatus(entry);
     entries.push(entry);
   }
 
@@ -190,7 +192,10 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     // ".sql" or an implausibly small / non-gzip ".sql.gz") never evicts
     // the bucket's real backup by being newer. See #15351.
     if (entry.mtimeMs >= weeklyCutoff) {
-      if (!entry.representative) {
+      if (entry.tierStatus === "unreadable") {
+        continue;
+      }
+      if (entry.tierStatus !== "representative") {
         toDelete.push(entry.fullPath);
       } else if (keepWeekBuckets.has(week)) {
         toDelete.push(entry.fullPath);
@@ -202,7 +207,10 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
 
     // Monthly tier — keep newest per calendar month, same rule as weekly.
     if (entry.mtimeMs >= monthlyCutoff) {
-      if (!entry.representative) {
+      if (entry.tierStatus === "unreadable") {
+        continue;
+      }
+      if (entry.tierStatus !== "representative") {
         toDelete.push(entry.fullPath);
       } else if (keepMonthBuckets.has(month)) {
         toDelete.push(entry.fullPath);

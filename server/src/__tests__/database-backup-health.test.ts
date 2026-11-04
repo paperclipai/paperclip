@@ -88,4 +88,23 @@ describe("inspectDatabaseBackupHealth (#15351)", () => {
     const status = inspect(dir);
     expect(status.warnings.map((warning) => warning.code)).not.toContain("database_backup_truncated");
   });
+
+  it("does not raise the truncated warning while a backup is actively being written", () => {
+    const dir = createBackupDir();
+    writeBackup(dir, "paperclip-20260330.sql.gz", HEALTHY_DUMP, new Date("2026-03-30T11:00:00Z"));
+    writeBackup(dir, "paperclip-20260331.sql.gz", gzipSync(""), new Date("2026-03-31T11:59:00Z"));
+    writeBackup(dir, "paperclip-20260331.sql", Buffer.from(""), new Date("2026-03-31T11:59:00Z"));
+    const status = inspect(dir);
+    expect(status.latestBackup?.name).toBe("paperclip-20260331.sql.gz");
+    expect(status.warnings.map((warning) => warning.code)).not.toContain("database_backup_truncated");
+  });
+
+  it("raises the truncated warning once the active-write grace expires", () => {
+    const dir = createBackupDir();
+    writeBackup(dir, "paperclip-20260330.sql.gz", HEALTHY_DUMP, new Date("2026-03-30T11:00:00Z"));
+    writeBackup(dir, "paperclip-20260331.sql.gz", gzipSync(""), new Date("2026-03-31T11:00:00Z"));
+    writeBackup(dir, "paperclip-20260331.sql", Buffer.from(""), new Date("2026-03-31T11:00:00Z"));
+    const status = inspect(dir);
+    expect(status.warnings.map((warning) => warning.code)).toContain("database_backup_truncated");
+  });
 });

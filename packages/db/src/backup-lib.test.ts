@@ -4,7 +4,7 @@ import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, pruneOldBackups, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
@@ -72,6 +72,29 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("pruneOldBackups", () => {
+  it("keeps an unreadable backup instead of deleting it, and still deletes invalid ones", () => {
+    const dir = createTempDir("paperclip-db-backup-prune-");
+    const mtime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const unreadablePath = path.join(dir, "paperclip-20261025.sql.gz");
+    fs.mkdirSync(unreadablePath);
+    fs.utimesSync(unreadablePath, mtime, mtime);
+    const validPath = path.join(dir, "paperclip-20261025-valid.sql.gz");
+    fs.writeFileSync(validPath, gzipSync("-- Paperclip database backup\nBEGIN;\nCOMMIT;\n"));
+    fs.utimesSync(validPath, mtime, mtime);
+    const invalidPath = path.join(dir, "paperclip-20261025-invalid.sql.gz");
+    fs.writeFileSync(invalidPath, Buffer.from("this is not a gzip stream, it is plain text padding........"));
+    fs.utimesSync(invalidPath, mtime, mtime);
+
+    const prunedCount = pruneOldBackups(dir, { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 }, "paperclip");
+
+    expect(prunedCount).toBe(1);
+    expect(fs.existsSync(unreadablePath)).toBe(true);
+    expect(fs.existsSync(validPath)).toBe(true);
+    expect(fs.existsSync(invalidPath)).toBe(false);
   });
 });
 

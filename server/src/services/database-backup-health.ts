@@ -103,6 +103,8 @@ function findLatestBackup(backupDir: string, nowMs: number) {
     name: basename(latest.fullPath),
     path: latest.fullPath,
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
+    mtimeMs: latest.stat.mtimeMs,
+    hasActiveSibling: existsSync(join(backupDir, latest.name.replace(/\.gz$/, ""))),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
     medianOtherSizeBytes,
@@ -118,6 +120,7 @@ function findLatestBackup(backupDir: string, nowMs: number) {
 const TRUNCATED_ABSOLUTE_FLOOR_BYTES = 200;
 const TRUNCATED_MEDIAN_FRACTION = 0.25;
 const TRUNCATED_MEDIAN_MIN_SAMPLES = 3;
+const ACTIVE_BACKUP_WRITE_GRACE_MS = 5 * 60 * 1000;
 
 function isImplausiblySmall(latest: { sizeBytes: number; medianOtherSizeBytes: number | null; otherCount: number }): boolean {
   if (latest.sizeBytes < TRUNCATED_ABSOLUTE_FLOOR_BYTES) return true;
@@ -130,6 +133,13 @@ function isImplausiblySmall(latest: { sizeBytes: number; medianOtherSizeBytes: n
     return true;
   }
   return false;
+}
+
+function isActivelyWritten(
+  latest: { mtimeMs: number; hasActiveSibling: boolean },
+  nowMs: number,
+): boolean {
+  return latest.hasActiveSibling && nowMs - latest.mtimeMs <= ACTIVE_BACKUP_WRITE_GRACE_MS;
 }
 
 export function inspectDatabaseBackupHealth(
@@ -167,7 +177,7 @@ export function inspectDatabaseBackupHealth(
       });
     }
 
-    if (found && isImplausiblySmall(found)) {
+    if (found && isImplausiblySmall(found) && !isActivelyWritten(found, now.getTime())) {
       warnings.push({
         code: "database_backup_truncated",
         message: `Latest database backup ${found.name} is only ${found.sizeBytes} bytes, which is implausibly small for a finished backup. It is likely a truncated artifact of a crashed backup run.`,
