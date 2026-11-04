@@ -124,7 +124,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
       const workspace = readNativeWorkspaceSyncReference(admission?.workspace);
       const remoteCwd = workspace?.remoteCwd ?? execution.workspace.cwd;
       if (typeof identity?.environmentLeaseId !== "string" || !remoteCwd
-        || (workspace && workspace.leaseId !== identity.environmentLeaseId)) {
+        || (workspace && workspace.workspaceId !== execution.binding.executionWorkspaceId)) {
         throw new Error("native_controller_migration_artifact_binding");
       }
       const unavailable = (): never => { throw new Error("native_controller_migration_artifact_unavailable"); };

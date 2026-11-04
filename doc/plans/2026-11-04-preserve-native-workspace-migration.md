@@ -117,3 +117,16 @@ with matching, mismatched, and absent migration receipts. An executor-level
 test restores real backup files into a created warm lease only for the exact
 migrated session, verifies the retained provider identity, and checks the new
 lease's backup stamp. Neither test replaces the migration decision helper.
+
+### Live enrollment: protocol and physical lease identities
+
+The first full legacy import exposed a false binding failure: the controller's
+`environmentLeaseId` retained its logical workspace identity, while
+`nativeWorkspaceSync.leaseId` identified a distinct physical sandbox lease row.
+The migration now validates the sync record's `workspaceId` against the frozen
+execution workspace. The saved provider-pack authority still independently
+verifies the exact protocol lease, runner, session, company, agent, provider and
+remote path. A database-backed fixture uses distinct IDs, rejects foreign
+workspaces and protocol identities, and restores the original checkpoint after
+the predecessor home is deleted. The original failed live attempt and its
+attached volume remain preserved until the corrected owner passes verification.

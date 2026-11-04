@@ -66,7 +66,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success"])("offline native 
       identity: { companyId, agentId, issueId: f.issueId, runId: f.runId, sessionId: f.native.normalizedSessionId } };
     const profile = { ...f.preparedProfile, nativeExecutionInput: execution, nativeToolContractFingerprint: fingerprint, sessionCheckpoint: snapshot,
       nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared", descriptorSha256: "a".repeat(64),
-        baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId: f.native.environmentLeaseId,
+        baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: binding.executionWorkspaceId, leaseId: randomUUID(),
         providerLeaseId: randomUUID(), remoteCwd: "/remote/workspace", resourceDisposition: "destroy" } };
     await f.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
     await f.db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -82,10 +82,19 @@ describeEmbeddedPostgres.each(["import", "archive", "success"])("offline native 
     const { companyId, agentId, paperclipHome, runtimeRoot, profile, file, source, session, queuedId, identity, snapshot } = f;
     expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
     await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile,
-      nativeWorkspaceSync: { ...profile.nativeWorkspaceSync, leaseId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.runId));
+      nativeWorkspaceSync: { ...profile.nativeWorkspaceSync, workspaceId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.runId));
     await expect(migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) }))
       .rejects.toThrow("native_controller_migration_artifact_binding");
     await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    expect(profile.nativeWorkspaceSync.leaseId).not.toBe(identity.environmentLeaseId);
+    expect(profile.nativeWorkspaceSync.workspaceId).toBe(identity.environmentLeaseId);
+    const foreignProtocol = JSON.parse(source);
+    foreignProtocol.identity.environmentLeaseId = randomUUID();
+    await writeFile(file, JSON.stringify(foreignProtocol), { mode: 0o600 });
+    await expect(migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) }))
+      .rejects.toThrow("saved provider pack authority is invalid or does not match this execution");
+    expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toHaveLength(0);
+    await writeFile(file, source, { mode: 0o600 });
     await f.db.update(nativeRunFinalizations).set({ leaseOwner: "unsettled-owner" }).where(eq(nativeRunFinalizations.runId, f.runId));
     await expect(migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) })).rejects.toThrow("normal_ownership_recovery_required");
     expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toHaveLength(0);
