@@ -9,6 +9,7 @@ import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-res
 function mockSentryPackage() {
   const captureException = vi.fn(() => "event-id");
   vi.doMock("@sentry/node", () => ({
+    getClient: () => ({ on: vi.fn() }),
     init: vi.fn(),
     captureException,
     close: vi.fn(async () => true),
