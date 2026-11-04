@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
+import { createPrpSemanticToolInputEnvelope, createPrpSemanticToolResultEnvelope } from "../../../packages/paperclip-runner/src/protocol/semantic-tool-receipts.js";
 import { parseFrontmatterMarkdown } from "../../../packages/shared/src/frontmatter.js";
 import { agentSkillSyncSchema } from "../../../packages/shared/src/validators/adapter-skills.js";
 import { createTaskThroughUi } from "../user-actions.js";
@@ -21,7 +22,7 @@ const directories: string[] = [];
 afterEach(async () => { vi.clearAllMocks(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign", betaSkillsEnabled = false,
-  wrappedRead: boolean | "assigned" = false) {
+  wrappedRead: boolean | "assigned" | "codex" = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "saved-skill-flow-")); directories.push(directory);
   let fixture: SavedSkillFixture;
   let skill: Row, assigned = false, issueCreated = false, reloaded = false;
@@ -69,10 +70,28 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
       if (route === "/api/issues/issue/comments?order=asc" || route === "/api/issues/issue/interactions") return [];
       if (route === "/api/heartbeat-runs/run") return change("run", { id: "run", companyId: "company", agentId: "agent", issueId: "issue",
         status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: null,
+        runnerInstanceId: "instance", nativeSessionId: "session",
         contextSnapshot: { paperclipEnvironment: { id: "environment" }, skillSelectionSnapshot: true, skillVersions: { [skill.key]: "version" } },
         runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "model" },
           runtimeContext: { skills: [{ key: skill.key, versionId: "version", runtimeName: `${fixture.slug}--0123456789` }] } } } });
       if (route.startsWith("/api/heartbeat-runs/run/events?")) {
+        if (wrappedRead === "codex") {
+          const correlation = { runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+          const input = { skill: skill.key };
+          const result = change("assigned-read", { skill: skill.key, versionId: skill.currentVersionId,
+            path: "SKILL.md", text: fixture.markdown, sha256: createHash("sha256").update(fixture.markdown).digest("hex"),
+            byteSize: Buffer.byteLength(fixture.markdown), nextOffset: null });
+          const semantic = [{ ...createPrpSemanticToolInputEnvelope({ operationId: "read_assigned_skill", callId: "load",
+            correlation, content: input }), input }, createPrpSemanticToolResultEnvelope({ operationId: "read_assigned_skill",
+            callId: "load", correlation, content: result, outcome: "succeeded", code: "semantic_tool_succeeded",
+            retryable: false, authorizationBoundary: "active_task", operationReceiptId: "operation_load" })];
+          return semantic.map((value, i) => change("event", { runId: "run", companyId: "company", agentId: "agent",
+            seq: i + 1, sourceSeq: i + 1, sourceEventId: `event-${i}`, sourceInstanceId: "instance", protocolSchemaVersion: 1,
+            eventType: `semantic_tool.${value.phase}`, payload: { prpEvent: { ...correlation,
+              schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceSeq: i + 1,
+              sourceEventId: `event-${i}`, sourceInstanceId: "instance", eventType: `semantic_tool.${value.phase}`,
+              payload: { semantic_tool: value } } } }));
+        }
         return ["pending", "completed"].map((status, i) => {
           const p = canonicalProviderEventsFromOpenCodePart({ id: "load", type: "tool", tool: "skill", state: {
             status, output: `<skill_content name="${fixture.slug}">\n${fixture.procedure}\n</skill_content>`,
@@ -128,7 +147,7 @@ describe("saved skill journey orchestration", () => {
       const f = await setup((kind, row) => {
         if (kind === "run") Object.assign(row.runnerProfileJson.nativeExecutionInput.provider, provider);
         return row;
-      }, "campaign", false, "assigned");
+      }, "campaign", false, provider.kind === "codex" ? "codex" : "assigned");
       f.context.agent!.provider = provider.kind;
       await f.run();
       expect(f.evidence.checks).toHaveLength(7);
@@ -148,7 +167,7 @@ describe("saved skill journey orchestration", () => {
           ...(provider === "acpx" ? { agent: "cursor" } : {}) });
         if (kind === target) mutate(row);
         return row;
-      }, "campaign", false, "assigned");
+      }, "campaign", false, provider === "codex" ? "codex" : "assigned");
       f.context.agent!.provider = provider;
       await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "saved_skill_native_read_attributed" });
       expect(f.api.get.mock.calls.some(([route]) => route.includes("/documents"))).toBe(false);

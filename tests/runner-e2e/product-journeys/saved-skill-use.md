@@ -32,7 +32,8 @@ A pass requires all seven closed checks:
   does not expose its receipt reference; no human comment supplies that reference.
 - `saved-skill-native-read-attributed`: a complete successful native skill load or
   source-file read, with start/completion identity bound to this company, agent,
-  run, turn and runner. The output must contain the complete saved procedure.
+  run, turn and runner. Its native receipt must contain or cryptographically
+  commit to the complete saved procedure.
 - `saved-skill-result-authored-by-run`: exactly one saved task document contains
   the reference and independently calculated sum. Its revision belongs to the
   successful native run and agent, without human authorship. The run's
@@ -67,6 +68,19 @@ wrapper; it is not a condition for the common first-party semantic read.
 A semantic read failure can have a
 completed tool status; it does not qualify. A partial page, copied tool result,
 foreign version, missing start or unbound native event also fails closed.
+
+Codex's dynamic tool display is not first-party authority. Its raw name,
+optional namespace or read-only hint cannot qualify a read. For Codex, the
+grader also accepts Core's retained `semantic_tool.input` and `semantic_tool.result`
+for the closed read-only operation `read_assigned_skill`. Both must name the
+actual run's runner, native session, call, turn and item. The input must match
+its own digest and select the canonical skill or its exact admitted alias,
+`SKILL.md` and offset zero (including Core's defaults). The successful
+`active_task` result must commit to the exact complete immutable read object:
+canonical key, version, file, all UTF-8 source text, SHA-256, byte size and a
+null next-page offset. The digest uses Core's canonical JSON key ordering.
+Missing, duplicate, reordered, failed, foreign or differently hashed carriers
+fail. This path does not relax the existing OpenCode built-in or filesystem guards.
 
 The existing campaign deadline bounds observations. Only failed read transport
 operations can be retried; task input, skill creation and execution are not

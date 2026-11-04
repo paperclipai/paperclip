@@ -91,7 +91,7 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
       (afterSeq, limit) => read.get(`/api/heartbeat-runs/${binding.runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
     const runtimeName = savedSkillReadRuntimeName(skill, assignments, state.taskRuns[0]!);
     const assignment = savedSkillReadAssignment(skill, assignments, state.taskRuns[0]!);
-    const receipts = savedSkillReadReceipts(events, binding, fixture, runtimeName, assignment);
+    const receipts = savedSkillReadReceipts(events, binding, fixture, runtimeName, assignment, state.taskRuns[0]!);
     checkpoint = { ...checkpoint, events, receipts };
     check("saved-skill-native-read-attributed", receipts.length > 0);
     const documents = await read.get<Row[]>(`${route}/documents`);

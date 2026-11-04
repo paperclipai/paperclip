@@ -96,12 +96,85 @@ function assignedSkillReadText(output: string, binding: NativePrpRunBinding, fix
   } catch { return undefined; }
 }
 
+// Core091 provider_bridge.rs hashes UTF-8 JSON with object keys ordered by UTF-16.
+// This oracle reconstructs the complete pinned read result, not provider display text.
+function semanticDigest(value: unknown): string {
+  const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+    : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key =>
+      `${JSON.stringify(key)}:${canonical((value as Row)[key])}`).join(",")}}` : JSON.stringify(value) ?? "null";
+  return `sha256:${createHash("sha256").update(canonical(value), "utf8").digest("hex")}`;
+}
+
+/** Codex's raw dynamic name, namespace and optional readOnly hint grant no authority.
+ * Its admitted first-party read instead has a controller-bound semantic input/result.
+ * Core's read_assigned_skill operation is read-only and verifies the immutable file.
+ */
+function codexAssignedSkillReceipts(bound: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture,
+  assignment: SavedSkillReadAssignment | undefined, run: Row | undefined) {
+  const input = run?.runnerProfileJson?.nativeExecutionInput;
+  const skills = Array.isArray(input?.runtimeContext?.skills)
+    ? input.runtimeContext.skills.filter((skill: Row) => skill.key === assignment?.key) : [];
+  if (!run || run.runtimeMode !== "native" || input?.provider?.kind !== "codex"
+    || run.id !== binding.runId || run.companyId !== binding.companyId || run.agentId !== binding.agentId
+    || typeof run.runnerInstanceId !== "string" || !run.runnerInstanceId.trim()
+    || typeof run.nativeSessionId !== "string" || !run.nativeSessionId.trim()
+    || !assignment || assignment.key !== `company/${binding.companyId}/${fixture.slug}` || !assignment.versionId
+    || skills.length !== 1 || skills[0].versionId !== assignment.versionId
+    || run.contextSnapshot?.skillSelectionSnapshot !== true
+    || run.contextSnapshot?.skillVersions?.[assignment.key] !== assignment.versionId
+    || !fixture.markdown.includes(fixture.procedure.trim()) || !fixture.markdown.includes(fixture.expected.reference)) return [];
+  const expected = { skill: assignment.key, versionId: assignment.versionId, path: "SKILL.md", text: fixture.markdown,
+    sha256: createHash("sha256").update(fixture.markdown, "utf8").digest("hex"),
+    byteSize: Buffer.byteLength(fixture.markdown), nextOffset: null };
+  const semantic = (row: Row): Row | undefined => row.payload.prpEvent.payload?.semantic_tool;
+  const content = (value: Row, digest: string) => value.content?.digest === digest
+    && value.content.redactionDisposition === "digest_only" && Array.isArray(value.content.references)
+    && value.content.references.length === 0
+    && Object.keys(value.content).sort().join(",") === "digest,redactionDisposition,references";
+  const correlated = (row: Row, phase: "input" | "result") => {
+    const event = row.payload.prpEvent, value = semantic(row), correlation = value?.correlation;
+    const keys = ["schema", "schemaVersion", "phase", "operationId", "callId", "correlation", "idempotencyKey", "content",
+      ...(phase === "input" ? ["input"] : ["outcome", "code", "retryable", "authorizationBoundary", "operationReceiptId"])];
+    return Boolean(value && event.eventType === `semantic_tool.${phase}` && value.phase === phase
+      && value.schema === "paperclip.prp.semantic_tool.v1" && value.schemaVersion === 1
+      && Object.keys(value).sort().join(",") === keys.sort().join(",")
+      && value.operationId === "read_assigned_skill" && typeof value.callId === "string" && value.callId.trim()
+      && value.idempotencyKey === null && Number.isSafeInteger(row.seq)
+      && event.sourceInstanceId === run.runnerInstanceId && event.normalizedSessionId === run.nativeSessionId
+      && typeof event.turnId === "string" && event.turnId.trim() && typeof event.itemId === "string" && event.itemId.trim()
+      && correlation && Object.keys(correlation).sort().join(",") === "itemId,normalizedSessionId,runId,turnId"
+      && correlation.runId === binding.runId && correlation.normalizedSessionId === run.nativeSessionId
+      && correlation.turnId === event.turnId && correlation.itemId === event.itemId);
+  };
+  return bound.flatMap(start => {
+    if (!correlated(start, "input")) return [];
+    const initial = semantic(start)!, args = initial.input;
+    if (!args || typeof args !== "object" || Array.isArray(args)
+      || Object.keys(args).some(key => !["skill", "path", "offset"].includes(key))
+      || !(args.skill === assignment.key || typeof skills[0].runtimeName === "string"
+        && skills[0].runtimeName.trim() && args.skill === skills[0].runtimeName)
+      || Object.hasOwn(args, "path") && args.path !== "SKILL.md"
+      || Object.hasOwn(args, "offset") && args.offset !== 0 || !content(initial, semanticDigest(args))) return [];
+    // Duplicates, reconciled alternatives and foreign same-call carriers cannot supply a second interpretation.
+    const pair = bound.filter(row => semantic(row)?.callId === initial.callId);
+    const end = pair.find(row => correlated(row, "result"));
+    if (pair.length !== 2 || !end || start.seq >= end.seq
+      || start.payload.prpEvent.sourceSeq >= end.payload.prpEvent.sourceSeq) return [];
+    const result = semantic(end)!;
+    if (semanticDigest(initial.correlation) !== semanticDigest(result.correlation)
+      || result.outcome !== "succeeded" || result.code !== "semantic_tool_succeeded" || result.retryable !== false
+      || result.authorizationBoundary !== "active_task" || result.operationReceiptId !== `operation_${initial.callId}`
+      || !content(result, semanticDigest(expected))) return [];
+    return [{ runId: binding.runId, executionId: String(initial.callId), seq: Number(end.seq) }];
+  });
+}
+
 /** Successful built-in reads and native skill loads expose the actual skill text.
  * A model claim, discovered name, shell echo, failed read or foreign run cannot qualify. */
 export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture,
-  runtimeName?: string, assignment?: SavedSkillReadAssignment) {
+  runtimeName?: string, assignment?: SavedSkillReadAssignment, run?: Row) {
   const bound = events.filter(row => isBoundNativePrpEventRow(row, binding));
-  return bound.filter(row => {
+  const builtin = bound.filter(row => {
     const event = row.payload.prpEvent, payload = event.payload;
     if (event.eventType !== "tool.execution.completed" || payload?.schema !== "paperclip.tool.execution.v1"
       || payload.transport !== "builtin" || payload.status !== "completed"
@@ -146,6 +219,7 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
         && (!(wrappedRead || assignedText !== undefined) || p.readOnly === true);
     });
   }).map(row => ({ runId: binding.runId, executionId: String(row.payload.prpEvent.payload.executionId), seq: Number(row.seq) }));
+  return [...builtin, ...codexAssignedSkillReceipts(bound, binding, fixture, assignment, run)];
 }
 
 export function savedSkillDocumentAttributed(document: Row | undefined, revision: Row | undefined, fixture: SavedSkillFixture,
