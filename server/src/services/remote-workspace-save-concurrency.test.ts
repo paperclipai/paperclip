@@ -294,6 +294,66 @@ describe("remote workspace save parent lock order", () => {
     } finally { release.resolve(); await barrier; await migrating; await peerDb.$client.end(); }
   }, 30_000);
 
+  it("keeps import publication and an arriving legacy reservation in parent order", async () => {
+    const f = await preparedFailure(), workspaceId = randomUUID();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Import before admission" }).returning();
+    const cwd = path.join(root, workspaceId); await mkdir(cwd);
+    await writeFile(path.join(cwd, "local.txt"), "retained local work\n");
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: issue.id,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Legacy files", cwd, providerRef: cwd });
+    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issue.id));
+    const migrationDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-import-peer" });
+    const reserveDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-import-reserve" });
+    await reserveDb.execute(sql`select set_config('deadlock_timeout', '50ms', false)`);
+    const uploadReady = deferred(), uploadRelease = deferred(), lockReady = deferred(), lockRelease = deferred();
+    const storage = { ...f.storage, putFile: async (input: Parameters<typeof f.storage.putFile>[0]) => {
+      const saved = await f.storage.putFile(input); uploadReady.resolve(); await uploadRelease.promise; return saved;
+    } };
+    const migrating = migrateRemoteWorkspace({ db: migrationDb, storage, companyId: f.companyId, workspaceId, apply: true })
+      .then(value => ({ value }), error => ({ error }));
+    let barrier: Promise<void> | undefined, reserving: Promise<{ error: unknown } | { value: unknown }> | undefined;
+    try {
+      await uploadReady.promise;
+      barrier = db.transaction(async tx => {
+        await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, workspaceId)).for("update");
+        lockReady.resolve(); await lockRelease.promise;
+      });
+      await lockReady.promise;
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        issueId: issue.id, runtimeMode: "legacy", status: "running", contextSnapshot: { issueId: issue.id } }).returning();
+      uploadRelease.resolve();
+      const waiting = async (application: string) => (await db.execute<{ query: string; blockers: number[] }>(sql`
+        select query, pg_blocking_pids(pid) as blockers from pg_stat_activity
+        where datname = current_database() and application_name = ${application} and wait_event_type = 'Lock'`))[0];
+      await expect.poll(async () => (await waiting("save-order-import-peer"))?.query, { timeout: 5000 }).toContain('"execution_workspaces"');
+      reserving = reserveRemoteWorkspace({ db: reserveDb, storage: f.storage, companyId: f.companyId, issueId: issue.id,
+        runId: run.id, agentId: f.agentId, environmentId: f.environmentId, projectId: null,
+        projectWorkspaceId: null, existingWorkspaceId: workspaceId, source: { kind: "empty" } })
+        .then(value => ({ value }), error => ({ error }));
+      await expect.poll(async () => Boolean(await waiting("save-order-import-reserve")), { timeout: 5000 }).toBe(true);
+      const peerWait = await waiting("save-order-import-peer"), reserveWait = await waiting("save-order-import-reserve");
+      lockRelease.resolve(); await barrier;
+      const results = await Promise.all([migrating, reserving]);
+      const databaseErrors = results.flatMap(result => "error" in result && (result.error as { cause?: { code?: string } })?.cause?.code
+        ? [result.error as { cause: { code: string; detail?: string; where?: string } }] : []);
+      if (databaseErrors.length) console.info("save-order-import-postgres-evidence", JSON.stringify({
+        peerQuery: peerWait?.query, reserveQuery: reserveWait?.query, errors: databaseErrors.map(error => error.cause) }));
+      expect(databaseErrors).toEqual([]);
+      expect(results[0]).toMatchObject({ error: expect.objectContaining({ message: expect.stringContaining("active_execution") }) });
+      expect(results[1]).toMatchObject({ error: expect.objectContaining({ details: { code: "remote_workspace_migration_required" } }) });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+      expect(readRemoteWorkspaceAuthority(workspace.metadata)).toBeNull();
+      expect(await readFile(path.join(cwd, "local.txt"), "utf8")).toBe("retained local work\n");
+      const snapshots = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, workspaceId));
+      expect(snapshots).toEqual([expect.objectContaining({ status: "uploaded" })]);
+      expect((await f.storage.headObject(f.companyId, snapshots[0].objectKey!)).exists).toBe(true);
+    } finally {
+      uploadRelease.resolve(); lockRelease.resolve(); await barrier; await Promise.all([migrating, reserving]);
+      await migrationDb.$client.end(); await reserveDb.$client.end();
+    }
+  }, 30_000);
+
   it.each(["prepare", "provision", "migrate"] as const)("saves beside actual %s started first", async mode => {
     const f = await preparedFailure();
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, resultJson: null, errorCode: null })
