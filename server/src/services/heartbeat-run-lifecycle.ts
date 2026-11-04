@@ -2,6 +2,7 @@ import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
+import { logRunTransitionAfterCommit } from "./lifecycle-events.js";
 
 export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -58,16 +59,15 @@ export async function transitionHeartbeatRunStatus(
       .where(eq(heartbeatRuns.id, runId))
       .returning();
     if (!run) return null;
-    return {
-      run,
-      transition: {
-        eventId: `run:${runId}:${locked.transitionedAtEpochUs}:${options.toStatus}`,
-        runId,
-        fromStatus: locked.status,
-        toStatus: options.toStatus,
-        transitionedAtEpochUs: locked.transitionedAtEpochUs,
-      },
+    const transition = {
+      eventId: `run:${runId}:${locked.transitionedAtEpochUs}:${options.toStatus}`,
+      runId,
+      fromStatus: locked.status,
+      toStatus: options.toStatus,
+      transitionedAtEpochUs: locked.transitionedAtEpochUs,
     };
+    logRunTransitionAfterCommit(tx, run, transition);
+    return { run, transition };
   };
   return "rollback" in dbOrTx || typeof dbOrTx.transaction !== "function"
     ? runInTransaction(dbOrTx as DbTransaction)

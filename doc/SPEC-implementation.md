@@ -1984,6 +1984,11 @@ agents continue independent work without repeating the deferred request.
 - structured logs (JSON in production)
 - request ID per API call
 - every mutation writes `activity_log`
+- every committed status change of a heartbeat run, and every task status
+  change made through the issue update, logs one `lifecycleEvent` record
+  (`heartbeat run status changed` or `task status changed`) after its
+  transaction commits, with the previous and new status, a `clock_timestamp()`
+  timestamp read at the transition, and an event ID unique per transition
 
 ## 15.4 Reliability Targets
 
