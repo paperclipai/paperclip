@@ -1,3 +1,4 @@
+import { HttpError } from "../../../errors.js";
 import { generateKeyPairSync } from "node:crypto";
 import { chatEndpoints, chatSlackRegistrations, type Db } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
@@ -127,4 +128,22 @@ it("losing Cloud identity retains configured retirement responsibility as attent
   expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ active: false, instanceId: "instance", runtimeGeneration: 2,
     failureCode: "connector_configuration_unavailable", nextAttemptAt: null });
   expect(f.connector.slackEventEnrollment).toHaveBeenCalledOnce();
+});
+
+it.each([404, 422])("unavailable signing credential %s becomes retained attention instead of broker retry", async status => {
+  const f = fixture(); await f.stage();
+  f.resolveCredentials.mockRejectedValueOnce(new HttpError(status, "synthetic credential failure"));
+  await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ failureCode: "signing_credential_unavailable", nextAttemptAt: null });
+  expect(f.connector.slackEventEnrollment).not.toHaveBeenCalled();
+  expect(f.endpoint.setup.slackCloudEvents).toBeUndefined();
+});
+
+it("temporary signing-credential store failure keeps the bounded retry", async () => {
+  const f = fixture(); await f.stage();
+  f.resolveCredentials.mockRejectedValueOnce(new Error("temporary database failure"));
+  await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.endpoint.setup.slackCloudIntent?.failureCode).toBe("broker_unavailable");
+  expect(Date.parse(f.endpoint.setup.slackCloudIntent!.nextAttemptAt!)).toBeGreaterThan(Date.now());
+  expect(f.connector.slackEventEnrollment).not.toHaveBeenCalled();
 });

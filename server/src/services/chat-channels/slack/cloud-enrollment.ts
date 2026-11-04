@@ -8,6 +8,9 @@ import type { InternalSetupState } from "../runtime-types.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { logger } from "../../../middleware/logger.js";
 
+import { resolveSlackCloudSigningSecret } from "./cloud-signing-secret.js";
+import { SlackCloudReceiptError } from "./cloud-event.js";
+
 type Intent = NonNullable<InternalSetupState["slackCloudIntent"]>;
 class SlackEnrollmentFailure extends Error {
   constructor(readonly code: string) { super(code); }
@@ -147,10 +150,9 @@ export function createSlackCloudEnrollment(db: Db, options: {
       await lease.assertOwned();
       if (config.instanceId !== intent.instanceId) { await commit({ failure: "instance_authority_changed", attention: true }); return; }
       if (!await connector.slackEventsAvailable()) { await commit({ failure: "unsupported_capability" }); return; }
-      const credentials = intent.active ? await options.resolveCredentials(endpoint, db, ["signingSecret"]) : undefined;
-      if (intent.active && !credentials?.signingSecret) throw new SlackEnrollmentFailure("signing_credential_unavailable");
+      const signingSecret = intent.active ? await resolveSlackCloudSigningSecret(options.resolveCredentials, endpoint, db, ["signingSecret"]) : undefined;
       const receipt = await connector.slackEventEnrollment({ subject: intent.subject, companyId: intent.companyId,
-        enrollment: { active: intent.active, ...identity, ...(intent.active ? { teamId: intent.teamId, appId: intent.appId, signingSecret: credentials!.signingSecret } : {}) } });
+        enrollment: { active: intent.active, ...identity, ...(intent.active ? { teamId: intent.teamId, appId: intent.appId, signingSecret: signingSecret! } : {}) } });
       if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) throw new SlackEnrollmentFailure("receipt_unconfirmed");
       const value = receipt as Record<string, unknown>;
       if (value.version !== 1 || value.instanceId !== intent.instanceId || Object.entries(identity).some(([key, expected]) => value[key] !== expected)
@@ -160,8 +162,9 @@ export function createSlackCloudEnrollment(db: Db, options: {
     } catch (error) {
       const conflict = error instanceof PaperclipCloudConnectorError && error.status === 409
         && ["SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED", "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED"].includes(error.brokerReason ?? "");
-      const attention = error instanceof SlackEnrollmentFailure || conflict || (error instanceof PaperclipCloudConnectorError && [400, 401, 403].includes(error.status ?? 0));
-      const code = error instanceof SlackEnrollmentFailure ? error.code : attention ? "authority_required"
+      const credentialAttention = error instanceof SlackCloudReceiptError && error.code === "signing_credential_unavailable" && error.disposition === "attention";
+      const attention = credentialAttention || error instanceof SlackEnrollmentFailure || conflict || (error instanceof PaperclipCloudConnectorError && [400, 401, 403].includes(error.status ?? 0));
+      const code = credentialAttention ? "signing_credential_unavailable" : error instanceof SlackEnrollmentFailure ? error.code : attention ? "authority_required"
         : error instanceof PaperclipCloudConnectorError && error.brokerReason === "SLACK_ENROLLMENT_DISABLED" ? "enrollment_disabled" : "broker_unavailable";
       await commit({ failure: code, attention, retryAt: error instanceof PaperclipCloudConnectorError ? error.retryAt : undefined });
       logger.warn({ endpointId, reason: code }, "Slack enrollment responsibility retained");
