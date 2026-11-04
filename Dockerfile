@@ -92,6 +92,16 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends poppler-utils python3-pypdf \
   && rm -rf /var/lib/apt/lists/*
 
+# Headless Chromium for the agents (Echo Barrier, 9 October 2026): Playwright 1.61.1 is in /app but no
+# browser could run (no system libraries, and agents have no root to apt-get them). Installed to
+# /ms-playwright, outside HOME, because HOME=/paperclip is the volume mount and would hide a build-time
+# install. /paperclip/tools/bin/browser-fetch prefers this copy. Pinned to the playwright-core version
+# in /app so the browser revision matches.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx -y playwright@1.61.1 install --with-deps chromium \
+  && chmod -R a+rX /ms-playwright \
+  && rm -rf /var/lib/apt/lists/* /root/.npm
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
