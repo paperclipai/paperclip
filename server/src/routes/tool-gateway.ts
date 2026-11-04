@@ -78,13 +78,14 @@ async function handleMcpGatewayProtocol(
   locator: { gatewayId?: string | null; gatewayPublicId?: string | null },
 ) {
   try {
+    const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
+    res.locals.mcpMethod = body.method;
     const token = bearerToken(req);
     if (!token) {
       res.status(401).json({ error: "Bearer token is required" });
       return;
     }
     const headers = callerHeaders(req);
-    const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
     const id = body.id ?? null;
     if (body.method === "initialize") {
       await toolGateway.initializeNamedGatewayProtocol({
@@ -218,7 +219,16 @@ async function handleMcpGatewayProtocol(
       res.json({ jsonrpc: "2.0", id, result });
       return;
     }
-    res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    await toolGateway.verifyNamedGatewayProtocolNotification({
+      ...locator,
+      bearerToken: token,
+      callerHeaders: headers,
+    });
+    if (body.id === undefined) {
+      res.status(202).end();
+      return;
+    }
+    res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err) {
     if (res.destroyed) return;
     if (err instanceof ToolGatewayHttpError) {

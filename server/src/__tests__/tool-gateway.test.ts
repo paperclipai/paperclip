@@ -1,7 +1,9 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
+import { Writable } from "node:stream";
 import express from "express";
+import pino from "pino";
 import { and, eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -48,6 +50,9 @@ import {
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { actorMiddleware } from "../middleware/auth.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { basePinoOptions, createHttpLogger } from "../middleware/logger.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import {
@@ -461,13 +466,27 @@ function createTestToolGatewayService(db: Db, options: ToolGatewayServiceOptions
   });
 }
 
+type GatewayDeploymentMode = "authenticated" | "local_trusted";
+
 function createGatewayRouteApp(
   db: Db,
   gateway = createTestToolGatewayService(db),
   actor?: Express.Request["actor"],
+  options: {
+    withActorMiddleware?: boolean;
+    deploymentMode?: GatewayDeploymentMode;
+    observeActor?: (actor: Express.Request["actor"]) => void;
+  } = {},
 ) {
   const app = express();
   app.use(express.json());
+  if (options.withActorMiddleware) {
+    app.use(actorMiddleware(db, { deploymentMode: options.deploymentMode ?? "local_trusted" }));
+    app.use((req, _res, next) => {
+      options.observeActor?.(req.actor);
+      next();
+    });
+  }
   if (actor) {
     app.use((req, _res, next) => {
       req.actor = actor;
@@ -476,7 +495,58 @@ function createGatewayRouteApp(
   }
   app.use(mcpGatewayProtocolRoutes(gateway));
   app.use("/api", toolGatewayRoutes(db, gateway));
+  if (options.withActorMiddleware) app.use(errorHandler);
   return app;
+}
+
+async function createRunGatewayProtocolFixture(
+  db: Db,
+  deploymentMode: GatewayDeploymentMode,
+  options: ToolGatewayServiceOptions = {},
+) {
+  const company = await createCompany(db);
+  const agent = await createAgent(db, company.id);
+  const { project, issue, run } = await createIssueAndRun(db, company.id, agent.id);
+  const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+  const gateway = createTestToolGatewayService(db, {
+    now: () => Date.UTC(2026, 0, 1),
+    ...options,
+  });
+  const namedGateway = await gateway.createNamedGateway({
+    companyId: company.id,
+    body: {
+      name: "Run protocol regression",
+      profileId: profile.id,
+      agentId: agent.id,
+      issueId: issue.id,
+      projectId: project.id,
+      defaultProfileMode: "gateway_only",
+    },
+  });
+  const token = await gateway.createNamedGatewayToken({
+    companyId: company.id,
+    gatewayId: namedGateway.id,
+    body: {
+      name: "Run protocol token",
+      subjectType: "heartbeat_run",
+      subjectId: run.id,
+      clientLabel: "Heartbeat runtime",
+      ownerNote: "Run-bound protocol regression",
+      allowedActions: ["tools/list", "tools/call"],
+    },
+    actor: { agentId: agent.id },
+  });
+  const observedActors: Express.Request["actor"][] = [];
+  const app = createGatewayRouteApp(db, gateway, undefined, {
+    withActorMiddleware: true,
+    deploymentMode,
+    observeActor: (actor) => observedActors.push({ ...actor }),
+  });
+  const endpoints = {
+    managed: `/api/tool-gateway/gateways/${namedGateway.id}/mcp`,
+    public: `/mcp/gateways/${namedGateway.gatewayPublicId}`,
+  };
+  return { company, agent, project, issue, run, profile, gateway, namedGateway, token, app, endpoints, observedActors };
 }
 
 type FakeMcpRequest = {
@@ -711,6 +781,80 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     } finally {
       await remote.close();
     }
+  });
+
+  describe.each(["public", "managed"] as const)("unsupported MCP methods on %s endpoint", (endpoint) => {
+    it.each([
+      { method: "ping", id: 0 },
+      { method: "resources/templates/list", id: "templates" },
+      { method: "unsupported", id: null },
+    ])("returns a JSON-RPC method error over HTTP 200 for $method with id $id", async ({ method, id }) => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      const response = await request(fixture.app)
+        .post(fixture.endpoints[endpoint])
+        .set("authorization", `Bearer ${fixture.token.token}`)
+        .send({ jsonrpc: "2.0", id, method })
+        .expect(200);
+      expect(response.body).toEqual({
+        jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" },
+      });
+    });
+
+    it("accepts an unknown notification without a JSON-RPC response", async () => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      const response = await request(fixture.app)
+        .post(fixture.endpoints[endpoint])
+        .set("authorization", `Bearer ${fixture.token.token}`)
+        .send({ jsonrpc: "2.0", method: "notifications/unknown" })
+        .expect(202);
+      expect(response.text).toBe("");
+    });
+
+    it.each([true, false])("rejects an invalid bearer before dispatch (notification: %s)", async (notification) => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      await request(fixture.app)
+        .post(fixture.endpoints[endpoint])
+        .set("authorization", `Bearer ${tamperToken(fixture.token.token)}`)
+        .send({ jsonrpc: "2.0", ...(!notification ? { id: "invalid" } : {}), method: "unsupported" })
+        .expect(401);
+    });
+
+    it("retains HTTP 401 for a missing bearer", async () => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      await request(fixture.app)
+        .post(fixture.endpoints[endpoint])
+        .send({ jsonrpc: "2.0", id: "missing", method: "ping" })
+        .expect(401);
+    });
+
+    it.each([
+      { method: "resources/templates/list", loggedMethod: "resources/templates/list" },
+      { method: "Bearer diagnostic-method-secret", loggedMethod: "Bearer [REDACTED]" },
+    ])("logs a redacted method without arguments for $method", async ({ method, loggedMethod }) => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      const chunks: string[] = [];
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          chunks.push(chunk.toString());
+          callback();
+        },
+      });
+      const app = express();
+      app.use(createHttpLogger(pino(basePinoOptions, stream)));
+      app.use(fixture.app);
+      await request(app)
+        .post(fixture.endpoints[endpoint])
+        .set("authorization", `Bearer ${fixture.token.token}`)
+        .send({ jsonrpc: "2.0", id: "logged", method, params: { token: "argument-secret" } });
+      const output = chunks.join("");
+      const record = JSON.parse(output.trim());
+      expect(record.mcpMethod).toBe(loggedMethod);
+      expect(record.res.statusCode).toBe(200);
+      expect(record).not.toHaveProperty("reqBody");
+      expect(output).not.toContain(fixture.token.token);
+      expect(output).not.toContain("argument-secret");
+      expect(output).not.toContain("diagnostic-method-secret");
+    });
   });
 
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
