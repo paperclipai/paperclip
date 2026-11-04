@@ -365,7 +365,13 @@ export function fileResourceRoutes(db: Db, opts: {
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs, matching the issues router.
+  // Only board actors can use these routes. Other actors keep the raw value so a
+  // denied request's activity row never records the UUID behind a guessed identifier.
   router.param("issueId", async (req, _res, next, rawId) => {
+    if (req.actor.type !== "board") {
+      next();
+      return;
+    }
     try {
       req.params.issueId = await serviceFor(req).resolveIssueId(String(rawId));
       next();

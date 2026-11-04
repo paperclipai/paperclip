@@ -265,6 +265,29 @@ describeEmbeddedPostgres("workspace file resources", () => {
     }
   });
 
+  it("does not record the issue UUID behind an identifier when an agent is denied", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    const [otherCompany] = await db.select().from(companies).where(eq(companies.id, graph.otherCompanyId));
+    const otherIssueId = crypto.randomUUID();
+    const identifier = `${otherCompany!.issuePrefix}-7`;
+    await db.insert(issues).values({ id: otherIssueId, companyId: graph.otherCompanyId, title: "Other company issue", issueNumber: 7, identifier });
+    const agentId = crypto.randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: graph.companyId, name: "Identifier probe agent", role: "engineer", adapterType: "process", adapterConfig: {} });
+    const agentApp = createApp(db, { type: "agent", agentId, companyId: graph.companyId, source: "agent_key" });
+
+    await request(agentApp).get(`/api/issues/${identifier}/file-resources/content`).query({ workspace: "project", path: "notes.txt" }).expect(403);
+    await request(agentApp).get(`/api/issues/${identifier}/file-resources/resolve`).query({ workspace: "project", path: "notes.txt" }).expect(403);
+    await request(agentApp).get(`/api/issues/${identifier}/file-resources/list`).query({ workspace: "project" }).expect(403);
+    await request(agentApp).post(`/api/issues/${identifier}/file-resources/availability`).send({ queries: [{ workspace: "project", path: "notes.txt" }] }).expect(403);
+
+    const denials = await db.select().from(activityLog).where(eq(activityLog.companyId, graph.companyId));
+    const fileDenials = denials.filter((row) => row.action.startsWith("issue.file_resource_") && row.action.endsWith("_denied"));
+    expect(fileDenials).toHaveLength(4);
+    expect(fileDenials.every((row) => row.entityId === identifier)).toBe(true);
+    expect(JSON.stringify(denials)).not.toContain(otherIssueId);
+  });
+
   it("resolves and reads a project file without exposing absolute paths", async () => {
     const { root, projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
