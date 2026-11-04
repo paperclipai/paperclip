@@ -63,6 +63,9 @@ export function createOAuthClientRegistration(db: Db, { now, options, store, get
     const { clientId, clientSecret, tokenEndpointAuthMethod, clientIdIssuedAt, clientSecretExpiresAt } = await requestOAuthClientRegistration({
       endpoints: input.endpoints,
       redirectUri: input.redirectUri,
+      proxy: typeof asRecord(input.connection.config).proxy === "string" && (asRecord(input.connection.config).proxy as string).trim()
+        ? (asRecord(input.connection.config).proxy as string).trim()
+        : null,
     });
     const existingClientSecretRef = oauthSecretRef(
       input.connection,

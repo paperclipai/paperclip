@@ -578,7 +578,7 @@ These axes produce combinations such as:
 
 | Transport | Manifest-only? | Runtime status | Authoring rule |
 | --- | --- | --- | --- |
-| `mcp_remote` | Yes | First-class discovery, health, catalog, gateway, test, OAuth, and credential projection. | Default for official hosted MCP servers. |
+| `mcp_remote` | Yes | First-class discovery, health, catalog, gateway, test, OAuth, and credential projection. An optional `config.proxy` (`socks5h://host:port`, no credentials) routes the connection's own traffic through a SOCKS5 proxy that resolves the target hostname; the proxy host passes the same private-network guard as an endpoint. | Default for official hosted MCP servers. |
 | `local_stdio` | Only with an approved template | First-class only through registered templates and a trusted runtime host. Disabled in authenticated/public deployments without that host. | Never put an arbitrary command in an `AppDefinition`. Register and test a template. |
 | `rest_api` | No, not generally | Not exposed through the connected MCP gateway. Composio is a provider-specific parent that creates MCP-capable children. | Do not add a generic REST/API card until an execution adapter or wrapper exists. |
 

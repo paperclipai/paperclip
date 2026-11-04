@@ -48,6 +48,6 @@ export type OAuthConnectionSettings = {
 };
 
 export type OAuthTransport = {
-  fetchRemoteHttpUrl: (value: string, init?: RequestInit) => Promise<Response>;
+  fetchRemoteHttpUrl: (value: string, init?: RequestInit, proxy?: string | null) => Promise<Response>;
   assertOAuthEndpointUrl: (kind: OAuthEndpointKind, value: unknown, options?: { firstPartyOrigin?: string | null }) => string;
 };

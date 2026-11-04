@@ -200,6 +200,9 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
           typeof oauth.resource === "string" && oauth.resource
             ? oauth.resource
             : null,
+        proxy: typeof asRecord(connection.config).proxy === "string" && (asRecord(connection.config).proxy as string).trim()
+          ? (asRecord(connection.config).proxy as string).trim()
+          : null,
       });
     } catch (error) {
       if (

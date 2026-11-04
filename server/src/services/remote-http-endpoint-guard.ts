@@ -35,6 +35,78 @@ export function parseRemoteHttpEndpoint(
   return parsed;
 }
 
+export function parseRemoteHttpProxy(
+  value: unknown,
+  error: RemoteHttpEndpointErrorFactory,
+): URL | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw error("Remote MCP connection proxy URL is invalid", "mcp_remote_proxy_invalid");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw error("Remote MCP connection proxy URL is invalid", "mcp_remote_proxy_invalid");
+  }
+  if (parsed.protocol !== "socks5h:") {
+    throw error("Remote MCP connection proxy must use socks5h", "mcp_remote_proxy_invalid");
+  }
+  if (parsed.username || parsed.password) {
+    throw error("Remote MCP connection proxy URL cannot contain credentials", "mcp_remote_proxy_invalid");
+  }
+  if (!parsed.hostname || parsed.port === "0") {
+    throw error("Remote MCP connection proxy URL needs a host and a port other than 0", "mcp_remote_proxy_invalid");
+  }
+  return parsed;
+}
+
+export function readRemoteHttpProxy(
+  config: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!config) return null;
+  const value = config.proxy;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export async function assertProxiedRemoteHttpEndpoint(
+  endpoint: URL,
+  options: RemoteHttpEndpointGuardOptions,
+  error: RemoteHttpEndpointErrorFactory,
+): Promise<void> {
+  if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+    throw error("Remote MCP connection URL must use http or https", "mcp_remote_url_invalid");
+  }
+  const hostname = endpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (Buffer.byteLength(hostname, "utf8") > 255) {
+    throw error("Remote MCP connection URL hostname is too long for a SOCKS5 proxy", "mcp_remote_url_invalid");
+  }
+  if (!options.allowPrivateNetwork && (hostname === "localhost" || hostname.endsWith(".localhost"))) {
+    throw error("Remote MCP connection URL cannot target private or reserved network addresses", "remote_http_private_endpoint");
+  }
+  if (isIP(hostname) !== 0) {
+    if (isAlwaysDeniedLinkLocalIp(hostname) || (!options.allowPrivateNetwork && isPrivateOrReservedIp(hostname))) {
+      throw error("Remote MCP connection URL cannot target private or reserved network addresses", "remote_http_private_endpoint");
+    }
+    return;
+  }
+  let results: LookupResult[];
+  try {
+    results = await lookupWithTimeout(
+      hostname,
+      options.lookup ?? defaultLookup,
+      options.dnsTimeoutMs ?? DEFAULT_DNS_TIMEOUT_MS,
+    );
+  } catch {
+    return;
+  }
+  if (results.some((result) => isAlwaysDeniedLinkLocalIp(result.address))) {
+    throw error("Remote MCP connection URL cannot resolve to private or reserved network addresses", "remote_http_private_endpoint");
+  }
+}
+
 export async function assertPublicRemoteHttpEndpoint(
   endpoint: URL,
   options: RemoteHttpEndpointGuardOptions,

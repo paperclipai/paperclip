@@ -21,6 +21,7 @@ import { GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getConnectableAppDefinition } from
 import { badRequest, HttpError, unprocessable } from "../../../errors.js";
 import { isSlackMcpAccessDisabledResponse } from "../../slack-mcp-error.js";
 import { initializeMcpHttpSession, McpHttpInitializationError, getMcpHttpSession, forgetMcpHttpSessions, readMcpHttpResponse, mcpHttpRequestHeaders } from "../../mcp-http.js";
+import { readRemoteHttpProxy } from "../../remote-http-endpoint-guard.js";
 import { secretService } from "../../secrets.js";
 import { agentmailApi } from "../../agentmail-api.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, RailwayError } from "../../railway.js";
@@ -114,7 +115,8 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
+    const proxy = readRemoteHttpProxy(asRecord(connection.config));
+    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init, proxy));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
@@ -343,7 +345,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     try {
       const railwayOptions = {
         authorization: headers.Authorization ?? "",
-        request: (url: string, init: RequestInit) => requestRemoteHttpEndpoint(new URL(url), init),
+        request: (url: string, init: RequestInit) => requestRemoteHttpEndpoint(new URL(url), init, proxy),
         signal: AbortSignal.timeout(15_000),
       };
       const workspaceId = await discoverRailwayWorkspace(railwayOptions);

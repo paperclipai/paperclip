@@ -144,7 +144,7 @@ export function storedOAuthTokenEndpointAuthMethod(
 }
 
 export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpointUrl }: OAuthTransport) {
-  async function requestOAuthClientRegistration(input: { endpoints: OAuthProviderEndpoints; redirectUri: string }) {
+  async function requestOAuthClientRegistration(input: { endpoints: OAuthProviderEndpoints; redirectUri: string; proxy?: string | null }) {
     if (!input.endpoints.registrationUrl) {
       throw unprocessable(
         "OAuth provider does not advertise dynamic client registration",
@@ -201,6 +201,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
         headers: { "content-type": "application/json" },
         body: JSON.stringify(requestedMetadata),
       },
+      input.proxy,
     );
     const record = asRecord(
       (await response.json().catch(() => ({}))) as unknown,
@@ -309,6 +310,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     refreshToken?: string | null;
     /** RFC 8707 resource indicator: the MCP server this token is for. */
     resource?: string | null;
+    proxy?: string | null;
   }) {
     const body = new URLSearchParams();
     if (input.grantType === "client_credentials") {
@@ -378,7 +380,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       method: "POST",
       headers,
       body,
-    });
+    }, input.proxy);
     const payload = (await response.json().catch(() => ({}))) as unknown;
     const record = asRecord(payload);
     if (!response.ok || record.ok === false) {
