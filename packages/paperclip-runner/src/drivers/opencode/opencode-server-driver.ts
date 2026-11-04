@@ -29,6 +29,7 @@ import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.j
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import { configuredEnvironment } from "../../configured-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -3092,7 +3093,7 @@ function sanitizedEnvironment(
   const candidate = source ?? process.env;
   for (const key of allowed)
     if (candidate[key] !== undefined) result[key] = candidate[key];
-  return { ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
+  return { ...configuredEnvironment(source), ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
 }
 
 function sanitizedEnvironmentKeys(): string[] {
