@@ -20,7 +20,7 @@ const selection = cases => ({ schema: 'paperclip.product-regression-testops-sele
 const result = (overrides = {}) => ({
   executionId: selected.executionId, suiteId: selected.suite, caseId: selected.name,
   profileId: selected.profile, environmentId: 'local', source: { sha: targetSha }, attempt: 1,
-  status: 'passed', cleanup: 'passed', model: 'gpt-6.1-sol', suiteDefinitionHash: 'c'.repeat(64),
+  status: 'passed', cleanup: 'passed', model: 'gpt-5.6-sol', suiteDefinitionHash: 'c'.repeat(64),
   matcherResults: [{ matcher: { kind: 'json_path', path: 'observed.outputVerified', expected: true }, passed: true }],
   ...overrides,
 });
@@ -133,7 +133,7 @@ test('the transmission projection excludes raw errors, provider IDs, narratives 
 
 test('secret-shaped and unknown metadata cannot cross the reporting boundary', () => {
   const sentinel = 'sk-proj-syntheticcredentialabcdefghijklmnop';
-  for (const mutation of [{ model: sentinel }, { failureClass: sentinel },
+  for (const mutation of [{ model: sentinel }, { model: 'gpt-6.1-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
     { matcherResults: [{ passed: true, matcher: { kind: sentinel } }] }]) {
     assert.throws(() => projectProductResults(campaign([result(mutation)]), selection([selected]), targetSha),
       error => error.message === 'product_regression_testops_metadata_invalid');
@@ -212,13 +212,15 @@ test('the separated selection, retained-report projection and server verificatio
   await mkdir(path.join(runtime.REPORT_DIR, 'normalized'), { recursive: true });
   await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('project', selectionFile, runtime, exec, fetchImpl), 0);
-  await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'),
-    JSON.stringify(campaign([result({ model: 'sk-proj-syntheticcredentialabcdefghijklmnop' })])));
   const unsafeRuntime = { ...runtime, ALLURE_RESULTS: path.join(root, 'unsafe-results'), EXPORT_SUMMARY: path.join(root, 'unsafe-export.json') };
-  await assert.rejects(productTestOps('project', selectionFile, unsafeRuntime, exec, fetchImpl),
-    error => error.message === 'product_regression_testops_metadata_invalid');
-  await assert.rejects(lstat(unsafeRuntime.ALLURE_RESULTS), { code: 'ENOENT' });
-  await assert.rejects(lstat(unsafeRuntime.EXPORT_SUMMARY), { code: 'ENOENT' });
+  for (const mutation of [{ model: 'sk-proj-syntheticcredentialabcdefghijklmnop' },
+    { cleanup: 'sk-proj-syntheticcredentialabcdefghijklmnop' }]) {
+    await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign([result(mutation)])));
+    await assert.rejects(productTestOps('project', selectionFile, unsafeRuntime, exec, fetchImpl),
+      error => error.message === 'product_regression_testops_metadata_invalid');
+    await assert.rejects(lstat(unsafeRuntime.ALLURE_RESULTS), { code: 'ENOENT' });
+    await assert.rejects(lstat(unsafeRuntime.EXPORT_SUMMARY), { code: 'ENOENT' });
+  }
   await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl), 0);
   uploadedStatus = 'unknown';

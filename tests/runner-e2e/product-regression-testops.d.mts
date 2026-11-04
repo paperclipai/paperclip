@@ -3,6 +3,7 @@ export interface ProductRegressionCase {
   suite: string;
   name: string;
   profile: string;
+  model: string;
   fullName: string;
   executionId: string;
 }

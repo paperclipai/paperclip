@@ -21,6 +21,7 @@ it("runs every standing Product regression case through its existing full-stack 
     expect(execution.environment.id).toBe("local");
     expect(execution.requiredCredentials).not.toContain("CODEX_AUTH_JSON");
     expect(productReportingModels).toContain(execution.profile.model);
+    expect(execution.profile.model).toBe(row.model);
     for (const matcher of execution.task.buildMatchers("report-contract-control", execution)) {
       expect(productReportingMatcherKinds).toContain(matcher.kind);
     }

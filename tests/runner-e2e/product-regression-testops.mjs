@@ -25,6 +25,8 @@ export const productRegressionCases = [
   [168, 'agent-chat', 'new-session'],
 ].map(([id, suite, name, profile = 'runner-codex']) => Object.freeze({
   id, suite, name, profile,
+  model: suite === 'task-workspaces' ? 'openrouter/deepseek/deepseek-v4-flash-0731'
+    : suite === 'configured-repository' ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
   fullName: `paperclip.Product E2E.${suite}.${name}`,
   executionId: `${suite}.${profile}.local.${name}`,
 }));
@@ -33,7 +35,7 @@ const fail = code => { throw new Error(`product_regression_testops_${code}`); };
 const sha = value => createHash('sha256').update(value).digest('hex');
 // Closed transmission contracts, checked against all 20 catalog cells. Dynamic
 // matcher paths stay in the linked source artifact; only their digest leaves it.
-export const productReportingModels = ['gpt-5.6-sol', 'gpt-6.1-sol', 'openrouter/deepseek/deepseek-v4-flash-0731'];
+export const productReportingModels = [...new Set(productRegressionCases.map(row => row.model))];
 export const productReportingMatcherKinds = ['message_exact', 'message_contains', 'message_occurrences', 'message_regex',
   'message_ordered', 'issue_status', 'run_status', 'runtime_mode', 'environment', 'file_exists', 'file_exact',
   'file_contains', 'artifact_exists', 'artifact_exact', 'json_path', 'json_schema'];
@@ -112,8 +114,9 @@ export function projectProductResults(campaign, selection, sourceSha) {
           || !['passed', 'failed'].includes(result.status) || (!missingArtifact && !Array.isArray(result.matcherResults)))) fail('result_binding');
       const checks = result?.matcherResults ?? [];
       if (checks.length > 300 || checks.some(check => typeof check.passed !== 'boolean')) fail('checks_invalid');
-      if ((result?.model != null && !productReportingModels.includes(result.model))
+      if ((result?.model != null && result.model !== selected.model)
           || (result?.failureClass != null && !failureClasses.includes(result.failureClass))
+          || (result && !['passed', 'failed', 'not_started'].includes(result.cleanup))
           || checks.some(check => !productReportingMatcherKinds.includes(check.matcher?.kind))) fail('metadata_invalid');
       const passed = result?.status === 'passed' && result.cleanup === 'passed' && checks.length > 0 && checks.every(check => check.passed);
       const infrastructure = !result || ['permanent_infrastructure', 'transient_infrastructure', 'setup_blocked'].includes(result.failureClass);
