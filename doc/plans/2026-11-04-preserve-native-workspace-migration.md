@@ -160,3 +160,11 @@ Existing envelopes remain readable. For the staging imports from this attempt,
 a guarded offline repair backs up the encrypted rows on the retained volume,
 checks every record against its original legacy source, and rewrites only the
 envelope. Run, session, owner and task metadata remain unchanged.
+
+The complete 807-source audit also found five failed runs with existing durable
+checkpoints and no provider-session snapshot. Their original controller state
+is already preserved. Enrollment now verifies the durable run, Runner and
+session binding and counts these failed states separately. It does not create
+a session snapshot or recovery authority, clear a blocker, or change their
+checkpoint rows, task pointers or failed status. A successful run with a missing
+snapshot still blocks enrollment.
