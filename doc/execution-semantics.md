@@ -1841,9 +1841,10 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
-If shutdown interrupts Paperclip Runner preparation before native execution was
-selected, recovery verifies that no provider, process launch, native result or
-coordinator exists. The previous controller must have settled or lost its lease.
+If shutdown or a recorded unexpected system interruption stops Paperclip Runner
+preparation before native execution was selected, recovery verifies that no
+provider, process launch, native result or coordinator exists. The previous
+controller must have settled or lost its lease.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
@@ -1852,7 +1853,8 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
-Operator Stops retain their explicit continuation requirements.
+Operator Stops retain their explicit continuation requirements. Other ambiguous
+interruptions without a server system-cancellation record remain held.
 
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
 control, then waits within one shared 30-second window for provider stop and
