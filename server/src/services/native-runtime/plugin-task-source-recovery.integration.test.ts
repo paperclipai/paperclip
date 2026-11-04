@@ -9,7 +9,7 @@ import { agents, companies, completionContracts, createDb, environmentLeases, en
 import { DurablePrpControlPlane, type DurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
-import { executeEnvironmentTask } from "../environment-task-runtime.js";
+import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -161,13 +161,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["capability", "expired", "paused", "source-live", "driver", "header", "workspace-export", "legacy-settlement"])("holds an ineligible recovery: %s", async mode => {
+  it.each(["capability", "expired", "paused", "source-live", "driver", "header", "source-profile", "current-profile", "workspace-export", "legacy-settlement"])("holds an ineligible recovery: %s", async mode => {
     const f = await fixture();
     if (mode === "expired") await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (mode === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
     if (mode === "source-live") await db.update(environmentLeases).set({ cleanupStatus: null }).where(eq(environmentLeases.id, f.sourceLeaseId));
     if (mode === "driver") await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"driverKey":"other"}'::jsonb` }).where(eq(environmentLeases.id, f.sourceLeaseId));
     if (mode === "header") await db.update(nativeRunnerCheckpoints).set({ material: {} }).where(eq(nativeRunnerCheckpoints.runId, f.sourceRunId));
+    if (mode === "source-profile" || mode === "current-profile") await db.update(heartbeatRuns).set({ runnerProfileJson:
+      sql`jsonb_set(${heartbeatRuns.runnerProfileJson}, '{nativeExecutionInput,binding,issueId}', ${JSON.stringify(randomUUID())}::jsonb)` })
+      .where(eq(heartbeatRuns.id, mode === "source-profile" ? f.sourceRunId : f.runId));
     if (mode === "workspace-export") await db.update(heartbeatRuns).set({ runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} || ${JSON.stringify({ nativeWorkspaceSync: {
       schema: "paperclip.native-workspace-sync/v3", state: "prepared", leaseId: f.sourceLeaseId, providerLeaseId: f.resumeFrom,
       workspaceId: f.issueId, remoteCwd: "/workspace", resourceDisposition: "keep_running", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
@@ -189,6 +192,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const [original] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     await db.insert(environmentLeases).values({ ...original, id: competingLease, providerLeaseId: "other-replacement" });
     await expect(claimPluginTaskSourceRecovery(db, { ...f, leaseId: competingLease })).rejects.toThrow();
+    await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"runnerTaskSessionRetained":true}'::jsonb` })
+      .where(eq(environmentLeases.id, f.sourceLeaseId));
+    await expect(resolvePluginTaskResume(db, { ...f, priorIdentity: f.identity })).resolves.toBe(f.resumeFrom);
+    await expect(resolvePluginTaskResume(db, { ...f, leaseId: competingLease, priorIdentity: f.identity })).rejects.toThrow("not authorized");
   });
 
   it("allows the last A write before consumption and rejects stale A writes afterward", async () => {

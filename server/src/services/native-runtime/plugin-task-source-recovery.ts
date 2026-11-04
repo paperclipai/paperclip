@@ -77,7 +77,11 @@ async function inspect(tx: Transaction, input: {
   if (!protocolIdentity || keys.some(key => protocolIdentity[key] !== input.identity[key])) return deny();
   const sourceExecution = parseNativeExecutionInput(source.runnerProfileJson?.nativeExecutionInput);
   const consumerExecution = parseNativeExecutionInput(current.runnerProfileJson?.nativeExecutionInput);
-  if (sourceExecution.provider.kind !== "codex" || consumerExecution.provider.kind !== "codex") return deny();
+  if (sourceExecution.provider.kind !== "codex" || consumerExecution.provider.kind !== "codex" ||
+      sourceExecution.binding.companyId !== input.companyId || sourceExecution.binding.issueId !== binding.issueId ||
+      sourceExecution.binding.agentId !== binding.agentId || sourceExecution.binding.runId !== source.id ||
+      sourceExecution.session.normalizedSessionId !== input.identity.normalizedSessionId ||
+      fingerprint(consumerExecution) !== fingerprint(input.context.execution)) return deny();
   const sourceTask = await resolvePluginTaskResume(tx as unknown as Db, { companyId: input.companyId, leaseId: input.leaseId,
     priorIdentity: input.identity, inspectCheckpoint: true });
   if (sourceTask !== input.resumeFrom) return deny();
