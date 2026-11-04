@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "b1119630003785c9e26e14c763859125642ad756",
+  "targetSha": "249b487a2d2451763913038cc009f7090580d1f1",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "40d8979d82ecc8c6a8254dc84c64639e7a5aa3bfec3fb7c576d8915f332f76bb",
+      "candidateDescriptorSha256": "e9c59dade7aeffd5b23c05b66bf52ed11988a897d8a160e75d0435052733abf6",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -308,7 +308,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v5"
+          "current": "paperclip.chat-catalog.app-review.v6"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -1008,7 +1008,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v5"
+          "current": "paperclip.chat-catalog.app-review.v6"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -1745,7 +1745,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "b1119630003785c9e26e14c763859125642ad756",
+        "targetSha": "249b487a2d2451763913038cc009f7090580d1f1",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -3366,7 +3366,7 @@
         "questions-and-approvals/tool-review"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.app-review.v5",
+      "oracleVersion": "paperclip.chat-catalog.app-review.v6",
       "sourceFiles": [
         "chat-catalog-domains/external-app-review.ts",
         "chat-catalog-domains/external-app-review-outcomes.ts",
