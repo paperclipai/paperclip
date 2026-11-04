@@ -144,3 +144,14 @@ it.each([
 ])("keeps coordinated command ownership and adjacency bounded: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
+
+it.each([
+  { handoff: "The task was reassigned by Morgan to Riley.", expected: false },
+  { handoff: "By the runner, the task was reassigned to Riley.", expected: false },
+  { handoff: "By the human operator, the task was reassigned to Riley.", expected: true },
+])("checks explicit handoff provenance throughout the clause: $handoff", ({ handoff, expected }) => {
+  expect(grade(account.replace("You reassigned the task to Riley.", handoff).replace("He added", "Riley added"))).toBe(expected);
+});
+it("rejects an asserted pass whose command exit is nonzero", () => {
+  expect(grade(bulletedAccount.replace("exit code 0, matching the file", "exit code 2"))).toBe(false);
+});

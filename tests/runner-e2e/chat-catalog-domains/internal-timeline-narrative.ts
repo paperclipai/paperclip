@@ -30,10 +30,11 @@ export function truthfulTimelineAccount(input: {
       || /\b(?:another|different|other)\s+(?:human|person|user|operator)\b/i.test(text);
   };
   const handoffMatches = (text: string) => {
-    if (differentNamedPerson(text) || /\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text)) return [];
-    const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker), ...text.matchAll(successorOwnership)].filter(match =>
-      !/\bby\b/i.test(text.slice(match.index + match[0].length))
-      && !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
+    if (differentNamedPerson(text.replace(/^\s*by\s+/i, "")) || /\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text)) return [];
+    const byActors = [...text.matchAll(/\bby\s+(?:(?:the|a|an)\s+)?/gi)];
+    if (byActors.some(actor => !new RegExp(`^${humanActor}`, "i").test(text.slice(actor.index + actor[0].length)))) return [];
+    const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker), ...text.matchAll(successorOwnership)].filter(() =>
+      !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
     return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi")), ...actorUnspecified].filter(match => {
       // An explicit other person's role must not become the current human just
       // because earlier milestones share this sentence.
@@ -110,9 +111,13 @@ export function truthfulTimelineAccount(input: {
   const explicitOwner = new RegExp(`['’]s\\s+${commandTail}`, "i");
   const repairOwner = new RegExp(`\\b${escape(repairWorker)}['’]s\\s+${commandTail}`, "i");
   const firstWorkerCommand = new RegExp(`\\b${escape(firstWorker)}\\s+(?:ran|executed|performed)\\s+(?:the\\s+)?${commandTail}`, "i");
+  const nonzeroExit = (text: string) => [...text.matchAll(/\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*(-?\d+)\b/gi)]
+    .some(match => Number(match[1]) !== 0);
   const successIsOwned = (text: string, at: number) => {
     const before = text.slice(0, at);
-    return (!explicitOwner.test(before) || repairOwner.test(before)) && !firstWorkerCommand.test(before);
+    const resultStart = [...before.matchAll(/\b(?:verification|verify_launch_html|check|test|command)\b/gi)].at(-1)?.index ?? at;
+    return (!explicitOwner.test(before) || repairOwner.test(before)) && !firstWorkerCommand.test(before)
+      && !nonzeroExit(text.slice(resultStart));
   };
   const causedByRepair = /^\s+(?:with\s+exit(?:\s+(?:code|status))?\s*[:=]?\s*0\s+)?(?:(?:only|immediately|just)\s+)?(?:after|once)(?:\s+(?:the|a|missing|email|real|label|input|task|repair)){0,6}\s*$/i;
   const repairAfterSuccess = new RegExp(`\\bafter\\s+(?:(?:the|a|his|her|their|its)\\s+)?${commandTail}`, "i");
