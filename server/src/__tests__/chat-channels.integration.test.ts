@@ -65177,6 +65177,161 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await f.service.shutdown(); }
     },
   );
+  it.each(["settled", "pending_at_intake", "source_edited", "operator_stopped", "unknown_stop", "live_owner", "absent_sandbox"] as const)(
+    "keeps the admitted chat Retry queued until its source lease cleanup settles: %s", async mode => {
+    const f = await currentGitHubTaskRetryFixture();
+    const companyId = f.fixture.companyId, issueId = f.issue.id;
+    const heartbeat = heartbeatService(db);
+    const errors: unknown[] = [];
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let releaseWorkspaceOwner: () => void = () => undefined;
+    let workspaceOwner: Promise<unknown> | undefined;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+    app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+    app.use(errorHandler);
+    const lease = { id: randomUUID(), companyId, issueId, heartbeatRunId: f.runId,
+      provider: "daytona", providerLeaseId: randomUUID(), status: "released", cleanupStatus: "success",
+      releasedAt: new Date(), leasePolicy: "retain_on_failure" };
+    const termination = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" })!;
+    const metadata = { remoteExecutionTermination: termination, sandboxStopAndRetainReceipt: {
+      schema: "paperclip.sandbox-stop-and-retain-receipt.v1", companyId, runId: f.runId,
+      leaseId: lease.id, provider: lease.provider, providerLeaseId: lease.providerLeaseId,
+      requestId: randomUUID(), confirmedAt: termination.confirmedAt, builtinProvider: "daytona", method: "builtin.stopLease",
+    } };
+    await db.insert(environmentLeases).values({ ...lease, metadata,
+      ...(mode === "pending_at_intake" ? { status: "pending_cleanup", cleanupStatus: "failed" } : {}) });
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_session_interrupted",
+      failureDetail: { recoveryMode: "ambiguous_state", providerSessionEstablished: false,
+        providerEventsExist: false, checkpointExists: false } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "system",
+      cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(), nextAction: "Verify source cleanup",
+      evidence: { runId: f.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+        systemRecovery: { ...createSystemRecovery(f.runId), state: mode === "pending_at_intake" ? "running" : "complete" } } });
+    const adapterType = `retained-chat-retry-${randomUUID()}`;
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+      summary: "Completed the exact saved request after source cleanup", provider: "test", model: "test-model" }));
+    registerServerAdapter({ type: adapterType, supportsLocalAgentJwt: false, execute,
+      testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }) });
+    try {
+      const body = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+      const response = await request(app).post(`/api/issues/${issueId}/retry`).send(body);
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      if (mode === "pending_at_intake") {
+        await expect.poll(async () => (await readAgentWakeupRequestsById(response.body.chatActionId))[0]?.status)
+          .toBe("deferred_issue_execution");
+        expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ runId: null });
+        expect(execute).not.toHaveBeenCalled();
+        await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success" })
+          .where(eq(environmentLeases.id, lease.id));
+        await reconcileTaskChatRetryReceipts(db, { companyId });
+        await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      }
+      await expect.poll(async () => (await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeTruthy();
+      const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+      const [successor] = await readHeartbeatRunsById(intent.runId!);
+      expect(successor).toMatchObject({ status: "queued", retryOfRunId: f.runId,
+        contextSnapshot: { taskRetryRequestId: intent.id, explicitUserContinuation: {
+          previousRunId: f.runId, readiness: { mode: "fresh_isolated_workspace" } } } });
+      await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+        metadata: { ...metadata, pendingCleanupInFlight: true } }).where(eq(environmentLeases.id, lease.id));
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+        eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"), isNull(heartbeatRuns.wakeupRequestId)));
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.fixture.assignedAgentId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await readHeartbeatRunsById(successor.id))[0]).toMatchObject({ status: "queued", startedAt: null });
+      expect(execute).not.toHaveBeenCalled();
+      expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ runId: successor.id });
+      if (mode === "operator_stopped") await heartbeat.cancelRun(successor.id);
+      if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after admission" })
+        .where(eq(issueComments.id, String(f.action.payload.commentId)));
+      if (mode === "live_owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "another-controller",
+        leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(agents).set({ adapterType }).where(eq(agents.id, f.fixture.assignedAgentId));
+      const { registerRunDispatchWork } = await import("../services/heartbeat/dispatch-work.js");
+      const { writeEnvironmentCleanup } = await import("../services/environment-cleanup-notifications.js");
+      let dispatchAttempts = 0;
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => errors.push(error) });
+      await registerRunDispatchWork(coordinator, { promoteDueScheduledRetries: async () => undefined,
+        nextScheduledRetryAt: async () => null, schedulingSuppressed: async () => false,
+        resumeQueuedRunsAfterDrain: async () => { await heartbeat.resumeQueuedRunsAfterDrain({ companyId }); dispatchAttempts++; },
+      }, () => true).ready;
+      await expect.poll(() => dispatchAttempts).toBeGreaterThan(0);
+      await expect.poll(() => coordinator!.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+      const beforeSettlement = dispatchAttempts;
+      const settledMetadata = { ...metadata, pendingCleanupInFlight: false,
+        remoteExecutionTermination: mode === "unknown_stop" ? { ...termination, providerLeaseId: randomUUID() } : termination };
+      if (mode === "absent_sandbox") {
+        const { withNativeWorkspaceFinalizationOwnership } = await import("../services/native-runtime/native-workspace-finalization-ownership.js");
+        const { settleAbsentSandbox } = await import("../services/sandbox-stop-and-retain.js");
+        let entered!: (token: string) => void;
+        const ownerEntered = new Promise<string>(resolve => { entered = resolve; });
+        const ownerMayFinish = new Promise<void>(resolve => { releaseWorkspaceOwner = resolve; });
+        workspaceOwner = withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: f.runId }, async ownership => {
+          entered(ownership.token);
+          await ownerMayFinish;
+        });
+        const ownerToken = await ownerEntered;
+        const [currentLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+        expect(await settleAbsentSandbox(db, currentLease, { receipt: "verified-upstream", proof: {
+          companyId, issueId, runId: f.runId, leaseId: lease.id, provider: "daytona", providerLeaseId: lease.providerLeaseId,
+          ownerToken, v: 1, iss: "paperclip-cloud", aud: "paperclip-sandbox-absence/v1", sub: "fixture", absent: true,
+          iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 60,
+        } })).toBe(true);
+        expect((await readHeartbeatRunsById(successor.id))[0]).toMatchObject({ status: "queued", startedAt: null });
+        expect(execute).not.toHaveBeenCalled();
+        releaseWorkspaceOwner();
+        await workspaceOwner;
+      } else {
+        await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "released", cleanupStatus: "success",
+          metadata: settledMetadata }).where(eq(environmentLeases.id, lease.id)), { companyId, runId: f.runId, leaseId: lease.id });
+      }
+      await expect.poll(() => dispatchAttempts, { timeout: 10_000 }).toBeGreaterThan(beforeSettlement);
+      if (mode === "source_edited") await expect.poll(async () =>
+        (await readHeartbeatRunsById(successor.id))[0]?.status, { timeout: 10_000 }).toBe("failed");
+      await heartbeat.drainActiveRunExecutions();
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "failed" });
+      expect((await request(app).post(`/api/issues/${issueId}/retry`).send(body)).body.requestId).toBe(intent.id);
+      expect(errors).toEqual([]);
+      if (mode === "operator_stopped") {
+        expect(execute).not.toHaveBeenCalled();
+        expect((await readHeartbeatRunsById(successor.id))[0]).toMatchObject({ status: "cancelled" });
+        return;
+      }
+      if (mode === "source_edited" || mode === "unknown_stop") {
+        expect(execute).not.toHaveBeenCalled();
+        const [withheld] = await readHeartbeatRunsById(successor.id);
+        if (mode === "unknown_stop") expect(["queued", "failed"]).toContain(withheld.status);
+        if (withheld.status === "failed") expect(withheld.errorCode).toBe("chat_failed_run_retry_not_authorized");
+        return;
+      }
+      if (mode === "live_owner") {
+        await expect.poll(() => coordinator!.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+        expect(execute).not.toHaveBeenCalled();
+        expect((await readHeartbeatRunsById(successor.id))[0]).toMatchObject({ status: "queued", startedAt: null });
+        const { writeExecutionControl } = await import("../services/execution-control-notifications.js");
+        const { DELIVERY_QUEUES } = await import("../services/delivery-work-notifications.js");
+        await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx.update(nativeRunFinalizations)
+          .set({ leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId)), { companyId, runId: f.runId });
+      }
+      await expect.poll(() => execute.mock.calls.length, { timeout: 10_000 }).toBe(1);
+      await heartbeat.drainActiveRunExecutions();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect((await readHeartbeatRunsById(successor.id))[0]).toMatchObject({ status: "succeeded" });
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "failed" });
+      expect((await request(app).post(`/api/issues/${issueId}/retry`).send(body)).body.requestId).toBe(intent.id);
+      expect(execute).toHaveBeenCalledTimes(1);
+      await expect.poll(() => coordinator!.nextWakeAt(), { timeout: 10_000 }).toBeNull();
+      expect(errors).toEqual([]);
+    } finally { releaseWorkspaceOwner(); await workspaceOwner?.catch(() => undefined); await coordinator?.stop();
+      await heartbeat.drainActiveRunExecutions(); unregisterServerAdapter(adapterType); await f.service.shutdown(); }
+  });
 
   it("retries saved GitHub input after a successful run without replaying that run", async () => {
     const f = await successfulGitHubQueuedInputFixture();

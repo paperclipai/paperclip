@@ -2897,6 +2897,13 @@ Paperclip submits saved input through normal task admission, once, with the
 original user's authority. Pauses, task ownership, budgets, approvals, and
 execution recovery holds still apply. Unconfirmed cleanup does not start work.
 
+An admitted connected-task Retry keeps its existing successor queued while the
+exact native predecessor still owes cleanup, even when the task already points
+to the successor. A stop-and-retain receipt alone does not settle that cleanup.
+Cleanup writes and exact workspace-owner releases wake scoped dispatch after
+commit; the same run then passes the normal source, identity, Stop, approval and
+budget checks again.
+
 A Stop from a bound Slack session records the verified user's identity, just as
 a board Stop does. Native cancellation can then recognize the acknowledged
 operator Stop instead of creating an execution recovery hold. An AI login request
