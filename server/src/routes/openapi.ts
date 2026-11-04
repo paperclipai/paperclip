@@ -3103,9 +3103,12 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
-    description: route[1].endsWith("/install")
-      ? "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy."
-      : undefined,
+    ...(route[1].endsWith("/install") ? {
+      description: "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy. resourceLinks provides canonical company-scoped hrefs for actual saved agents, projects and routines, including reused resources; share these links with the installation outcome.",
+      responses: { 200: r.ok(z.object({ resourceLinks: z.array(z.object({
+        kind: z.enum(["agent", "project", "routine"]), id: z.string(), name: z.string(), href: z.string(),
+      })) }).passthrough()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+    } : {}),
   });
 }
 
