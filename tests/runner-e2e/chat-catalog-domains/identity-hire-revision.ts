@@ -14,12 +14,14 @@ function hasBoundRevisionHistory(o: IdentityObservation, approval: Approval | un
   const sourceId = o.state.sourceIssueId;
   if (!approval || !comment || !link || typeof sourceId !== "string" || o.runs.length !== 1 || o.humanQueries.length !== 1
     || comment.companyId !== o.companyId || comment.issueId !== sourceId || comment.authorAgentId !== o.leadId || comment.authorUserId
-    || typeof comment.body !== "string" || comment.body !== o.reply || typeof o.state.cheaperModel !== "string"
+    || typeof comment.body !== "string" || typeof o.state.cheaperModel !== "string"
     || !comment.body.includes(o.state.cheaperModel)) return false;
   const run = o.runs[0]!;
   if (run.id !== comment.createdByRunId || run.companyId !== o.companyId || run.agentId !== o.leadId || run.runtimeMode !== "native"
     || run.status !== "succeeded" || run.resultJson?.finalizationPhase !== "committed" || run.nativeIssueId !== sourceId
     || run.contextSnapshot?.source !== "issue.comment" || run.contextSnapshot.issueId !== sourceId) return false;
+  if (!o.comments.some(row => row.id === comment.id && row.companyId === o.companyId && row.issueId === sourceId
+    && row.authorAgentId === o.leadId && !row.authorUserId && row.createdByRunId === run.id && row.body === comment.body)) return false;
   const wake = run.contextSnapshot.paperclipWake as { comments?: Array<{ id?: string; issueId?: string; body?: string; author?: { type?: string; id?: string } }> } | undefined;
   if (!wake?.comments?.some(row => row.id === run.contextSnapshot?.commentId && row.issueId === sourceId
     && row.author?.type === "user" && row.author.id === o.state.humanId && row.body?.trim() === o.humanQueries[0]!.trim())) return false;
@@ -104,7 +106,8 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
           && run.contextSnapshot?.issueId === sourceId && humans.length === 1 && run.contextSnapshot?.commentId === humans[0]?.id;
         const link = bound && run ? links.find(row => {
           if (row.source !== "reply" || row.conversationId !== sourceId || !comments.some(comment => comment.id === row.commentId
-            && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id)) return false;
+            && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id
+            && comment.body?.includes(String(state.cheaperModel)))) return false;
           try { const url = new URL(row.href, ctx.input.api.baseURL); return url.origin === new URL(ctx.input.api.baseURL).origin
             && [ `/approvals/${id}`, `/${ctx.input.fixtures.company.issuePrefix}/approvals/${id}` ].includes(url.pathname); }
           catch { return false; }
@@ -132,6 +135,8 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
     state.approvalComments = await ctx.input.api.get<ApprovalComment[]>(`/api/approvals/${id}/comments`);
     const stripModel = (payload: Record<string, unknown>) => { const adapter = payload.adapterConfig as Record<string, unknown>; return { ...payload, adapterConfig: { ...adapter, model: undefined } }; };
     state.originalOtherFieldsPreserved = JSON.stringify(stripModel((state.originalApproval as Approval).payload)) === JSON.stringify(stripModel(current.payload));
-    return observeIdentity(ctx, state);
+    const sourceComments = await ctx.input.api.get<Entity[]>(`/api/issues/${String(state.sourceIssueId)}/comments?order=asc`);
+    const observation = await observeIdentity(ctx, state);
+    return { ...observation, comments: [...observation.comments.filter(row => row.issueId !== state.sourceIssueId), ...sourceComments] };
   },
 })];

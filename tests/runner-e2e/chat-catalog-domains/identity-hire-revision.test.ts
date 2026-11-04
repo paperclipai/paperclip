@@ -20,16 +20,43 @@ function validChatRevision(): IdentityObservation {
   o.runs = [{ id: "native", companyId: "acorn", agentId: "ceo", status: "succeeded", runtimeMode: "native", nativeIssueId: "source",
     resultJson: { finalizationPhase: "committed" }, contextSnapshot: { source: "issue.comment", issueId: "source", commentId: "human",
       paperclipWake: { comments: [{ id: "human", issueId: "source", body: query, author: { type: "user", id: "alex" } }] } } }];
-  o.state.revisionHistoryComment = { id: "bound-reply", companyId: "acorn", issueId: "source", authorAgentId: "ceo", authorUserId: null, createdByRunId: "native", body: o.reply };
+  const comment = { id: "bound-reply", companyId: "acorn", issueId: "source", authorAgentId: "ceo", authorUserId: null, createdByRunId: "native", body: o.reply };
+  o.comments = [structuredClone(comment)];
+  o.state.revisionHistoryComment = structuredClone(comment);
+  Object.assign(o.company, { issuePrefix: "ACORN" });
   o.renderedLinkEvidence = [{ threadTestId: "task-chat-thread", source: "reply", href: "/approvals/approval", conversationId: "source", anchorCommentId: "bound-reply", commentId: "bound-reply" }];
-  o.state.revisionHistoryLink = o.renderedLinkEvidence[0];
+  o.state.revisionHistoryLink = structuredClone(o.renderedLinkEvidence[0]);
   return o;
 }
 describe("formal hire remains a proposal after cost revision", () => {
   it("accepts retained original history and the exact bound native revision reply without an extra approval comment", () => {
     expect(gradeHireRevision(validChatRevision()).passed).toBe(true);
   });
+  it("accepts a bound revision reply alongside progress from the same run", () => {
+    const o = validChatRevision();
+    const progress = { ...structuredClone(o.comments[0]!), id: "progress", body: "I am checking the revised proposal." };
+    o.comments.unshift(progress);
+    o.reply = o.comments.map(row => row.body).join("\n\n");
+    expect(gradeHireRevision(o).passed).toBe(true);
+  });
+  it("accepts an earlier bound revision note when the final message only asks for board review", () => {
+    const o = validChatRevision();
+    o.comments.push({ ...structuredClone(o.comments[0]!), id: "final", body: "It remains pending board approval." });
+    o.reply = o.comments.map(row => row.body).join("\n\n");
+    expect(gradeHireRevision(o).passed).toBe(true);
+  });
+  it("keeps captured comment and link receipts separate from independently observed evidence", () => {
+    const o = validChatRevision();
+    expect(o.state.revisionHistoryComment).not.toBe(o.comments[0]);
+    expect(o.state.revisionHistoryLink).not.toBe(o.renderedLinkEvidence![0]);
+    const observed = structuredClone({ comments: o.comments, links: o.renderedLinkEvidence });
+    (o.state.revisionHistoryComment as { body: string }).body = "Changed captured receipt only";
+    (o.state.revisionHistoryLink as { href: string }).href = "/ACORN/approvals/approval";
+    expect({ comments: o.comments, links: o.renderedLinkEvidence }).toEqual(observed);
+    expect(gradeHireRevision(o).passed).toBe(false);
+  });
   it.each([
+    ["unobserved captured message", (o: IdentityObservation) => { o.comments = []; }],
     ["unbound prose", (o: IdentityObservation) => { delete o.state.revisionHistoryComment; }],
     ["wrong comment company", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { companyId: string }).companyId = "other"; }],
     ["wrong comment source", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { issueId: string }).issueId = "other"; }],
@@ -42,6 +69,11 @@ describe("formal hire remains a proposal after cost revision", () => {
     ["foreign run source", (o: IdentityObservation) => { o.runs[0]!.nativeIssueId = "other"; }],
     ["wrong human wake", (o: IdentityObservation) => { o.runs[0]!.contextSnapshot!.commentId = "other"; }],
     ["unobserved rendered link", (o: IdentityObservation) => { o.renderedLinkEvidence = []; }],
+    ["different canonical receipt href", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "/ACORN/approvals/approval"; }],
+    ["wrong captured link source", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { source: string }).source = "project-created-card"; }],
+    ["wrong captured link conversation", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { conversationId: string }).conversationId = "other"; }],
+    ["wrong captured link comment", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { commentId: string }).commentId = "other"; }],
+    ["changed captured message", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { body: string }).body += " Unobserved receipt text"; }],
     ["wrong proposal link", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "/approvals/other"; }],
     ["foreign link origin", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "https://other.test/approvals/approval"; }],
     ["missing original history", (o: IdentityObservation) => { o.state.approvalComments = []; }],

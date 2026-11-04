@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 const clock = vi.hoisted(() => ({ now: 30_000, deadlines: [] as number[] }));
+const observations = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock("./identity-support.js", async importOriginal => ({ ...await importOriginal<typeof import("./identity-support.js")>(), observeIdentity: observations.read }));
 vi.mock("../codex-subscription-fixture.js", () => ({ codexSubscriptionAgentConfig: (value: unknown) => value }));
 vi.mock("@playwright/test", () => ({ expect: (node: { visible?: () => boolean; text?: () => string }) => ({
   toBeVisible: async () => { if (!node.visible?.()) throw Error("Actual pending proposal is not visible"); },
@@ -17,8 +19,8 @@ vi.mock("../api.js", () => ({ pollUntil: async (options: { deadlineAt: number; l
   throw Error("Controlled original observation expired");
 } }));
 import { hireRevisionIdentityCases } from "./identity-hire-revision.js";
-afterEach(() => { vi.restoreAllMocks(); document.body.replaceChildren(); });
-type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean };
+afterEach(() => { vi.restoreAllMocks(); observations.read.mockReset(); document.body.replaceChildren(); });
+type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean; progress?: boolean };
 function fixture(options: Options = {}) {
   clock.now = 30_000; clock.deadlines.splice(0); vi.spyOn(Date, "now").mockImplementation(() => clock.now);
   vi.spyOn(Element.prototype, "getClientRects").mockImplementation(() => [{ width: 10, height: 10 }] as unknown as DOMRectList);
@@ -27,10 +29,11 @@ function fixture(options: Options = {}) {
   const readyAt = options.readyAt ?? 210_000, href = options.href ?? "/approvals/approval";
   const run = { id: "native", companyId: "company", agentId: options.wrongActor ? "other" : "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: source, commentId: options.wrongNativeComment ? "other" : "human" } };
   const comments = [{ id: "human", companyId: "company", issueId: source, authorUserId: "person", body: query },
-    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "Revised pending proposal." }];
+    ...(options.progress ? [{ id: "progress", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "I am checking this proposal before revising it." }] : []),
+    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "Revised to requested-model, pending proposal." }];
   function sync() {
-    document.body.innerHTML = '<section data-testid="task-chat-thread"><div id="comment-human"></div><div id="comment-' + (options.wrongComment ? "foreign" : "reply") + '"></div></section>';
-    if (clock.now >= readyAt) { const a = document.createElement("a"); a.setAttribute("href", href); a.textContent = "pending approval"; document.querySelector('div:last-child')!.append(a); }
+    document.body.innerHTML = '<section data-testid="task-chat-thread"><div id="comment-human"></div>' + (options.progress ? '<div id="comment-progress"></div>' : '') + '<div id="comment-' + (options.wrongComment ? "foreign" : "reply") + '"></div></section>';
+    if (clock.now >= readyAt) { const a = document.createElement("a"); a.setAttribute("href", href); a.textContent = "pending approval"; document.querySelector('div:last-child')!.append(a); if (options.progress) document.getElementById("comment-progress")!.append(a.cloneNode(true)); }
   }
   type Nodes = { nodes: Element[]; locator(selector: string): Nodes; first(): Nodes; filter(options: { has: Nodes }): Nodes; evaluateAll<T>(read: (nodes: Element[]) => T): Promise<T>; click(): Promise<void>; text(): string };
   function nodes(list: Element[]): Nodes { return { nodes: list, locator: selector => nodes(list.flatMap(n => Array.from(n.querySelectorAll(selector)))), first: () => nodes(list.slice(0,1)),
@@ -69,4 +72,31 @@ it("accepts the same owned company-prefixed ordinary approval route", async () =
 });
 it.each([{ wrongModel: true }, { notPending: true }])("does not turn review visibility into a wrong model/approved proposal PASS %j", async options => {
   const f = fixture({ readyAt:30_000, ...options }); await expect(hireRevisionIdentityCases[0]!.act!(f.ctx,f.state)).rejects.toThrow();
+});
+
+it("captures the model-specific bound revision note when progress also renders the same proposal link", async () => {
+  const f = fixture({ readyAt: 30_000, progress: true });
+  await hireRevisionIdentityCases[0]!.act!(f.ctx, f.state);
+  expect(f.state).toMatchObject({ revisionHistoryComment: { id: "reply", body: "Revised to requested-model, pending proposal." },
+    revisionHistoryLink: { commentId: "reply", href: "/approvals/approval" } });
+});
+
+it("rereads the actual source comment independently of the captured history receipt", async () => {
+  const captured = { id: "reply", issueId: "source", companyId: "company", createdByRunId: "native", authorAgentId: "ceo", body: "Revised model, pending approval." };
+  const observed = structuredClone(captured), child = { id: "child-comment", issueId: "child", body: "Child history." };
+  const state = { sourceIssueId: "source", originalApproval: { id: "approval", payload: { adapterConfig: { model: "old" } } }, revisionHistoryComment: captured };
+  observations.read.mockResolvedValue({ comments: [child], state });
+  const get = vi.fn(async (url: string) => {
+    if (url === "/api/approvals/approval") return { id: "approval", payload: { adapterConfig: { model: "new" } } };
+    if (url === "/api/approvals/approval/comments") return [];
+    if (url === "/api/issues/source/comments?order=asc") return [observed];
+    throw Error("Unexpected observation read");
+  });
+  const ctx = { input: { api: { get } } } as unknown as ChatCatalogContext;
+  const result = await hireRevisionIdentityCases[0]!.observe!(ctx, state) as { comments: typeof captured[] };
+  expect(get).toHaveBeenCalledWith("/api/issues/source/comments?order=asc");
+  expect(result.comments).toEqual([child, captured]);
+  expect(result.comments[1]).not.toBe(captured);
+  observed.body = "Changed independent observation";
+  expect(captured.body).toBe("Revised model, pending approval.");
 });
