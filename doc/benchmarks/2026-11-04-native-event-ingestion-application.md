@@ -1,9 +1,17 @@
 # Native ingestion application acceptance
 
-Status at 2026-11-04 10:58 UTC: **application acceptance remains open**. Source
+Status at the 2026-11-04 packaging snapshot: **application acceptance remains open**. Source
 append measurements passed their registered gates. No production-application
 A/A calibration, paired browser improvement, or deployed improvement is claimed.
 Both delivery PRs remain drafts.
+
+The [current reproduction package](../../scripts/native-ingestion/h5e/README.md)
+contains exact H5e V4/resource V3 sources, fixtures, pure checks and source
+reviews. Its [compact evidence index](../../scripts/native-ingestion/h5e/evidence/current-status.json)
+retains qualification hashes and explicitly pending durable artifact links.
+Main B0 A/A is active under its unchanged V3 helper/release; no completed noise
+verdict or application treatment gain is available. Neutral V4 and resource V3
+are source-cleared; their next runtime qualifications remain open.
 
 This report records the application inputs and qualification evidence. The
 [source report](2026-11-03-native-event-ingestion-interleaved.md) measures active
@@ -38,7 +46,7 @@ append implementation, index and dependency checks. New matched inputs are:
 | --- | --- | ---: |
 | B0 | `7550ffa5d6447d2615bc89fc5313f4cbb958b615` | 12,930 |
 | B1 | `2cf1454406cbd582a11f04476713eceb746eada5` | 12,944 |
-| Unoptimized B2 base | `0b616ccc90bf43cb26adac056a22ff01a84f982b` | 12,952 |
+| Current TypeScript B2 | `75b3578cfccf040b087a55a624e01baa2bca37f9` | 12,952 |
 
 All three normal independent locked production builds exited zero. Their actual
 shared native SHA256 is
@@ -51,23 +59,82 @@ Qualified receipt SHA256 is
 `5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b`;
 inventory-summary SHA256 is
 `e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d`.
-These are build qualifications, with no application measurements. Fresh main
-and companion B0/B1 calibration must precede further
-optimization. Workloads, deadlines, noise limits and acceptance gates stay fixed.
+The original CF master receipt covers B0/B1 and unoptimized B2-base
+`0b616ccc…`; it must not be relabelled as the current B2 receipt. Current75 has
+its own normal build, independent canonical native target and exact receipt
+`86bf7cd284b4ac0672ed5d99de2319962946e365216277a253ff18b4c93bf9d1`,
+summary `330b0f843a5b44ccf940267e61ab5b401d99aa53206586feeabb73aff73f7b29`
+and four-root aggregate
+`2df789c77a7939ead10f8789f3c60ac8e6addcbc25f263650f0e9478c33e32ee`.
+Its fifteen native inputs, compiler/configuration, metadata and actual binary
+match CF controls; all six protected targets remained unchanged. The TypeScript
+batching change requires no Rust product change or novel binary. Fresh main
+and companion B0/B1 calibration must precede any further product optimization.
+Workloads, deadlines, noise limits and acceptance gates stay fixed.
 
 Review also found a prospective comparison defect: the old comparator required
-one Runner binary across both arms while the planned Rust candidate requires a
-new qualified binary. The corrected comparator validates each arm against its
+one Runner binary across both arms. The corrected comparator validates each arm against its
 own qualified build and requires stable samples; A/A retains one shared build.
 The actual CLI regression fails on the historical comparator and passes the
 correction, with five native-provenance cases in a passing 44-case tool suite.
 H5e is frozen at `73ea8516739e81fa7f37cd67651b4a2c73674014`; the separate
 blocked-Stop V4 is `a89f321ab5654211cbff7be1ee15c110b8db4a5f`. They change
 baseline input references and registration metadata; H5e also includes this
-provenance correction. Qualification and timing execution remain unreleased.
+provenance correction. The five exact application/driver source tags are
+published; their annotated objects and commits are in the reproduction package.
+CF functional qualification and main B0 A/A status are recorded below. New
+neutral-helper and resource executions remain separately gated.
 Historical H5b/H5c/H5d
 sources and recorded qualifications stay immutable; their unexecuted prospective
-Rust-candidate comparisons are not accepted evidence.
+candidate comparisons are not accepted evidence.
+
+## Current CF functional qualification and source-only tools
+
+SMALL B0 passed one owning attempt: 48 text deltas, three results, persisted
+reload and a six-delta local Stop prefix with no result. Runtime, lease, ACK,
+physical-process and port checks passed. Lead review checked 118 sealed files;
+an earlier pre-app setup-mapping failure remains retained. This is functional
+qualification, not a performance sample.
+
+FULL B0 completed all six functional cases in one 853.299-second owning test:
+53,904 normal text deltas, 122 results, the independently emitted 1,000-delta
+history prelude and an eight-delta Stop prefix with no result. Reload, leases,
+ACK retirement and physical cleanup passed. The original loaded 120-second
+streaming limit still **failed**: 63 of 512 foreground deltas were observed
+near the deadline. All 512 became visible by 285.002 seconds; independent
+readback verified all 51,200 loaded deltas and 100 results at 390.608 seconds.
+Twenty-eight provider transport failures recovered. Lead review checked all
+60 sealed files. Eventual completion does not regrade the responsiveness miss
+or establish acceptable noise.
+
+The old-wrapper companion on driver `a89f321a…` completed one B0 functional
+qualification. Fifteen samples covered a 1,021ms hold after the actual Stop
+POST, with no consequential dispatch before the commit barrier. After release,
+ACK took 165ms and independent PID/group absence took 1,288ms; the 1,000-event
+prelude, eight Stop deltas, zero results, reload, leases and cleanup passed.
+Lead review checked all 57 files. These values are one functional observation,
+not control-latency acceptance.
+
+Candidate-neutral H5e V4 retains exact root-release source/build/native/
+inventory guards without hardcoding a future candidate revision. Current75 is
+the only registered B2. Its 91 source cases and six frozen comparator CLI cases
+pass source review. Main V3 controls may carry forward only through unchanged
+ordinary identity/suitability checks. The companion identity includes its two
+helper hashes, so the old-wrapper functional result above cannot qualify
+neutral V4: one fresh companion functional qualification and its own A/As remain
+required. No running V3 helper, release, raw evidence or completed candidate
+comparison is rewritten.
+
+Combined resource V3 is independently source-cleared (46 Node and three Python
+pure cases). Actual Linux accounting/controls/environment/exit proof, installed
+postgres3.4.9 guards and a SMALL six-hook/SQL-cluster/independent-flush/cleanup
+qualification remain open. The unreleased measurement protocol uses five
+alternating three-role blocks, 15 FULL diagnostic invocations and five matched
+pairs per contrast, disclosing shared observations. It retains exact durable
+denominators, separate terminal/verified windows and each numerator's six
+interior samples/10% boundary precision. Without CPU-specific noise calibration,
+it reports resource costs/bounds without claiming CPU improvement beyond noise.
+It cannot substitute for unprofiled application or blocked-control acceptance.
 
 ## Recorded 4a83 application builds
 
@@ -100,9 +167,10 @@ Source/build-input comparisons match the frozen B1/B2 to the delivery branches;
 this excludes test/tooling differences rather than executing the delivery lock
 as the browser driver.
 
-These are build qualifications, not performance results. A further Rust change
-needs its own immutable revision, normal build, binary and qualified inventory.
-The existing B2 base cannot stand in for that candidate.
+These are historical build qualifications, not performance results. A later
+product candidate needs its own immutable revision, normal build, actual binary
+and qualified inventory. This does not require a Rust change or different
+binary. The historical B2 base cannot stand in for current75.
 
 ## Retained full-load qualification failures
 
@@ -346,8 +414,9 @@ own fresh baseline noise and paired comparisons, distinct from the main matrix.
 
 ## Remaining acceptance
 
-No application A/A or paired browser improvement has passed. No proposed Rust
-optimization is implemented. Remaining gates are fresh B0/B1 application and companion noise; all three paired comparisons; loaded browser
+No application A/A or paired browser improvement has passed. Current75
+TypeScript batching is independently built; a Rust change is not an acceptance
+prerequisite. Remaining gates are fresh B0/B1 application and companion noise; all three paired comparisons; loaded browser
 and complete-drainage improvement; sparse/control nonregression; complete-window
 resource accounting; original-SLA confirmation; affected live-provider and real
 cloud Stop journeys on the final runtime; and current-head checks/review.

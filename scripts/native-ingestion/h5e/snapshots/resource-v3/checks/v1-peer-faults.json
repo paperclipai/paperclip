@@ -1,0 +1,41 @@
+{
+  "stoppedTransientUnitDisappears": {
+    "actualSourceFunctions": [
+      "serviceState",
+      "stopPgService"
+    ],
+    "stopCommandSucceeded": true,
+    "postStopShowReturnedNotFound": true,
+    "cleanupRejected": true,
+    "privateFilesUnlinked": [],
+    "independentPidChecks": [],
+    "scopeChecks": [],
+    "cleanupReceiptWritten": false,
+    "noSystemctlOrFilesystemRuntimeExecuted": true
+  },
+  "alreadyCollectedReadyUnit": {
+    "readyReceiptExists": true,
+    "unitAbsentAtCleanup": true,
+    "returnedComplete": true,
+    "incorrectlyClassifiedNeverStarted": true,
+    "independentPidChecks": [],
+    "scopeChecks": [],
+    "normalPgShutdownProven": false
+  },
+  "collectorBirthFailure": {
+    "actualSourceFunctions": [
+      "poll",
+      "launchCollector",
+      "startResourceCapture tail",
+      "finishResourceCapture"
+    ],
+    "childSpawned": true,
+    "birthReadRejected": "EACCES",
+    "cleanupChildrenRegistered": 0,
+    "cleanupKillCalls": 0,
+    "fakeChildStillLive": true,
+    "errorListenersDuringFirstPostSpawnAwait": 0,
+    "combinedReceiptComplete": false,
+    "noProcessOrProcRuntimeExecuted": true
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "sourceOnly": true,
+  "allOriginalV1SourcesRawChecksPacketAndDiffUnchanged": true,
+  "retainedV1RawChecksUnchanged": true,
+  "reviewReportSha256": "f65ba95208b118622149fadacf3165dc6dc3b977f678f1e7a2e6315fd50be500",
+  "definitionsAndNumericalTransformsUnchanged": [
+    {
+      "path": "DEFINITIONS.md",
+      "sha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e"
+    },
+    {
+      "path": "counters.mjs",
+      "sha256": "91de72c53829e13fe5c9a33f43fd7b9f20dbc01933e0392645603270371876d0"
+    },
+    {
+      "path": "transforms.mjs",
+      "sha256": "ed0a07c4775b99f7f2a0f7861e3ca40a360fe4d7cb23822cfcaa6338da0af1cc"
+    },
+    {
+      "path": "counter-capture-client.mjs",
+      "sha256": "d5cb42713a2dba1af1d15a879aa9b9a0adb1f8e8a0317f9fa1c69973e51a6741"
+    },
+    {
+      "path": "counter-proofs.mjs",
+      "sha256": "3784fa8e928087fba8d9274cafcd38e1e5a3b63dd0e9ff838e347664f2957e5a"
+    },
+    {
+      "path": "external/external_resources.py",
+      "sha256": "1a040299087b85b4e50f63fc8c45783241fe9893c709359cd56e200451d4ae57"
+    },
+    {
+      "path": "external/pg_resources.mjs",
+      "sha256": "e90ce40fdb45f7f789f29c20c0ff8a57f1e915ca1e8fa8f4cce6b2d19084b6d3"
+    },
+    {
+      "path": "external/pg_cluster_binding.mjs",
+      "sha256": "75b9713aaa5e89099947b6e4d3864bc105f82852f6718cb6d2f9935f13a23c63"
+    },
+    {
+      "path": "external/pg-snapshot.sql",
+      "sha256": "dfc702d531f51da75ae0f49fa19a46c5f5d04e61e9c790bddae8d8fcd1403bbf"
+    }
+  ],
+  "allPriorFrozenReferencesStillMatch": true,
+  "actualB2DescriptorSha256": "6cb9946cf2d62cd95c85283129c2979894a2fb12ee1ab3d87ed1b43a0efbd3aa",
+  "actualB2ManifestSha256": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+  "B2SourceFixtureProvenanceSha256": "6367725b908c07b85aef3b97566769a2eeb225f49c1a1ebfa5b85522317f67a7",
+  "B2ServingQualified": false
+}

@@ -1,0 +1,20 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+false !== true
+
+    at load (file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs:60:9)
+    at async main (file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs:236:10)
+    at async file:///private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs:240:58 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.22.2

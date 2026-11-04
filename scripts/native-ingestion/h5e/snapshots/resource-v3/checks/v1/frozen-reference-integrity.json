@@ -1,0 +1,69 @@
+{
+  "sourceOnly": true,
+  "references": [
+    {
+      "path": "/private/tmp/native-ingestion-h5d-resource-tools/source-packet.json",
+      "sha256": "c1e0a1cff16ae672ce2068539884219f9982405d2c391d09494ec44a497294f7",
+      "unchanged": true
+    },
+    {
+      "path": "/private/tmp/native-ingestion-h5d-resource-tools/wrapper-packet-v2.json",
+      "sha256": "386395c5fd9ddf61622431abf98604ef7318239491d9a2ed4d088033bdb2ef25",
+      "unchanged": true
+    },
+    {
+      "path": "/private/tmp/native-ingestion-external-resource-tools-v2/source-packet.json",
+      "sha256": "b5e29f557ceb86cc44e817089cb7d92315a4fa5e5ff428a8f7f265eb2e32e5be",
+      "unchanged": true
+    },
+    {
+      "path": "/private/tmp/native-ingestion-cf-build-descriptors.json",
+      "sha256": "f334c6a854b0cc50727854c99f024ce3c4b42440bb6a960d0d32c4085f15ae40",
+      "unchanged": true
+    },
+    {
+      "path": "/private/tmp/native-ingestion-cf-cgroup-launch-plan.md",
+      "sha256": "9f5daaf86eda84e599fe52427a3c52c08b19806cdba27442eb36ccae638c2ea3",
+      "unchanged": true
+    },
+    {
+      "path": "/private/tmp/native-ingestion-cf-driver-source-freeze.json",
+      "sha256": "77efe5e4477dea52689d1c1da43b791d4905ab2279b5539f5cd2d37d5d143d81",
+      "unchanged": true
+    }
+  ],
+  "allOriginalCounterWrapperAndExternalSourceRowsUnchanged": true,
+  "unchangedCopies": [
+    {
+      "path": "DEFINITIONS.md",
+      "from": "/private/tmp/native-ingestion-h5d-resource-tools/DEFINITIONS.md",
+      "sha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e"
+    },
+    {
+      "path": "counters.mjs",
+      "from": "/private/tmp/native-ingestion-h5d-resource-tools/counters.mjs",
+      "sha256": "91de72c53829e13fe5c9a33f43fd7b9f20dbc01933e0392645603270371876d0"
+    },
+    {
+      "path": "external/external_resources.py",
+      "from": "/private/tmp/native-ingestion-external-resource-tools-v2/external_resources.py",
+      "sha256": "1a040299087b85b4e50f63fc8c45783241fe9893c709359cd56e200451d4ae57"
+    },
+    {
+      "path": "external/pg_resources.mjs",
+      "from": "/private/tmp/native-ingestion-external-resource-tools-v2/pg_resources.mjs",
+      "sha256": "e90ce40fdb45f7f789f29c20c0ff8a57f1e915ca1e8fa8f4cce6b2d19084b6d3"
+    },
+    {
+      "path": "external/pg_cluster_binding.mjs",
+      "from": "/private/tmp/native-ingestion-external-resource-tools-v2/pg_cluster_binding.mjs",
+      "sha256": "75b9713aaa5e89099947b6e4d3864bc105f82852f6718cb6d2f9935f13a23c63"
+    },
+    {
+      "path": "external/pg-snapshot.sql",
+      "from": "/private/tmp/native-ingestion-external-resource-tools-v2/pg-snapshot.sql",
+      "sha256": "dfc702d531f51da75ae0f49fa19a46c5f5d04e61e9c790bddae8d8fcd1403bbf"
+    }
+  ],
+  "mainNineMeasurementSourcesLockComparatorUnchanged": true
+}

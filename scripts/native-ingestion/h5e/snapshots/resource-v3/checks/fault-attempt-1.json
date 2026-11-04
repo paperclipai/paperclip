@@ -1,0 +1,13 @@
+{
+  "scope": "Actual-source Node vm stubs only; no real VM/runtime",
+  "command": [
+    "/private/tmp/native-ingestion-node24/bin/node",
+    "--test",
+    "--test-concurrency=1",
+    "cleanup-faults.test.mjs"
+  ],
+  "exit": 1,
+  "stdout": "\u2714 RED actual V1 stop success plus unit GC skips private cleanup; GREEN V2 retains normal proof and verifies retirement (2.557083ms)\n\u2714 RED V1 initially collected ready service is falsely never-started; GREEN V2 requires its exit proof and retirement (1.121542ms)\n\u2714 missing/mismatched exit proof and PID reuse fail honestly while always removing exact owned private paths (2.66425ms)\n\u2716 actual ExecStopPost writer atomically preserves own-unit status; bad exit stays explicitly unqualified (0.706584ms)\n\u2714 RED V1 birth EACCES escapes ownership; GREEN V2 owns before await and cooperatively joins with primary error preserved (1.135959ms)\n\u2714 early spawn error already has listeners and an owned joined handle; no numeric PID is signalled (0.683083ms)\n\u2714 unjoined unknown birth and reused known birth never signal a numeric PID or become successful cleanup (0.473792ms)\n\u2714 direct service installs only the source-bound finite exit writer after all event windows (0.177208ms)\n\u2139 tests 8\n\u2139 suites 0\n\u2139 pass 7\n\u2139 fail 1\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 47.946041\n\n\u2716 failing tests:\n\ntest at cleanup-faults.test.mjs:107:1\n\u2716 actual ExecStopPost writer atomically preserves own-unit status; bad exit stays explicitly unqualified (0.706584ms)\n  AssertionError [ERR_ASSERTION]: Values have same structure but are not reference-equal:\n  \n  {\n    EXIT_CODE: 'exited',\n    EXIT_STATUS: '0',\n    SERVICE_RESULT: 'success'\n  }\n  \n      at validateExitProof (file:///private/tmp/native-ingestion-h5e-resource-tools-v2/pg-exit-receipt.mjs:28:10)\n      at Object.main (evalmachine.<anonymous>:18:9)\n      at async TestContext.<anonymous> (file:///private/tmp/native-ingestion-h5e-resource-tools-v2/cleanup-faults.test.mjs:108:34)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: { SERVICE_RESULT: 'success', EXIT_CODE: 'exited', EXIT_STATUS: '0' },\n    expected: { SERVICE_RESULT: 'success', EXIT_CODE: 'exited', EXIT_STATUS: '0' },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n",
+  "stderr": "",
+  "fixtureIssue": "Cross-realm Object.fromEntries generated a different prototype in the writer fixture; production same-realm code unaffected"
+}

@@ -1,0 +1,13 @@
+{
+  "atUtc": "2026-11-04T13:37:47.053318+00:00",
+  "reviewer": "root",
+  "verdict": "SOURCE_CLEAR",
+  "executionReleased": false,
+  "protocolSha256": "c95fa5f81a2f02dc1c28631ba677209d398a3df5b6b4024653a1f082cec5a388",
+  "peerReviewSha256": "f13d120b69ac5e2324e0ea51cb4fd968e1de6f041adacb3c6d64246b64b5451a",
+  "fiveAlternatingPairsPerContrast": true,
+  "sharedObservationsExplicitAndNotIndependentExtraTrials": true,
+  "measurementAndImprovementClaimsNotMade": true,
+  "fixedCountersPrecisionDenominatorsAndCompletedDrainRetained": true,
+  "noNewPerformanceGateOrNoiseRelaxation": true
+}

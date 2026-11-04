@@ -1,0 +1,376 @@
+TAP version 13
+# Subtest: main: qualified current75 and prospective sources use exact descriptor receipts
+ok 1 - main: qualified current75 and prospective sources use exact descriptor receipts
+  ---
+  duration_ms: 7.069417
+  type: 'test'
+  ...
+# Subtest: main: changed native input may retain the same binary only with a fresh current-head B2 receipt and isolated target
+ok 2 - main: changed native input may retain the same binary only with a fresh current-head B2 receipt and isolated target
+  ---
+  duration_ms: 1.901958
+  type: 'test'
+  ...
+# Subtest: main: a complete changed compilation configuration requires no invented binary novelty
+ok 3 - main: a complete changed compilation configuration requires no invented binary novelty
+  ---
+  duration_ms: 1.963208
+  type: 'test'
+  ...
+# Subtest: main: same native inputs accept a different independently qualified artifact hash
+ok 4 - main: same native inputs accept a different independently qualified artifact hash
+  ---
+  duration_ms: 1.817167
+  type: 'test'
+  ...
+# Subtest: main: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+ok 5 - main: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.49625
+  type: 'test'
+  ...
+# Subtest: main: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+ok 6 - main: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.46025
+  type: 'test'
+  ...
+# Subtest: main: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+ok 7 - main: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.20425
+  type: 'test'
+  ...
+# Subtest: main: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+ok 8 - main: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.729834
+  type: 'test'
+  ...
+# Subtest: main: rejects missing one of fifteen inputs
+ok 9 - main: rejects missing one of fifteen inputs
+  ---
+  duration_ms: 1.516334
+  type: 'test'
+  ...
+# Subtest: main: rejects unexpected native input path
+ok 10 - main: rejects unexpected native input path
+  ---
+  duration_ms: 1.431333
+  type: 'test'
+  ...
+# Subtest: main: rejects invalid native input object
+ok 11 - main: rejects invalid native input object
+  ---
+  duration_ms: 1.24475
+  type: 'test'
+  ...
+# Subtest: main: rejects missing compilation field
+ok 12 - main: rejects missing compilation field
+  ---
+  duration_ms: 1.584542
+  type: 'test'
+  ...
+# Subtest: main: rejects unreviewed compilation field
+ok 13 - main: rejects unreviewed compilation field
+  ---
+  duration_ms: 1.555375
+  type: 'test'
+  ...
+# Subtest: main: rejects invalid compilation field type
+ok 14 - main: rejects invalid compilation field type
+  ---
+  duration_ms: 1.283542
+  type: 'test'
+  ...
+# Subtest: main: rejects missing toolchain output
+ok 15 - main: rejects missing toolchain output
+  ---
+  duration_ms: 1.260375
+  type: 'test'
+  ...
+# Subtest: main: rejects contradictory compiler output
+ok 16 - main: rejects contradictory compiler output
+  ---
+  duration_ms: 1.302667
+  type: 'test'
+  ...
+# Subtest: main: rejects missing native metadata
+ok 17 - main: rejects missing native metadata
+  ---
+  duration_ms: 1.177584
+  type: 'test'
+  ...
+# Subtest: main: rejects invalid native metadata contract
+ok 18 - main: rejects invalid native metadata contract
+  ---
+  duration_ms: 1.696459
+  type: 'test'
+  ...
+# Subtest: main: rejects invalid native version interval
+ok 19 - main: rejects invalid native version interval
+  ---
+  duration_ms: 1.181709
+  type: 'test'
+  ...
+# Subtest: main: rejects old B2-base receipt role
+ok 20 - main: rejects old B2-base receipt role
+  ---
+  duration_ms: 1.111542
+  type: 'test'
+  ...
+# Subtest: main: rejects old base compiled stamp
+ok 21 - main: rejects old base compiled stamp
+  ---
+  duration_ms: 2.144083
+  type: 'test'
+  ...
+# Subtest: main: rejects old manifest compiled stamp
+ok 22 - main: rejects old manifest compiled stamp
+  ---
+  duration_ms: 4.758625
+  type: 'test'
+  ...
+# Subtest: main: rejects missing isolated-build attestation
+ok 23 - main: rejects missing isolated-build attestation
+  ---
+  duration_ms: 5.380459
+  type: 'test'
+  ...
+# Subtest: main: rejects build receipt points at baseline target
+ok 24 - main: rejects build receipt points at baseline target
+  ---
+  duration_ms: 1.266084
+  type: 'test'
+  ...
+# Subtest: main: rejects target lexical alias
+ok 25 - main: rejects target lexical alias
+  ---
+  duration_ms: 1.288042
+  type: 'test'
+  ...
+# Subtest: main: rejects nested baseline target
+ok 26 - main: rejects nested baseline target
+  ---
+  duration_ms: 1.391792
+  type: 'test'
+  ...
+# Subtest: main: rejects baseline target ancestor
+ok 27 - main: rejects baseline target ancestor
+  ---
+  duration_ms: 1.36075
+  type: 'test'
+  ...
+# Subtest: main: rejects both frozen baseline source revisions relabelled B2
+ok 28 - main: rejects both frozen baseline source revisions relabelled B2
+  ---
+  duration_ms: 2.308583
+  type: 'test'
+  ...
+# Subtest: main: an actual old CF B2-base receipt is not a qualified B2 build
+ok 29 - main: an actual old CF B2-base receipt is not a qualified B2 build
+  ---
+  duration_ms: 7.08175
+  type: 'test'
+  ...
+# Subtest: companion dependency: qualified current75 and prospective sources use exact descriptor receipts
+ok 30 - companion dependency: qualified current75 and prospective sources use exact descriptor receipts
+  ---
+  duration_ms: 3.232666
+  type: 'test'
+  ...
+# Subtest: companion dependency: changed native input may retain the same binary only with a fresh current-head B2 receipt and isolated target
+ok 31 - companion dependency: changed native input may retain the same binary only with a fresh current-head B2 receipt and isolated target
+  ---
+  duration_ms: 1.273667
+  type: 'test'
+  ...
+# Subtest: companion dependency: a complete changed compilation configuration requires no invented binary novelty
+ok 32 - companion dependency: a complete changed compilation configuration requires no invented binary novelty
+  ---
+  duration_ms: 1.306875
+  type: 'test'
+  ...
+# Subtest: companion dependency: same native inputs accept a different independently qualified artifact hash
+ok 33 - companion dependency: same native inputs accept a different independently qualified artifact hash
+  ---
+  duration_ms: 1.402041
+  type: 'test'
+  ...
+# Subtest: companion dependency: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+ok 34 - companion dependency: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.105542
+  type: 'test'
+  ...
+# Subtest: companion dependency: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+ok 35 - companion dependency: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.467875
+  type: 'test'
+  ...
+# Subtest: companion dependency: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+ok 36 - companion dependency: unchanged native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.297542
+  type: 'test'
+  ...
+# Subtest: companion dependency: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+ok 37 - companion dependency: changed native cannot reuse immutable target /home/ubuntu/native-ingestion/aligned-cf-baseline/packages/paperclip-runner/runner/target
+  ---
+  duration_ms: 1.242125
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects missing one of fifteen inputs
+ok 38 - companion dependency: rejects missing one of fifteen inputs
+  ---
+  duration_ms: 1.175958
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects unexpected native input path
+ok 39 - companion dependency: rejects unexpected native input path
+  ---
+  duration_ms: 1.845666
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects invalid native input object
+ok 40 - companion dependency: rejects invalid native input object
+  ---
+  duration_ms: 1.161917
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects missing compilation field
+ok 41 - companion dependency: rejects missing compilation field
+  ---
+  duration_ms: 1.111666
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects unreviewed compilation field
+ok 42 - companion dependency: rejects unreviewed compilation field
+  ---
+  duration_ms: 1.273041
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects invalid compilation field type
+ok 43 - companion dependency: rejects invalid compilation field type
+  ---
+  duration_ms: 1.264167
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects missing toolchain output
+ok 44 - companion dependency: rejects missing toolchain output
+  ---
+  duration_ms: 1.200959
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects contradictory compiler output
+ok 45 - companion dependency: rejects contradictory compiler output
+  ---
+  duration_ms: 1.379291
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects missing native metadata
+ok 46 - companion dependency: rejects missing native metadata
+  ---
+  duration_ms: 1.188584
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects invalid native metadata contract
+ok 47 - companion dependency: rejects invalid native metadata contract
+  ---
+  duration_ms: 1.196875
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects invalid native version interval
+ok 48 - companion dependency: rejects invalid native version interval
+  ---
+  duration_ms: 1.167083
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects old B2-base receipt role
+ok 49 - companion dependency: rejects old B2-base receipt role
+  ---
+  duration_ms: 1.315875
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects old base compiled stamp
+ok 50 - companion dependency: rejects old base compiled stamp
+  ---
+  duration_ms: 1.158125
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects old manifest compiled stamp
+ok 51 - companion dependency: rejects old manifest compiled stamp
+  ---
+  duration_ms: 1.104291
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects missing isolated-build attestation
+ok 52 - companion dependency: rejects missing isolated-build attestation
+  ---
+  duration_ms: 1.507167
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects build receipt points at baseline target
+ok 53 - companion dependency: rejects build receipt points at baseline target
+  ---
+  duration_ms: 1.160125
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects target lexical alias
+ok 54 - companion dependency: rejects target lexical alias
+  ---
+  duration_ms: 1.218209
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects nested baseline target
+ok 55 - companion dependency: rejects nested baseline target
+  ---
+  duration_ms: 1.143
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects baseline target ancestor
+ok 56 - companion dependency: rejects baseline target ancestor
+  ---
+  duration_ms: 1.054459
+  type: 'test'
+  ...
+# Subtest: companion dependency: rejects both frozen baseline source revisions relabelled B2
+ok 57 - companion dependency: rejects both frozen baseline source revisions relabelled B2
+  ---
+  duration_ms: 1.721167
+  type: 'test'
+  ...
+# Subtest: companion dependency: an actual old CF B2-base receipt is not a qualified B2 build
+ok 58 - companion dependency: an actual old CF B2-base receipt is not a qualified B2 build
+  ---
+  duration_ms: 6.232458
+  type: 'test'
+  ...
+# Subtest: both candidate validators and native provenance policies are byte-identical
+ok 59 - both candidate validators and native provenance policies are byte-identical
+  ---
+  duration_ms: 0.348584
+  type: 'test'
+  ...
+# Subtest: main: a real filesystem target alias fails the live pre-app native-target guard
+ok 60 - main: a real filesystem target alias fails the live pre-app native-target guard
+  ---
+  duration_ms: 3.09
+  type: 'test'
+  ...
+# Subtest: companion dependency: a real filesystem target alias fails the live pre-app native-target guard
+ok 61 - companion dependency: a real filesystem target alias fails the live pre-app native-target guard
+  ---
+  duration_ms: 2.5835
+  type: 'test'
+  ...
+1..61
+# tests 61
+# suites 0
+# pass 61
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 146.012375

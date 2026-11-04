@@ -1,0 +1,23 @@
+{
+  "capturedAt": "2026-11-04T10:48:44.876855+00:00",
+  "inventories": {
+    "B0": {
+      "manifest": "B0-artifact-inventory.json.gz",
+      "manifestSha256": "de7f87acba29b26cdd76367f1358aef5d1fb3bcb967c2eed027d266d04dce3ad",
+      "fileCount": 12930,
+      "aggregateSha256": "bd14772d45fcbabc9d66582e27400a9cfe2cdfbeb40eccbc372428d3edf9102d"
+    },
+    "B1": {
+      "manifest": "B1-artifact-inventory.json.gz",
+      "manifestSha256": "5dd499b896425a9afc5776c2e76214027a9d146f2ee32f8554e7fe9873f1b7bc",
+      "fileCount": 12944,
+      "aggregateSha256": "ebd636a5e5180f3eb6b9d8c1ade33c73d969e9c116e83d1c3326aa5ed7188ae5"
+    },
+    "B2-base": {
+      "manifest": "B2-base-artifact-inventory.json.gz",
+      "manifestSha256": "b7f109a3ce3db8f90768c8c64bcfa0a78b7c6e4d9e748044b2b8e2a6b299122c",
+      "fileCount": 12952,
+      "aggregateSha256": "8d63a2d059352941dd607f11f1dc05cdb22b184f513097c1a6abb88a96bdb5fa"
+    }
+  }
+}

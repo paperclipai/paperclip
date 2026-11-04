@@ -1,0 +1,9 @@
+{
+  "scope": "Source-only anchors; selected Linux installation/artifacts still need released preflight verification",
+  "version": "18.1.0-beta.16",
+  "files": {
+    "package.json": "9e752e900517fc17e8cf260c2f64b7f5d51f2258649e668e2c5eadbfeacecdc2",
+    "dist/index.js": "72a7569733bdf2a6643c441e4a99b75aec5316d5a4f99f19b4195c879b6e06dd",
+    "dist/binary.js": "f77a04f667045a3b1912297ea6f9d94b75b38e3112f78296b384d41f161c7be3"
+  }
+}

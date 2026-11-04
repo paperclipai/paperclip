@@ -1,0 +1,54 @@
+{
+  "startedAtUtc": "2026-11-04T12:04:27.587253+00:00",
+  "revision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+  "branch": "codex/native-event-ingestion-final-cf",
+  "sourceCleanBefore": true,
+  "isolatedMacProductChecks": true,
+  "independentOfLinuxBenchmarkHost": true,
+  "scrubbedVariableNames": [],
+  "steps": [
+    {
+      "name": "install",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/pnpm",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "startedAtUtc": "2026-11-04T12:04:27.668040+00:00",
+      "exitCode": 0,
+      "finishedAtUtc": "2026-11-04T12:04:35.415252+00:00",
+      "logSha256": "5fc9d35551df37aa0519c7fd233e223f4cbb22bfaf4da8743a7c7d9f84060e2e"
+    },
+    {
+      "name": "build",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/pnpm",
+        "build"
+      ],
+      "startedAtUtc": "2026-11-04T12:04:35.415591+00:00",
+      "exitCode": 0,
+      "finishedAtUtc": "2026-11-04T12:05:46.024359+00:00",
+      "logSha256": "8b3db2ea7ec0b2d252c7c3da4522a933ed9fcb47f8c45ebb64814b488a885cb5"
+    },
+    {
+      "name": "typecheck",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/pnpm",
+        "-r",
+        "typecheck"
+      ],
+      "startedAtUtc": "2026-11-04T12:05:46.024677+00:00",
+      "exitCode": 0,
+      "finishedAtUtc": "2026-11-04T12:06:56.159388+00:00",
+      "logSha256": "552a5afe8230cc80e788f917c26c3736f8a5bc17a015a45184ed1338e1e39bf6"
+    },
+    {
+      "name": "test-run",
+      "argv": [
+        "/private/tmp/native-ingestion-node24/bin/pnpm",
+        "test:run"
+      ],
+      "startedAtUtc": "2026-11-04T12:06:56.159734+00:00"
+    }
+  ]
+}

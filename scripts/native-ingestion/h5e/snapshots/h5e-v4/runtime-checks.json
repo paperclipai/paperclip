@@ -1,0 +1,71 @@
+{
+  "runtimeChecks": {
+    "node": {
+      "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+      "args": [
+        "--version"
+      ],
+      "expected": "v26.4.0"
+    },
+    "pnpm": {
+      "executable": "/usr/local/bin/pnpm",
+      "args": [
+        "--version"
+      ],
+      "expected": "9.15.4"
+    },
+    "postgres": {
+      "executable": "/home/ubuntu/native-ingestion/aligned-cf-baseline/node_modules/.pnpm/@embedded-postgres+linux-x64@18.1.0-beta.16/node_modules/@embedded-postgres/linux-x64/native/bin/postgres",
+      "args": [
+        "--version"
+      ],
+      "expected": "postgres (PostgreSQL) 18.1"
+    },
+    "chromium": {
+      "executable": "/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell",
+      "args": [
+        "--version"
+      ],
+      "expected": "Google Chrome for Testing 151.0.7922.34"
+    },
+    "rustc": {
+      "executable": "/home/ubuntu/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/rustc",
+      "args": [
+        "-vV"
+      ],
+      "expected": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6"
+    },
+    "cargo": {
+      "executable": "/home/ubuntu/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo",
+      "args": [
+        "-vV"
+      ],
+      "expected": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:OpenSSL/3.6.2)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]"
+    }
+  },
+  "provenance": {
+    "file": "/private/tmp/native-ingestion-cf-runtime-path-readback/stdout.json",
+    "sha256": "4498a01f20116a1a83860568411e780c7de65e26509824df682cc9ce811fb02b",
+    "manifestFile": "/private/tmp/native-ingestion-cf-runtime-path-readback/manifest.json",
+    "manifestSha256": "e8f69f51db226a743e41595a358e4ff6a92b748f1bc400f954b695bdaa7c01fd",
+    "nodeVersionSource": "Actual process.version plus CF normal-build node-version.log; --version is the guard command",
+    "nodeVersionFile": "/private/tmp/native-ingestion-evidence-cf/builds/aligned-cf-build-logs/node-version.log",
+    "nodeVersionFileSha256": "a75bc1e881900bc735e456cd684724256bcc2d09f91e04e5a42082d821a6b87b",
+    "pnpmCanonicalFile": "/opt/native-ingestion/pnpm/node_modules/pnpm/bin/pnpm.cjs",
+    "pnpmFileSha256": "98e6b99a881d64a1cc982c3e60aa260bf02160386b12e74475e06486dc74b090",
+    "actualPnpmNodeObservation": {
+      "observed": true,
+      "samples": [
+        {
+          "pid": 3552991,
+          "startTicks": "5694068",
+          "executable": "/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node",
+          "cwd": "/home/ubuntu/native-ingestion/aligned-cf-baseline"
+        }
+      ],
+      "scope": "Actual same-PID /proc executable/cwd during package-manager --version; no project script or bootstrap invoked"
+    },
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
+    "cwd": "/home/ubuntu/native-ingestion/aligned-cf-baseline"
+  }
+}

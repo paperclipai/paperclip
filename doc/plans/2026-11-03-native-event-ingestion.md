@@ -434,3 +434,30 @@ emission clocks and browser paint observer. The comparator requires the frozen
 
 Registered browser protocol after setup observation correction: `902c6a208793f0bcde1b326a1fee46d85df3274117754e3bfbbf77a65dc730ee`.
 Comparator SHA256: `e50d958532906d037413db6f66bdc02e60c93ddcacfe2e18e5b731d302f6a785`.
+
+## November 4 current campaign and tool packaging
+
+The [application report](../benchmarks/2026-11-04-native-event-ingestion-application.md)
+owns current qualification and acceptance status. The [H5e package](../../scripts/native-ingestion/h5e/README.md)
+retains exact neutral V4 and resource V3 snapshots, meaningful parent/compiled/
+receipt fixtures, source reviews, the resource measurement protocol and portable
+offline checks. Earlier frozen protocols and failed attempts above stay intact.
+Published driver tags remain main `73ea8516…` and companion `a89f321a…`; neither
+the mixed delivery checkout nor packaging changes replace those drivers.
+
+Current75 TypeScript batching has its own normal production build, isolated
+native target and exact receipt. It needs no Rust product change. CF SMALL/FULL
+and the old-wrapper companion have completed functional observations, retaining
+FULL's original loaded 120-second miss (63/512 foreground deltas). Main B0 A/A
+is active at this packaging snapshot; no accepted noise or application gain is
+claimed. Neutral V4 requires a new companion functional qualification and A/As;
+resource V3 needs actual Linux/accounting and six-hook SMALL qualification.
+
+The fixed resource protocol uses five alternating B0/B1/B2 blocks (15 FULL
+invocations), with five matched pairs per contrast and shared observations
+disclosed. Exact durable denominators, terminal versus independently verified
+drain windows, six interior samples and 10% per-numerator boundary precision
+remain unchanged. No CPU improvement beyond uncalibrated CPU noise is claimed.
+Resource diagnostics remain separate from unprofiled application/control gates.
+Completed paired results, durable raw-artifact links, final-source live/cloud
+Stop evidence and current-head checks/review remain to be added by their owners.

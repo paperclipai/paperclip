@@ -1,0 +1,12 @@
+{
+  "dependencyOnly": true,
+  "executionReleased": false,
+  "exports": [
+    "validateVariantBuild",
+    "validateActualInventory",
+    "assertNoPreferredUiShadow",
+    "physicalQuietGuard",
+    "sealArmArtifacts",
+    "verifyRawArtifactSeals"
+  ]
+}

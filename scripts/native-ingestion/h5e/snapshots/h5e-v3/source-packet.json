@@ -1,0 +1,410 @@
+{
+  "schema": "paperclip.native-ingestion.h5e-v4-helper-source-packet.v3",
+  "generatedAtUtc": "2026-11-04T11:59:13.465856+00:00",
+  "sourceOnly": true,
+  "executionReleased": false,
+  "servingQualification": false,
+  "performanceAcceptance": false,
+  "owningApplicationProviderDatabaseBrowserVmStagingNetworkOrBuildExecution": false,
+  "parentPacket": {
+    "file": "/private/tmp/native-ingestion-h5e-tools-v2/source-packet.json",
+    "sha256": "013f84de7bfcacf989eba3932044eb1c3c52d2182efc843e65180cc71468297c",
+    "unchanged": true
+  },
+  "frozenDrivers": {
+    "main": "73ea8516739e81fa7f37cd67651b4a2c73674014",
+    "companion": "a89f321ab5654211cbff7be1ee15c110b8db4a5f",
+    "freezeFile": "/private/tmp/native-ingestion-cf-driver-source-freeze.json",
+    "freezeSha256": "77efe5e4477dea52689d1c1da43b791d4905ab2279b5539f5cd2d37d5d143d81"
+  },
+  "candidate": {
+    "revision": "75b3578cfccf040b087a55a624e01baa2bca37f9",
+    "actualBuildReceiptAvailable": false,
+    "actualFunctionalQualification": false,
+    "nativeTargetPolicy": "independent in both native input modes",
+    "crossRoleArtifactEqualityRequired": false,
+    "actualDifferentHashReviewRequiredBeforeTreatmentAcceptance": true,
+    "noRustProductChangeRequired": true
+  },
+  "preservedExperiment": "Frozen drivers, comparator, workload/oracle/timers/SLA/control/durable rules/stage order/noise/thresholds/runtime checks/inventory comparisons/arm seal set unchanged.",
+  "helpers": [
+    {
+      "file": "native-ingestion-run-h5e-browser.mjs",
+      "bytes": 68914,
+      "sha256": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-run-h5e-browser.mjs",
+      "parentSha256": "9d3123024694930139369df5811c823ce3d28d216d71d1a9dd0f5f887c3ed170"
+    },
+    {
+      "file": "native-ingestion-h5c-cf-build-guards.mjs",
+      "bytes": 62091,
+      "sha256": "2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-h5c-cf-build-guards.mjs",
+      "parentSha256": "a4d59b29ea1ea6219a18c72b029d569066d3fb84d78096a13af61e09df856067"
+    },
+    {
+      "file": "native-ingestion-h5e-linux-readiness.mjs",
+      "bytes": 3292,
+      "sha256": "f07d10221f28116fae37ca0cd3510ee71bd5d6b36d88b8f783319eeff10657e3",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-h5e-linux-readiness.mjs",
+      "parentSha256": "49c01cc88dc79231c59cd53d9269c6f8d64b0bc54c6e6b0afebbb4b7f61dd148"
+    },
+    {
+      "file": "native-ingestion-h5e-full-linux-readiness.mjs",
+      "bytes": 3291,
+      "sha256": "7a0f0dd78fb6a48af79a63b45cbd20eed2b9b2552bc8d649860b39981802c8cf",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-h5e-full-linux-readiness.mjs",
+      "parentSha256": "6b59df250b8b76057b9bffefc9ca170bace18fcd40a1766f09de1943013fc6e7"
+    },
+    {
+      "file": "native-ingestion-linux-h5e-qualification.py",
+      "bytes": 7804,
+      "sha256": "97a27b73554d7e11f4ffa78c62615ed300385b13ed7206e0a3147491195e77b3",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-linux-h5e-qualification.py",
+      "parentSha256": "054c5ddabe2fa2d4a90cd929ef4b1c481799f6267ca53c5561aa0e041b388b1d"
+    },
+    {
+      "file": "native-ingestion-extract-h5e-qualification-foreground.py",
+      "bytes": 6339,
+      "sha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-extract-h5e-qualification-foreground.py",
+      "parentSha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12"
+    },
+    {
+      "file": "native-ingestion-validate-h5e-evidence.mjs",
+      "bytes": 7590,
+      "sha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-validate-h5e-evidence.mjs",
+      "parentSha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb"
+    },
+    {
+      "file": "native-ingestion-run-blocked-stop-v4.mjs",
+      "bytes": 28940,
+      "sha256": "22c5dd91ecf40a44a0ed02324ae80838a761cffe43f3a6a8dad53f5b0780d470",
+      "parent": "/private/tmp/native-ingestion-h5e-tools-v2/native-ingestion-run-blocked-stop-v4.mjs",
+      "parentSha256": "70bfeedfa30594a4619e50f36c373f735519cf7095506c355d4b9159ed55ec73"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "README.md",
+      "bytes": 5553,
+      "sha256": "33a2b0d8456ba358c15998d3b5f4d15ad4b06021488cab4ab960626b6c68f235"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 4003,
+      "sha256": "6b036647b1068eb08c60680cc107df0bbc52f5883e221fcaadb661eba8bd9f65"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 7392,
+      "sha256": "5892fbf3b07e25c6d1716b6db0d7e02652392ff81f3cb4ba93143818a5dd4720"
+    },
+    {
+      "path": "finalize_packet.py",
+      "bytes": 3308,
+      "sha256": "9d0b290d2ee740f61eb3dfb4698114672dbb4613c106b16371cb1d7f8da49e6a"
+    },
+    {
+      "path": "generate_templates.py",
+      "bytes": 9068,
+      "sha256": "cb1b0107572c4c1649b108993227f71eaa31c8f4a691eb07ee1dd29c566b2210"
+    },
+    {
+      "path": "native-ingestion-extract-h5e-qualification-foreground.py",
+      "bytes": 6339,
+      "sha256": "7cb6eb848dcf1642e9a588b654c611e32c250a29cbd83609a344d7f7fdd1ff12"
+    },
+    {
+      "path": "native-ingestion-h5c-cf-build-guards.mjs",
+      "bytes": 62091,
+      "sha256": "2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d"
+    },
+    {
+      "path": "native-ingestion-h5e-full-linux-readiness.mjs",
+      "bytes": 3291,
+      "sha256": "7a0f0dd78fb6a48af79a63b45cbd20eed2b9b2552bc8d649860b39981802c8cf"
+    },
+    {
+      "path": "native-ingestion-h5e-linux-readiness.mjs",
+      "bytes": 3292,
+      "sha256": "f07d10221f28116fae37ca0cd3510ee71bd5d6b36d88b8f783319eeff10657e3"
+    },
+    {
+      "path": "native-ingestion-linux-h5e-qualification.py",
+      "bytes": 7804,
+      "sha256": "97a27b73554d7e11f4ffa78c62615ed300385b13ed7206e0a3147491195e77b3"
+    },
+    {
+      "path": "native-ingestion-run-blocked-stop-v4.mjs",
+      "bytes": 28940,
+      "sha256": "22c5dd91ecf40a44a0ed02324ae80838a761cffe43f3a6a8dad53f5b0780d470"
+    },
+    {
+      "path": "native-ingestion-run-h5e-browser.mjs",
+      "bytes": 68914,
+      "sha256": "ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642"
+    },
+    {
+      "path": "native-ingestion-validate-h5e-evidence.mjs",
+      "bytes": 7590,
+      "sha256": "4a92ad32dacd7c1b8f1daba8ecb5ed664f7cfeae6e7d14c9a538c0f1b65b41bb"
+    },
+    {
+      "path": "native-provenance.test.mjs",
+      "bytes": 12728,
+      "sha256": "d704c533dc79c9d820c7a848e71e5d8052a74a7f10bbe074f767a029e565e801"
+    },
+    {
+      "path": "review.patch",
+      "bytes": 10918,
+      "sha256": "2a18b5601fcdc63a490f69cbf08375f746db5573f3d6d335bffd3b42ff4b3e35"
+    },
+    {
+      "path": "run_checks.py",
+      "bytes": 6632,
+      "sha256": "fe311ff9a625ca8d214e22fc28aa7c86b5f6011b7da1e4bd80136f06ca0a0d29"
+    },
+    {
+      "path": "runtime-checks.json",
+      "bytes": 3325,
+      "sha256": "22f67b4d30250032350c81e79f2e66e84bededee009408ae0f6533ace8416710"
+    },
+    {
+      "path": "source-guards.test.mjs",
+      "bytes": 13018,
+      "sha256": "59c76d5f9a1d5eb6820bb149872807b7d232da3584e27bfdfe605672534af971"
+    },
+    {
+      "path": "templates/companion-v4-qualification-b0.unauthorized.json",
+      "bytes": 7256,
+      "sha256": "8b71f38361eac2eb58243d1967ed6051ed46608a65cfac5d558c3123e3b8601f"
+    },
+    {
+      "path": "templates/main-aa-b0.unauthorized.json",
+      "bytes": 6528,
+      "sha256": "1f22d32f71b1e1ad10f5500355d56bf44293afa286c4fc35628d53689c86c249"
+    },
+    {
+      "path": "templates/qualification-full-b0.unauthorized.json",
+      "bytes": 6439,
+      "sha256": "401d37d9e03271321fb2f2575eb5c253020638667e5b26611b32aa3cd0a09b1d"
+    },
+    {
+      "path": "templates/qualification-small-b0.unauthorized.json",
+      "bytes": 6429,
+      "sha256": "848a466792736e2912b3abb0e6ed37f6b7cd5c3c0fea7a4a8b7671364df69e1a"
+    }
+  ],
+  "verificationFiles": [
+    {
+      "path": "checks/before-v1-red-reporter-format-receipt.json",
+      "bytes": 4040,
+      "sha256": "4b0d64cd6f97a5d9b95ee644184bd99b78ea7a9702d337c638409694a85e3588"
+    },
+    {
+      "path": "checks/before-v1-red-reporter-format-red-v2-rejects-different-qualified-artifact.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/before-v1-red-reporter-format-red-v2-rejects-different-qualified-artifact.stdout",
+      "bytes": 3074,
+      "sha256": "b02793f2111f3a83cd1e8d8788cd7bcbb12c16e7c60c778eebf8aa75c39ce0c4"
+    },
+    {
+      "path": "checks/dependency-reject-execute.stderr",
+      "bytes": 617,
+      "sha256": "2f23401b9609de5cd946c1c7bf5fa3024a81f4e5131285eac23758f823293bff"
+    },
+    {
+      "path": "checks/dependency-reject-execute.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dependency-reject-validate-release.stderr",
+      "bytes": 617,
+      "sha256": "2f23401b9609de5cd946c1c7bf5fa3024a81f4e5131285eac23758f823293bff"
+    },
+    {
+      "path": "checks/dependency-reject-validate-release.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-h5c-cf-build-guards.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-h5c-cf-build-guards.stdout",
+      "bytes": 250,
+      "sha256": "103794e2bb37530ab20c663aab0b8bd2e47e03e91ee6a8f5517c0b7c7e68495c"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-blocked-stop-v4.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-blocked-stop-v4.stdout",
+      "bytes": 1100,
+      "sha256": "705cf50833d7c874ef164f27ded181b9cb7bb0da337643823979dad3ab9c21fd"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-h5e-browser.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/dry-run-native-ingestion-run-h5e-browser.stdout",
+      "bytes": 3706,
+      "sha256": "0d5496f7cb926ffa316355118d31d82f3a7dfc29410442b39f442c92dba781f4"
+    },
+    {
+      "path": "checks/existing-qualified-native-comparator-cli.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/existing-qualified-native-comparator-cli.stdout",
+      "bytes": 2164,
+      "sha256": "ed67eddcf045b69bbdb67b75edffd00b630203497fa9e7c52f297ed6f4c4e27a"
+    },
+    {
+      "path": "checks/green-native-provenance.test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/green-native-provenance.test.stdout",
+      "bytes": 13290,
+      "sha256": "d18360ee81b9560a2bbf998ea4b12e4522ecb3a585cb0999359e2dc581ebd9f4"
+    },
+    {
+      "path": "checks/green-source-guards.test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/green-source-guards.test.stdout",
+      "bytes": 6741,
+      "sha256": "67914d4893e07b4d5c04d7abe517ddf87e960dc8fb2078751d12bbb21de7d7a6"
+    },
+    {
+      "path": "checks/receipt.json",
+      "bytes": 11775,
+      "sha256": "c885d807e854a2babdd07fc6b911396fa9e7008a570accd2d2fc6abb58528226"
+    },
+    {
+      "path": "checks/red-v2-rejects-different-qualified-artifact.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/red-v2-rejects-different-qualified-artifact.stdout",
+      "bytes": 3072,
+      "sha256": "3ce00456dbe917dd345802cbc0d487f7fa7a7aa235d41ec6b1a9a89502178493"
+    },
+    {
+      "path": "checks/reject-companion-v4-qualification-b0.unauthorized.json.stderr",
+      "bytes": 650,
+      "sha256": "a11541749faee0eaa45b1e7834baf6bca6eae00c8871a1b0e853e2cd342bdd44"
+    },
+    {
+      "path": "checks/reject-companion-v4-qualification-b0.unauthorized.json.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/reject-main-aa-b0.unauthorized.json.stderr",
+      "bytes": 641,
+      "sha256": "156a1d63146cfa36ca680f56472e15dc32cf4c73ab825cfae1c5e4e20f397264"
+    },
+    {
+      "path": "checks/reject-main-aa-b0.unauthorized.json.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5c-cf-build-guards.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5c-cf-build-guards.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-full-linux-readiness.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-full-linux-readiness.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-linux-readiness.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-h5e-linux-readiness.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-blocked-stop-v4.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-blocked-stop-v4.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-h5e-browser.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "checks/syntax-native-ingestion-run-h5e-browser.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "reviewPatchSha256": "2a18b5601fcdc63a490f69cbf08375f746db5573f3d6d335bffd3b42ff4b3e35",
+  "checksReceiptSha256": "c885d807e854a2babdd07fc6b911396fa9e7008a570accd2d2fc6abb58528226",
+  "checks": {
+    "commands": 16,
+    "greenTests": 91,
+    "expectedRedFailures": 2,
+    "existingComparatorCli": {
+      "file": "/private/tmp/paperclip-native-event-harness-h5e/scripts/native-ingestion-performance-gates.test.mjs",
+      "fileSha256": "96396cb32292ec9e3a8602bcfd63ff006b0e12955435d372ee632b9b52f0b1e5",
+      "tests": 6,
+      "passed": 6,
+      "failed": 0,
+      "purpose": "Actual frozen CLI checks qualified cross-role binaries, serving/receipt mismatches, within-role changes, A/A stability and later original proof identity."
+    }
+  },
+  "openGates": [
+    "Peer and root source review",
+    "Fresh current75 B2-role production build and isolated target receipt",
+    "Root review of actual native artifact/build provenance before treatment acceptance, including any different hash",
+    "Actual B2 qualification input pins and functional qualification",
+    "Fresh A/A/noise, then unchanged paired application performance gates"
+  ],
+  "historicalDataUnchanged": true,
+  "sourceReproducibilityReview": {
+    "file": "/private/tmp/native-ingestion-native-reproducibility-review.json",
+    "sha256": "a58dea3653249ccd495e70e78c7b4baaade3a5634e8105244bb93d9973f6d1db",
+    "conclusion": "Equal native source/configuration does not establish independent-root byte equality. No actual independently built B2 hash has been observed by this source task."
+  }
+}

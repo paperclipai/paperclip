@@ -1,0 +1,100 @@
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-h5e-browser.mjs
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-h5e-browser.mjs
+@@ -35,7 +35,6 @@
+ const OLD_SUMMARY = 'e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d';
+ const OLD_BINARY = '512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66';
+ const OLD_RUST = '11a7ac118a438159c252dc0df4779aa56fec80d6';
+-const B2_REVISION = '75b3578cfccf040b087a55a624e01baa2bca37f9';
+ const CF_NATIVE_PROVENANCE = {
+   "rustInputObjects": {
+     "runner": "11a7ac118a438159c252dc0df4779aa56fec80d6",
+@@ -213,7 +212,7 @@
+     for (const [key, value] of Object.entries(OLD_INVENTORIES[variant])) assert.equal(descriptor[key], value, `Original ${variant} inventory changed`);
+   } else {
+     assert.equal(variant, 'B2');
+-    assert.equal(descriptor.revision, B2_REVISION, 'B2 must use the reviewed current TypeScript batching source revision');
++    assert.ok(!Object.values(BASELINES).includes(descriptor.revision), 'B2 source cannot reuse a frozen B0/B1 baseline revision');
+     assert.notEqual(descriptor.qualifiedReceiptSha256, OLD_RECEIPT, 'B2 needs its own fresh qualified production-build receipt');
+     assert.equal(receipt.oldRustTargetNotReused, true, 'B2 build must attest that no baseline native target was reused');
+     assert.equal(receipt.newSharedTarget, native[0].targetRealPath, 'B2 build receipt must bind its own independent native target');
+@@ -826,7 +825,7 @@
+       stages: STAGES.map(stagePlan), fullArms: 50, finalization: stagePlan(FINALIZE_STAGE),
+       baselines: BASELINES, originalReceiptSha256: OLD_RECEIPT, resourceWatchdogMillis: RESOURCE_WATCHDOG_MILLIS,
+       frozenH5: { revision: H5_REVISION, protocolSha256: H5_PROTOCOL_SHA256, comparatorSha256: H5_COMPARATOR_SHA256, inventoryHelperSha256: H5_INVENTORY_HELPER_SHA256, protocolDocumentSha256: H5_PROTOCOL_DOCUMENT_SHA256 },
+-      pendingPins: 'B2 source75b3578 needs its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.',
++      pendingPins: 'B2 needs a prospectively registered exact root-release source and its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.',
+       note: 'Plan only; no SUT/build/VM/network or arm starts. Root and independent peer review plus qualification release required.' }, null, 2)); return;
+   }
+   const out = option('output-root') ?? '/home/ubuntu/native-ingestion/evidence/h5e/series';
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5c-cf-build-guards.mjs
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5c-cf-build-guards.mjs
+@@ -35,7 +35,6 @@
+ const OLD_SUMMARY = 'e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d';
+ const OLD_BINARY = '512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66';
+ const OLD_RUST = '11a7ac118a438159c252dc0df4779aa56fec80d6';
+-const B2_REVISION = '75b3578cfccf040b087a55a624e01baa2bca37f9';
+ const CF_NATIVE_PROVENANCE = {
+   "rustInputObjects": {
+     "runner": "11a7ac118a438159c252dc0df4779aa56fec80d6",
+@@ -213,7 +212,7 @@
+     for (const [key, value] of Object.entries(OLD_INVENTORIES[variant])) assert.equal(descriptor[key], value, `Original ${variant} inventory changed`);
+   } else {
+     assert.equal(variant, 'B2');
+-    assert.equal(descriptor.revision, B2_REVISION, 'B2 must use the reviewed current TypeScript batching source revision');
++    assert.ok(!Object.values(BASELINES).includes(descriptor.revision), 'B2 source cannot reuse a frozen B0/B1 baseline revision');
+     assert.notEqual(descriptor.qualifiedReceiptSha256, OLD_RECEIPT, 'B2 needs its own fresh qualified production-build receipt');
+     assert.equal(receipt.oldRustTargetNotReused, true, 'B2 build must attest that no baseline native target was reused');
+     assert.equal(receipt.newSharedTarget, native[0].targetRealPath, 'B2 build receipt must bind its own independent native target');
+@@ -740,7 +739,7 @@
+       stages: STAGES.map(stagePlan), fullArms: 50, finalization: stagePlan(FINALIZE_STAGE),
+       baselines: BASELINES, originalReceiptSha256: OLD_RECEIPT, resourceWatchdogMillis: RESOURCE_WATCHDOG_MILLIS,
+       frozenH5: { revision: H5_REVISION, protocolSha256: H5_PROTOCOL_SHA256, comparatorSha256: H5_COMPARATOR_SHA256, inventoryHelperSha256: H5_INVENTORY_HELPER_SHA256, protocolDocumentSha256: H5_PROTOCOL_DOCUMENT_SHA256 },
+-      pendingPins: 'B2 source75b3578 needs its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.',
++      pendingPins: 'B2 needs a prospectively registered exact root-release source and its own actual production-build receipt, isolated native target and qualified actual binary hash; native input equality does not imply cross-role artifact equality. No H5 VM execution is released by this file.',
+       note: 'Plan only; no SUT/build/VM/network or arm starts. Root and independent peer review plus qualification release required.' }, null, 2)); return;
+   }
+   const out = option('output-root') ?? '/home/ubuntu/native-ingestion/evidence/h5/browser';
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-linux-readiness.mjs
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5e-linux-readiness.mjs
+@@ -5,7 +5,7 @@
+ import path from 'node:path';
+ const base='/home/ubuntu/native-ingestion',helper=base+'/helpers/native-ingestion-run-h5e-browser.mjs',out=base+'/evidence/h5e/setup-small-b0';
+ const sha=b=>createHash('sha256').update(b).digest('hex');
+-assert.equal(sha(await readFile(helper)),'ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642');
++assert.equal(sha(await readFile(helper)),'191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347');
+ const h=await import(helper);
+ const quiet=await h.physicalQuietGuard({receiptFile:out+'/linux-quiet-readiness.json',phase:'pre-arm',armStage:'H5e-SETUP-ONLY'});
+ const receiptFile=base+'/aligned-cf-builds-qualified.json',summaryFile=base+'/evidence/aligned-cf/environment/artifact-inventory-summary.json';
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-h5e-full-linux-readiness.mjs
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-h5e-full-linux-readiness.mjs
+@@ -5,7 +5,7 @@
+ import path from 'node:path';
+ const base='/home/ubuntu/native-ingestion',helper=base+'/helpers/native-ingestion-run-h5e-browser.mjs',out=base+'/evidence/h5e/setup-full-b0';
+ const sha=b=>createHash('sha256').update(b).digest('hex');
+-assert.equal(sha(await readFile(helper)),'ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642');
++assert.equal(sha(await readFile(helper)),'191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347');
+ const h=await import(helper);
+ const quiet=await h.physicalQuietGuard({receiptFile:out+'/linux-quiet-readiness.json',phase:'pre-arm',armStage:'H5e-SETUP-ONLY'});
+ const receiptFile=base+'/aligned-cf-builds-qualified.json',summaryFile=base+'/evidence/aligned-cf/environment/artifact-inventory-summary.json';
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-linux-h5e-qualification.py
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-linux-h5e-qualification.py
+@@ -44,7 +44,7 @@
+  overrides['PATH']=env['PATH'];env.update(overrides);r['environmentOverrides']=overrides;save();subprocess.run(['sync'],check=True)
+  node=pathlib.Path('/opt/native-ingestion/node-v26.4.0-linux-x64/bin/node')
+  helper=base/'helpers/native-ingestion-run-h5e-browser.mjs'
+- assert hashlib.sha256(helper.read_bytes()).hexdigest()=='ef7f2807d24bb94e996588ed576fd2ee8914856c7b53eeb9e1b1c3f316559642'
++ assert hashlib.sha256(helper.read_bytes()).hexdigest()=='191de2cbebab6936433778a2348f61a242a2f29c006b0aa5794443cb040c3347'
+  path_guard="const {assertPathNode}=await import("+json.dumps(str(helper))+");console.log(JSON.stringify(await assertPathNode(process.env,process.execPath,process.argv[1])));"
+  path_argv=[str(node),'--input-type=module','-e',path_guard,str(app)]
+  path_result=subprocess.run(path_argv,cwd=app,env=env,check=True,capture_output=True,text=True)
+--- /private/tmp/native-ingestion-h5e-tools-v3/native-ingestion-run-blocked-stop-v4.mjs
++++ /private/tmp/native-ingestion-h5e-tools-v4/native-ingestion-run-blocked-stop-v4.mjs
+@@ -6,7 +6,7 @@
+ import net from 'node:net';
+ import path from 'node:path';
+ import { fileURLToPath, pathToFileURL } from 'node:url';
+-const SELF=fileURLToPath(import.meta.url), H5SHA='2b0ea48178d20f00bcf4d1fd45c647204be0f2d9c18639fa98a96e3b188c8a7d';
++const SELF=fileURLToPath(import.meta.url), H5SHA='8c803ecd1e711cc1cd953e7a006c5195122595792c31bdf710249a447cab07cf';
+ const COMPANION_REVISION='a89f321ab5654211cbff7be1ee15c110b8db4a5f';
+ const INHERITED='e431ec63d41fe90c6fd68bd2fc2bb969feeca917', LOCK='54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8';
+ const H5MEASUREMENT='e70ae87229d6cd0bec244e56ee8585fce06f9725838acaf08cff74dc0323e048';

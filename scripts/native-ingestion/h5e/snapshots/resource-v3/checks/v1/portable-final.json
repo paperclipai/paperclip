@@ -1,0 +1,28 @@
+{
+  "scope": "Isolated copy pure tests and Python AST parse only; no application, DB, network or process inspection",
+  "checks": [
+    {
+      "command": [
+        "/private/tmp/native-ingestion-node24/bin/node",
+        "--test",
+        "--test-concurrency=1",
+        "counter-semantics.test.mjs",
+        "counter-flush.test.mjs",
+        "resource-tools.test.mjs"
+      ],
+      "exit": 0,
+      "stdout": "\u2714 independent filesystem proof accepts hash-matched final counters and rejects changed receipt/observer/log bytes (18.5065ms)\n\u2714 counter failures, missing ACK coverage, unknown/duplicate hooks and nonzero pending observer cannot pass a forged complete receipt (4.5005ms)\n\u2714 self-consistent file hashes cannot substitute a claimed receipt hook for an absent observed hook (9.624209ms)\n\u2714 independent ACK must bind the same PID, boundary, observer/log hashes and counters as the reread receipt (13.790958ms)\n\u2714 capture ownership rejects a different uid, symlink evidence and canonical escape from the owned directory (18.475958ms)\n\u2714 inspector validation and CDP use only Runtime.evaluate, bind exact PID and fail on early close without an ACK (7.753709ms)\n\u2714 marker-level coverage keeps normal complete joins and Stop prefix while rejecting missing, foreign and duplicated observations (0.653959ms)\n\u2714 unknown bytes, variants and absent/duplicated anchors fail without legacy fallback (1.199583ms)\n\u2714 outer COMMIT is counted only after its actual awaited acknowledgement, not query construction or request (0.915ms)\n\u2714 injected COMMIT failure preserves the exact error and never counts a committed transaction or rollback (0.410667ms)\n\u2714 callback rejection and acknowledged rollback are distinct, preserving original thrown error (0.286708ms)\n\u2714 actual scope handler retains its lexical uncaught-query error and original rollback propagation (0.284375ms)\n\u2714 rollback failure retains original postgres replacement-error behavior and has no rollback ACK (0.245334ms)\n\u2714 BEGIN rejection stays separate from callback, COMMIT and rollback failures (0.181959ms)\n\u2714 nested successful scopes and rollback-to scopes never inflate outer transactions (0.472ms)\n\u2714 prepared transaction ACK and failure are not committed transactions (0.603625ms)\n\u2714 query-build attempts retain transaction commands but cannot become ACKs or log statement/parameters (0.170916ms)\n\u2714 postcommit new identities, duplicate receipts and later callback failures keep distinct durable semantics (0.802125ms)\n\u2714 actual transformed AsyncQueue counts accepted values, direct handoff and buffered depth without altering close/failure semantics (0.350709ms)\n\u2714 CF pins match sealed qualified B0/B1 inventories; future B2 stays unavailable (15.759084ms)\n\u2714 all six current source hooks retain exact byte guards, anchors and syntax (216.07375ms)\n\u2714 startup hook checks actual CF entry bytes and exactly one existing reuse boundary (21.766667ms)\n\u2714 release rejects authorization, workload, budget, old runtime and missing actual PG pins before launch (2.132084ms)\n\u2714 parameterized candidate export requires its actual independent qualified manifest and preserves its own binary (6.492167ms)\n\u2714 service starts exact PG in root-owned nondelegated Type=exec scope before any child; no PID migration command (0.15925ms)\n\u2714 normal PG environment is privately encoded and compared by hashes without appearing in argv (4.636916ms)\n\u2714 service proof rejects proxy PID, wrong unit/user, delegation, capabilities and writable-control configuration (0.622084ms)\n\u2714 SMALL/FULL composition keeps frozen assembly and workload flags, bootstrap uninstrumented, PG hook server-only (0.15275ms)\n\u2714 resource bounds retain five interior intervals and independent 10-percent uncertainty per numerator (0.186708ms)\n\u2714 Stop is excluded from CPU/SQL/TX ratios and every reported denominator is exact independently durable text count (0.135917ms)\n\u2714 default command performs no serving action and explicitly leaves B2 unqualified (26.5635ms)\n\u2714 actual old wrapper pins and ordinary startup lack CF resource qualification; adapted pins and one startup hook pass (6.528209ms)\n\u2714 partial startup cleanup binds its fresh ledger, exact PG argv and current unit; receipt rejects PID reuse (1.265666ms)\n\u2714 future main-helper metadata and execution share exact independently reviewed approval guards (0.277625ms)\n\u2139 tests 34\n\u2139 suites 0\n\u2139 pass 34\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 491.8605\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "analyze-pg-windows.test.py"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "...\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n"
+    }
+  ],
+  "pythonAstPassed": 3
+}

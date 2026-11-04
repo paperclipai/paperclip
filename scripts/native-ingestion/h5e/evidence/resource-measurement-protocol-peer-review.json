@@ -1,0 +1,167 @@
+{
+  "schema": "native-ingestion-resource-protocol-peer-review/v1",
+  "decision": "SOURCE_CLEAR",
+  "reviewedProtocol": {
+    "path": "/private/tmp/native-ingestion-resource-measurement-protocol.json",
+    "sha256": "c95fa5f81a2f02dc1c28631ba677209d398a3df5b6b4024653a1f082cec5a388"
+  },
+  "references": {
+    "sourcePacket": {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v3/source-packet.json",
+      "sha256": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124"
+    },
+    "frozenDefinitions": {
+      "path": "/private/tmp/native-ingestion-h5e-resource-tools-v3/DEFINITIONS.md",
+      "sha256": "e5f6af57372b8f1edd8458781f72d6fbbd716cc74c0d6854958bd559a2bd138e"
+    }
+  },
+  "scope": "Read-only local protocol/source review plus pure JSON/hash/schedule assertions. No resource measurement, runtime qualification, application performance acceptance or execution authorization.",
+  "findings": [],
+  "schedule": {
+    "newIndependentMatchedBlocks": 5,
+    "newFullDiagnosticInvocations": 15,
+    "pairedComparisonsPerContrast": 5,
+    "pairs": {
+      "B0->B1": [
+        {
+          "block": 1,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B1"
+        },
+        {
+          "block": 2,
+          "order": "candidate-first",
+          "baselineRole": "B0",
+          "candidateRole": "B1"
+        },
+        {
+          "block": 3,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B1"
+        },
+        {
+          "block": 4,
+          "order": "candidate-first",
+          "baselineRole": "B0",
+          "candidateRole": "B1"
+        },
+        {
+          "block": 5,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B1"
+        }
+      ],
+      "B1->B2": [
+        {
+          "block": 1,
+          "order": "baseline-first",
+          "baselineRole": "B1",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 2,
+          "order": "candidate-first",
+          "baselineRole": "B1",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 3,
+          "order": "baseline-first",
+          "baselineRole": "B1",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 4,
+          "order": "candidate-first",
+          "baselineRole": "B1",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 5,
+          "order": "baseline-first",
+          "baselineRole": "B1",
+          "candidateRole": "B2"
+        }
+      ],
+      "B0->B2": [
+        {
+          "block": 1,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 2,
+          "order": "candidate-first",
+          "baselineRole": "B0",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 3,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 4,
+          "order": "candidate-first",
+          "baselineRole": "B0",
+          "candidateRole": "B2"
+        },
+        {
+          "block": 5,
+          "order": "baseline-first",
+          "baselineRole": "B0",
+          "candidateRole": "B2"
+        }
+      ]
+    },
+    "sharedObservations": "Each role observation participates in two within-block contrasts. These contrasts are correlated and must not be pooled as independent extra trials; the protocol explicitly discloses this. Reversal alternates relative baseline/candidate order for all three contrasts."
+  },
+  "assessment": [
+    {
+      "gate": "Scope and workload",
+      "result": "PASS_SOURCE",
+      "evidence": "Separate diagnostics only; exact frozen main73 six FULL cases, normal provider emissions, fresh owned data and complete drainage. Unprofiled application and blocked-control acceptance retain their existing workloads, baseline repeatability/noise, deadlines and >=4/5 throughput gates; this protocol does not replace or weaken them."
+    },
+    {
+      "gate": "Role identity and matched execution",
+      "result": "PASS_SOURCE",
+      "evidence": "Frozen B0/B1 receipts; exact reviewed B2 source/build/native/pins fixed before first comparison; only current qualified75 is registered. No retargeting completed captures. Identical instrumentation/topology/resource limits and quiet-window guard readback are prerequisites. Existing frozen source and definitions continue to exclude prelude/setup from windows."
+    },
+    {
+      "gate": "Completed windows and failed observations",
+      "result": "PASS_SOURCE",
+      "evidence": "Terminal and independently verified-drain windows remain separate. Immutable definitions require successful ordinary non-Stop journey, original raw report, all six hooks, exact independent durable joins, zero unmatched normal backlog, final flush hashes and zero pending buffers. Failures, retries, timeouts, ineligible windows and cleanup failures remain visible; a flush cannot qualify incomplete work. Stop/short cases supply raw counters without ratios."
+    },
+    {
+      "gate": "Numerators and denominators",
+      "result": "PASS_SOURCE",
+      "evidence": "Primary ratio denominator is independently verified unique committed text deltas, fixed within each workload; normalized events, postcommit markers and transaction counts are separately reported. Whole measured-scope background/recovery/verification/observer work remains in its numerator. Server Node CPU is server-only; sampled proc CPU remains a lower bound; whole-PG cgroup CPU includes its SQL observer. No full Runner/provider CPU or returned-rows-as-rows-examined claim is introduced."
+    },
+    {
+      "gate": "Boundary precision",
+      "result": "PASS_SOURCE",
+      "evidence": "Reference SHA preserves each numerator\u2019s six-interior-sample/five-interval and <=10% boundary uncertainty gates. The inherited U/L brackets, overshoots and exact durable denominator remain mandatory separately for CPU, SQL and outer acknowledged COMMIT numerators. Ineligible cases retain raw data, not fabricated ratios."
+    },
+    {
+      "gate": "CPU noise and reporting",
+      "result": "PASS_SOURCE",
+      "evidence": "Five role observations or paired contrasts permit absolute costs, medians, spread and interval bounds; no p99 is inferred. No CPU-specific baseline noise calibration is asserted. The protocol expressly withholds a CPU improvement beyond certified CPU-specific noise when such calibration does not exist. Application A/A noise is not repurposed as CPU noise. No current resource improvement claim exists."
+    }
+  ],
+  "runtimeStatus": "UNEXECUTED. Actual Linux unit/environment/exit-proof/accounting qualification, installed module guards, one SMALL six-hook serving qualification and completed matched FULL captures remain open and separately owned. SOURCE_CLEAR does not release any of them.",
+  "operationsPerformed": [
+    "Read local protocol, V3 README, frozen DEFINITIONS and V3 source packet",
+    "Pure stdlib JSON parsing, SHA-256 reference checks and schedule assertions",
+    "Wrote this reviewer-owned JSON only"
+  ],
+  "notPerformed": [
+    "No OS/process/resource inspection or workload",
+    "No VM/systemd/cgroup/PG/app/browser/provider/build/test/network operation",
+    "No source/protocol/reference mutation"
+  ]
+}

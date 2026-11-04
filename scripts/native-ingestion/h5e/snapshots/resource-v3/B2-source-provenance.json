@@ -1,0 +1,30 @@
+{
+  "copiedAtUtc": "2026-11-04T12:59:35.775868+00:00",
+  "sourcePath": "/Users/dotta/.codex/worktrees/f2ca/paperclip/server/dist/services/native-runtime/paperclip-control-plane-port.js",
+  "sourceSize": 33500,
+  "sourceMtimeNs": 1793793940664381187,
+  "sha256": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66",
+  "existingMacBuildReceiptPath": "/private/tmp/native-ingestion-cf-b2-primary-checks/receipt.json",
+  "existingMacBuildReceiptSnapshotSha256": "a67202281bb02fdd4aa839204efcd033c3308397d3f3937a50666f8dc075f155",
+  "MacBuildStep": {
+    "name": "build",
+    "argv": [
+      "/private/tmp/native-ingestion-node24/bin/pnpm",
+      "build"
+    ],
+    "startedAtUtc": "2026-11-04T12:04:35.415591+00:00",
+    "exitCode": 0,
+    "finishedAtUtc": "2026-11-04T12:05:46.024359+00:00",
+    "logSha256": "8b3db2ea7ec0b2d252c7c3da4522a933ed9fcb47f8c45ebb64814b488a885cb5"
+  },
+  "LinuxQualifiedDescriptorPath": "/private/tmp/native-ingestion-cf-ts-b2-build-descriptor.json",
+  "LinuxDescriptorSha256": "6cb9946cf2d62cd95c85283129c2979894a2fb12ee1ab3d87ed1b43a0efbd3aa",
+  "LinuxManifestSha256": "7d93503b747c769a0260ebe9f630cf17c1e4182aca94ab4fa4335c4f155cbd85",
+  "LinuxManifestRow": {
+    "bytes": 33500,
+    "path": "server/dist/services/native-runtime/paperclip-control-plane-port.js",
+    "sha256": "d3cf1203feb7f0b74c6799a289799990b932a837475e857732c7340876fd4f66"
+  },
+  "qualification": "Exact existing compiled byte identity only; no new build and no Linux installed-module/process/serving readback",
+  "otherFourExistingFixtureHashesMatchLinuxB2": true
+}
