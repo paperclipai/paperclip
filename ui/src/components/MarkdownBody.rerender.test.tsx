@@ -40,17 +40,35 @@ afterEach(() => {
 
 const SAMPLE = "Some text\n\n```ts\nconst answer = 42;\n```\n\nAnd a [link](https://example.com).";
 
-function tree(children: string, queryClient: QueryClient) {
+function tree(children: string, queryClient: QueryClient, resolveLinkHref?: (href: string) => string | null) {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MarkdownBody>{children}</MarkdownBody>
+        <MarkdownBody resolveLinkHref={resolveLinkHref}>{children}</MarkdownBody>
       </ThemeProvider>
     </QueryClientProvider>
   );
 }
 
 describe("MarkdownBody re-render stability (PAP-10767)", () => {
+  it("uses the current file resolver when the same viewer opens another file", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const instructions = "Read the [checklist](./checklist.md).";
+
+    flushSync(() => root?.render(tree(instructions, queryClient, () => "/skills/review/files/first/checklist.md")));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/skills/review/files/first/checklist.md");
+
+    flushSync(() => root?.render(tree(instructions, queryClient, () => "/skills/review/files/second/checklist.md")));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/skills/review/files/second/checklist.md");
+
+    flushSync(() => root?.render(tree(instructions, queryClient, () => null)));
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("Read the checklist.");
+  });
+
   it("preserves rendered DOM nodes across a parent re-render with unchanged props", () => {
     container = document.createElement("div");
     document.body.appendChild(container);

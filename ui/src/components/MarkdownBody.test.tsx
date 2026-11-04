@@ -307,6 +307,32 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
+  it("holds the quicklook preview until an issue mention is confirmed readable (PAP-16070)", () => {
+    // While the fetch is in flight we don't know if the viewer can read the
+    // issue. The mention stays a clickable link, but the IssueLinkQuicklook
+    // hover preview (a Radix Popover portal) must NOT mount yet: a private
+    // mention 404s straight to the locked chip, and mounting then tearing down
+    // that portal to swap in the chip is the element churn that crashed the
+    // chat transcript renderer.
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.");
+
+    expect(html).toContain('data-mention-pending="true"');
+    expect(html).toContain('data-mention-kind="issue"');
+    expect(html).toContain("paperclip-markdown-issue-ref");
+    // Clickability is preserved through the loading state.
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).toContain(">PAP-1271<");
+  });
+
+  it("drops the pending marker once a seeded (readable) issue mention resolves", () => {
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.", [
+      { identifier: "PAP-1271", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).not.toContain('data-mention-pending="true"');
+  });
+
   it("uses concise issue aria labels until a distinct title is available", () => {
     const html = renderMarkdown("Depends on PAP-1271 and PAP-1272.", [
       { identifier: "PAP-1271", status: "done" },
@@ -558,9 +584,12 @@ describe("MarkdownBody", () => {
   it("opens external links in a new tab with safe rel attributes", () => {
     const html = renderMarkdown("[docs](https://example.com/docs)");
 
-    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain("<a href=\"https://example.com/docs\"");
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).not.toContain("lucide-github");
+    expect(html).toContain("lucide-external-link");
+    expect(html).toMatch(/<span style="white-space:nowrap">s<svg[^>]*lucide-external-link/);
   });
 
   it("opens GitHub links in a new tab", () => {
@@ -597,22 +626,9 @@ describe("MarkdownBody", () => {
     expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
   });
 
-  it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
-    const html = renderMarkdown("[docs](https://example.com/docs)");
+  ;
 
-    expect(html).toContain('<a href="https://example.com/docs"');
-    expect(html).not.toContain("lucide-github");
-  });
-
-  it("suffixes external links with a new-tab icon glued to the last character", () => {
-    const html = renderMarkdown("[docs](https://example.com/docs)");
-
-    expect(html).toContain('target="_blank"');
-    expect(html).toContain("lucide-external-link");
-    // Last character "s" must sit in a no-wrap span with the icon so the
-    // indicator never wraps away from the link text.
-    expect(html).toMatch(/<span style="white-space:nowrap">s<svg[^>]*lucide-external-link/);
-  });
+  ;
 
   it("does not render the new-tab icon on internal links", () => {
     const html = renderMarkdown("[settings](/company/settings)");

@@ -29,6 +29,7 @@ export const projectExecutionWorkspacePolicySchema = z
     allowIssueOverride: z.boolean().optional(),
     defaultProjectWorkspaceId: z.string().guid().optional().nullable(),
     environmentId: z.string().guid().optional().nullable(),
+    storageProviderPluginId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -111,6 +112,7 @@ const projectFields = {
   goalIds: z.array(z.string().guid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
   leadAgentId: z.string().guid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
@@ -136,5 +138,12 @@ export const updateProjectSchema = objectWithoutDefaults(
 ).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const addProjectAccessMemberSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().min(1),
+});
+
+export type AddProjectAccessMember = z.infer<typeof addProjectAccessMemberSchema>;
 
 export type ProjectExecutionWorkspacePolicy = z.infer<typeof projectExecutionWorkspacePolicySchema>;

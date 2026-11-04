@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
-import { RunnerApi } from "./api.js";
+import { pollUntil, RunnerApi, RunnerApiHttpError } from "./api.js";
 const response = (status: number, data: unknown = {}): APIResponse => ({
   ok: () => status >= 200 && status < 300, status: () => status,
   json: async () => data, text: async () => JSON.stringify(data), url: () => "http://fixture.invalid/instructions",
@@ -31,4 +31,49 @@ describe("fixture instruction revision fence", () => {
     expect(fixture.request.get).toHaveBeenCalledTimes(1);
     expect(fixture.request.put).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("passes a bounded GET timeout to the request transport without changing its response", async () => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const get = vi.fn(async () => response(200, { status: "running" }));
+  const api = new RunnerApi({ get } as unknown as APIRequestContext);
+  await expect(api.get("/api/heartbeat-runs/run", { timeout: 1234 })).resolves.toEqual({ status: "running" });
+  expect(get).toHaveBeenCalledExactlyOnceWith("/api/heartbeat-runs/run", { timeout: 1234 });
+});
+
+
+it("preserves GET HTTP status separately from diagnostic text", async () => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const api = new RunnerApi({ get: vi.fn(async () => response(503, { error: "PRIVATE" })) } as unknown as APIRequestContext);
+  const error = await api.get("/api/environments/env/leases").catch(error => error);
+  expect(error).toBeInstanceOf(RunnerApiHttpError);
+  if (!(error instanceof RunnerApiHttpError)) throw new Error("Expected typed HTTP error");
+  expect(error.status).toBe(503);
+});
+
+
+it("a strict observation cannot pass after first observing invalid evidence", async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error("invalid evidence")).mockResolvedValue(true);
+  await expect(pollUntil({ label: "strict proof", deadlineAt: Date.now() + 1000,
+    load, accept: Boolean, intervalMs: 1, retryOnError: () => false })).rejects.toThrow("invalid evidence");
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+
+it("keeps existing polling retries when the strict error policy is absent", async () => {
+  const load = vi.fn().mockRejectedValueOnce(new Error("temporary transport failure")).mockResolvedValue(true);
+  await expect(pollUntil({ label: "ordinary state", deadlineAt: Date.now() + 1000,
+    load, accept: Boolean, intervalMs: 1 })).resolves.toBe(true);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it.each([200, 204, 404, 409])("forwards the cleanup request timeout and preserves DELETE status %s", async status => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const remove = vi.fn(async () => response(status));
+  const api = new RunnerApi({ delete: remove } as unknown as APIRequestContext);
+  const result = api.delete("/api/environments/environment", { allowNotFound: true, timeout: 500 });
+  if (status === 409) await expect(result).rejects.toThrow("409");
+  else await expect(result).resolves.toBeUndefined();
+  expect(remove).toHaveBeenCalledExactlyOnceWith("/api/environments/environment", { timeout: 500 });
 });

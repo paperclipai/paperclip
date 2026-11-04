@@ -1,3 +1,6 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
+import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -6,7 +9,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -19,8 +22,18 @@ import { secretService } from "../services/secrets.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { accessService } from "../services/access.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+
+const captureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sentry.js")>(),
+  captureRunFailure,
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
 
@@ -28,11 +41,18 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
-  db = createDb(database.connectionString);
+  vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+  if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+  else {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
+    db = createDb(database.connectionString);
+  }
 }, 90_000);
 
 afterAll(async () => {
+  await waitForPendingRunFailureReports();
+  if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
+  await db?.$client.end();
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });
@@ -44,10 +64,14 @@ async function fixture(provider: "anthropic" | "openai", method: "api_key" | "su
   const userId = `owner-${companyId}`;
   const binding = { provider, method, mode: "responsible_user" } as const;
   const adapterType = provider === "anthropic" ? "claude_local" : "codex_local";
+  await db.insert(authUsers).values({ id: userId, name: "Connection owner", email: `${userId}@example.test`,
+    createdAt: new Date(), updatedAt: new Date() });
   await db.insert(companies).values({ id: companyId, name: "Hiring connection test", issuePrefix: `H${companyId.slice(0, 7)}`, defaultResponsibleUserId: userId });
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
   await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:create" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Manager", role: "ceo", adapterType, runtimeConfig: { aiConnection: binding } });
+  await accessService(db).ensureMembership(companyId, "agent", agentId, "member", "active");
+  await db.insert(principalPermissionGrants).values(["tools:manage_profiles", "agents:configure"].map(permissionKey => ({ companyId, principalType: "agent" as const, principalId: agentId, permissionKey })));
   const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", responsibleUserId: userId }).returning();
   const app = express();
   app.use(express.json());
@@ -68,6 +92,11 @@ async function fixture(provider: "anthropic" | "openai", method: "api_key" | "su
 function hired(response: request.Response) {
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return response.body.agent ?? response.body;
+}
+
+async function markLegacyAdoption(connectionId: string) {
+  const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+  await db.update(toolConnections).set({ config: { ...connection.config, aiLegacyAdoption: true } }).where(eq(toolConnections.id, connectionId));
 }
 
 async function poolFixture(f: Awaited<ReturnType<typeof fixture>>, extraMembers: AiConnectionPoolMember[] = []) {
@@ -115,9 +144,11 @@ describe("agent-created hires use managed AI connections", () => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
-    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local" });
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local", runner: "legacy" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toContain("no compatible harness");
+    // Fixed bindings contain identity only; compatibility is decided from
+    // authoritative connection metadata when selecting each pool member.
+    expect(response.body.details?.code).toBe("ai_connection_pool_no_eligible_member");
     expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
   });
 
@@ -131,10 +162,10 @@ describe("agent-created hires use managed AI connections", () => {
   });
 
   it.each([
-    ["opencode_local", {}, "PAPERCLIP_OPENCODE_PROVIDERS"],
+    ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "PAPERCLIP_OPENCODE_PROVIDERS"],
     ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "OPENCODE_AUTH_JSON"],
     ["paperclip_runner", { provider: "opencode", model: "anthropic/claude-sonnet-5" }, "OPENCODE_CONFIG_CONTENT"],
-  ] as const)("%s hires with %j keep explicit %s auth outside the managed OpenRouter model catalog", async (adapterType, config, key) => {
+  ] as const)("%s hires with %j apply the host boundary to explicit %s auth", async (adapterType, config, key) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
@@ -142,9 +173,17 @@ describe("agent-created hires use managed AI connections", () => {
     const value = JSON.stringify(key === "PAPERCLIP_OPENCODE_PROVIDERS" ? { anthropic: provider }
       : key === "OPENCODE_CONFIG_CONTENT" ? { provider: { anthropic: provider } }
       : { anthropic: { type: "api", key: "fixture-explicit-key" } });
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
       name: "Independent OpenCode teammate", role: "engineer", adapterType, adapterConfig: { ...config, env: { [key]: value } },
-    }));
+    });
+    if (adapterType === "paperclip_runner") {
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
+      return;
+    }
+    const agent = hired(response);
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
     expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value });
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
@@ -175,12 +214,90 @@ describe("agent-created hires use managed AI connections", () => {
     expect(saved.runtimeConfig.aiConnection).toEqual(f.binding);
   });
 
+  it.each(["shared", "delegated", "responsible_user", "router"] as const)("saves unrelated edits without probing an unchanged %s connection read from PostgreSQL", async (mode) => {
+    const f = await fixture("openai");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const account = mode === "shared"
+      ? await aiConnectionService(db).save(f.companyId, f.userId, {
+        provider: "openai", method: "api_key", ownership: "shared", name: "Shared save fixture",
+        apiKey: "fixture", agentIds: [f.agentId], allAgents: false,
+      }, "fixture")
+      : f.account;
+    const binding = mode === "router" ? (await poolFixture(f)).binding
+      : mode === "responsible_user" ? f.binding
+        : { provider: "openai", method: "api_key", mode, ...account };
+    const adapterType = mode === "shared" ? "paperclip_runner" : f.adapterType;
+    await db.update(agents).set({ adapterType,
+      ...(adapterType === "paperclip_runner" ? { adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } } : {}),
+      runtimeConfig: { aiConnection: binding },
+    }).where(eq(agents.id, f.agentId));
+    const [before] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session" };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => { throw new Error("The runtime is unavailable; unrelated edits must still save"); });
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    try {
+      for (const patch of [
+        { title: "Updated title" },
+        { adapterConfig: { reasoningEffort: "high" } },
+        { defaultEnvironmentId: null },
+        { runtimeConfig: { ...before.runtimeConfig, heartbeat: { enabled: false } } },
+      ]) {
+        const response = await request(app).patch(`/api/agents/${f.agentId}`).send(patch);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.runtimeConfig.aiConnection).toEqual(binding);
+      }
+      expect(probe).not.toHaveBeenCalled();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved).toMatchObject({ title: "Updated title", adapterConfig: { reasoningEffort: "high" },
+        runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } } });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.agentId), eq(activityLog.action, "agent.updated")))).toHaveLength(4);
+    } finally { unregisterServerAdapter(adapterType); }
+  });
+
+  it.each((["model", "engine", "environment", "harness", "connection"] as const).flatMap(selection =>
+    [false, true].map(legacy => ({ selection, legacy }))))("checks a changed $selection selection (legacy: $legacy)", async ({ selection, legacy }) => {
+    const f = await fixture("openai");
+    if (legacy) await markLegacyAdoption(f.account.connectionId);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    const adapterType = selection === "harness" ? "paperclip_runner" : f.adapterType;
+    const original = getServerAdapter(adapterType);
+    const probe = vi.fn(async () => ({ adapterType, status: "fail" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "fixture_runtime_unavailable", level: "error" as const, message: "The selected runtime is unavailable" }],
+    }));
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    const patch = selection === "environment" ? { defaultEnvironmentId: environment.id }
+      : selection === "harness" ? { adapterType, adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } }
+        : selection === "connection" ? { runtimeConfig: { aiConnection: { ...f.binding, mode: "delegated", ...f.account } } }
+        : { adapterConfig: { [selection]: selection === "model" ? "changed-model" : "cli" } };
+    try {
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send(patch);
+      expect(response.status, JSON.stringify(response.body)).toBe(legacy ? 422 : 200);
+      expect(probe).toHaveBeenCalledTimes(legacy ? 1 : 0);
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      if (legacy) {
+        expect(saved).toMatchObject({ adapterType: f.adapterType, adapterConfig: {}, defaultEnvironmentId: null,
+          runtimeConfig: { aiConnection: f.binding } });
+      } else {
+        expect(saved).toMatchObject(patch);
+      }
+    } finally { unregisterServerAdapter(adapterType); }
+  });
+
   it("does not install a restricted shared connection through pool membership", async () => {
     const f = await fixture("openai");
     const otherOwner = `other-${f.companyId}`;
     await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherOwner, membershipRole: "member", status: "active" });
     const account = await aiConnectionService(db).save(f.companyId, otherOwner, { provider: "openai", method: "api_key", ownership: "shared", name: "Shared credential, restricted installation", apiKey: "fixture", agentIds: [f.agentId], allAgents: false }, "fixture");
-    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { userId: otherOwner });
+    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { actorType: "user", actorId: otherOwner });
     const member: AiConnectionPoolMember = { id: randomUUID(), binding: { ...account, provider: "openai", method: "api_key", mode: "shared" }, profile: { provider: "codex", model: "gpt-5.6-sol" } };
     const p = await poolFixture(f, [member]);
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agents`).send({ name: "Restricted pool teammate", role: "engineer", adapterType: f.adapterType, runtimeConfig: { aiConnection: p.binding } }));
@@ -209,8 +326,9 @@ describe("agent-created hires use managed AI connections", () => {
   });
 
   for (const operation of ["test", "save"] as const) {
-    it.each([401, 403, 429, 503, null])(`${operation} changes API-key health only for a provider rejection (status: %s)`, async (status) => {
+    it.each([401, 403, 429, 503, null])(`${operation} changes API-key health only for a provider rejection (legacy save; status: %s)`, async (status) => {
       const f = await fixture("anthropic", "api_key");
+      if (operation === "save") await markLegacyAdoption(f.account.connectionId);
       await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
       const original = getServerAdapter(f.adapterType);
       registerServerAdapter({ ...original, testEnvironment: async () => ({ adapterType: f.adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }) });
@@ -228,8 +346,9 @@ describe("agent-created hires use managed AI connections", () => {
     });
   }
 
-  it.each(["test", "save"] as const)("%s marks a hello-test authentication rejection as needing attention and reconnect repairs the same default", async (operation) => {
+  it.each(["test", "save"] as const)("%s marks a hello-test authentication rejection as needing attention and reconnect repairs the same default (legacy save)", async (operation) => {
     const f = await fixture("anthropic", "subscription");
+    if (operation === "save") await markLegacyAdoption(f.account.connectionId);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
     const original = getServerAdapter(f.adapterType);
     registerServerAdapter({ ...original, testEnvironment: async () => ({
@@ -310,15 +429,15 @@ describe("agent-created hires use managed AI connections", () => {
       ["ANTHROPIC_API_KEY", ""],
       ["CLAUDE_CONFIG_DIR", "/tmp/child-claude-home"],
       ["ANTHROPIC_BASE_URL", "https://example.invalid"],
-    ])(`${endpoint}: preserves an explicit child auth setting %s=%s`, async (key, value) => {
+    ])(`${endpoint}: rejects an agent-supplied local environment setting %s=%s`, async (key, value) => {
       const f = await fixture("anthropic");
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Explicit auth", role: "engineer", adapterType: f.adapterType,
         adapterConfig: { env: { [key]: value } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toBeUndefined();
-      const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
-      expect((saved.adapterConfig.env as Record<string, unknown>)[key]).toEqual({ type: "plain", value });
+      });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
     });
   }
 
@@ -355,7 +474,7 @@ describe("agent-created hires use managed AI connections", () => {
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Other provider", role: "engineer", adapterType }));
     expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: otherProvider, mode: "responsible_user" });
     await expect(prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: agent.id, responsibleUserId: f.userId, adapterType, binding: agent.runtimeConfig.aiConnection, config: agent.adapterConfig })).rejects.toMatchObject({ details: { code: "ai_connection_default_missing" } });
-    expect(agent.status).toBe("idle");
+    expect(agent).toMatchObject({ status: "paused", lifecycleState: "preparing" });
   });
 
   for (const endpoint of ["agent-hires", "agents"]) {
@@ -364,15 +483,16 @@ describe("agent-created hires use managed AI connections", () => {
       ["openai", "claude_local", {}, "OPENAI_API_KEY"],
       ["anthropic", "paperclip_runner", { provider: "codex" }, "ANTHROPIC_API_KEY"],
       ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
-    ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
+    ] as const)(`${endpoint}: rejects host env settings for a %s caller hiring %s`, async (provider, adapterType, config, key) => {
       const f = await fixture(provider);
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Cross-provider config", role: "engineer", adapterType,
         adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toMatchObject({
-        provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user",
       });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      const savedAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, f.companyId));
+      expect(savedAgents.map(agent => agent.id)).toEqual([f.agentId]);
     });
   }
 
@@ -463,9 +583,54 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
+  async function finishSetup(agentId: string) {
+    // These tests cover task credentials after setup; lifecycle tests cover verification.
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    try { await worker.process(agentId); } finally { await worker.stop(); }
+  }
+  it("starts a hired agent without acquiring an AI connection execution lock", async () => {
+    const f = await fixture("openai", "subscription");
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    // Only an operator may set host execution paths after the agent is hired.
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Use the account concurrently", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
+    const execute = vi.fn(async () => {
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issue.id));
+      return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
+    });
+    registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+      .mockRejectedValueOnce(Object.assign(new Error("quota refresh holds company lock"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
+      expect(run).not.toBeNull();
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
+      await heartbeat.drainActiveRunExecutions();
+      const completed = await heartbeat.getRun(run!.id);
+      expect(completed?.errorCode).toBeNull();
+      await waitForPendingRunFailureReports();
+      expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.retryOfRunId, run!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_busy"),
+      ))).toEqual([]);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(lock).not.toHaveBeenCalled();
+      expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
+    } finally {
+      lock.mockRestore();
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter(f.adapterType);
+    }
+  });
+
   it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, runner: "legacy", reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    // Host working directories are configured by an operator, not an agent key.
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {
@@ -491,3 +656,6 @@ describe("hired agents sharing a subscription", () => {
     }
   });
 });
+
+
+enableRunFailureReporting();

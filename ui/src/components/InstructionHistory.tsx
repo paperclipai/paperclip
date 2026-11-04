@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import type { AgentInstructionsFileDetail } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
+import { describeError } from "../api/errors";
 import { Button } from "./ui/button";
+import { QueryErrorState, useQueryView } from "./QueryView";
 
 export function InstructionHistory({
   agentId,
@@ -53,7 +55,11 @@ export function InstructionHistory({
       onRestored(file);
     },
   });
-  const error = history.error ?? diff.error ?? restore.error;
+  // Read the two reads through the shared view so cached history stays visible
+  // while a transient refetch fails;a no-data failure shows copy with Retry.
+
+  const historyView = useQueryView(history);
+  const diffView = useQueryView(diff);
   return (
     <div className="space-y-3">
       <Button
@@ -67,13 +73,29 @@ export function InstructionHistory({
       </Button>
       {open && (
         <div className="space-y-3">
-          {history.isLoading && (
-            <p className="text-sm text-muted-foreground">Loading revisions…</p>
+          {historyView.kind === "error" && (
+            <QueryErrorState
+              size="panel"
+              error={historyView.error}
+              action="load revision history"
+              onRetry={historyView.retry}
+              retrying={historyView.isFetching}
+            />
           )}
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error.message}
-            </p>
+          {diffView.kind === "error" && (
+            <QueryErrorState
+              size="panel"
+              error={diffView.error}
+              action="load the revision diff"
+              onRetry={diffView.retry}
+              retrying={diffView.isFetching}
+            />
+          )}
+{restore.isError && ( // query-error-ok: mutation result
+            <p role="alert" className="text-sm text-destructive">{describeError(restore.error).body}</p>
+          )}
+          {(historyView.kind === "loading" || historyView.kind === "reconnecting") && (
+            <p role="status" className="text-sm text-muted-foreground">Loading revisions…</p>
           )}
           {history.data?.pages
             .flatMap((page) => page.revisions)

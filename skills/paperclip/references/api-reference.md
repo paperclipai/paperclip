@@ -107,6 +107,12 @@ POST /api/companies/company-1/exports
 }
 ```
 
+**Issue Activity (`GET /api/issues/:issueId/activity`)**
+
+Returns the issue's activity history, including actor, action, timestamp, and sanitized details. Sandbox agents can call this read-only route for issues their identity may read. Company boundaries and issue-read authorization still apply; this does not grant company-wide audit access.
+
+An automatic stale-recovery cancellation has `action: "issue.recovery_action_resolved"` and `details.source: "source_revalidation"`. Page reads use `details.trigger: "read_projection"`. These cancellations belong to the system. Historical reader-attributed rows with that source and trigger do not count as inbox participation or recent issue activity.
+
 ### Issue with Ancestors (`GET /api/issues/:issueId`)
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
@@ -1189,7 +1195,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 Other outcomes match `request_confirmation`:
 
 - `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
-- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `cancelled` expires all pending interactions without continuation wakes. Transitioning to `done` expires current questions and governed requests, but retains ordinary historical questions that precede newer human direction. An authorized human can answer a retained question after completion; this records history without reopening work or creating a response wake. Listing a terminal issue also applies these rules in its catch-up sweep.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
@@ -1691,3 +1697,17 @@ per-call write approval, records activity, and dispatches the existing continuat
 An unauthorized approver receives 403; changed tool definitions, assignment,
 identity, or a closed task receive 409; unrelated connections receive 404.
 No credentials or provider authorization URL appear in the card payload.
+
+For sandbox run inspection, see [Run diagnostics from a sandbox](run-diagnostics.md).
+
+**Sandbox task context routes.**
+
+The queue and HTTP/2 callback bridges admit company skill detail and file reads,
+`GET /api/assets/{assetId}/content`, `GET /api/issues/{id}/diagnostics/wakes`,
+and `POST /api/issues/{id}/monitor/check-now`. Use the asset URL embedded in the
+task to read its screenshot. Use the skill files route with a `path` query
+parameter to read a referenced script or instruction file.
+
+Bridge admission does not grant resource access. The controller rechecks company,
+task and skill visibility, and monitor-management permission. Asset mutations,
+skill-file mutations and recovery-action resolution remain restricted.

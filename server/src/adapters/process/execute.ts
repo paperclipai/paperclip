@@ -18,6 +18,24 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  let spawned = false;
+  try {
+    return await executeProcess({ ...ctx, onSpawn: async (meta) => {
+      // Set this before metadata persistence: a failed callback cannot prove
+      // that the already-created process did no billable work.
+      spawned = true;
+      await ctx.onSpawn?.(meta);
+    } });
+  } catch (error) {
+    if (spawned) throw error;
+    return { exitCode: 1, signal: null, timedOut: false,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    };
+  }
+}
+
+async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
@@ -26,7 +44,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   for (const [k, v] of Object.entries(envConfig)) {

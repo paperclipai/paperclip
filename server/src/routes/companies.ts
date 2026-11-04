@@ -55,6 +55,7 @@ import {
   accessService,
   agentService,
   budgetService,
+  heartbeatService,
   buildExportFidelityReport,
   collectExportFidelityCounts,
   companyArtifactsService,
@@ -278,7 +279,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   const router = Router();
   const importTransferSpoolRoot =
     options?.importTransferSpoolRoot ?? resolveDefaultImportTransferSpoolRoot();
-  const svc = companyService(db);
+  const svc = companyService(db, {
+    cancelWorkForScope: (scope) => heartbeatService(db).cancelBudgetScopeWork(scope),
+  });
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
@@ -883,6 +886,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       if (digest !== declared.sha256) {
         throw unprocessable(`Part ${partIndex} content does not match its declared sha256`);
       }
+      await companyTransferRunService.notePartUploadActivity(db, run.id);
       await writeImportTransferPart(importTransferSpoolRoot, run.id, partIndex, bytes);
       const recorded = await companyTransferRunService.completePart(db, run.id, partName);
       if (!recorded) {

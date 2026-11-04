@@ -1,11 +1,16 @@
+import { gradeNecessaryQuestion } from "./necessary-question.js";
+import { gradeLegacyWorkspaceMigration, migrationPrimaryOutputCheckpoints, isLegacyWorkspaceMigration, legacyWorkspaceMigrationPrompt, readMigrationPoint, type MigrationPoint } from "./legacy-workspace-migration.js";
+import { necessaryQuestionContract } from "./continuation-cases.js";
+import { validResumeQuestionForm, validResumeReferenceForm } from "./question-resume-scoring.js";
+import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
-import { prepareLegacyContinuationSkill } from "./continuation-fixtures.js";
+import { prepareLegacyContinuationSkill, prepareContinuationBudget } from "./continuation-fixtures.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { answerableRuntimeRunIds, isSingleClaudeQuestion } from "./runtime-question-readiness.js";
 import { expect, type Page } from "@playwright/test";
 import path from "node:path";
-import { continuationAnswerCommitted, continuationInitialReady } from "./continuation-readiness.js";
+import { continuationAnswerCommitted, continuationInitialReady, continuationCheckpointReady } from "./continuation-readiness.js";
 import { captureLoadedContinuation } from "./continuation-screenshot.js";
 import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -48,11 +53,14 @@ export async function runContinuationFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { page, api, fixtures, execution } = input;
+  const migration = isLegacyWorkspaceMigration(execution);
+  let migrationBefore: MigrationPoint | undefined, migrationAfter: MigrationPoint | undefined;
   const lifecycleProbe = lifecycleLiveCase(execution.task.id);
   const scenario = lifecycleProbe
     ? lifecycleLiveContinuation(execution.task.id, input.nonce)
     : continuationScenario(execution.task.id, input.nonce);
   const checkpoints: LifecycleCheckpoint[] = [];
+  let budgetGuard: Awaited<ReturnType<typeof prepareContinuationBudget>> | undefined;
   let issue: Row | undefined;
   let runs: Row[] = [];
   let checks: ReturnType<typeof gradeContinuation> = [];
@@ -84,6 +92,12 @@ export async function runContinuationFlow(input: {
         const paused = answerableRuntimeRunIds(state.interactions);
         const idle =
           continuationAnswerCommitted(state.interactions, answeredInteractionId) &&
+          continuationCheckpointReady({
+            requireCompletedTurn: migration,
+            issue: { status: state.issue.status, executionRunId: state.issue.executionRunId },
+            runs: state.runs.map(r => ({ id: r.id, status: r.status, runtimeMode: r.runtimeMode })),
+            interactions: state.interactions,
+          }) &&
           state.runs.some((r) => !prior.has(r.id) || previousPaused.has(r.id)) &&
           state.runs.every((r) => ["succeeded", "failed", "timed_out", "cancelled"].includes(r.status) ||
             (r.status === "running" && paused.has(r.id))) &&
@@ -91,7 +105,8 @@ export async function runContinuationFlow(input: {
           !state.issue.activeRecoveryAction &&
           (!requireQuestion || continuationInitialReady(state.interactions));
         const key = idle
-          ? state.runs.map((r) => `${r.id}:${r.status}`).join()
+          ? JSON.stringify([state.issue.status, state.issue.executionRunId,
+              state.runs.map(r => [r.id, r.status]), state.interactions.map(i => [i.id, i.status])])
           : "";
         const ready = !!key && key === stable;
         stable = key;
@@ -99,7 +114,7 @@ export async function runContinuationFlow(input: {
         return ready;
       },
       reject: (state) =>
-        state.runs.length > 12
+        state.runs.length > (scenario.id === "necessary-free-text" ? 2 : scenario.id === "question-answer-resume" ? 3 : 12)
           ? "Bounded continuation run count exceeded"
           : state.runs.some((r) =>
                 ["failed", "timed_out", "cancelled"].includes(r.status),
@@ -120,13 +135,14 @@ export async function runContinuationFlow(input: {
     );
   }
   async function snapshot(phase: ContinuationCheckpoint["phase"]) {
-    const [tasks, summaries, comments, interactions, attachments] =
+    const [tasks, summaries, comments, interactions, attachments, activity] =
       await Promise.all([
         api.get<Row[]>(tasksPath),
         api.get<Row[]>(`/api/issues/${issue!.id}/documents`),
         api.get<Row[]>(`/api/issues/${issue!.id}/comments?order=asc`),
         api.get<Row[]>(`/api/issues/${issue!.id}/interactions`),
         captureFirstTaskAttachments(api, [{ id: issue!.id }], input.secrets),
+        api.get<Row[]>(`/api/issues/${issue!.id}/activity`),
       ]);
     const documents = await Promise.all(
       summaries.map((d) =>
@@ -149,17 +165,47 @@ export async function runContinuationFlow(input: {
       ) as ContinuationCheckpoint["children"],
       documents: documents as ContinuationCheckpoint["documents"],
       comments,
+      activity,
       interactions,
       attachments,
       runs: [...runs] as ContinuationCheckpoint["runs"],
     });
     await input.evidence("continuation.json", {
       ...scenario,
+      budgetGuard,
       checkpoints,
       checks,
     });
     await input.evidence("api-state.json", checkpoints.at(-1));
     await open();
+    if (scenario.id === "necessary-free-text") {
+      if (phase === "initial") {
+        const contract = necessaryQuestionContract();
+        await expect(page.getByText(contract.prompt, { exact: true }).last()).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByText(contract.context, { exact: true }).last()).toBeVisible({ timeout: 30_000 });
+        const question = interactions.find(interaction => interaction.kind === "ask_user_questions" && interaction.status === "pending");
+        checkpoints.at(-1)!.questionPresentation = { interactionId: question?.id ?? "", promptVisible: true, contextVisible: true };
+      } else if (phase === "final") {
+        expect(documents).toHaveLength(1);
+        const document = documents[0]!;
+        expect(document.latestRevisionId).toBeTruthy();
+        const href = `/${encodeURIComponent(fixtures.company.issuePrefix!)}/issues/${encodeURIComponent(issue!.identifier ?? issue!.id)}#document-${encodeURIComponent(document.key)}`;
+        const url = new URL(href, page.url()).href;
+        const link = page.getByTestId("task-chat-agent-bubble").locator(`a[href=${JSON.stringify(href)}]`).last();
+        await expect(link).toBeVisible({ timeout: 30_000 });
+        await link.click();
+        await expect(page).toHaveURL(url);
+        const target = page.locator([
+          `[id=${JSON.stringify(`document-${document.key}`)}]:visible`,
+          `[id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`,
+        ].join(", "));
+        await expect(target).toHaveCount(1);
+        await expect(target).toBeVisible();
+        const visibleBody = `Booking confirmed: ${scenario.answer}`;
+        await expect(target).toContainText(visibleBody);
+        checkpoints.at(-1)!.outputDocument = { issueId: issue!.id, key: document.key, revisionId: document.latestRevisionId, href, visibleBody };
+      }
+    }
     await captureLoadedContinuation(page, String(issue!.title), () => input.capture(
       phase,
       `Continuation: ${phase}`,
@@ -175,33 +221,18 @@ export async function runContinuationFlow(input: {
     );
     expect(questions, "one real question must be shown").toHaveLength(1);
     const set = chatQuestionPresentation(questions[0].payload);
-    if (scenario.id === "provider-question-bridge") {
+    if (scenario.id === "necessary-free-text") {
+      expect(validResumeQuestionForm(checkpoints[0]!, questions[0], false), "a bound text-only question").toBe(true);
+    } else if (scenario.id === "question-answer-resume") {
+      expect(choice ? validResumeQuestionForm(checkpoints.at(-1)!, questions[0], true)
+        : validResumeReferenceForm(checkpoints.at(-1)!, questions[0]), "a verified native question path and the requested form").toBe(true);
+    } else if (scenario.id === "provider-question-bridge") {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
     } else expect(set.questions, "ask only the requested next question").toHaveLength(1);
     const before = new Set(runs.map((r) => r.id));
-    if (choice) {
-      expect(set.questions[0].answerMode, "choices must use radio controls").toBe("single_select");
-      const options = questions[0].payload.questionSet?.questions[0]?.options
-        ?? questions[0].payload.questions[0]?.options ?? [];
-      expect(new Set(options.map((o: Row) => String(o.label).trim().toLowerCase())).size).toBeGreaterThanOrEqual(2);
-      await page.getByRole("radio", { name: new RegExp(`^${choice}\\b`, "i") }).last().click();
-    } else {
-      expect(set.questions[0].answerMode, "open answers must render a text field, not a choice question").toBe("text");
-      await page.getByTestId("question-text-answer-composer").last()
-        .locator('[contenteditable="true"],textarea').first().fill(scenario.answer);
-    }
-    // Claude may add a separate optional Other field after its choice page.
-    // Navigate every rendered page before submitting; do not invent an answer.
-    for (let index = 1; index < set.questions.length; index += 1) {
-      await page.getByRole("button", { name: "Next", exact: true }).last().click();
-    }
-    await page
-      .getByRole("button", {
-        name: set.submitLabel ?? "Submit answers",
-        exact: true,
-      })
-      .last()
-      .click();
+    await answerResumeQuestionThroughUi(page, questions[0], choice ? { choice } : {
+      text: scenario.answer, allowProviderCustomAnswer: scenario.id === "question-answer-resume",
+    });
     await settle(before, false, questions[0].id);
   }
   async function reply(body: string) {
@@ -219,16 +250,17 @@ export async function runContinuationFlow(input: {
     expect(c.issue.status, "waiting is not complete").not.toBe("done");
   }
   try {
+    budgetGuard = await prepareContinuationBudget(api, fixtures.company.id, fixtures.agent.id);
     if (execution.profile.generation === "legacy") await prepareLegacyContinuationSkill(api, fixtures.company.id, fixtures.agent.id);
     await api.patch("/api/instance/settings/experimental", {
       enableClassicTaskInterface: false,
     });
-    await createTaskThroughUi({
+    const createdTask = await createTaskThroughUi({
       page,
       issuePrefix: fixtures.company.issuePrefix!,
       agentName: fixtures.agent.name,
       title: execution.task.buildTitle(input.nonce),
-      prompt: scenario.prompt,
+      prompt: migration ? legacyWorkspaceMigrationPrompt(scenario.prompt) : scenario.prompt,
       workMode: "standard",
     });
     issue = await pollUntil({
@@ -236,7 +268,7 @@ export async function runContinuationFlow(input: {
       deadlineAt: input.deadlineAt,
       load: async () =>
         (await api.get<Row[]>(tasksPath)).find(
-          (t) => t.title === execution.task.buildTitle(input.nonce),
+          (t) => t.id === createdTask.issueId,
         ),
       accept: Boolean,
     });
@@ -244,6 +276,12 @@ export async function runContinuationFlow(input: {
     await settle(new Set(), scenario.id !== "revision-preserves-approval");
     await snapshot("initial");
     assertWaiting();
+    if (migration) {
+      migrationBefore = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue.id });
+      await input.evidence("legacy-migration-before.json", migrationBefore);
+      await input.restart();
+      await open();
+    }
     if (scenario.id === "untrusted-evidence") {
       const parentRun = runs.find((r) => r.contextSnapshot?.issueId === issue!.id);
       await seedContinuationContext({
@@ -256,7 +294,7 @@ export async function runContinuationFlow(input: {
       await input.restart();
       await open();
     }
-    if (scenario.id === "question-tool-documentation") {
+    if (["question-tool-documentation", "question-answer-resume"].includes(scenario.id)) {
       await answer("Afternoon");
       await snapshot("answered");
       assertWaiting();
@@ -272,14 +310,20 @@ export async function runContinuationFlow(input: {
       assertWaiting();
       await reply(scenario.approval);
     }
+    if (migration) migrationAfter = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue!.id });
     await snapshot("final");
   } finally {
     checks = gradeContinuation({
       ...scenario,
-      checkpoints,
+      checkpoints: migration ? migrationPrimaryOutputCheckpoints(checkpoints, migrationBefore, migrationAfter) : checkpoints,
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
     checks.push(...gradeLifecycleBaseline(checkpoints));
+    if (migration) {
+      checks.push(...gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter, checkpoints));
+      await input.evidence("legacy-migration.json", { before: migrationBefore, after: migrationAfter, checks: gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter, checkpoints) });
+    }
+    if (scenario.id === "necessary-free-text") checks.push(...gradeNecessaryQuestion(checkpoints, scenario.answer));
     if (lifecycleProbe) checks.push(gradeLifecycleNarrative({
       narrative: lifecycleProbe.narrative,
       agentId: fixtures.agent.id,
@@ -288,6 +332,7 @@ export async function runContinuationFlow(input: {
     if (issue) input.observe(issue, runs, checks);
     await input.evidence("continuation.json", {
       ...scenario,
+      budgetGuard,
       checkpoints,
       checks,
     });

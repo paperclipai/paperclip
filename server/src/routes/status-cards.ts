@@ -11,10 +11,16 @@ import {
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+
+// Deadline provenance belongs to scheduling, not the public card contract.
+function publicCard<T extends { nextEvalReason?: unknown }>(card: T) {
+  const { nextEvalReason: _reason, ...result } = card;
+  return result;
+}
 
 export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
   const router = Router();
@@ -144,7 +150,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     assertCompanyAccess(req, companyId);
     await assertStatusCardsEnabled();
     const query = listStatusCardsQuerySchema.parse(req.query);
-    res.json(await service.list(companyId, query.archived));
+    res.json((await service.list(companyId, query.archived, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    })).map(publicCard));
   });
 
   router.post("/companies/:companyId/status-cards", validate(createStatusCardSchema), async (req, res) => {
@@ -160,7 +168,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     try {
       const compile = await enqueueCompile(req, card.id);
       await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
-      res.status(201).json(compile.card);
+      res.status(201).json(publicCard(compile.card));
     } catch (error) {
       await service.remove(card.id);
       throw error;
@@ -171,7 +179,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    res.json(await service.hydrate(card));
+    res.json(publicCard(await service.hydrate(card, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    })));
   });
 
   router.patch("/status-cards/:id", validate(patchStatusCardSchema), async (req, res) => {
@@ -193,7 +203,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       fields: Object.keys(req.body),
       archived: Boolean(updated.archivedAt),
     });
-    res.json(compile?.card ?? restore?.card ?? updated);
+    res.json(publicCard(compile?.card ?? restore?.card ?? updated));
   });
 
   router.delete("/status-cards/:id", async (req, res) => {
@@ -230,7 +240,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       generatingIssueId: result.generatingIssue.id,
       alreadyGenerating: result.alreadyGenerating,
     });
-    res.status(result.alreadyGenerating ? 200 : 202).json(result);
+    res.status(result.alreadyGenerating ? 200 : 202).json({ ...result, card: publicCard(result.card) });
   });
 
   router.post("/status-cards/:id/refresh", validate(refreshStatusCardSchema), async (req, res) => {
@@ -245,7 +255,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       alreadyGenerating: result.alreadyGenerating,
       enqueued: result.enqueued,
     });
-    res.status(result.enqueued && !result.alreadyGenerating ? 202 : 200).json(result);
+    res.status(result.enqueued && !result.alreadyGenerating ? 202 : 200).json({ ...result, card: publicCard(result.card) });
   });
 
   router.get("/status-cards/:id/dry-run", async (req, res) => {
@@ -260,11 +270,12 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     if (!decision.allowed) {
       throw forbidden("Status-card dry-run is outside this actor's low-trust authorization boundary", authorizationDeniedDetails(decision));
     }
+    const issueReadCondition = await issueReadSqlCondition(db, req.actor);
     res.json({
       cardId: card.id,
       queryVersion: card.queryVersion,
-      queries: await service.dryRun(card),
-      mentionedIssues: await service.listMentionedIssues(card),
+      queries: await service.dryRun(card, { issueReadCondition }),
+      mentionedIssues: await service.listMentionedIssues(card, { issueReadCondition }),
     });
   });
 
@@ -284,7 +295,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       generationIssueId: req.body.generationIssueId,
       changeSummary: req.body.changeSummary,
     });
-    res.json(updated);
+    res.json(publicCard(updated));
   });
 
   router.put("/status-cards/:id/summary", validate(writeStatusCardSummarySchema), async (req, res) => {
@@ -304,7 +315,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       documentId: result.document.id,
       changeSummary: req.body.changeSummary,
     });
-    res.json(result);
+    res.json({ ...result, card: publicCard(result.card) });
   });
 
   return router;

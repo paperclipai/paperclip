@@ -214,7 +214,7 @@ describe("connection usage probes", () => {
     expect(unlimited).toMatchObject({ status: "ok", overage: null, limits: [{ used: 20, limit: null, usedPercent: null, limitReached: null }] });
   });
 
-  it.each(["openai", "anthropic", "xai"] as const)("makes unsupported %s API probes explicit without a request", async provider => {
+  it.each(["openai", "anthropic", "xai", "google"] as const)("makes unsupported %s API probes explicit without a request", async provider => {
     const request = fixture({});
     expect(await probeAiConnectionUsage({ provider, method: "api_key" }, "key", { request })).toMatchObject({ status: "unsupported", limits: [], overage: null });
     expect(request).not.toHaveBeenCalled();

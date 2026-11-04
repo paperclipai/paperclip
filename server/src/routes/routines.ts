@@ -636,6 +636,7 @@ export function routineRoutes(
     const run = await svc.runRoutine(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -660,7 +661,13 @@ export function routineRoutes(
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       throw badRequest("Webhook payload must be a JSON object");
     }
+    const idempotencyScope = req.header("x-paperclip-idempotency-scope");
+    if (idempotencyScope != null && idempotencyScope !== "trigger" && idempotencyScope !== "routine") {
+      throw badRequest("X-Paperclip-Idempotency-Scope must be trigger or routine");
+    }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
+      sourceRunToken: req.header("x-paperclip-source-run-token"),
+      idempotencyScope: idempotencyScope as "trigger" | "routine" | undefined,
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),

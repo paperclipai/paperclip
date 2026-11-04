@@ -94,7 +94,7 @@ describe("production native procedure instruction measurement", () => {
       const session = recovery?.session ?? await backend.openSession({ identity, workingDirectory: WORKSPACE });
       try {
         checkpoint ??= await session.snapshot();
-        const envelope = buildNativeModelEnvelope(current, phase === "continuation" ? { resumedSession: true } : undefined);
+        const envelope = phase === "continuation" ? buildNativeModelEnvelope(current, { resumedSession: true }) : buildNativeModelEnvelope(current);
         if ("requestedSkills" in envelope && backend.preparedTaskConstraints) envelope.constraints = [...backend.preparedTaskConstraints];
         await session.startTurn({ message: { role: "user", text: JSON.stringify(envelope) } });
         const setup = captured.calls.find(call => call.method === (phase === "start" ? "thread/start" : "thread/resume"))!.params;
@@ -144,6 +144,9 @@ afterAll(() => {
     "packages/paperclip-runner/src/backends/codex-native-backend.ts",
     "packages/paperclip-runner/src/drivers/opencode/mcp-bridge.ts",
     "server/src/services/native-runtime/paperclip-runner-tool-authority.ts",
+    "server/src/services/connection-tool-definitions.ts",
+    "packages/shared/src/connection-intent-guidance.ts",
+    "packages/shared/src/validators/connection-intent.ts",
     "server/src/services/native-runtime/native-session-resume.ts",
     "server/src/__tests__/native-procedure-measurement.test.ts",
   ];

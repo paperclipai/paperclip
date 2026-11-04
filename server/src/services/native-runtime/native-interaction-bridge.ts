@@ -1,3 +1,5 @@
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-runner/index.js";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -19,6 +21,7 @@ import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { nativeSha256 } from "./canonical.js";
 import { recordNativeAttentionAssessment } from "./work-assessments.js";
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
+import { findSatisfiedToolConnection } from "../satisfied-connection-intents.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -119,6 +122,9 @@ export async function applyNativeAttentionStatusDecision(input: {
         continue;
       }
       if (effect.kind === "record_finalization_error") {
+        if (effect.cause === "native_workspace_sync_out_unsafe_archive") {
+          await notifyUnsafeWorkspaceExportRecovery(tx, input);
+        }
         const [coordinator] = await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           failureCode: effect.cause,
@@ -163,7 +169,7 @@ export async function materializeNativeInteractionResponses(input: {
   if (requestedIds.size === 0) return [];
   const [interactions, issue] = await Promise.all([
     issueThreadInteractionService(input.db).listForIssue(input.issueId),
-    input.db.select({ status: issues.status }).from(issues).where(and(
+    input.db.select().from(issues).where(and(
       eq(issues.id, input.issueId),
       eq(issues.companyId, input.companyId),
     )).limit(1).then((rows) => rows[0] ?? null),
@@ -201,6 +207,19 @@ export async function materializeNativeInteractionResponses(input: {
       if (invocation.status !== expectedInvocationStatus || (request.status !== "rejected" && interaction.result?.toolAction?.status !== request.status)) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review outcome does not match its invocation");
     }
     const interactionResult = record(interaction.result);
+    if (interaction.kind === "connection_intent" && interaction.status === "expired"
+      && interactionResult.outcome === "expired" && typeof interactionResult.connectionId === "string") {
+      const [run] = await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.agentId, input.agentId)));
+      const ready = issue.assigneeAgentId === input.agentId && run?.responsibleUserId === interaction.addresseeUserId
+        ? await findSatisfiedToolConnection(input.db, issue, { ...interaction, addresseeUserId: interaction.addresseeUserId ?? null, status: "pending" }, input.runId) : null;
+      if (!ready || ready.id !== interactionResult.connectionId) {
+        throw new NativeInteractionBridgeError("native_interaction_unresolved", "The existing connection is no longer available");
+      }
+      responses.push({ interactionId: interaction.id, kind: interaction.kind,
+        response: { status: "expired", result: structuredClone(interaction.result) as unknown as Record<string, unknown> } });
+      continue;
+    }
     const supersessionOutcome = interaction.status === "expired"
       && ["superseded_by_newer_request", "superseded_by_comment", "stale_target"].includes(String(interactionResult.outcome));
     if (supersessionOutcome) {
@@ -613,24 +632,29 @@ export async function routePersistedNativeResultAttention(input: {
         const effects = Array.isArray(decisionJson.effects) ? decisionJson.effects.map(record) : [];
         const delegation = effects.find((effect) => effect.kind === "create_delegated_issue");
         const finalizationError = effects.find((effect) => effect.kind === "record_finalization_error");
-        await input.db.update(nativeRunFinalizations).set({
-          phase: finalizationError ? "retryable_failure" : "committed",
-          assessmentId: existingAssessment.id,
-          decisionId: existingDecision.id,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          failureCode: nonEmptyText(finalizationError?.cause),
-          failureDetail: finalizationError ? {
-            originalFailureCode: finalizationError.cause,
-            nextAction: finalizationError.nextAction,
-          } : null,
-          nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
-          updatedAt: new Date(),
-        }).where(and(
-          eq(nativeRunFinalizations.runId, input.runId),
-          eq(nativeRunFinalizations.companyId, binding.companyId),
-          eq(nativeRunFinalizations.issueId, binding.issueId),
-        ));
+        await input.db.transaction(async tx => {
+          await notifyNativeFinalizationWork(tx, { companyId: binding.companyId, runId: input.runId });
+          await tx.update(nativeRunFinalizations).set({
+            phase: finalizationError ? "retryable_failure" : "committed",
+            assessmentId: existingAssessment.id,
+            decisionId: existingDecision.id,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryState: null,
+            recoveryRequestId: null,
+            failureCode: nonEmptyText(finalizationError?.cause),
+            failureDetail: finalizationError ? {
+              originalFailureCode: finalizationError.cause,
+              nextAction: finalizationError.nextAction,
+            } : null,
+            nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(nativeRunFinalizations.runId, input.runId),
+            eq(nativeRunFinalizations.companyId, binding.companyId),
+            eq(nativeRunFinalizations.issueId, binding.issueId),
+          ));
+        });
         receipts.push({
           requestId,
           route: candidate.route,

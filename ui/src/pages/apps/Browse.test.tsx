@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
+import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -38,6 +39,9 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => accountIdent
 const poolListMock = vi.hoisted(() => vi.fn());
 const poolRemoveMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: poolListMock, remove: poolRemoveMock } }));
+
+const assistantConnectionsMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnectionsMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -179,13 +183,14 @@ describe("Connectors landing page", () => {
 
   beforeEach(() => {
     accountIdentity.userId = "board-user"; accountIdentity.settled = true;
+    assistantConnectionsMock.mockReset().mockResolvedValue([]);
     syncComposioAppsMock.mockReset().mockImplementation((...args) => listComposioAppsMock(...args));
     listComposioAppsMock.mockReset().mockResolvedValue({ apps: [] });
     refreshComposioAppsMock.mockReset().mockResolvedValue({ apps: [] });
     manageComposioAppAccountMock.mockReset();
     listAgentsMock.mockResolvedValue([{ id: "default-agent", name: "Default agent", role: "ceo", reportsTo: null, status: "active", createdAt: new Date(0) }]);
     aggregatorCatalogMock.splice(0);
-    experimentalMock.mockResolvedValue({ enableChatConnectors: true });
+    experimentalMock.mockResolvedValue({ enableChatConnectors: true, enableGitHubReviewBots: true });
     chatListMock.mockResolvedValue([]);
     chatSetupMock.mockReset().mockResolvedValue({ status: "archived" });
     emailControlMock.mockReset().mockResolvedValue({ status: "archived" });
@@ -246,6 +251,104 @@ describe("Connectors landing page", () => {
     }
     return client;
   }
+
+  it("shows provider catalog rows and splits legacy gateway accounts by API format", async () => {
+    const slugs = ["notion", "openrouter", "bedrock", "google", "responses-api", "messages-api", "chat-completions-api", "local"];
+    listGalleryMock.mockResolvedValue({ apps: slugs.map(slug => getAppStoreDefinition(slug)) });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Model gateway", applicationKey: "app-gallery:gateway", metadata: { sourceTemplateKey: "gateway" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: ["responses", "messages"].map(protocol => connection({
+      id: protocol, name: `${protocol} account`, applicationId: "gateway-app", connectionPurpose: "ai",
+      config: { sourceTemplateKey: "gateway", ai: { provider: protocol === "messages" ? "anthropic" : "openai", method: "api_key", routing: { kind: "gateway", protocol, auth: "bearer", baseUrl: "https://models.example.com/v1", models: [] } } },
+    })) });
+    await renderBrowse();
+    expect(container.textContent).not.toContain("Connect a model provider");
+    expect(container.textContent).not.toContain("Model gateway");
+    for (const slug of slugs) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
+    const responses = container.querySelector('[data-app-slug="responses-api"]')!;
+    const messages = container.querySelector('[data-app-slug="messages-api"]')!;
+    expect(responses.textContent).toContain("responses account");
+    expect(responses.textContent).not.toContain("messages account");
+    expect(messages.textContent).toContain("messages account");
+    const bedrock = container.querySelector('[data-app-slug="bedrock"]')!;
+    const connect = Array.from(bedrock.querySelectorAll('button')).find(button => button.textContent?.includes("Connect"))!;
+    await act(() => connect.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=bedrock");
+  });
+
+  it("offers assistant setup from Connections without choosing an agent", async () => {
+    await renderBrowse();
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Set up Assistant Connection (MCP)"]');
+    expect(button).not.toBeNull();
+    await act(() => button!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
+    expect(chatSetupMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps assistant setup in the Paperclip catalog when filtering connection sources", async () => {
+    await renderBrowse(false);
+    const assistantButton = () => container.querySelector('[aria-label="Set up Assistant Connection (MCP)"]');
+    expect(assistantButton()).not.toBeNull();
+    await clickButton("Composio", container);
+    expect(assistantButton()).toBeNull();
+    await clickButton("Arcade", container);
+    expect(assistantButton()).toBeNull();
+    await clickButton("All", container);
+    await search("assistant");
+    expect(assistantButton()).not.toBeNull();
+    expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  const assistantGrant = { id: "grant", companyId: "company-1", companyName: "Paperclip", clientName: "Claude", scopes: ["paperclip:read"], createdAt: "2026-10-06T00:00:00Z", revokedAt: null };
+
+  it("shows active assistant grants in Installed and removes them after revocation", async () => {
+    assistantConnectionsMock.mockResolvedValue([assistantGrant]);
+    const client = await renderBrowse(false);
+    await clickButton("Installed", container);
+    const manage = container.querySelector<HTMLButtonElement>('[aria-label="Manage Assistant Connection (MCP)"]');
+    expect(manage).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')?.textContent).toContain("Claude");
+    await act(() => manage!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
+    assistantConnectionsMock.mockResolvedValue([{ ...assistantGrant, revokedAt: "2026-10-06T01:00:00Z" }]);
+    await act(async () => { await client.invalidateQueries({ queryKey: ["mcp-connections"] }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')).toBeNull();
+  });
+
+  it.each([
+    ["empty", []],
+    ["revoked", [{ ...assistantGrant, revokedAt: "2026-10-06T01:00:00Z" }]],
+    ["another organization", [{ ...assistantGrant, companyId: "other-company" }]],
+  ])("does not show %s assistant grants as installed", async (_label, grants) => {
+    assistantConnectionsMock.mockResolvedValue(grants);
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')).toBeNull();
+  });
+
+  it("keeps pending assistant status visible in Installed until it can determine access", async () => {
+    let resolve!: (rows: typeof assistantGrant[]) => void;
+    assistantConnectionsMock.mockReturnValue(new Promise<typeof assistantGrant[]>(done => { resolve = done; }));
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.textContent).toContain("Checking your connection status");
+    expect(container.textContent).not.toContain("No connectors match");
+    await act(() => resolve([assistantGrant]));
+    await flushReact();
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
+  });
+
+  it("shows a retryable assistant status failure in Installed instead of an empty result", async () => {
+    assistantConnectionsMock.mockRejectedValue(new Error("offline"));
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.textContent).toContain("Couldn't load your connection status");
+    expect(container.textContent).not.toContain("No connectors match");
+    assistantConnectionsMock.mockResolvedValue([assistantGrant]);
+    await clickButton("Retry", container);
+    await flushReact();
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
+  });
 
   function indexedApp(name: string, providers: ("composio" | "arcade" | "executor")[] = ["composio"]): AggregatorAppCatalogEntry {
     const slug = name.toLowerCase().replaceAll(" ", "-");
@@ -312,16 +415,16 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[aria-label="App filters"]')?.textContent).toBe("PaperclipComposioArcadeInstalledAll");
     expect(container.querySelector('[data-app-slug="remote-app"]')).toBeNull();
     await search("Remote App");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("All");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("All");
     expect(container.querySelector('[data-app-slug="remote-app"]')).toBeTruthy();
     await search("");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Paperclip");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Paperclip");
     await clickButton("Arcade", container);
     await search("Remote App");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Arcade");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Arcade");
     expect(container.textContent).toContain("No connectors match");
     await clickButton("Clear search", container);
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Arcade");
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe("Arcade");
   });
 
   it.each(["composio", "arcade"] as const)("scopes %s to its catalog and accounts without native catalog overlaps", async (provider) => {
@@ -343,7 +446,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="other-app"]')).toBeNull();
 
     await search("Notion");
-    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe(providerName);
+    expect(container.querySelector('[aria-checked="true"]')?.textContent).toBe(providerName);
     expect(container.textContent).toContain("No connectors match");
     await clickButton("All", container);
     expect(container.querySelector('[data-app-slug="notion"]')?.textContent).toContain("Native Notion");
@@ -372,6 +475,7 @@ describe("Connectors landing page", () => {
     await renderBrowse(false);
     expect(container.querySelectorAll('[data-app-slug="notion"]')).toHaveLength(1);
     const row = container.querySelector('[data-app-slug="notion"]')!;
+    await clickButton("5 connections", row);
     expect(row.querySelectorAll('button[aria-label="Manage Work connection"]')).toHaveLength(4);
     expect(row.textContent).toContain("Native");
     for (const provider of ["Composio", "Arcade", "Executor"]) expect(row.textContent).toContain(`Managed by ${provider}`);
@@ -492,6 +596,39 @@ describe("Connectors landing page", () => {
     expect(syncComposioAppsMock).toHaveBeenCalledWith("conn-notion", true);
   });
 
+  it("keeps the last known aggregator accounts without a load-error notice when a refetch fails transiently", async () => {
+    composioFixture();
+    const client = await renderBrowse();
+    const circleback = () => container.querySelector('[data-app-slug="circleback"]');
+    expect(circleback()?.textContent).toContain("Meeting notes");
+    expect(circleback()?.querySelector('[title="Connected"]')).toBeTruthy();
+
+    listComposioAppsMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tools", "aggregator-apps"] }); });
+    await flushReact();
+
+    expect(circleback()?.textContent).toContain("Meeting notes");
+    expect(circleback()?.querySelector('[title="Connected"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Last known account · Refresh to verify");
+    expect(container.textContent).not.toContain("Couldn’t load Composio accounts");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("reports a real aggregator account failure while keeping the last known accounts", async () => {
+    composioFixture();
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="circleback"]')?.textContent).toContain("Meeting notes");
+
+    listComposioAppsMock.mockRejectedValue(new ApiError("Boom", 500, { error: "Boom" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tools", "aggregator-apps"] }); });
+    await flushReact();
+
+    expect(container.querySelector('[data-app-slug="circleback"]')?.textContent).toContain("Meeting notes");
+    expect(container.textContent).toContain("Couldn’t load Composio accounts. Use Refresh in the connection’s menu to try again.");
+    expect(container.textContent).toContain("Last known account · Refresh to verify");
+  });
+
   it("refreshes only the selected Composio account while another account is syncing", async () => {
     composioFixture();
     const work = connection({ id: "conn-work", applicationId: "gateway-app", name: "Work Composio", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } });
@@ -500,6 +637,7 @@ describe("Connectors landing page", () => {
     listComposioAppsMock.mockImplementation((id: string) => Promise.resolve({ apps: [], sync: { status: id === "conn-work" ? "syncing" : "ready" } }));
     await renderBrowse();
     expect(container.textContent).not.toContain("Refresh Composio");
+    await clickButton("2 connections", container.querySelector('[data-app-slug="composio"]')!);
     let menu = await openComposioAccountMenu("Work Composio");
     expect(Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")?.getAttribute("aria-disabled")).toBe("true");
     await act(() => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
@@ -545,12 +683,12 @@ describe("Connectors landing page", () => {
     listApplicationsMock.mockResolvedValue({ applications: [application()] });
     listConnectionsMock.mockResolvedValue({ connections: [connection()] });
     await renderBrowse();
-    expect(container.querySelectorAll('[data-connected="false"][data-app-slug]:not([data-app-slug="custom-mcp"])')).toHaveLength(50);
-    expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]')?.getAttribute("data-app-slug")).toBe("notion");
+    expect(container.querySelectorAll('[data-connected="false"][data-app-slug]:not([data-app-slug="custom-mcp"]):not([data-app-slug="assistant-connection"])')).toHaveLength(50);
+    expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]:not([data-app-slug="assistant-connection"])')?.getAttribute("data-app-slug")).toBe("notion");
     const next = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Next")!;
     await act(() => next.click());
     expect(container.textContent).toContain("Page 2 of");
-    expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]')?.getAttribute("data-app-slug")).toBe("notion");
+    expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]:not([data-app-slug="assistant-connection"])')?.getAttribute("data-app-slug")).toBe("notion");
     await search("Indexed App 59");
     expect(container.textContent).toContain("Page 1 of 1");
     expect(container.querySelector('[data-app-slug="indexed-app-59"]')).not.toBeNull();
@@ -706,11 +844,12 @@ describe("Connectors landing page", () => {
   });
 
   const googleSlugs = [
+    "google-workspace",
     "gmail", "google-drive", "google-docs", "google-sheets", "google-slides",
     "google-calendar", "google-chat", "google-people", "google-workspace-search",
   ];
 
-  it("temporarily hides all Google Workspace catalog rows without changing their definitions", async () => {
+  it("offers one Google Workspace connector while retaining the individual service definitions", async () => {
     const definitions = googleSlugs.map((slug) => getAppStoreDefinition(slug)!);
     listGalleryMock.mockResolvedValue({ apps: [...definitions, getAppStoreDefinition("notion")] });
     const client = await renderBrowse();
@@ -718,17 +857,23 @@ describe("Connectors landing page", () => {
     for (const definition of definitions) {
       expect(definition.methods.length).toBeGreaterThan(0);
       expect(getAppStoreDefinition(definition.slug)).toBe(definition);
-      expect(container.querySelector(`[data-app-slug="${definition.slug}"]`)).toBeNull();
+      if (definition.slug === "google-workspace") {
+        expect(container.querySelectorAll('[data-app-slug="google-workspace"]')).toHaveLength(1);
+      } else {
+        expect(container.querySelector(`[data-app-slug="${definition.slug}"]`)).toBeNull();
+      }
     }
     expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
     expect(client.getQueryData(queryKeys.apps.gallery("company-1"))).toEqual({
       apps: [...definitions, getAppStoreDefinition("notion")],
     });
     expect(archiveConnectionMock).not.toHaveBeenCalled();
+    await clickButton("Connect", container.querySelector('[data-app-slug="google-workspace"]')!);
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=google-workspace");
   });
 
   it.each(["active", "draft", "disabled"])(
-    "hides saved Google %s accounts without disabling or removing them",
+    "shows saved Google %s accounts without changing their access or status",
     async (status) => {
       const applications = googleSlugs.map((slug) => application({
         id: `app-${slug}`, name: `Saved ${slug}`, applicationKey: `app-gallery:${slug}:one`,
@@ -744,8 +889,8 @@ describe("Connectors landing page", () => {
       const client = await renderBrowse();
 
       for (const slug of googleSlugs) {
-        expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
-        expect(container.textContent).not.toContain(`Account for ${slug}`);
+        expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
+        expect(container.textContent).toContain(`Account for ${slug}`);
       }
       expect(client.getQueryData(queryKeys.tools.connections("company-1"))).toEqual({ connections });
       expect(client.getQueryData(queryKeys.tools.applications("company-1"))).toEqual({ applications });
@@ -754,7 +899,7 @@ describe("Connectors landing page", () => {
   );
 
   it.each(["config", "transportConfig"])(
-    "hides a Google account identified by %s even when its gallery entry is absent",
+    "shows a Google account identified by %s even when its gallery entry is absent",
     async (sourceField) => {
       listGalleryMock.mockResolvedValue({ apps: [] });
       listApplicationsMock.mockResolvedValue({ applications: [application({
@@ -766,14 +911,14 @@ describe("Connectors landing page", () => {
       }), connection()] });
       await renderBrowse();
 
-      expect(container.textContent).not.toContain("Saved Google account");
+      expect(container.textContent).toContain("Saved Google account");
       expect(container.textContent).toContain("Notion");
       expect(archiveConnectionMock).not.toHaveBeenCalled();
     },
   );
 
   it.each(["catalog", "custom"])(
-    "preserves non-Google accounts in a mixed-provider %s row",
+    "preserves both Google and non-Google accounts in a mixed-provider %s row",
     async (rowKind) => {
       const notion = getAppStoreDefinition("notion")!;
       listGalleryMock.mockResolvedValue({ apps: rowKind === "catalog" ? [notion] : [] });
@@ -781,7 +926,7 @@ describe("Connectors landing page", () => {
         ? { name: "My tools", applicationKey: null, metadata: null }
         : {})] });
       const connections = [connection({
-        id: "google-account", name: "Hidden Google account",
+        id: "google-account", name: "Saved Google account",
         config: { sourceTemplateKey: "google-docs" },
       }), connection({
         id: "notion-account", name: "Visible Notion account",
@@ -790,8 +935,9 @@ describe("Connectors landing page", () => {
       listConnectionsMock.mockResolvedValue({ connections });
       const client = await renderBrowse();
 
+      await clickButton("2 connections");
       expect(container.textContent).toContain("Visible Notion account");
-      expect(container.textContent).not.toContain("Hidden Google account");
+      expect(container.textContent).toContain("Saved Google account");
       expect(container.textContent).toContain(rowKind === "catalog" ? "Notion" : "My tools");
       expect(client.getQueryData(queryKeys.tools.connections("company-1"))).toEqual({ connections });
       expect(archiveConnectionMock).not.toHaveBeenCalled();
@@ -799,7 +945,7 @@ describe("Connectors landing page", () => {
   );
 
   it.each(["metadata", "applicationKey"])(
-    "keeps a non-Google custom connector identified by %s when only its Google accounts are hidden",
+    "keeps a non-Google custom connector identified by %s and its saved Google account",
     async (sourceField) => {
       listGalleryMock.mockResolvedValue({ apps: [] });
       const savedApplication = application({
@@ -809,19 +955,81 @@ describe("Connectors landing page", () => {
       });
       listApplicationsMock.mockResolvedValue({ applications: [savedApplication] });
       const connections = [connection({
-        name: "Hidden Google account", config: { sourceTemplateKey: "google-docs" },
+        name: "Saved Google account", config: { sourceTemplateKey: "google-docs" },
       })];
       listConnectionsMock.mockResolvedValue({ connections });
       const client = await renderBrowse();
 
       expect(container.querySelector('[data-app-slug="custom-provider"]')).not.toBeNull();
       expect(container.textContent).toContain("My custom connector");
-      expect(container.textContent).not.toContain("Hidden Google account");
+      expect(container.textContent).toContain("Saved Google account");
       expect(client.getQueryData(queryKeys.tools.applications("company-1"))).toEqual({ applications: [savedApplication] });
       expect(client.getQueryData(queryKeys.tools.connections("company-1"))).toEqual({ connections });
       expect(archiveConnectionMock).not.toHaveBeenCalled();
     },
   );
+
+  it("uses availability metadata for a non-Notebook connector in cached gallery results", async () => {
+    const privateResearch = { ...getAppStoreDefinition("notion")!, slug: "private-research", name: "Private Research", experimentalFeatureKey: "enableCases" as const };
+    listGalleryMock.mockResolvedValue({ apps: [privateResearch, getAppStoreDefinition("context7")] });
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="private-research"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="context7"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableCases: true }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="private-research"]')).not.toBeNull();
+  });
+
+  it("hides cached Notebook catalog entries until explicitly enabled", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["paperclip-notebook", "notion"].map(getAppStoreDefinition) });
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enablePaperclipNotebook: true }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enablePaperclipNotebook: false }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).toBeNull();
+  });
+
+  it("hides Notebook while settings load", async () => {
+    experimentalMock.mockImplementation(() => new Promise(() => {}));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("paperclip-notebook")] });
+    await renderBrowse();
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).toBeNull();
+  });
+
+  it("hides Notebook when a settings refresh fails with a cached opt-in", async () => {
+    experimentalMock.mockResolvedValue({ enablePaperclipNotebook: true });
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("paperclip-notebook")] });
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).not.toBeNull();
+    experimentalMock.mockRejectedValue(new Error("Settings unavailable"));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }); });
+    await flushReact();
+    expect(client.getQueryData(queryKeys.instance.experimentalSettings)).toEqual({ enablePaperclipNotebook: true });
+    expect(container.querySelector('[data-app-slug="paperclip-notebook"]')).toBeNull();
+  });
+
+  it("keeps Notebook removal available while hiding reconnect and new-account controls", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("paperclip-notebook")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "notebook-app", name: "Paperclip Notebook",
+      applicationKey: "app-gallery:paperclip-notebook:one", metadata: { sourceTemplateKey: "paperclip-notebook" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ id: "saved-notebook", applicationId: "notebook-app",
+      name: "Notebook account", config: { sourceTemplateKey: "paperclip-notebook" }, healthStatus: "error", requiresReauthorization: true })] });
+    await renderBrowse();
+    const row = container.querySelector('[data-app-slug="paperclip-notebook"]')!;
+    expect(row).not.toBeNull();
+    expect([...row.querySelectorAll("button")].some(button => /^(Connect|Add connection|Reconnect|Finish setup)$/.test(button.textContent?.trim() ?? ""))).toBe(false);
+    await act(() => { row.querySelector<HTMLButtonElement>('button[aria-label^="Manage "]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await flushReact();
+    await act(() => { [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === "Remove connection")!.click(); });
+    await flushReact();
+    await act(() => { [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Remove connection")!.click(); });
+    await flushReact();
+    expect(archiveConnectionMock).toHaveBeenCalledWith("saved-notebook");
+  });
 
   it("hides cached memory connectors until enabled and preserves saved MCP connections", async () => {
     const providers = ["mem0", "zep", "supermemory", "cognee", "honcho"];
@@ -871,6 +1079,10 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("Chat with agents");
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+    const copilot = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Connect Copilot")!;
+    expect(copilot).toBeTruthy();
+    await act(() => void copilot.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&method=copilot-token");
   });
 
   it("names what the card will actually ask for", async () => {
@@ -891,7 +1103,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('button[aria-label="Add key GitHub"]')).toBeNull();
   });
 
-  it("separates tools and saved bots and hides only bots when chat connectors are disabled", async () => {
+  it("separates tools and saved bots and gates bots independently of chat connectors", async () => {
     listGalleryMock.mockResolvedValue({ apps: ["github", "github-code-review-bot"].map(getAppStoreDefinition) });
     listApplicationsMock.mockResolvedValue({ applications: [
       application({ id: "github-tools", name: "GitHub", metadata: { sourceTemplateKey: "github" } }),
@@ -921,7 +1133,10 @@ describe("Connectors landing page", () => {
     const finish = [...bots.querySelectorAll("button")].find((button) => button.textContent === "Finish setup")!;
     await act(() => finish.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat&resume=endpoint-2");
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false }); });
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: true }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: true, enableGitHubReviewBots: false }); });
     await flushReact();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).toBeNull();
     expect(container.textContent).not.toContain("Review agent");
@@ -953,7 +1168,7 @@ describe("Connectors landing page", () => {
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
     expect(container.querySelector("header")?.classList).toContain(
-      "items-start",
+      "items-center",
     );
     expect(container.querySelector("header")?.classList).not.toContain(
       "justify-end",
@@ -968,6 +1183,7 @@ describe("Connectors landing page", () => {
         ),
       ).map((row) => row.dataset.appSlug),
     ).toEqual([
+      "assistant-connection",
       "agentmail",
       "discord",
       "github-code-review-bot",
@@ -976,6 +1192,7 @@ describe("Connectors landing page", () => {
       "microsoft-teams",
       "notion",
       "slack",
+      "speko",
       "telegram",
       "custom-mcp",
     ]);
@@ -1013,6 +1230,93 @@ describe("Connectors landing page", () => {
     expect(navigateMock).toHaveBeenCalledWith("/apps/advanced/paste-config");
   });
 
+  it("folds healthy multi-account lists behind a connection-count toggle", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection(),
+        connection({ id: "conn-ops", name: "ops@example.com" }),
+        connection({ id: "conn-eng", name: "eng@example.com" }),
+      ],
+    });
+    await renderBrowse();
+
+    const notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    const toggle = Array.from(notion.querySelectorAll<HTMLButtonElement>("button"))
+      .find(button => button.textContent?.trim() === "3 connections")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(notion.textContent).not.toContain("ops@example.com");
+
+    await clickButton("3 connections", notion);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    for (const name of ["devinfoley@gmail.com", "ops@example.com", "eng@example.com"]) expect(notion.textContent).toContain(name);
+
+    await clickButton("3 connections", notion);
+    expect(notion.textContent).not.toContain("ops@example.com");
+
+    await search("ops@example");
+    expect(container.querySelector('[data-app-slug="notion"]')?.textContent).toContain("ops@example.com");
+  });
+
+  it("reopens connection lists whenever the search query changes", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection(), connection({ id: "conn-ops", name: "ops@example.com" }),
+        connection({ id: "conn-eng", name: "eng@example.com" })],
+    });
+    await renderBrowse();
+    await search("ops@example");
+    let notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("ops@example.com");
+    await clickButton("3 connections", notion);
+    expect(notion.textContent).not.toContain("ops@example.com");
+
+    await search("eng@example");
+    notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("eng@example.com");
+    await search("ops@example");
+    expect(container.querySelector('[data-app-slug="notion"]')?.textContent).toContain("ops@example.com");
+  });
+
+  it("keeps a single account inline and opens lists that need attention", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection()] });
+    await renderBrowse();
+    let notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("devinfoley@gmail.com");
+    expect(notion.querySelector('[data-slot="collapsible-trigger"]')).toBeNull();
+
+    act(() => root.unmount());
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection(), connection({ id: "conn-draft", name: "draft@example.com", status: "draft" })],
+    });
+    await renderBrowse();
+    notion = container.querySelector<HTMLElement>('[data-app-slug="notion"]')!;
+    expect(notion.textContent).toContain("2 connections· 1 needs attention");
+    expect(notion.textContent).toContain("draft@example.com");
+  });
+
+  it.each(["provider_setup", "identity_link", undefined, "complete"])(
+    "keeps unfinished verifying chat setup visible for step %s", async (step) => {
+      chatListMock.mockResolvedValue([
+        { id: "chat-active", provider: "slack", status: "active", assignedAgentName: "Active agent" },
+        { id: "chat-verifying", provider: "slack", status: "verifying", assignedAgentName: "Setup agent",
+          setup: step === undefined ? undefined : { step } },
+      ]);
+      await renderBrowse();
+      const slack = container.querySelector<HTMLElement>('[data-app-slug="slack"]')!;
+      const trigger = slack.querySelector('[data-slot="collapsible-trigger"]')!;
+      const unfinished = step !== "complete";
+      expect(trigger.getAttribute("aria-expanded")).toBe(String(unfinished));
+      expect(slack.textContent?.includes("1 needs attention")).toBe(unfinished);
+      expect(slack.textContent?.includes("Finish setup")).toBe(unfinished);
+      if (unfinished) {
+        await clickButton("Finish setup", slack);
+        expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=slack&purpose=chat&resume=chat-verifying");
+      }
+    },
+  );
+
   it("sorts connected providers first and shows account, owner, status actions, and edit menus inline", async () => {
     listApplicationsMock.mockResolvedValue({ applications: [application()] });
     listConnectionsMock.mockResolvedValue({
@@ -1048,11 +1352,12 @@ describe("Connectors landing page", () => {
         '[aria-label="Connector list"] > [data-app-slug]',
       ),
     );
-    expect(rows[0]?.dataset.appSlug).toBe("notion");
-    const notion = rows[0]!;
+    const providers = rows.filter(row => row.dataset.appSlug !== "assistant-connection");
+    expect(providers[0]?.dataset.appSlug).toBe("notion");
+    const notion = providers[0]!;
     expect(notion.textContent).toContain("devinfoley@gmail.com");
     expect(notion.textContent).toContain("ops@example.com");
-    expect(notion.textContent).toContain("Connected by");
+    expect(notion.textContent).not.toContain("Connected by");
     expect(notion.textContent).toContain("Dotta");
     expect(notion.textContent).toContain("The saved sign-in expired.");
     expect(
@@ -1210,6 +1515,20 @@ describe("Connectors landing page", () => {
     },
   );
 
+  it.each(["slack", "agentmail", "discord", "telegram", "microsoft-teams", "github"])("shows agent and connector-owner identities without routine status labels for %s", async provider => {
+    listAgentsMock.mockResolvedValue([{ id: "maya", name: "Maya", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" } }]);
+    listUserDirectoryMock.mockResolvedValue({ users: [{ principalId: "user-1", status: "active", user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null } }] });
+    chatListMock.mockResolvedValue([{ id: "chat-avatar", provider, status: "verifying", assignedAgentId: "maya", assignedAgentName: "Maya", sponsorUserId: "user-1", setup: { webhookVerifiedAt: "2026-10-07T12:00:00Z" } }]);
+    await renderBrowse();
+    const avatar = container.querySelector('[aria-label="Maya avatar"]');
+    expect(avatar).not.toBeNull();
+    const row = avatar!.parentElement!.parentElement!;
+    expect(row.textContent).toContain("Dotta");
+    expect(row.textContent).not.toContain("Connected by");
+    expect(row.textContent).not.toContain("verifying");
+    expect(row.querySelector('[data-slot="avatar"]')).not.toBeNull();
+  });
+
   it.each([
     ["slack", "Slack", "active"], ["slack", "Slack", "draft"],
     ["agentmail", "AgentMail", "active"], ["agentmail", "AgentMail", "draft"],
@@ -1286,6 +1605,38 @@ describe("Connectors landing page", () => {
     );
   });
 
+  it("resumes a hidden provider only from its existing draft account row", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "app-clickup",
+      name: "ClickUp",
+      applicationKey: "app-gallery:clickup:one",
+      metadata: { sourceTemplateKey: "clickup" },
+    })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({
+      id: "conn-clickup-draft",
+      applicationId: "app-clickup",
+      name: "ClickUp",
+      status: "draft",
+      config: { sourceTemplateKey: "clickup" },
+    })] });
+
+    await renderBrowse();
+
+    const row = container.querySelector('[data-app-slug="clickup"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Setup incomplete");
+    const finish = Array.from(row!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Finish setup",
+    );
+    await act(async () => {
+      finish?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/apps/connect?source=clickup&resume=conn-clickup-draft",
+    );
+    expect(getAppStoreDefinition("clickup")).toBeNull();
+  });
+
   it("filters the single list without restoring section chrome", async () => {
     await renderBrowse();
 
@@ -1337,14 +1688,14 @@ describe("Connectors landing page", () => {
 
     await renderBrowse();
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn’t load every connector",
+    expect(container.querySelector('[data-query-view="error"]')?.textContent).toContain(
+      "Couldn't load every connector",
     );
     expect(container.textContent).toContain("Internal search");
     expect(container.textContent).toContain("search.internal.example");
     expect(
       Array.from(container.querySelectorAll("button")).some(
-        (button) => button.textContent === "Try again",
+        (button) => button.textContent === "Retry",
       ),
     ).toBe(true);
   });

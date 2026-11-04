@@ -35,6 +35,13 @@ describe("Cloud connector enrollment return path", () => {
       "/APP/apps/connections?cloud_connector=enrolled",
     );
   });
+
+  it("resumes the same GitHub draft after enrollment without a second company prefix", () => {
+    expect(cloudConnectorEnrollmentReturnPath("GIT", "/apps/chat/connect?provider=github&purpose=chat&resume=draft-1"))
+      .toBe("/GIT/apps/chat/connect?provider=github&purpose=chat&resume=draft-1&cloud_connector=enrolled");
+    expect(cloudConnectorEnrollmentReturnPath("GIT", "https://evil.example/apps/chat/connect?resume=draft-1"))
+      .toBe("/GIT/apps/connections?cloud_connector=enrolled");
+  });
 });
 
 describe("connection intent OAuth callback document", () => {

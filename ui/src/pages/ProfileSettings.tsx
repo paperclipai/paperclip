@@ -4,6 +4,7 @@ import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,6 +14,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { describeError } from "@/api/errors";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -32,8 +34,8 @@ export function ProfileSettings() {
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
+  const sessionView = useQueryView(sessionQuery);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -80,7 +82,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(describeError(error).body);
     },
   });
 
@@ -103,7 +105,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
@@ -115,20 +117,28 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (sessionQuery.isLoading) {
+  if (sessionQuery.isLoading || sessionView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading profile...</div>;
   }
 
-  if (sessionQuery.error || !sessionQuery.data) {
+  if (sessionView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
-      </div>
+      <QueryErrorState
+        size="page"
+        error={sessionQuery.error}
+        action="load your profile"
+        onRetry={sessionView.retry}
+        retrying={sessionView.isFetching}
+      />
     );
+  }
+
+  if (!sessionQuery.data) {
+    return <div className="text-sm text-destructive">Failed to load profile.</div>;
   }
 
   const currentName = name.trim() || sessionQuery.data.user.name || "Board";

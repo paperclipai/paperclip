@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { appendSemanticToolReceipt, semanticCanonicalJson as canonicalJson, semanticInputSha256, type SemanticToolReceipt } from "./semantic-tool-receipt.js";
 import {
   createServer,
   type IncomingMessage,
@@ -17,10 +18,13 @@ import {
   PRP_COMPLETION_TOOL_NAME,
 } from "../contracts/completion-result.js";
 
+export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = "x-paperclip-runner-scope-token";
+
 export interface RunnerToolDefinition {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  _meta?: { "anthropic/alwaysLoad": true };
 }
 
 export interface RunnerToolCall {
@@ -28,19 +32,32 @@ export interface RunnerToolCall {
   callId: string;
   arguments: unknown;
   signal: AbortSignal;
+  /** Internal, invocation-owned evidence. Snapshot before forwarding; commit only
+   * after that exact normalized input is forwarded. Never supplied by the model. */
+  captureNormalizedInput?: (input: unknown) => (() => void);
 }
 
 export interface RunnerToolBridgeOptions {
   tools?: readonly Readonly<Record<string, unknown>>[];
+  /** Claude-only: avoid tool search for task naming and terminal disposition. */
+  preloadClaudeTaskTools?: boolean;
+  preserveToolNames?: boolean;
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler(call: RunnerToolCall): Promise<unknown>;
-  timeoutMs?: number;
+  /** Copilot-only opt-in; capture the active invocation scope before dispatch. */
+  captureSemanticReceipt?: () => ((receipt: SemanticToolReceipt) => void) | undefined;
+  /** Null delegates the wait to an owning durable runtime's lease and close.
+   * Ordinary callers retain the bounded request timeout. */
+  timeoutMs?: number | null;
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
   /** Internal test seam; production bounds headers and body reads to 30 seconds. */
   requestBodyTimeoutMs?: number;
   secret?: string;
+  socketPath?: string;
+  sessionScope?: () => string | null;
+  scopeToken?: () => string | null;
 }
 
 export interface RunnerToolBridge {
@@ -60,6 +77,7 @@ interface RunnerToolTextContent {
 }
 
 interface RunnerToolCallResult {
+  isError?: boolean;
   content: RunnerToolTextContent[];
 }
 
@@ -100,8 +118,8 @@ export async function startRunnerToolBridge(
   const secret = options.secret ?? randomBytes(32).toString("base64url");
   if (secret.length === 0)
     throw new Error("Runner tool bridge secret is empty");
-  const tools = normalizeTools(options.tools ?? [], "public");
-  const privateTools = normalizeTools(options.privateTools ?? [], "private");
+  const tools = normalizeTools(options.tools ?? [], "public", options.preserveToolNames);
+  const privateTools = normalizeTools(options.privateTools ?? [], "private", options.preserveToolNames);
   const publicNames = new Set(tools.map((tool) => tool.name));
   for (const tool of privateTools) {
     if (publicNames.has(tool.name)) {
@@ -111,19 +129,32 @@ export async function startRunnerToolBridge(
     }
   }
   const visibleTools = [...tools, ...structuredClone(RESERVED_TOOLS)];
+  if (options.preloadClaudeTaskTools) {
+    for (const tool of visibleTools) {
+      if (tool.name === "set_task_title" || tool.name === PRP_COMPLETION_TOOL_NAME || tool.name === PRP_BLOCK_TOOL_NAME) {
+        tool._meta = { "anthropic/alwaysLoad": true };
+      }
+    }
+  }
   const admittedTools = [...visibleTools, ...privateTools];
   const validators = compileValidators(admittedTools);
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
     secret,
+    preserveToolNames: options.preserveToolNames === true,
     visibleTools,
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
     calls,
     controllers,
+    sessionScope: options.sessionScope,
+    scopeToken: options.scopeToken,
+    sessions: new Map<string, string>(),
+    activeScope: null as string | null,
     handler: options.handler,
-    timeoutMs: positiveBoundedInteger(
+    captureSemanticReceipt: options.captureSemanticReceipt,
+    timeoutMs: options.timeoutMs === null ? null : positiveBoundedInteger(
       options.timeoutMs,
       DEFAULT_TIMEOUT_MS,
       1,
@@ -162,15 +193,25 @@ export async function startRunnerToolBridge(
   server.requestTimeout = context.requestBodyTimeoutMs;
   server.headersTimeout = context.requestBodyTimeoutMs;
   server.on("clientError", (_error, socket) => socket.destroy());
-  await listenLoopback(server);
+  if (options.socketPath) {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+  } else {
+    await listenLoopback(server);
+  }
   const address = server.address();
-  if (address === null || typeof address === "string") {
+  if (address === null || (typeof address === "string" && !options.socketPath)) {
     await closeServer(server);
     throw new Error("Runner tool bridge failed to bind a loopback port");
   }
   let closed = false;
   return Object.freeze({
-    url: `http://127.0.0.1:${address.port}/mcp`,
+    url: typeof address === "string" ? "http://localhost/mcp" : `http://127.0.0.1:${address.port}/mcp`,
     secret,
     async close() {
       if (closed) return;
@@ -186,13 +227,19 @@ async function handleRequest(
   response: ServerResponse,
   context: {
     secret: string;
+    sessionScope?: () => string | null;
+    scopeToken?: () => string | null;
+    sessions: Map<string, string>;
+    activeScope: string | null;
+    preserveToolNames: boolean;
     visibleTools: RunnerToolDefinition[];
     admittedTools: Map<string, RunnerToolDefinition>;
     validators: Map<string, ValidateFunction>;
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
     handler: RunnerToolBridgeOptions["handler"];
-    timeoutMs: number;
+    captureSemanticReceipt: RunnerToolBridgeOptions["captureSemanticReceipt"];
+    timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
@@ -216,6 +263,14 @@ async function handleRequest(
     response.end();
     return;
   }
+  const scopeToken = context.scopeToken?.();
+  if (context.scopeToken) {
+    if (!scopeToken) { response.statusCode = 403; response.end(); return; }
+    const supplied = request.headers[RUNNER_TOOL_SCOPE_TOKEN_HEADER];
+    if (typeof supplied !== "string" || !authorized(supplied, scopeToken)) {
+      response.statusCode = 401; response.end(); return;
+    }
+  }
   let message: Record<string, unknown>;
   try {
     message = parseMessage(
@@ -229,13 +284,33 @@ async function handleRequest(
     writeRpc(response, null, undefined, rpcError(-32700, safeError(error)));
     return;
   }
+  if (context.scopeToken && scopeToken !== context.scopeToken()) {
+    response.statusCode = 401; response.end(); return;
+  }
   const id = message.id ?? null;
   const method = typeof message.method === "string" ? message.method : "";
+  let sessionKey = "";
+  if (context.sessionScope) {
+    const scope = context.sessionScope();
+    if (!scope) { response.statusCode = 403; response.end(); return; }
+    if (context.activeScope !== scope) {
+      for (const controller of context.controllers.values()) controller.abort();
+      context.sessions.clear(); context.calls.clear(); context.controllers.clear();
+      context.activeScope = scope;
+    }
+    if (method !== "initialize") {
+      const supplied = request.headers["mcp-session-id"];
+      if (typeof supplied !== "string" || context.sessions.get(supplied) !== scope) {
+        response.statusCode = 404; response.end(); return;
+      }
+      sessionKey = supplied + ":";
+    }
+  }
   if (method === "notifications/cancelled") {
     const params = isRecord(message.params) ? message.params : {};
     const requestId = params.requestId;
     if (typeof requestId === "string" || typeof requestId === "number") {
-      context.controllers.get(rpcIdKey(requestId))?.abort();
+      context.controllers.get(sessionKey + rpcIdKey(requestId))?.abort();
     }
     response.statusCode = 202;
     response.end();
@@ -247,7 +322,12 @@ async function handleRequest(
     return;
   }
   if (method === "initialize") {
-    response.setHeader("Mcp-Session-Id", randomBytes(16).toString("hex"));
+    const sessionId = randomBytes(16).toString("hex");
+    if (context.sessionScope) {
+      if (context.sessions.size >= 64) { response.statusCode = 429; response.end(); return; }
+      context.sessions.set(sessionId, context.activeScope!);
+    }
+    response.setHeader("Mcp-Session-Id", sessionId);
     writeRpc(response, id, {
       protocolVersion: "2025-03-26",
       capabilities: { tools: { listChanged: false } },
@@ -270,7 +350,7 @@ async function handleRequest(
 
   const params = isRecord(message.params) ? message.params : {};
   const rawName = typeof params.name === "string" ? params.name : "";
-  const tool = canonicalRunnerToolName(rawName);
+  const tool = context.preserveToolNames ? rawName : canonicalRunnerToolName(rawName);
   if (!context.admittedTools.has(tool)) {
     writeToolError(response, id, "Unsupported tool.");
     return;
@@ -284,8 +364,8 @@ async function handleRequest(
     );
     return;
   }
-  const callId = String(id);
-  const callKey = rpcIdKey(id);
+  const callId = context.sessionScope ? sessionKey + rpcIdKey(id) : String(id);
+  const callKey = sessionKey + rpcIdKey(id);
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
@@ -321,6 +401,38 @@ async function handleRequest(
     }
   }
   const controller = existing === undefined ? new AbortController() : undefined;
+  let observeReceipt: ((receipt: SemanticToolReceipt) => void) | undefined;
+  if (!existing) { try { observeReceipt = context.captureSemanticReceipt?.(); } catch { /* Optional evidence cannot prevent dispatch. */ } }
+  let receiptSealed = false;
+  let normalizationCaptured = false;
+  let normalizationInvalid = false;
+  let normalizedInputSha256: string | null = null;
+  const captureNormalizedInput = (input: unknown): (() => void) => {
+    if (receiptSealed || controller?.signal.aborted) return () => {};
+    if (normalizationCaptured) { normalizationInvalid = true; return () => {}; }
+    normalizationCaptured = true;
+    let digest: string;
+    try {
+      if (!isRecord(input) || Buffer.byteLength(JSON.stringify(input)) > context.maxBodyBytes) throw new Error("Invalid normalized input");
+      digest = semanticInputSha256(input);
+    } catch { normalizationInvalid = true; return () => {}; }
+    let committed = false;
+    return () => {
+      if (receiptSealed || controller?.signal.aborted) return;
+      if (committed) { normalizationInvalid = true; return; }
+      committed = true;
+      if (!normalizationInvalid) normalizedInputSha256 = digest;
+    };
+  };
+  const withReceipt = (result: RunnerToolCallResult): RunnerToolCallResult => {
+    receiptSealed = true;
+    if (!context.captureSemanticReceipt) return result;
+    try {
+      const bound = appendSemanticToolReceipt({ tool, callId, arguments: args, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
+      try { observeReceipt?.(bound.receipt); } catch { /* Evidence cannot change the tool outcome. */ }
+      return bound.result;
+    } catch { return result; }
+  };
   const execution: Promise<RunnerToolCallResult> =
     existing?.promise ??
     withCancellationAndTimeout(
@@ -331,6 +443,8 @@ async function handleRequest(
             callId,
             arguments: structuredClone(args),
             signal: controller!.signal,
+            ...(context.captureSemanticReceipt && (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME)
+              ? { captureNormalizedInput } : {}),
           }),
         )
         .then((result) => successfulToolResult(tool, callId, result)),
@@ -338,7 +452,10 @@ async function handleRequest(
       context.privateToolNames.has(tool)
         ? context.privateToolTimeoutMs
         : context.timeoutMs,
-    );
+    ).then(withReceipt, error => {
+      if (!context.captureSemanticReceipt) throw error;
+      return withReceipt({ isError: true, content: [{ type: "text", text: safeError(error) }] });
+    });
   if (!existing) {
     context.calls.set(callKey, { fingerprint, promise: execution });
     context.controllers.set(callKey, controller!);
@@ -357,13 +474,14 @@ async function handleRequest(
 function normalizeTools(
   input: readonly Readonly<Record<string, unknown>>[],
   visibility: "public" | "private",
+  preserveNames = false,
 ): RunnerToolDefinition[] {
   const tools: RunnerToolDefinition[] = [];
   const seen = new Set<string>();
   const reservedNames = new Set(RESERVED_TOOLS.map((tool) => tool.name));
   for (const raw of input) {
     const name =
-      typeof raw.name === "string" ? canonicalRunnerToolName(raw.name) : "";
+      typeof raw.name === "string" ? (preserveNames ? raw.name : canonicalRunnerToolName(raw.name)) : "";
     if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(name)) {
       throw new Error(`Runner ${visibility} tool has an invalid name`);
     }
@@ -539,24 +657,24 @@ function closeServer(server: Server): Promise<void> {
 function withCancellationAndTimeout<T>(
   promise: Promise<T>,
   controller: AbortController,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
       callback();
     };
     const onAbort = () =>
       finish(() => reject(new Error("Paperclip tool call cancelled")));
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? undefined : setTimeout(() => {
       finish(() => reject(new Error("Paperclip tool call timed out")));
       controller.abort();
     }, timeoutMs);
-    timer.unref();
+    timer?.unref();
     controller.signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish(() => resolve(value)),
@@ -813,16 +931,6 @@ function taggedObjectType(value: object): string {
     : "Object";
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
-}
 
 function isJsonContentType(value: string | undefined): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";

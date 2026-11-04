@@ -60,11 +60,59 @@ describe("stranded recovery notice seeds", () => {
     expect(disabled.body).toContain("an operator disabled it");
   });
 
+  it("explains unsupported concurrent shared workspace placement instead of missing secrets", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported" });
+    expect(seed.title).toBe("Shared workspace unavailable");
+    expect(seed.body).toContain("cannot place concurrent agents in one physical shared folder");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("isolated task workspace");
+  });
+
+  it("explains a quiet holder that still owns the shared workspace", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported", holderStale: true });
+    expect(seed.title).toBe("Shared workspace still held");
+    expect(seed.body).toContain("no output for more than an hour");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("stop it if it is stuck");
+  });
+
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
   it("keeps the secret-binding copy for other configuration gaps", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
       "secret/env bindings",
     );
     expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
+  it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "workspace_base_ref_unresolved",
+      requestedRef: "main",
+      attemptedRefs: ["origin/main"],
+      fetchError: "fatal: couldn't find remote ref refs/heads/main",
+      missingBindings: [],
+    });
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed,
+      recoveryActionId: "base-ref-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
+    });
+    expect(notice.presentation.title).toBe("Workspace base ref unavailable");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).toContain("base ref");
+    expect(notice.body).not.toContain("secret/env bindings");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Next action",
+      value: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+    });
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {

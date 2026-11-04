@@ -1,0 +1,72 @@
+{
+  "schema": "paperclip.copilot-native-instruction-delivery.v1",
+  "date": "2026-09-29",
+  "providerVersion": "1.0.88",
+  "providerBinarySha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "runtimeSourceRevision": "3d0c45920c326821c2f5ff48dc985ef8158b46e4",
+  "fixtureMechanism": "Credential-free env -i / COPILOT_OFFLINE=true with synthetic credential and loopback OpenAI fixture. Actual native binary and AcpxRuntimeHost. Test-only offline model metadata injection retained. Second explicit requested turn forces native session/load. File-mechanism probe writes the proposed instruction file in prepareSandbox; it is not a final built-production proof.",
+  "documentation": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
+  "attempts": [
+    {
+      "mechanism": "generic ACP metadata only",
+      "rawPrivateEvidenceSha256": "c2a0944f325cbbd73e3238d3aa93b5d1305ec924686b96e5933c2a1b41dc166e",
+      "probeScriptSha256": "ba346a6ce5652f189ca95b993902570c121142d9c69a85cb2ad88427bdf47360",
+      "loopbackModelResponses": 2,
+      "paidProviderCalls": 0,
+      "nativeLoadObserved": true,
+      "continuationResult": {
+        "status": "completed",
+        "stopReason": "end_turn"
+      },
+      "modelRequestProjection": [
+        {
+          "request": 1,
+          "paperclipPromptInSystem": false,
+          "oldRegisteredRootInSystem": false,
+          "currentRegisteredRootInSystem": false,
+          "originalCustomEntryInSystem": false,
+          "updatedCustomEntryInSystem": false
+        },
+        {
+          "request": 2,
+          "paperclipPromptInSystem": false,
+          "oldRegisteredRootInSystem": false,
+          "currentRegisteredRootInSystem": false,
+          "originalCustomEntryInSystem": false,
+          "updatedCustomEntryInSystem": false
+        }
+      ]
+    },
+    {
+      "mechanism": "isolated COPILOT_HOME/copilot-instructions.md refreshed before admission",
+      "rawPrivateEvidenceSha256": "abe3317c36f178c7b4f512070b290ed5fc2c066ca19b52152a5bebb4ff8ba195",
+      "probeScriptSha256": "85752c52ff53f99e4a7a8d6fe40b41fbea1d55b07efbcd4c4062674946089850",
+      "loopbackModelResponses": 2,
+      "paidProviderCalls": 0,
+      "nativeLoadObserved": true,
+      "continuationResult": {
+        "status": "completed",
+        "stopReason": "end_turn"
+      },
+      "modelRequestProjection": [
+        {
+          "request": 1,
+          "paperclipPromptInSystem": true,
+          "oldRegisteredRootInSystem": true,
+          "currentRegisteredRootInSystem": false,
+          "originalCustomEntryInSystem": true,
+          "updatedCustomEntryInSystem": false
+        },
+        {
+          "request": 2,
+          "paperclipPromptInSystem": true,
+          "oldRegisteredRootInSystem": false,
+          "currentRegisteredRootInSystem": true,
+          "originalCustomEntryInSystem": false,
+          "updatedCustomEntryInSystem": true
+        }
+      ]
+    }
+  ],
+  "conclusion": "Pinned Copilot ignores generic systemPrompt metadata. Native personal instruction file supplies fresh composed text to actual model system message after load, replacing old root/custom-entry text. Both attempts retained; final production build and authenticated qualification remain required."
+}

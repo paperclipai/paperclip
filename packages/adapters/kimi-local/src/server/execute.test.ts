@@ -326,6 +326,9 @@ describe("kimi_local execute", () => {
     const result = await execute(makeContext(root, { config: { cwd: root, timeoutSec: 5 } }));
 
     expect(result.timedOut).toBe(true);
+    expect(result.usageComplete).toBe(true);
+    expect(result.costStatus).toBe("unpriced");
+    expect(result.costUsd).toBeNull();
     expect(result.errorMessage).toContain("5s");
   });
 

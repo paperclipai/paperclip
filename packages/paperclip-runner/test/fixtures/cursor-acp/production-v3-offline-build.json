@@ -1,0 +1,236 @@
+{
+  "schema": "paperclip.cursor.production-offline-build.v1",
+  "observedAt": "2026-09-29",
+  "runtimeSourceRevision": "526081b9d6c905de5e2da680e3a37c620899b380",
+  "providerVersion": "2026.09.26-dd393fe",
+  "profileVersion": 3,
+  "patchVersion": "paperclip-cursor-isolation-v1",
+  "providerPackDigest": "sha256:7166a42d06192c53191aad7b15396e291675624001fbd95dd4b3cbda197f87a0",
+  "candidate": {
+    "version": "2026.09.26-dd393fe",
+    "profileDigest": "sha256:c91aa592ec867071ec4457b9b7230399ce42ad918787ceed99b4b651ea5607e2",
+    "closureDigest": "sha256:8a22016ca832ef8c8e6a83b955208d74c63f2c8dbe1dd688cbf27b81ad01886a",
+    "qualification": "pending",
+    "path": "provider-assets/cursor/darwin-arm64",
+    "sha256": "sha256:e4c656debc32e8a6bf6e6fd7f620223b48ad0b8b18994096d09f056fdf9d809c"
+  },
+  "daemon": {
+    "sourceRevision": "526081b9d6c905de5e2da680e3a37c620899b380",
+    "platform": "darwin-arm64",
+    "sha256": "826611379af7b8148933c58c6c77826c5a4f0773b789aac9eafbbc66b8e3dcb5"
+  },
+  "dependencyProvenance": {
+    "source": "git archive of exact runtimeSourceRevision",
+    "isolation": "fresh private pnpm store; copied package files, no shared hardlinks",
+    "pnpmVersion": "9.15.4",
+    "committedLockSha256": "e0c928a494f90ddad3c00791e83f09315ee8c82df2a0418a809dcf93649a8ab3",
+    "stagingLockSha256": "9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+    "acpxPatchSha256": "8b698d853fe6df6a34a8f89dddaccc6c8f1e5b7763af5ab5866b77acd42bc127",
+    "firstFrozenInstall": "failed: ERR_PNPM_LOCKFILE_CONFIG_MISMATCH",
+    "resolution": "retained original lock, generated private staging lock only, then frozen installation passed; repository lock unchanged"
+  },
+  "checks": {
+    "runnerTypescriptBuild": "passed",
+    "runnerReleaseDaemonBuild": "passed",
+    "freshPackageContracts": {
+      "passed": 26
+    },
+    "runtimeControlsAndCursorSdkInteractions": {
+      "passed": 184,
+      "scope": "credential-free real ACP SDK fixtures plus mocked admission, recovery, request delivery, lifecycle and cancellation; excludes native provider availability"
+    },
+    "verifiedNativeLease": {
+      "schema": "paperclip-cursor-offline-pack-proof/v1",
+      "capturedAt": "2026-09-29T14:50:08.614Z",
+      "runnerSourceRevision": "526081b9d6c905de5e2da680e3a37c620899b380",
+      "packDigest": "sha256:7166a42d06192c53191aad7b15396e291675624001fbd95dd4b3cbda197f87a0",
+      "target": {
+        "platform": "darwin",
+        "architecture": "arm64"
+      },
+      "candidate": {
+        "version": "2026.09.26-dd393fe",
+        "profileDigest": "sha256:c91aa592ec867071ec4457b9b7230399ce42ad918787ceed99b4b651ea5607e2",
+        "closureDigest": "sha256:8a22016ca832ef8c8e6a83b955208d74c63f2c8dbe1dd688cbf27b81ad01886a",
+        "qualification": "pending",
+        "path": "provider-assets/cursor/darwin-arm64",
+        "sha256": "sha256:e4c656debc32e8a6bf6e6fd7f620223b48ad0b8b18994096d09f056fdf9d809c"
+      },
+      "productionLock": "sha256:9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+      "launch": {
+        "entrypoint": "verified bundled node + index.js",
+        "arguments": [
+          "--disable-project-configs",
+          "--disable-auto-update",
+          "acp"
+        ],
+        "credentials": "none; private home/config/data/cache; memory credential store",
+        "verification": "generic profile installation registry, whole closure digest verification, retained immutable native snapshot, closed module bootstrap",
+        "modelAdmission": "offline-installation-probe is a factory identity sentinel only; no ACP model selection or prompt; model remains unverified"
+      },
+      "requests": [
+        {
+          "method": "initialize",
+          "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+              "fs": {
+                "readTextFile": false,
+                "writeTextFile": false
+              },
+              "terminal": false,
+              "_meta": {
+                "subagents": true
+              }
+            },
+            "clientInfo": {
+              "name": "paperclip-offline-pack-probe",
+              "version": "1"
+            }
+          }
+        },
+        {
+          "method": "cursor/list_available_models",
+          "params": {}
+        },
+        {
+          "method": "session/list",
+          "params": {}
+        },
+        {
+          "method": "session/fork",
+          "params": {
+            "sessionId": "probe"
+          }
+        },
+        {
+          "method": "session/resume",
+          "params": {
+            "sessionId": "probe",
+            "cwd": "/qualification/private/workspace",
+            "mcpServers": []
+          }
+        },
+        {
+          "method": "session/new",
+          "params": {
+            "cwd": "/qualification/private/workspace",
+            "mcpServers": []
+          }
+        }
+      ],
+      "responses": [
+        {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {
+              "loadSession": true,
+              "mcpCapabilities": {
+                "http": true,
+                "sse": true
+              },
+              "promptCapabilities": {
+                "audio": false,
+                "embeddedContext": false,
+                "image": true
+              },
+              "sessionCapabilities": {
+                "list": {},
+                "subagents": {}
+              }
+            },
+            "authMethods": [
+              {
+                "id": "cursor_login",
+                "name": "Cursor Login",
+                "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."
+              }
+            ]
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 2,
+          "error": {
+            "code": -32000,
+            "message": "Authentication required",
+            "data": {
+              "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+            }
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 3,
+          "error": {
+            "code": -32000,
+            "message": "Authentication required",
+            "data": {
+              "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+            }
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 4,
+          "error": {
+            "code": -32601,
+            "message": "\"Method not found\": session/fork",
+            "data": {
+              "method": "session/fork"
+            }
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 5,
+          "error": {
+            "code": -32601,
+            "message": "\"Method not found\": session/resume",
+            "data": {
+              "method": "session/resume"
+            }
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 6,
+          "error": {
+            "code": -32000,
+            "message": "Authentication required",
+            "data": {
+              "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+            }
+          }
+        }
+      ],
+      "process": {
+        "exitCode": 143,
+        "signalCode": null,
+        "leaseClosed": true,
+        "stderrBytes": 0,
+        "unexpectedMessageCount": 0
+      },
+      "qualification": {
+        "status": "pending",
+        "model": null,
+        "billablePrompts": 0,
+        "costUsd": 0,
+        "environment": "local macOS ARM64; no Daytona execution"
+      },
+      "redactions": [
+        "ephemeral workspace and private directories replaced with /qualification/private"
+      ]
+    }
+  },
+  "qualification": {
+    "status": "pending",
+    "paidPrompts": 0,
+    "authenticatedNativeInteractions": "not attempted",
+    "durableRestrictiveApprovals": "not qualified",
+    "authenticatedMacosX64": "not qualified",
+    "authenticatedDaytona": "not qualified"
+  }
+}

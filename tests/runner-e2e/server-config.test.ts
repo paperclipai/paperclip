@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,7 @@ import {
   reserveRunnerE2EDatabasePort,
   type LoopbackPortReservation,
 } from "./ports.js";
-import { prepareRunnerE2EServerConfig } from "./server-config.js";
+import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig } from "./server-config.js";
 
 const roots: string[] = [];
 const reservations: LoopbackPortReservation[] = [];
@@ -22,6 +22,18 @@ afterEach(async () => {
 });
 
 describe("isolated paid E2E database ports", () => {
+  it("uses a physical temporary root when the host temp directory has an alias", async () => {
+    const parent = await realpath(await mkdtemp(path.join(os.tmpdir(), "e2e-temp-alias-")));
+    roots.push(parent);
+    const physical = path.join(parent, "physical");
+    const alias = path.join(parent, "alias");
+    await mkdir(physical);
+    await symlink(physical, alias);
+    const root = await createRunnerE2ETemporaryRoot(alias);
+    expect(root).toBe(await realpath(root));
+    expect(path.dirname(root)).toBe(physical);
+  });
+
   it("keeps parallel database reservations distinct and held until server spawn", async () => {
     reservations.push(
       ...(await Promise.all(
