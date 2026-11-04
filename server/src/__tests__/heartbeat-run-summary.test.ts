@@ -363,37 +363,61 @@ describe("resolveHeartbeatRunResponse", () => {
     },
   };
 
-  it("delivers the completed handoff after an explicit progress promise", () => {
-    const progress = "Handling the request to set your personal publishing credential. I will verify which piece is missing (definition vs. value) and direct you to the secure entry surface; personal secret values cannot be entered or read through chat.";
-    const summary = "Open Settings → Secrets → My secrets. Select the publishing definition and Set my value. Keep the value out of chat.";
-    const response = resolveHeartbeatRunResponse({
-      resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } },
-      existingComment: { id: "progress", body: progress },
-    });
-    expect(response).toMatchObject({ text: summary, decision: { chosenSource: "semantic_result_summary", commentAction: "create",
-      reasonCodes: ["accepted_semantic_result_summary", "completed_response_after_progress_promise"] } });
-  });
-
   it.each([
-    "The credential is configured and the worker check passed.",
-    "The worker check failed. Keep the credential unchanged.",
-    "I will check again later. The current worker check failed.",
-    "I will verify it later, but the deployment failed with HTTP 403.",
-  ])("retains a substantive explicit outcome: %s", body => {
-    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "explicit", body } }))
-      .toMatchObject({ text: body, decision: { commentAction: "reuse", commentId: "explicit" } });
+    "Handling the request to set your personal publishing credential. I will verify which piece is missing (definition vs. value) and direct you to the secure entry surface; personal secret values cannot be entered or read through chat.",
+    "Checking the configuration.", "Looking at the request.", "Fetching the current state.",
+    "I will check again tomorrow; the release is ready at /releases/latest.",
+  ])("delivers the native conversation final without classifying the earlier comment: %s", body => {
+    const summary = "Open Settings → Secrets → My secrets. Select the publishing definition and Set my value. Keep the value out of chat.";
+    expect(resolveHeartbeatRunResponse({
+      resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } },
+      nativeConversationFinalResponse: true, existingComment: { id: "earlier", body },
+    })).toMatchObject({ text: summary, decision: { chosenSource: "semantic_result_summary", commentAction: "create",
+      reasonCodes: ["accepted_semantic_result_summary", "native_conversation_final_precedence"] } });
+    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "earlier", body } }))
+      .toMatchObject({ text: body, decision: { commentAction: "reuse", commentId: "earlier" } });
   });
 
-  it("retains a progress promise when no completed response is available or the run yields", () => {
-    const existingComment = { id: "progress", body: "I will verify the configuration." };
-    for (const resultJson of [
-      {}, { summary: "Unqualified legacy summary" },
-      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Waiting for an answer" } },
-      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "failed", summary: "The provider failed" } },
-      { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: existingComment.body } },
-    ]) {
-      expect(resolveHeartbeatRunResponse({ resultJson, existingComment }))
-        .toMatchObject({ text: existingComment.body, decision: { commentAction: "reuse" } });
+  it.each(["done", "needs_review", "blocked", "failed"])("presents an accepted %s conversation response and reuses identical text", reportedWorkDisposition => {
+    const summary = "The requested work needs your attention.";
+    const resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition, summary } };
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "I will check." } })).toMatchObject({ text: summary, decision: { commentAction: "create" } });
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "same", body: summary } })).toMatchObject({ text: summary, decision: { commentAction: "reuse", commentId: "same" } });
+  });
+
+  it("prefers the completed provider final over the conversation semantic summary", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "Earlier comment" },
+      finalAgentMessage: { text: "The complete answer", sourceEventId: "final", channel: "final" },
+    })).toMatchObject({ text: "The complete answer", decision: { chosenSource: "final_agent_message", commentAction: "create" } });
+  });
+
+  it("does not let compatibility narration outrank an accepted conversation result", () => {
+    const resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked", summary: "The accepted handoff" },
+      finalResponse: { final: true, text: "Adapter compatibility prose" }, summary: "Legacy compatibility prose" };
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "Earlier comment" },
+      finalAgentMessage: { text: "Unknown-channel narration", sourceEventId: "unknown", channel: "unknown" },
+    })).toMatchObject({ text: "The accepted handoff", decision: { chosenSource: "semantic_result_summary" } });
+  });
+
+  it("keeps the explicit conversation comment when no qualified final exists", () => {
+    for (const resultJson of [{}, { summary: "Unqualified legacy summary" }]) {
+      expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+        existingComment: { id: "explicit", body: "The release is ready at /releases/latest." },
+      })).toMatchObject({ text: "The release is ready at /releases/latest.", decision: { commentAction: "reuse" } });
+    }
+  });
+
+  it("keeps a governed interaction in control of the conversation response", () => {
+    for (const input of [{ resultJson, interactionOwnsResponse: true },
+      { resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Waiting for an answer" } } }]) {
+      expect(resolveHeartbeatRunResponse({ ...input, nativeConversationFinalResponse: true,
+        existingComment: { id: "earlier", body: "I will check." },
+        finalAgentMessage: { text: "Do not publish this", sourceEventId: "final", channel: "final" },
+      })).toMatchObject({ text: null, decision: { commentAction: "none" } });
     }
   });
 
