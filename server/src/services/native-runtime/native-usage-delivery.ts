@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import type { NativeExecutionInput, PrpEvent } from "../../vendor/paperclip-runner/index.js";
@@ -27,7 +27,14 @@ export async function createNativeUsageDelivery(db: Db, input: NativeUsageDelive
   const [bound] = await db.update(heartbeatRuns).set({ usageJson: sql`
     coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptOwner":"native_producer"}'::jsonb ||
     case when ${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}
-      then '{}'::jsonb else ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
+      then '{}'::jsonb else
+        case when jsonb_typeof(${heartbeatRuns.usageJson}->'accountingReceiptSourceId') = 'string'
+          then jsonb_build_object('accountingReceiptSourceFences',
+            coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb)
+            || jsonb_build_object(${heartbeatRuns.usageJson}->>'accountingReceiptSourceId',
+              coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSequence', '0'::jsonb)))
+          else '{}'::jsonb end
+        || ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
   }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id });
   if (!bound) throw new Error("native_usage_run_not_available");
@@ -59,7 +66,46 @@ function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "
   return db.select({ receipt: runUsageReceipts.receiptJson, hash: runUsageReceipts.receiptHash,
     sequence: runUsageReceipts.sequence }).from(runUsageReceipts).where(and(
     eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
-    eq(runUsageReceipts.sourceId, sourceId))).orderBy(asc(runUsageReceipts.sequence));
+    eq(runUsageReceipts.sourceId, sourceId),
+    // A journaled late tail is durable evidence, not an accepted delivery. Keep
+    // replaying it through the explicit reconciliation response after restart.
+    sql`not exists (select 1 from ${heartbeatRuns} r where r.id = ${runUsageReceipts.runId}
+      and r.company_id = ${runUsageReceipts.companyId} and r.usage_json->>'accountingLateReceiptPending' = 'true'
+      and (r.usage_json->>'accountingLateReceiptId' = ${runUsageReceipts.id}::text
+        or coalesce(r.usage_json->'accountingLateReceiptDebts', '{}'::jsonb) ? ${runUsageReceipts.id}::text))`)).orderBy(asc(runUsageReceipts.sequence));
+}
+
+const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+const finishedRunStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
+
+/** The Runner names a late report's owner when the turn proves it. A session's
+ * usage belongs to that session, so an unproven owner is the session's last
+ * finished run, recorded as inferred. */
+async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput, event: PrpEvent, payload: Record<string, unknown>) {
+  const reconciliation = payload.reconciliation;
+  if (!reconciliation || typeof reconciliation !== "object" || !isUuid(event.normalizedSessionId)) return false;
+  const measured = { runDelta: payload.runDelta };
+  const usage = normalizeNativeUsage(measured, { inputIncludesCacheReads: input.provider.kind === "codex" });
+  // An older Runner reports only an invalidation, with zero-filled counters.
+  // It has no increment to move and still belongs to the delivering run.
+  if (!usage || (usage.inputTokens + usage.outputTokens + (usage.cachedInputTokens ?? 0)) <= 0) return false;
+  const prior = (reconciliation as Record<string, unknown>).priorOrigin as Record<string, unknown> | null | undefined;
+  const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeSessionId, event.normalizedSessionId),
+    inArray(heartbeatRuns.status, finishedRunStatuses), ne(heartbeatRuns.id, input.runId),
+  )).orderBy(desc(heartbeatRuns.finishedAt));
+  const exact = runs.find(run => run.id === prior?.runId && prior?.normalizedSessionId === event.normalizedSessionId);
+  // With no finished run in this session, the delivering run is the only owner
+  // left. Its own delta already excludes this usage, so it is never counted twice.
+  const owner = exact ?? runs[0] ?? { id: input.runId };
+  const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing, model: input.provider.model ?? "unknown", usage, usageBasis: "per_run",
+    complete: true, costUsd: nativeUsageCostUsd(measured, input.provider) ?? null }));
+  await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: uuid(`${owner.id}:${input.runnerInstanceId}:${event.sourceEventId}`),
+    companyId: input.companyId, runId: owner.id, adapterType: "paperclip_runner", sourceId: uuid(`late:${owner.id}:${input.runId}:${input.runnerInstanceId}`),
+    sequence: event.sourceSeq, receivedAt: event.emittedAt, receipt,
+    producerEvent: { sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType, usage: { runDelta: payload.runDelta, reconciliation } },
+    lateDelta: { attribution: exact ? "exact" : "inferred", reportedByRunId: input.runId } });
+  return true;
 }
 
 function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
@@ -107,6 +153,7 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
     if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
     if (event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId) throw new Error("native_usage_source_mismatch");
     const payload = event.payload as Record<string, unknown>;
+    if (event.eventType === "usage.reported" && await captureLateUsageForOwner(db, input, event, payload)) return;
     const fact: NonNullable<UsageReceiptEnvelope["producerEvent"]> = {
       sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),

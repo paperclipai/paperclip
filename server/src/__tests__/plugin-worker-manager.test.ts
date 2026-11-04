@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Company, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   createHostClientHandlers,
   JsonRpcCallError,
@@ -293,7 +293,7 @@ describe("plugin-worker-manager stderr failure context", () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
       instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
-      hostHandlers: { "companies.get": (async (_params, context) => context?.invocationScope) as never },
+      hostHandlers: { "companies.get": (async (_params: unknown, context?: { invocationScope?: unknown }) => context?.invocationScope) as never },
     });
     const common = { companyId: "company-a", params: { mode: "echo", requestedCompanyId: "company-a" } };
     try {
@@ -369,7 +369,7 @@ describe("plugin-worker-manager stderr failure context", () => {
   });
 
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
@@ -806,7 +806,7 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
   // Each case drives a real worker so the subscribe flows through the manager's
   // context resolution exactly as it does in production.
   function makeEventsHandle(seededCompanies: readonly string[]) {
-    const eventsSubscribe = vi.fn(async () => undefined);
+    const eventsSubscribe = vi.fn(async (_params: unknown) => undefined);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
       capabilities: ["events.subscribe"],

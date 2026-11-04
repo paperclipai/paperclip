@@ -94,6 +94,10 @@ export function nativeToolContractFingerprintForTarget(
 export const NATIVE_TOOL_CONTRACT_FINGERPRINT =
   nativeToolContractFingerprintForTarget("local");
 
+/** The runner proved that this run's saved provider session cannot be
+ * restored by the current runner build. Its checkpoint is not resumable. */
+export const NATIVE_PROVIDER_STATE_INCOMPATIBLE = "native_provider_state_incompatible";
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -221,7 +225,7 @@ type NativeSessionResumeSelection = {
   agentId: string;
   issueId: string;
   normalizedSessionId: string;
-  currentRunId: string;
+  currentRunId?: string;
   beforeCreatedAt: Date;
   /** Recovery discovery must retain an ineligible newest progress barrier. */
   includeProgressBarrier?: boolean;
@@ -302,7 +306,7 @@ async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResu
     .from(heartbeatRuns)
     .where(
       and(
-        ne(heartbeatRuns.id, input.currentRunId),
+        input.currentRunId ? ne(heartbeatRuns.id, input.currentRunId) : undefined,
         eq(heartbeatRuns.companyId, input.companyId),
         eq(heartbeatRuns.agentId, input.agentId),
         eq(heartbeatRuns.nativeIssueId, input.issueId),
@@ -341,6 +345,7 @@ async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResu
       nativeIssueId: heartbeatRuns.nativeIssueId,
       runtimeMode: heartbeatRuns.runtimeMode,
       status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode,
       createdAt: heartbeatRuns.createdAt,
       processPid: heartbeatRuns.processPid,
       processGroupId: heartbeatRuns.processGroupId,
@@ -596,6 +601,7 @@ export function rebindNativeSessionCheckpoint(input: {
     companyId: string;
     agentId: string;
     nativeSessionId: string | null;
+    errorCode?: string | null;
     runnerProfileJson: unknown;
   };
   currentExecution: NativeExecutionInput;
@@ -604,6 +610,9 @@ export function rebindNativeSessionCheckpoint(input: {
   refreshTools?: boolean;
 }): PersistedNativeSession | null {
   if (input.refreshTools && input.toolRefreshOnResume !== true) return null;
+  // The source is still the progress barrier. Its provider session cannot be
+  // restored, so the next run starts a fresh session in the same workspace.
+  if (input.previousRun.errorCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
     previousProfile.nativeToolContractFingerprint !==

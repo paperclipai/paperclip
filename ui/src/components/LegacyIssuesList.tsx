@@ -461,6 +461,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  showChecklist?: boolean;
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -683,6 +684,7 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
+  showChecklist = defaultSortField === "workflow",
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableAgentCreatedVisibilityFilter = false,
@@ -1162,9 +1164,9 @@ export function IssuesList({
   );
   const checklistAffordanceEnabled = useMemo(
     () =>
-      defaultSortField === "workflow"
+      showChecklist
       && viewState.groupBy === "none",
-    [defaultSortField, viewState.groupBy],
+    [showChecklist, viewState.groupBy],
   );
   const workflowChecklistMeta = useMemo(() => {
     if (!checklistAffordanceEnabled) return null;

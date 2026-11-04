@@ -2,6 +2,7 @@ import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellatio
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
+import { nativeManualAdmissionHoldMatches } from "./native-runner-ownership.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -78,8 +79,10 @@ export function assertCancellationRequest(result: unknown, requestId: string, al
  * is not retry authority; a resumed Stop needs its exact durable native intent. */
 export function nativeRetryCancellationEligible(input: {
   runId: string; companyId: string; issueId: string; resultJson: unknown; requestId?: string; scope?: string;
-}, coordinator: { phase?: string; failureCode?: string | null } | null | undefined) {
+}, coordinator: Partial<Pick<typeof nativeRunFinalizations.$inferSelect,
+  "runId" | "companyId" | "issueId" | "phase" | "resultId" | "failureCode" | "failureDetail">> | null | undefined) {
   if (coordinator?.phase === "retryable_failure") return true;
+  if (coordinator?.failureCode === "native_restart_recovery_blocked" && nativeManualAdmissionHoldMatches(input, coordinator)) return true;
   if (coordinator?.phase !== "terminal_failure" || coordinator.failureCode !== "native_retry_cancelled") return false;
   const result = record(input.resultJson), native = record(result.nativeCancellation);
   return (!input.requestId || (record(result.startupCancellation).cancellationRequestId === input.requestId

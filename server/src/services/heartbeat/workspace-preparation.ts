@@ -1020,7 +1020,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           || error.writer.lastActivityAt.getTime() < Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS) throw error;
         throw new WorkspaceBusyDeferral({ holder: error.writer, executionWorkspaceId: error.workspaceId,
           deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
-          wasIssueAssignee: input.task.wasIssueAssignee });
+          wasIssueAssignee: input.task.wasIssueAssignee, holderEnded: error.writer.ended === true });
       });
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");

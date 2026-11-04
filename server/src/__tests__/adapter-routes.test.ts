@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
+import type { RunnerTarget } from "../services/agent-runner-selection.js";
 
 const mockAdapterPluginStore = vi.hoisted(() => ({
   listAdapterPlugins: vi.fn(),
@@ -221,7 +222,7 @@ describe("adapter routes", () => {
       });
   });
 
-  it.each([
+  it.each<[RunnerTarget, string]>([
     [{ driver: "ssh", platform: "linux", architecture: "x64" }, "paperclip"],
     [{ driver: "ssh", platform: "darwin", architecture: "arm64" }, "paperclip"],
     [{ driver: "ssh", platform: "darwin", architecture: "x64" }, "paperclip"],

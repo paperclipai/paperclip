@@ -60,10 +60,12 @@ describeEmbeddedPostgres("companyService", () => {
     lifecycleWorker = startAgentLifecycle(db, { ...createLifecycleDriver(db, {} as never),
       requiredPluginIds: async () => [], runPlugin: async () => "complete" }, () => true);
   });
+  const lifecycleStateFor = (status: typeof agents.$inferInsert["status"]): NonNullable<typeof agents.$inferInsert["lifecycleState"]> =>
+    status === "paused" || status === "pending_approval" || status === "terminated" ? status : "ready";
   async function insertAgents(input: typeof agents.$inferInsert | Array<typeof agents.$inferInsert>) {
     const rows = Array.isArray(input) ? input : [input];
     await db.insert(agents).values(rows.map(row => ({ ...row,
-      lifecycleState: ["paused", "pending_approval", "terminated"].includes(row.status ?? "") ? row.status! : "ready",
+      lifecycleState: lifecycleStateFor(row.status),
       lifecycleHolds: row.status === "paused" ? [row.pauseReason ?? "manual"] : [],
     })));
   }

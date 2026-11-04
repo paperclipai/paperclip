@@ -1692,8 +1692,8 @@ export function toolAccessService(
       // application/connection rows. A fresh gallery click has no
       // applicationId, so recover that retained identity by its company-unique
       // name and source instead of inserting a duplicate application that the
-      // unique index rejects. Active applications are excluded: connecting a
-      // second account still requires its own name/application identity.
+      // unique index rejects. Archived personal identities are excluded below.
+      // Active applications also require a separate application identity.
       const requestedName =
         input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
       const recoverableApplicationStatuses = galleryEntry
@@ -1841,6 +1841,19 @@ export function toolAccessService(
       retainedConnection = undefined;
       existingApplication = null;
     }
+    // A fresh setup must not revive a personal identity found only by name.
+    // Keep its application, grants, credentials, and history archived, and let
+    // normal name allocation create a separate application/connection below.
+    // Explicit reconnects still use the fixed personal-owner check.
+    if (
+      !requestedConnectionId &&
+      !input.applicationId &&
+      retainedConnection?.status === "archived" &&
+      retainedConnection.credentialPolicy === "per_user"
+    ) {
+      existingApplication = null;
+      retainedConnection = undefined;
+    }
     let applicationName = existingApplication?.name ?? requestedName;
     let name = retainedConnection?.name ?? requestedName;
     if (!existingApplication) {
@@ -1876,8 +1889,8 @@ export function toolAccessService(
           : "organization"
       : null;
     // An explicit resume/application reconnect continues the retained identity.
-    // A fresh gallery connect may still reuse an archived row for stable history
-    // and company-unique naming, but an explicit Access choice is a new identity
+    // A fresh gallery connect may still reuse an archived non-personal row for
+    // stable history, but an explicit Access choice is a new identity
     // decision and must replace the archived policy. Without this distinction,
     // removing a dedicated-agent connection and reconnecting the default personal
     // account leaves `per_agent` behind and the OAuth callback cannot persist its

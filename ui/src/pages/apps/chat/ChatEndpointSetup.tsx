@@ -475,6 +475,13 @@ function ChatSdkEndpointSetup() {
         tone: "error",
       }),
   });
+  const finishSetup = () => {
+    if (provider === "slack" && endpoint?.setup?.step === "complete") {
+      navigate(`/apps/chat/${endpoint.id}/settings`);
+      return;
+    }
+    testConnection.mutate();
+  };
 
   const repairing = isChatEndpointRepairing(
     endpoint,
@@ -672,7 +679,7 @@ function ChatSdkEndpointSetup() {
               </p>
               <Button asChild variant="link"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>
             </div>
-            <Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>
+            <Button disabled={testConnection.isPending} onClick={finishSetup}>
               {testConnection.isPending && <Loader2 className="size-4 animate-spin" />}Done
             </Button>
           </div> : <TryStep
@@ -696,7 +703,7 @@ function ChatSdkEndpointSetup() {
             }
             pending={testConnection.isPending}
             onOpenAccess={() => navigate(`/apps/chat/${endpoint.id}/access`)}
-            onTest={() => testConnection.mutate()}
+            onTest={finishSetup}
             onSaveExit={() => navigate("/apps")}
           />
         )}

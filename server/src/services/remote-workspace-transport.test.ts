@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
@@ -50,7 +51,11 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     return root;
   }
 
-  function target(ambientEnv: Record<string, string> = {}) {
+  function target(ambientEnv: Record<string, string> = {}, outputMode: "split" | "one-shot" = "split") {
+    // Daytona one-shot execution returns the child streams together in stdout.
+    // Run the real helper first, then apply that provider response contract.
+    const streams = (stdout: string, stderr: string) => outputMode === "one-shot"
+      ? { stdout: stdout + stderr, stderr: "" } : { stdout, stderr };
     const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(async input => {
       try {
         const result = await exec(input.command, input.args ?? [], {
@@ -58,11 +63,12 @@ describe("remote workspace transport safety with real sandbox commands", () => {
           // Carry only generated fixture values across this execution boundary.
           env: { PATH: process.env.PATH, ...ambientEnv, ...input.env },
         });
-        return { ...result, exitCode: 0, timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() };
+        return { ...streams(result.stdout, result.stderr), exitCode: 0, timedOut: false, signal: null,
+          pid: process.pid, startedAt: new Date().toISOString() };
       } catch (error) {
         const failure = error as { code?: number; stdout?: string; stderr?: string; signal?: string };
-        return { exitCode: typeof failure.code === "number" ? failure.code : 1, stdout: failure.stdout ?? "",
-          stderr: failure.stderr ?? "", timedOut: false, signal: failure.signal ?? null,
+        return { exitCode: typeof failure.code === "number" ? failure.code : 1,
+          ...streams(failure.stdout ?? "", failure.stderr ?? ""), timedOut: false, signal: failure.signal ?? null,
           pid: process.pid, startedAt: new Date().toISOString() };
       }
     });
@@ -153,6 +159,53 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       expect(await fs.readdir(path.join(scratch, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
       await expect(restoreRemoteWorkspaceDirectory({ ...input, restorationIdentity: "b".repeat(64) })).rejects.toThrow();
       expect(await fs.readFile(path.join(root, "newer.txt"), "utf8")).toBe("retain later edits\n");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["owned", "changed", "unrelated", "symlink", "interrupted"])("preserves only verified allocation files during a migrated restore: %s", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained user work");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "allocated"), relativePath = ".paperclip-runtime/reusable-sandbox-lease.json";
+      const bytes = JSON.stringify({ version: 1, token: "exact-allocation-token", provider: "daytona" });
+      await fs.mkdir(path.join(root, ".paperclip-runtime"), { recursive: true });
+      const sentinel = path.join(root, relativePath);
+      await fs.writeFile(sentinel, bytes);
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "d".repeat(64), allowEmptyRoot: true,
+        allocationFiles: [{ relativePath, sha256: createHash("sha256").update(bytes).digest("hex") }] };
+      if (scenario === "changed") await fs.writeFile(sentinel, "foreign marker");
+      if (scenario === "unrelated") await fs.writeFile(path.join(root, ".paperclip-runtime", "unrelated.txt"), "keep");
+      if (scenario === "symlink") {
+        const outside = path.join(scratch, "outside-marker"); await fs.writeFile(outside, bytes);
+        await fs.unlink(sentinel); await fs.symlink(outside, sentinel);
+      }
+      if (["changed", "unrelated", "symlink"].includes(scenario)) {
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow();
+        expect(await fs.readFile(sentinel, "utf8")).toBe(scenario === "changed" ? "foreign marker" : bytes);
+        expect(await fs.lstat(path.join(root, "saved.txt")).catch(() => null)).toBeNull();
+        return;
+      }
+      if (scenario === "interrupted") {
+        const run = execute.getMockImplementation()!; let interrupt = true;
+        execute.mockImplementation(async command => {
+          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed")) {
+            interrupt = false;
+            return run({ ...command, args: command.args.map((arg, index) => index === 1
+              ? arg.replace("try{await fs.rename(staged,root);}", "throw Error('interrupted');try{await fs.rename(staged,root);}") : arg) });
+          }
+          return run(command);
+        });
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow();
+        expect(await fs.readFile(path.join(root + ".allocation-" + input.restorationIdentity, relativePath), "utf8")).toBe(bytes);
+      }
+      await restoreRemoteWorkspaceDirectory(input);
+      expect(await fs.readFile(sentinel, "utf8")).toBe(bytes);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("retained user work");
+      await fs.writeFile(path.join(root, "saved.txt"), "later user edits");
+      await restoreRemoteWorkspaceDirectory(input);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("later user edits");
     } finally { await captured.cleanup(); }
   });
 
@@ -287,7 +340,38 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
-  it("preserves only the fixed unfinished Git operation diagnostic across capture commands", async () => {
+  it.each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
+    const privateName = "SYNTHETIC_PRIVATE_FILENAME", outside = path.join(scratch, privateName);
+    await fs.writeFile(outside, "outside source bytes\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await fs.symlink(`../${privateName}`, path.join(workspace, "link"));
+    const { remote, execute } = target({}, outputMode), operationId = randomUUID();
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow(/^remote_workspace_archive_unsafe_symlink$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(outside, "utf8")).toBe("outside source bytes\n");
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+    expect(await fs.readlink(path.join(workspace, "link"))).toBe(`../${privateName}`);
+    const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  it.each(["split", "one-shot"] as const)("retains a closed filesystem failure for a missing canonical archive with %s output", async outputMode => {
+    const operationId = randomUUID(), canonical = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId, "captured");
+    await fs.mkdir(canonical, { recursive: true });
+    const receipt = '{"SYNTHETIC_PRIVATE_METADATA":"retained receipt"}';
+    await fs.writeFile(path.join(canonical, "receipt.json"), receipt);
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained unsaved source bytes\n");
+    const { remote, execute } = target({}, outputMode);
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow(/^remote_workspace_archive_fs_enoent$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(path.join(canonical, "receipt.json"), "utf8")).toBe(receipt);
+    expect(await fs.readdir(canonical)).toEqual(["receipt.json"]);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained unsaved source bytes\n");
+  });
+
+  it.each(["split", "one-shot"] as const)("preserves only the fixed unfinished Git operation diagnostic with %s output", async outputMode => {
     await git(workspace, "init", "--initial-branch=main");
     await fs.writeFile(path.join(workspace, "work.txt"), "base\n"); await git(workspace, "add", "."); await git(workspace, "commit", "-m", "base");
     await git(workspace, "checkout", "-b", "feature");
@@ -295,10 +379,14 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await git(workspace, "checkout", "main");
     await fs.writeFile(path.join(workspace, "work.txt"), "main\n"); await git(workspace, "commit", "-am", "main");
     await expect(git(workspace, "merge", "--no-edit", "feature")).rejects.toThrow();
-    const { remote, execute } = target();
+    const mergeHead = await fs.readFile(path.join(workspace, ".git", "MERGE_HEAD"), "utf8");
+    const conflictedWork = await fs.readFile(path.join(workspace, "work.txt"), "utf8");
+    const { remote, execute } = target({}, outputMode);
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
     const operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId })).rejects.toThrow(gitOperation);
+    expect(await fs.readFile(path.join(workspace, ".git", "MERGE_HEAD"), "utf8")).toBe(mergeHead);
+    expect(await fs.readFile(path.join(workspace, "work.txt"), "utf8")).toBe(conflictedWork);
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     for (const name of ["workspace.pcws", "receipt.json"]) await expect(fs.access(path.join(directory, name))).rejects.toMatchObject({ code: "ENOENT" });
     const failure = { exitCode: 1, stdout: "", stderr: `${gitOperation}\nSYNTHETIC_PRIVATE_PATH_OR_CREDENTIAL`,
@@ -312,9 +400,11 @@ describe("remote workspace transport safety with real sandbox commands", () => {
   });
 
   it.each([
-    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/` },
-    { step: "archive write", failing: String.raw`/workspace\.pcws$/` },
-  ])("names a full sandbox disk when the $step runs out of space", async ({ failing }) => {
+    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/`, outputMode: "split" as const },
+    { step: "archive write", failing: String.raw`/workspace\.pcws$/`, outputMode: "split" as const },
+    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/`, outputMode: "one-shot" as const },
+    { step: "archive write", failing: String.raw`/workspace\.pcws$/`, outputMode: "one-shot" as const },
+  ])("names a full sandbox disk when the $step runs out of space with $outputMode output", async ({ failing, outputMode }) => {
     await fs.writeFile(path.join(workspace, "result.txt"), "synthetic saved result\n");
     // Every sandbox Node process inherits this preload. A matching write keeps
     // one byte and then fails with ENOSPC, as a real full disk does.
@@ -327,7 +417,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       fs.open=async(file,...rest)=>{const handle=await open(file,...rest);if(failing.test(String(file))){const write=handle.writeFile.bind(handle);
         handle.writeFile=async data=>{await write(Buffer.from(data).subarray(0,1));throw enospc(file);};}return handle;};
       require('node:module').syncBuiltinESMExports();`);
-    const { remote, execute } = target();
+    const { remote, execute } = target({}, outputMode);
     const run = execute.getMockImplementation()!;
     execute.mockImplementation(input => run({ ...input, env: { ...input.env, NODE_OPTIONS: `--require ${preload}` } }));
     const operationId = randomUUID();
@@ -336,6 +426,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     const leftovers = await fs.readdir(directory).catch(() => []);
     expect(leftovers.filter(name => name !== "archive.cjs")).toEqual([]);
+    expect(await fs.readFile(path.join(workspace, "result.txt"), "utf8")).toBe("synthetic saved result\n");
   });
 
   it("keeps the full-disk diagnostic exact", async () => {
@@ -345,6 +436,209 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH" });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
+  });
+
+  it.each(["split", "one-shot"] as const)("preserves a Git child disk failure with %s output without its private text", async outputMode => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    const bin = path.join(scratch, "controlled-bin"); await fs.mkdir(bin);
+    const gitWrapper = path.join(bin, "git");
+    await fs.writeFile(gitWrapper, "#!/bin/sh\nprintf '%s' 'No space left on device: SYNTHETIC_PRIVATE_GIT_PATH' >&2\nexit 2\n", { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` }, outputMode);
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace$/);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+
+  it.each([
+    { label: "private stdout", stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "" },
+    { label: "private stderr", stdout: "", stderr: "SYNTHETIC_PRIVATE_STDERR" },
+    { label: "suffixed stdout diagnostic", stdout: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH", stderr: "" },
+    { label: "prefixed stdout diagnostic", stdout: "SYNTHETIC_PRIVATE_PATH\nremote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace", stderr: "" },
+    { label: "unrelated helper diagnostic", stdout: "remote_workspace_capture_failed", stderr: "" },
+    { label: "diagnostic split between streams", stdout: "remote_workspace_sandbox_", stderr: "disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" },
+    { label: "suffixed capture validation", stdout: "", stderr: "remote_workspace_archive_unsafe_symlink\nSYNTHETIC_PRIVATE_FILENAME" },
+    { label: "prefixed capture filesystem failure", stdout: "SYNTHETIC_PRIVATE_PATH\nremote_workspace_archive_fs_enoent", stderr: "" },
+    { label: "unknown capture filesystem code", stdout: "remote_workspace_archive_fs_eintr", stderr: "" },
+    { label: "unknown capture validation", stdout: "", stderr: "remote_workspace_archive_Synthetic_PRIVATE" },
+    { label: "capture failure split between streams", stdout: "remote_workspace_archive_", stderr: "unsafe_symlink" },
+  ])("keeps $label private", async ({ stdout, stderr }) => {
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout, stderr, timedOut: false, signal: null,
+      pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["prepare", "repository", "restore", "cleanup"] as const)("keeps new capture diagnostics private during %s", async operation => {
+    const { remote, execute } = target();
+    const failed = { exitCode: 1, stdout: "remote_workspace_archive_fs_enoent", stderr: "", timedOut: false,
+      signal: null, pid: process.pid, startedAt: new Date().toISOString() };
+    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
+    execute.mockResolvedValueOnce(failed);
+    const request = operation === "prepare"
+      ? prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: workspace, source: { kind: "empty" },
+        preparationIdentity: "a".repeat(64), resolveGitAuth: async () => null })
+      : operation === "repository"
+        ? prepareRemoteRepository({ target: remote, remoteCwd: workspace, repoUrl: "https://example.invalid/fixture.git", ref: null, resolveGitAuth: async () => null })
+        : operation === "cleanup"
+          ? cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+          : (async () => {
+            const archivePath = path.join(scratch, "restore.pcws"); await fs.writeFile(archivePath, "synthetic archive");
+            return restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(scratch, "restored"), archivePath,
+              manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) });
+          })();
+    await expect(request).rejects.toThrow(/^remote_workspace_operation_failed$/);
+    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 2 : 1);
+  });
+
+  it("keeps the existing disk diagnostic ahead of a new capture diagnostic", async () => {
+    const { remote, execute } = target();
+    const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: diskFull, stderr: "remote_workspace_archive_fs_enoent",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(diskFull);
+  });
+
+  it("keeps the existing safe stderr diagnostic when stdout reports another safe failure", async () => {
+    const { remote, execute } = target();
+    const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: diskFull,
+      stderr: "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace$/);
+  });
+
+  it("captures and restores verified bytes with one-shot combined output", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic one-shot bytes\n");
+    const { remote, execute } = target({}, "one-shot");
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(createHash("sha256").update(await fs.readFile(captured.archivePath)).digest("hex")).toBe(captured.sha256);
+      const restoredRoot = path.join(scratch, "restored-one-shot");
+      const restored = await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot,
+        archivePath: captured.archivePath, manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("saved synthetic one-shot bytes\n");
+      expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("saved synthetic one-shot bytes\n");
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+      expect(execute.mock.calls.every(([input]) => input.bypassSession === true)).toBe(true);
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["full", "shallow", "partial", "partial-sparse"] as const)("restores offline %s Git state through the archive reader", async kind => {
+    const origin = await repository({ revisions: true });
+    for (const name of ["selected", "omitted"]) {
+      await fs.mkdir(path.join(origin, name));
+      await fs.writeFile(path.join(origin, name, "file.txt"), `${name} committed work\n`);
+    }
+    await git(origin, "add", "."); await git(origin, "commit", "-qm", "Add sparse paths");
+    await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    const shallow = ["shallow", "partial-sparse"].includes(kind), partial = kind.startsWith("partial");
+    await git(scratch, "clone", "-q", ...(shallow ? ["--depth=1"] : []),
+      ...(partial ? ["--filter=blob:none"] : []), ...(kind === "partial-sparse" ? ["--sparse"] : []), pathToFileURL(origin).href, repo);
+    if (kind === "partial-sparse") await git(repo, "sparse-checkout", "set", "selected");
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    const missing = async (directory: string) => (await git(directory, "rev-list", "--objects", "--all", "--missing=print"))
+      .stdout.split("\n").filter(line => line.startsWith("?")).sort();
+    const missingBefore = await missing(repo);
+    if (partial) expect(missingBefore.length).toBeGreaterThan(0);
+    else expect(missingBefore).toEqual([]);
+    await fs.writeFile(path.join(repo, "selected", "file.txt"), "staged accepted work\n");
+    await git(repo, "add", "selected/file.txt");
+    await fs.writeFile(path.join(repo, "selected", "file.txt"), "dirty accepted work\n");
+    await fs.writeFile(path.join(repo, "untracked.txt"), "untracked accepted work\n");
+    const beforeStatus = (await git(repo, "status", "--porcelain=v2")).stdout;
+    const beforeHead = (await git(repo, "rev-parse", "HEAD")).stdout;
+    await fs.rm(origin, { recursive: true });
+    const template = path.join(scratch, "unrelated-template"); await fs.mkdir(path.join(template, "hooks"), { recursive: true });
+    await fs.writeFile(path.join(template, "config"), "[credential]\n helper = SYNTHETIC_PRIVATE_TEMPLATE\n[http]\n extraHeader = SYNTHETIC_PRIVATE_TEMPLATE\n");
+    await fs.writeFile(path.join(template, "hooks", "template-hook"), "SYNTHETIC_PRIVATE_TEMPLATE\n", { mode: 0o700 });
+    // Only local file transport is permitted. Capture must not fetch promised
+    // blobs or replace the original partial checkout with extra remote history.
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file", GIT_INDEX_FILE: path.join(scratch, "unrelated-index"), GIT_TEMPLATE_DIR: template }, "one-shot");
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(await missing(repo)).toEqual(missingBefore);
+      expect(await fs.readFile(path.join(repo, "selected", "file.txt"), "utf8")).toBe("dirty accepted work\n");
+      await fs.rm(workspace, { recursive: true }); remote.remoteCwd = scratch;
+      const restoredRoot = path.join(scratch, "offline-restored"), restoredRepo = path.join(restoredRoot, "repository");
+      await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRepo, "selected", "file.txt"), "utf8")).toBe("dirty accepted work\n");
+      expect(await fs.readFile(path.join(restoredRepo, "untracked.txt"), "utf8")).toBe("untracked accepted work\n");
+      expect((await git(restoredRepo, "show", ":selected/file.txt")).stdout).toBe("staged accepted work\n");
+      expect((await git(restoredRepo, "rev-parse", "HEAD")).stdout).toBe(beforeHead);
+      expect((await git(restoredRepo, "status", "--porcelain=v2")).stdout).toBe(beforeStatus);
+      expect((await git(restoredRepo, "rev-parse", "--is-shallow-repository")).stdout.trim()).toBe(String(shallow));
+      expect(await missing(restoredRepo)).toEqual(missingBefore);
+      expect(await fs.readFile(path.join(restoredRepo, ".git", "config"), "utf8")).not.toContain("SYNTHETIC_PRIVATE_TEMPLATE");
+      await expect(fs.access(path.join(restoredRepo, ".git", "hooks", "template-hook"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (partial) {
+        expect((await git(restoredRepo, "config", "--get", "remote.origin.promisor")).stdout.trim()).toBe("true");
+        expect((await git(restoredRepo, "config", "--get", "remote.origin.partialclonefilter")).stdout.trim()).toBe("blob:none");
+      }
+      if (kind === "partial-sparse") {
+        expect((await git(restoredRepo, "sparse-checkout", "list")).stdout.trim()).toBe("selected");
+        await expect(fs.access(path.join(restoredRepo, "omitted"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      await git(restoredRepo, "fsck", "--connectivity-only", "--no-dangling");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["ordinary", "unmarked-promisor"])("rejects missing objects in an %s repository instead of allowing corruption", async kind => {
+    await git(workspace, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "accepted work remains available\n");
+    await git(workspace, "add", "."); await git(workspace, "commit", "-qm", "Initial work");
+    const blob = (await git(workspace, "rev-parse", "HEAD:saved.txt")).stdout.trim();
+    await fs.rm(path.join(workspace, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    if (kind === "unmarked-promisor") {
+      await git(workspace, "config", "remote.origin.url", "https://example.invalid/source.git");
+      await git(workspace, "config", "remote.origin.promisor", "true");
+      await git(workspace, "config", "remote.origin.partialclonefilter", "blob:none");
+    }
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("accepted work remains available\n");
+  });
+
+  it.each(["full", "shallow", "partial"] as const)("rejects corrupt available objects in %s Git before publishing a receipt", async kind => {
+    const origin = await repository({ revisions: true }); await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    await git(scratch, "clone", "-q", ...(kind === "shallow" ? ["--depth=1"] : []),
+      ...(kind === "partial" ? ["--filter=blob:none"] : []), pathToFileURL(origin).href, repo);
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    await fs.writeFile(path.join(repo, "staged.txt"), "accepted staged work\n"); await git(repo, "add", "staged.txt");
+    const oid = (await git(repo, "rev-parse", ":staged.txt")).stdout.trim();
+    const file = path.join(repo, ".git", "objects", oid.slice(0, 2), oid.slice(2)), corrupt = Buffer.from("different bytes\n");
+    await fs.chmod(file, 0o600); await fs.writeFile(file, deflateSync(Buffer.concat([Buffer.from(`blob ${corrupt.length}\0`), corrupt])));
+    // Valid zlib with the wrong object hash passes connectivity-only fsck.
+    // A successful receipt must also establish available object integrity.
+    await git(repo, "fsck", "--connectivity-only", "--no-dangling");
+    await expect(git(repo, "fsck", "--full", "--no-dangling")).rejects.toThrow();
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
+    expect(await fs.readFile(path.join(repo, "staged.txt"), "utf8")).toBe("accepted staged work\n");
+  });
+
+  it.each(["unsupported-filter", "alternate-store", "object-symlink"] as const)("retains a partial source with unsupported %s state", async fault => {
+    const origin = await repository(); await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    await git(scratch, "clone", "-q", "--filter=blob:none", "--depth=1", pathToFileURL(origin).href, repo);
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    await fs.writeFile(path.join(repo, "saved.txt"), "retained accepted work\n");
+    const outside = path.join(scratch, "SYNTHETIC_PRIVATE_OBJECT_PATH"); await fs.writeFile(outside, "outside sentinel\n");
+    if (fault === "unsupported-filter") await git(repo, "config", "remote.origin.partialclonefilter", "SYNTHETIC_PRIVATE_FILTER");
+    if (fault === "alternate-store") await fs.writeFile(path.join(repo, ".git", "objects", "info", "alternates"), `${scratch}\n`);
+    if (fault === "object-symlink") await fs.symlink(outside, path.join(repo, ".git", "objects", "pack", "unrelated-link"));
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(fault === "object-symlink" ? /^remote_workspace_archive_unsafe_git_link$/ : /^remote_workspace_archive_unsupported_git_setting$/);
+    expect(await fs.readFile(path.join(repo, "saved.txt"), "utf8")).toBe("retained accepted work\n");
+    expect(await fs.readFile(outside, "utf8")).toBe("outside sentinel\n");
   });
 
   it("identifies a timed-out preparation without exposing transport output or retrying it", async () => {

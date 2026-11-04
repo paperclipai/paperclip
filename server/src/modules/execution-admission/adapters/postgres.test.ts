@@ -16,9 +16,9 @@ import { withAccountingTransaction } from "../../../services/accounting-transact
 import { deleteAgentDependencies } from "../../../services/agent-deletion.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
 import { projectService } from "../../../services/projects.js";
-import { prepareAdmissionRecord, type AdmissionRecord } from "../domain/admission.js";
+import { prepareAdmissionRecord, retainedSessionProjects, type AdmissionRecord } from "../domain/admission.js";
 import { createExecutionAdmission } from "../index.js";
-import { countActiveProjectCharges, recordAdmission, settleAdmission } from "./postgres.js";
+import { countActiveProjectCharges, readAdmittedProjects, recordAdmission, settleAdmission } from "./postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 type TestDb = ReturnType<typeof createDb>;
@@ -124,7 +124,7 @@ describe.skipIf(!support.supported)("execution admission storage", () => {
     expect(await admit({ companyId, runId, admissionId, record: record(a, [b], "issue:2") })).toEqual({ kind: "admission_conflict" });
     expect(await admit({ companyId, runId, record: admitted })).toEqual({ kind: "run_already_admitted", admissionId });
     expect(await db.select({ id: admissions.id }).from(admissions).where(eq(admissions.runId, runId))).toHaveLength(1);
-    await expect(db.insert(admissions).values({ id: randomUUID(), companyId, runId, attempt: 2, contextRevision: "x" }))
+    await expect(db.insert(admissions).values({ id: randomUUID(), companyId, runId, attempt: 2, contextRevision: "x", admittedProjectIds: [] }))
       .rejects.toMatchObject({ cause: { constraint_name: "execution_admissions_live_run_uq" } });
   });
 
@@ -149,6 +149,51 @@ describe.skipIf(!support.supported)("execution admission storage", () => {
       .rejects.toMatchObject({ cause: { constraint_name: "execution_admissions_settlement_check" } });
   });
 
+  it("keeps each admitted set readable after settlement releases its capacity", async () => {
+    const { companyId, agentId, runId, projectIds: [a, b, c] } = await fixture();
+    const first = randomUUID();
+    await admit({ companyId, runId, admissionId: first, record: record(a, [b]) });
+    const settlementId = randomUUID();
+    await settle(companyId, first, settlementId);
+    const settledRead = { kind: "found", runId, attempt: 1, primaryProjectId: a, contextRevision: "issue:1", settled: true,
+      projects: { kind: "known", projectIds: [a, b] } };
+    expect(await chargedProjects(first)).toEqual([]);
+    expect(Object.fromEntries(await countActiveProjectCharges(db, companyId, [a, b]))).toEqual({ [a]: 0, [b]: 0 });
+    expect(await readAdmittedProjects(db, { companyId, admissionId: first })).toEqual(settledRead);
+    expect(await settle(companyId, first, settlementId)).toEqual({ kind: "already_settled" });
+    expect(await readAdmittedProjects(db, { companyId, admissionId: first })).toEqual(settledRead);
+
+    // B was removed from the task text; the retained session still carries it.
+    const second = randomUUID();
+    await admit({ companyId, runId, admissionId: second, record: record(a, [c], "issue:2") });
+    expect(await readAdmittedProjects(db, { companyId, admissionId: second }))
+      .toMatchObject({ attempt: 2, settled: false, projects: { kind: "known", projectIds: [a, c] } });
+    expect(retainedSessionProjects(settledRead.projects as { kind: "known"; projectIds: string[] }, [a]))
+      .toEqual({ kind: "retain", projectIds: [a, b] });
+    expect(retainedSessionProjects({ kind: "unknown" }, [a])).toEqual({ kind: "fresh_context_required" });
+
+    const [otherRun, emptyRun] = await db.insert(heartbeatRuns).values([{ companyId, agentId }, { companyId, agentId }]).returning();
+    const primaryless = randomUUID(), empty = randomUUID();
+    await admit({ companyId, runId: otherRun.id, admissionId: primaryless, record: record(null, [b]) });
+    await admit({ companyId, runId: emptyRun.id, admissionId: empty, record: record(null, []) });
+    await settle(companyId, primaryless);
+    await settle(companyId, empty);
+    expect(await readAdmittedProjects(db, { companyId, admissionId: primaryless }))
+      .toMatchObject({ primaryProjectId: null, projects: { kind: "known", projectIds: [b] } });
+    expect(await readAdmittedProjects(db, { companyId, admissionId: empty })).toMatchObject({ projects: { kind: "known", projectIds: [] } });
+    expect(await readAdmittedProjects(db, { companyId: (await fixture()).companyId, admissionId: first })).toEqual({ kind: "not_found" });
+
+    await expect(db.update(admissions).set({ admittedProjectIds: [a] }).where(eq(admissions.id, first)))
+      .rejects.toMatchObject({ cause: { message: "execution admission project set is immutable" } });
+    await expect(db.insert(admissions).values({ id: randomUUID(), companyId, runId: emptyRun.id, attempt: 9, contextRevision: "x" }))
+      .rejects.toMatchObject({ cause: { constraint_name: "execution_admissions_project_set_check" } });
+
+    // Settled history neither blocks deleting B nor loses its identity.
+    expect(await projectService(db).remove(b)).toMatchObject({ id: b });
+    expect(await readAdmittedProjects(db, { companyId, admissionId: first })).toEqual(settledRead);
+    await expect(projectService(db).remove(c)).rejects.toMatchObject({ details: { code: "project_execution_admission_pending" } });
+  });
+
   it("keeps company isolation and rolls back the whole record", async () => {
     const { companyId, runId, projectIds: [a] } = await fixture();
     const other = await fixture();
@@ -169,7 +214,7 @@ describe.skipIf(!support.supported)("execution admission storage", () => {
       await recordAdmission(tx, { companyId: other.companyId, runId: other.runId, admissionId: rolledBack, record: record(null, other.projectIds) });
       throw new Error("claim lost");
     })).rejects.toThrow("claim lost");
-    expect(await db.select().from(admissions).where(eq(admissions.id, rolledBack))).toEqual([]);
+    expect(await readAdmittedProjects(db, { companyId: other.companyId, admissionId: rolledBack })).toEqual({ kind: "not_found" });
     expect(await chargedProjects(rolledBack)).toEqual([]);
     await expect(recordAdmission(db, { companyId, runId, admissionId: randomUUID(), record: record(a, []) }))
       .rejects.toThrow("requires a database transaction");

@@ -1095,6 +1095,22 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+The Runner transport suite keeps attachment recovery, warm attachment, live
+adoption, and suspension in separate test files. Vitest can schedule these
+independent fixtures on its existing file workers; cases within each file stay
+serial. The package sequencer starts the ten files measured above 50 seconds in
+the November 4, 2026 AWS run first, ordered by approximate duration. This includes
+transport deadlines, settlement, provider launch, recovery, and streaming waits,
+so fresh CI runners do not have to infer duration from file size. Package CI uses
+up to four workers, bounded by available CPUs; local runs retain Vitest defaults.
+Vitest's file selection and shard membership are unchanged. Real lease/deadline
+waits and assertions are unchanged. Run the complete
+family, including the separate deadline and settlement regressions, with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
+```
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
@@ -1186,7 +1202,8 @@ process per layer. Each layer reads the earlier layers as declarations:
 | `below` | Files the largest import cycle depends on, and unrelated files |
 | `cycle` | The largest import cycle |
 | `above` | Files that depend on the cycle |
-| `tests` | Test files |
+| `tests` | Test files outside `src/__tests__` |
+| `test-tree-0` to `test-tree-2` | `src/__tests__`, in shards |
 
 The generated configs and declarations go in
 `server/node_modules/.cache/paperclip-typecheck`. You do not maintain a layer list.
@@ -1194,6 +1211,12 @@ The generated configs and declarations go in
 The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
+
+`src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
+editor and the typecheck report the same errors. Server tests reach Daytona plugin
+source, but the root install does not install that plugin's dependencies. So this
+config maps `@daytonaio/sdk` to `server/scripts/typecheck-stubs/daytona-sdk.d.ts`.
+The plugin's own project checks that source against the real package.
 
 If the memory available to the task is limited, use this command:
 
@@ -1941,6 +1964,14 @@ Workspace validation failures show their redacted explanation in the task's
 failure notice. They retain the normal Retry permission and admission gates.
 Retained-folder access and trust denials use this explanation; low-trust project
 boundary denials retain their dedicated project-access action.
+
+Remote archive capture retains fixed validation failures and a closed set of
+Node filesystem codes as `remote_workspace_archive_fs_<errno>`. The transport
+accepts exact diagnostic messages from separate or combined command output.
+Paths, filenames, file contents, and unknown errors remain redacted. The existing
+full-disk and unfinished-Git messages keep their priority. These diagnostics
+describe a failed capture attempt; saving and recovery still require their
+ordinary verified receipts.
 
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
@@ -3180,7 +3211,7 @@ Run the credential-free real-process restart suite with:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
-pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```
 
 The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real

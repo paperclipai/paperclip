@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { S3Client, CreateBucketCommand, DeleteBucketCommand, DeleteObjectsCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, agentFileRoots, agentInstructionWorkingCopies, companies, executionWorkspaces, executionWorkspaceSnapshots, issues, workspaceOperations, createDb, closeFileStorageDb, heartbeatRuns, providerTraceRecords } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, agentFileRoots, agentInstructionWorkingCopies, companies, executionWorkspaces, executionWorkspaceSnapshots, issues, workspaceOperations, createDb, closeFileStorageDb, heartbeatRuns, providerTraceRecords } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "../services/remote-workspace-snapshot-storage.js";
@@ -22,6 +22,12 @@ import { materializeInstructionBytes } from "../services/agent-instruction-files
 import { verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 import { resolveDecisionSigningSecret } from "../services/decision-signing.js";
+import { getRunLogStore } from "../services/run-log-store.js";
+import { companySkillService } from "../services/company-skills.js";
+import { skillPackageStore } from "../services/skill-package-store.js";
+import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
+import { companySkills, companySkillRepositorySnapshots } from "@paperclipai/db";
 
 // Explicit real-dependency qualification. Never contacts off-host storage in
 // the default test path; use a disposable S3-compatible service and PostgreSQL.
@@ -52,7 +58,10 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.delete(issues).where(eq(issues.companyId, companyId));
     await db.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(companySkills).where(eq(companySkills.companyId, companyId));
+    await db.delete(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
     let token: string | undefined;
     do {
@@ -98,12 +107,53 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: file.objectKey, Body: "corrupt" }));
     await expect(verifyAgentFileObjects(db, getStorageService(), AbortSignal.timeout(30_000))).rejects.toThrow(/agent_file_object_(size|digest)_mismatch/);
   }, 120_000);
+  it("preserves original skill objects and identity when destination readback fails", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId);
+    const local = getStorageService(), store = skillPackageStore(db, local);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await store.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await store.versionFiles(version!) };
+    }));
+    expect(before.length).toBeGreaterThan(0);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const remote = getStorageService();
+    await expect(migrateLocalSkillPackageObjects(db, { source: local, destination: { ...remote,
+      getObject: async () => { throw new Error("Synthetic destination readback failed"); } }, writersStopped: true,
+      signal: AbortSignal.timeout(30_000) })).rejects.toThrow("Synthetic destination readback failed");
+    for (const point of before) {
+      expect((await store.descriptor(companyId, point.version.packageSnapshotId!)).storage?.provider).toBe("local_disk");
+      expect(await store.versionFiles(point.version)).toEqual(point.files);
+    }
+  }, 120_000);
+  it("verifies bundled skill migration after removal of the old server home", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId), local = skillPackageStore(db);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await local.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await local.versionFiles(version!) };
+    }));
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const result = await migrate();
+    expect(result.eligibility.eligible).toBe(true);
+    expect(result.counts.skillObjects).toBe(before.length);
+    await fs.rm(home, { recursive: true, force: true });
+    const remote = skillPackageStore(db);
+    for (const point of before) {
+      const version = await remote.version(companyId, point.skillId, point.version.id);
+      expect(version?.packageSnapshotId).toBe(point.version.packageSnapshotId);
+      expect(await remote.versionFiles(version!)).toEqual(point.files);
+    }
+    expect((await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 })).results
+      .every(row => ["remote_storage", "database_release_snapshot"].includes(row.status))).toBe(true);
+  }, 120_000);
   it("migrates overlapping task folders through maintenance and restores both from S3 after volume loss", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));
     const parent = path.join(home, "project"), child = path.join(parent, ".paperclip/worktrees/task");
     await fs.mkdir(child, { recursive: true });
     const fixtures = [{ cwd: parent, file: "project.txt", bytes: "project work" }, { cwd: child, file: "task.txt", bytes: "nested task work" }];
-    const ids: string[] = [];
+    const ids: string[] = [], queued = [];
+    const queuedAgent = await agent();
     for (const fixture of fixtures) {
       await fs.writeFile(path.join(fixture.cwd, fixture.file), fixture.bytes);
       const [issue] = await db.insert(issues).values({ companyId, title: fixture.file }).returning();
@@ -111,10 +161,20 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
         name: fixture.file, mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: fixture.cwd }).returning();
       ids.push(workspace!.id);
       await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, issue!.id));
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: queuedAgent.id,
+        source: "on_demand", payload: { issueId: issue!.id, text: "Continue my saved work" } }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: queuedAgent.id,
+        issueId: issue!.id, wakeupRequestId: wake!.id, status: "queued", contextSnapshot: { issueId: issue!.id,
+          executionWorkspaceId: workspace!.id } }).returning();
+      queued.push({ run: run!, wake: wake! });
     }
     expect(await migrate()).toMatchObject({ eligibility: { eligible: true }, counts: { workspaces: 2 } });
     await fs.rm(home, { recursive: true }); home = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-successor-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
+    for (const { run, wake } of queued) {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0]).toEqual(wake);
+    }
     for (const [index, workspaceId] of ids.entries()) {
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
       const authority = readRemoteWorkspaceAuthority(workspace!.metadata)!;
@@ -127,8 +187,17 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
   }, 120_000);
   const entry = fileURLToPath(new URL("../../dist-runtime/ephemeral-migration.mjs", import.meta.url));
   it.skipIf(!existsSync(entry))("runs the actual bundled maintenance entry with plain Node and exits cleanly", async () => {
-    await agent();
+    const row = await agent(), runId = randomUUID();
+    const logRef = `${companyId}/${row.id}/${runId}.ndjson`, logRoot = path.join(home, "old-run-logs");
+    const history = '{"stream":"stdout","chunk":"unfinished historical output"}\n{"partial":';
+    vi.stubEnv("RUN_LOG_BASE_PATH", logRoot);
+    await fs.mkdir(path.dirname(path.join(logRoot, logRef)), { recursive: true });
+    await fs.writeFile(path.join(logRoot, logRef), history);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: row.id, status: "interrupted",
+      runtimeMode: "native", logStore: "local_file", logRef });
     vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "");
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId: row.id, status: "queued",
+      contextSnapshot: { input: "Resume this turn after maintenance" } }).returning();
     const original = resolveDecisionSigningSecret();
     const listener = createServer();
     await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
@@ -159,8 +228,13 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
       }
       expect(status).toMatchObject({ id, commit: stamp.commit, state: "ready", eligibility: { eligible: true } });
       expect(JSON.stringify(status)).not.toContain(original);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id)))[0]).toEqual(queued);
       const exported = await fetch(`${origin}/export`, { method: "POST", headers }).then(r => r.json());
       expect(exported).toMatchObject({ id, commit: stamp.commit, decisionSigningSecret: original });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({ status: "interrupted", logStore: "s3_archive", logBytes: null, logSha256: null });
+      await fs.rm(logRoot, { recursive: true });
+      expect((await getRunLogStore().read({ store: "s3_archive", logRef: run!.logRef! })).content).toBe(history);
       expect((await fetch(`${origin}/api/companies`, { headers })).status).toBe(404);
       child.kill("SIGTERM");
       expect(await Promise.race([exited, delay(12_000).then(() => { throw new Error("Maintenance did not exit gracefully"); })])).toEqual({ code: 0, signal: null });

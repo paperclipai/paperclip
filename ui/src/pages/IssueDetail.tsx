@@ -4897,7 +4897,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             currentUserId,
           )}
           createIssueLabel="Sub-task"
-          defaultSortField="workflow"
+          showChecklist
           showProgressSummary
           parentIssueIdForCostSummary={issue.id}
           onUpdateIssue={handleChildIssueUpdate}
@@ -8265,7 +8265,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   currentUserId,
                 )}
                 createIssueLabel="Sub-task"
-                defaultSortField="workflow"
+                showChecklist
                 showProgressSummary
                 parentIssueIdForCostSummary={issue.id}
                 onUpdateIssue={handleChildIssueUpdate}

@@ -92,6 +92,7 @@ import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
   isNativeRunnerOwnershipHeld,
+  nativeManualAdmissionHoldsExecution,
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
@@ -975,6 +976,7 @@ export function recoveryService(
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    beforeStaleLockClear?: (issueId: string) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -6477,6 +6479,26 @@ export function recoveryService(
       if (!status) return true; // missing run row → no real claim
       return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
     };
+    // A native failure that schedules a same-run resume marks its run failed
+    // but keeps both task locks for that resume. Clearing them lets another
+    // run take the task first, and then the resume can never run. Only a
+    // closed task releases them here.
+    const pendingResumeLock = sql<boolean>`exists (select 1 from ${nativeRunFinalizations} pending_resume
+      where pending_resume.company_id = ${issues.companyId}
+        and pending_resume.run_id in (${issues.checkoutRunId}, ${issues.executionRunId})
+        and pending_resume.phase = 'retryable_failure'
+        and pending_resume.result_id is null)`;
+    const lockRunLive = sql<boolean>`exists (select 1 from ${heartbeatRuns} lock_run
+      where lock_run.id in (${issues.checkoutRunId}, ${issues.executionRunId})
+        and lock_run.status not in (${sql.join([...TERMINAL_HEARTBEAT_RUN_STATUSES].map(status => sql`${status}`), sql`, `)}))`;
+    const pendingResumeRunIds = new Set(referencedRunIds.length === 0 ? [] : (await db
+      .select({ runId: nativeRunFinalizations.runId })
+      .from(nativeRunFinalizations)
+      .where(and(
+        inArray(nativeRunFinalizations.runId, referencedRunIds),
+        eq(nativeRunFinalizations.phase, "retryable_failure"),
+        isNull(nativeRunFinalizations.resultId),
+      ))).map(row => row.runId));
 
     for (const issue of candidates) {
       const originalOwner = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
@@ -6497,8 +6519,21 @@ export function recoveryService(
       ) {
         continue;
       }
+      const taskClosed = issue.status === "done" || issue.status === "cancelled";
+      if (!taskClosed && [issue.checkoutRunId, issue.executionRunId]
+        .some(runId => runId !== null && pendingResumeRunIds.has(runId))) {
+        continue;
+      }
 
+      await deps.beforeStaleLockClear?.(issue.id);
       const updated = await db.transaction(async tx => {
+        const [locked] = await tx.select({ id: issues.id, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+          .from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
+        if (!locked || locked.checkoutRunId !== issue.checkoutRunId || locked.executionRunId !== issue.executionRunId) return null;
+        for (const runId of new Set([locked.checkoutRunId, locked.executionRunId])) {
+          if (runId && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: issue.companyId, runId, issueId: issue.id })) return null;
+        }
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
         await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
         return tx
@@ -6519,6 +6554,10 @@ export function recoveryService(
             issue.executionRunId
               ? eq(issues.executionRunId, issue.executionRunId)
               : isNull(issues.executionRunId),
+            // The reads above can be stale here. A resume claim can return a
+            // referenced run to running, and a failure can schedule a resume.
+            not(lockRunLive),
+            taskClosed ? undefined : not(pendingResumeLock),
           ),
         )
         .returning({ id: issues.id })

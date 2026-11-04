@@ -1,6 +1,7 @@
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -239,6 +240,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       exact = saved.costUsdExact as string;
       expect(Number(exact)).toBe(1.002);
       expect(saved.budgetExposure).toMatchObject({ costCents: "100.2000000" });
+      await flushBudgetEvaluationWork(db, { companyId: run.companyId });
       expect((await db.select().from(agents).where(eq(agents.id, input.agent.id)))[0].lifecycleHolds).toContain("budget");
       return { exitCode: 0, signal: null, timedOut: false, usageComplete: true, costUsd: null, model: "gpt-6.1-sol" };
     });
@@ -281,6 +283,18 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     });
     expect(input.effects.onNativeSessionResumeScheduled).toHaveBeenCalledOnce();
     expect(await finalizations()).toHaveLength(0);
+    expectCleanup(input);
+  });
+
+  it("logs a pointer to the docs when a same-run retry follows a failed attachment", async () => {
+    const { input, run } = await fixture(true);
+    await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: input.task.issueId!, runId: run.id, phase: "retryable_failure" });
+    const error = new Error('native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"message":"run.attach requires a settled Codex provider session: active_turn"}}');
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeSessionResumeScheduledError", original: error });
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("doc/execution-semantics.md#session-settlement-after-a-run"));
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("run.attach requires a settled Codex provider session: active_turn"));
     expectCleanup(input);
   });
 

@@ -258,7 +258,7 @@
       "../../server/src/services/native-runtime/status-decision-committer.ts",
       "../../server/src/services/work-timeline.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.work-timeline.v2",
+    "oracleVersion": "paperclip.chat-catalog.work-timeline.v6",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
@@ -808,6 +808,7 @@
       "chat-catalog-domains/external-app-review.ts",
       "chat-catalog-domains/external-app-review-outcomes.ts",
       "chat-catalog-domains/external-app-review-probe.ts",
+      "chat-catalog-domains/external-app-review-diagnostic.ts",
       "../../packages/shared/src/validators/issue.ts",
       "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/identity-support.ts",
@@ -829,7 +830,7 @@
       "../../ui/src/components/task-chat/TaskChatComposer.tsx",
       "chat-scenarios/app-permissions.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.app-review.v3",
+    "oracleVersion": "paperclip.chat-catalog.app-review.v6",
     "expectedRunCount": 6,
     "expectedHumanMessageCount": 3,
     "minimumRunCount": 6,
@@ -2598,7 +2599,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
@@ -4890,6 +4891,7 @@
     "scenarioId": "secrets.configure-company-secret",
     "sourceFiles": [
       "chat-catalog-domains/external-company-secret.ts",
+      "chat-catalog-domains/external-secret-question.ts",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
       "chat-catalog-domains/external-credential-language.ts",
@@ -4903,7 +4905,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v2",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v5",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -4942,7 +4944,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
@@ -4956,6 +4958,7 @@
     "scenarioId": "secrets.personal-secret",
     "sourceFiles": [
       "chat-catalog-domains/external-personal-secret.ts",
+      "chat-catalog-domains/external-secret-question.ts",
       "chat-catalog-domains/external-secret-endpoint.ts",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
@@ -4978,7 +4981,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v6",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
@@ -5010,7 +5013,7 @@
       "../../server/src/services/secret-proposal-notifications.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 4,
     "minimumRunCount": 4,
@@ -5058,7 +5061,7 @@
       "../../ui/src/pages/secrets/ImportFromVaultDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,

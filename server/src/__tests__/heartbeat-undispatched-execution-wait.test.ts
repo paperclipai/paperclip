@@ -49,7 +49,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
     const commentIds = [randomUUID(), randomUUID()];
     await db.insert(issueComments).values(commentIds.map((id, index) => ({ id, companyId: f.companyId,
-      issueId: f.issueId, authorType: "user", authorUserId: index ? "second-user" : "board",
+      issueId: f.issueId, authorType: "user" as const, authorUserId: index ? "second-user" : "board",
       body: index ? "Preserve the recovered files." : "Continue the original work.",
       createdAt: new Date(Date.now() - 20_000 + index) })));
     const queueId = randomUUID();
