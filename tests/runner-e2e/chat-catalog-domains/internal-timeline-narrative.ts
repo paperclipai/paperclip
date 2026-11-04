@@ -16,7 +16,8 @@ export function truthfulTimelineAccount(input: {
   const namesOtherActor = (text: string, owner: string) => {
     const withoutOwner = text.replace(new RegExp(`\\b${escape(owner)}\\b`, "gi"), "");
     return /\b(?:human|operator|person|user|board|CEO)\b/i.test(withoutOwner)
-      || /^\s*[A-Z][a-z]+['’]s\b/.test(withoutOwner)
+      || [...withoutOwner.matchAll(/\b([A-Z][\p{L}'-]+)['’]s\b/gu)].some(match =>
+        !calendarWords.has(match[1]!.toLowerCase()) && !/^(?:today|tomorrow|yesterday)$/i.test(match[1]!))
       || /\b(?:another|different|other)\s+(?:worker|agent|person|engineer|reviewer|operator)\b/i.test(withoutOwner)
       || /\b(?:run|ran|executed|performed)\s+by\s+[A-Z][a-z]+\b|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:ran|executed|performed)\b/.test(withoutOwner)
       || /(?:^|[.!?]\s+|\b(?:that|which|while|when)\s+)(?!(?:The|A|An|Then|Next|Later|Finally|He|She|They|You)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:[a-z]+(?:ed|s)|ran|built|made|did|had|was|is)\b/.test(withoutOwner);
@@ -60,12 +61,14 @@ export function truthfulTimelineAccount(input: {
     });
   };
   let offset = 0;
+  let activeHeadingWorkers: string[] = [];
   const paragraphs = reply.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^([ \t]*(?:#{1,6} +[^\n]+|\*\*[^\n*]+\*\*))[ \t]*\n[ \t]*\n(?=\S)/gm, "$1\n")
     .replace(/^([ \t]*\*\*[^\n*]+\*\*)[ \t]+(?=\S)/gm, "$1\n")
     .split(/\n\s*\n/).map(raw => {
     const heading = /^\s*(?:#{1,6} +([^\n]+)|\*\*([^\n]+)\*\*)[ \t]*\n/.exec(raw);
     const owners = [firstWorker, repairWorker].filter(name => mentions(heading?.[1] ?? heading?.[2] ?? "", name));
+    if (heading) activeHeadingWorkers = owners;
     const owner = owners.length === 1 && ![firstWorker, repairWorker].some(name => name !== owners[0] && mentions(raw, name)) ? owners[0] : undefined;
     const resolvedPronouns = new Set<number>();
     const headingPrefix = heading?.[0] ?? "";
@@ -85,7 +88,7 @@ export function truthfulTimelineAccount(input: {
         resolvedPronouns.add(at + lead.length);
         return lead + owner;
       });
-    const paragraph = { text, owner, namedWorkerHeading: owners.length > 0, start: offset, end: offset + text.length };
+    const paragraph = { text, owner, contraryWorkerHeading: activeHeadingWorkers.some(name => name !== firstWorker), start: offset, end: offset + text.length };
     offset = paragraph.end + 2;
     return paragraph;
   });
@@ -93,7 +96,7 @@ export function truthfulTimelineAccount(input: {
   // Search milestone clauses, not the first occurrence of a worker or outcome.
   // A summary or heading may mention the repair before the ordered account.
   const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|(?=\\n|$))`, "g"))]
-    .map(match => { const paragraph = paragraphs.find(row => row.start <= match.index && row.end > match.index); return { text: match[0], at: match.index, owner: paragraph?.owner, namedWorkerHeading: paragraph?.namedWorkerHeading, paragraphStart: paragraph?.start }; });
+    .map(match => { const paragraph = paragraphs.find(row => row.start <= match.index && row.end > match.index); return { text: match[0], at: match.index, owner: paragraph?.owner, contraryWorkerHeading: paragraph?.contraryWorkerHeading, paragraphStart: paragraph?.start }; });
   // A command noun can have ordinary modifiers, but never absorb a new event,
   // actor, negation or clause boundary while connecting this pause to failure.
   const commandBoundaries = [
@@ -108,7 +111,7 @@ export function truthfulTimelineAccount(input: {
 
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
   const commandIsSubject = new RegExp(`^\\s*(?:(?:then|next|later|finally)\\s+)?(?:(?:the|a|an)\\s+)?${commandSubject}\\b`, "i");
-  const failures = clauses.flatMap(({ text, at, owner, namedWorkerHeading }) => (mentions(text, firstWorker) || (owner === firstWorker || !namedWorkerHeading) && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
+  const failures = clauses.flatMap(({ text, at, contraryWorkerHeading }) => (mentions(text, firstWorker) || !contraryWorkerHeading && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
     ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, end: at + match.index + match[0].length, clauseAt: at })) : []);
   const handoffs = clauses.flatMap(({ text, at }) => handoffMatches(text).map(match => ({ at: at + match.index })));
