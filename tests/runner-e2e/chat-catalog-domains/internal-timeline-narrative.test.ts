@@ -81,7 +81,6 @@ it.each([
 it.each([
   "The verification command run by Avery failed",
   "The verification command Avery ran failed",
-  "The verification command the engineer ran failed",
 ])("does not give a heading another runner's command: %s", command => {
   expect(grade(account.replace("The verification command failed", command))).toBe(false);
 });
@@ -95,6 +94,18 @@ it.each(["## Repair (Riley)\n\n", "**Repair (Riley)** "])("reads an adjacent hea
 it.each(["on Monday's run", "during Today's run"])("does not turn a possessive day into the command actor: %s", day => {
   expect(grade(account.replace("failed with exit 1", `failed ${day} with exit 1`))).toBe(true);
 });
-it.each(["engineer", "reviewer"])("rejects an explicit %s runner without assigning that role to the heading", role => {
-  expect(grade(account.replace("The verification command failed", `The verification command that the ${role} ran failed`))).toBe(false);
+it.each(["engineer", "reviewer"])("permits an unbound %s role to refer to the named heading worker", role => {
+  expect(grade(account.replace("The verification command failed", `The verification command that the ${role} ran failed`))).toBe(true);
+});
+
+it.each([
+  "The verification command failed with exit 1 after the test was executed.",
+  "The verification command run by the native runner failed with exit 1.",
+  "The verification command run by the test harness failed with exit 1.",
+  "The verification command the runner ran failed with exit 1.",
+])("does not turn command execution into another worker: %s", result => {
+  expect(grade(account.replace("The verification command failed with exit 1.", result))).toBe(true);
+});
+it("still rejects an explicitly different worker under a heading", () => {
+  expect(grade(account.replace("The verification command failed", "The verification command another worker ran failed"))).toBe(false);
 });
