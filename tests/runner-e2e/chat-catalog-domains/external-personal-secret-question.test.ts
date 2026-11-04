@@ -74,3 +74,20 @@ it.each(["header", "title", "submitLabel"] as const)("rejects unsafe chat instru
   else qs[field] = unsafe;
   expect(personalSecretQuestionHandoff(row, binding)).toBeUndefined();
 });
+
+it("accepts explicit own-value completion and contextual Yes while rejecting foreign or prospective answers", () => {
+  const choose = (prompt: string, label: string, description?: string, header?: string, helpText?: string) => {
+    const row = question(), qs = row.payload.questionSet!;
+    row.payload = questionSetToAskUserQuestionsPayload({ ...qs, questions: [{ ...qs.questions[0]!, prompt, header,
+      helpText: [qs.questions[0]!.helpText, helpText].filter(Boolean).join("\n"),
+      options: [{ id: "yes", label, description }, { id: "later", label: "Not yet" }] }] });
+    return personalSecretQuestionHandoff(row, binding);
+  };
+  expect(choose("Is your personal value saved?", "Yes, entered", "My personal value is saved in My secrets.")).toMatchObject({ optionId: "yes" });
+  expect(choose("Did you save your own value?", "Yes")).toMatchObject({ optionId: "yes" });
+  expect(choose("Is your personal value saved?", "Yes")).toMatchObject({ optionId: "yes" });
+  expect(choose("Confirm your setup", "Yes", undefined, "Have you saved your own value?")).toMatchObject({ optionId: "yes" });
+  expect(choose("Confirm your setup", "Yes", undefined, undefined, "Did you save your own value?")).toMatchObject({ optionId: "yes" });
+  expect(choose("Have you saved your own value?", "Added to company secrets")).toBeUndefined();
+  expect(choose("May I save the value for you?", "Yes, saved", "My personal value is saved.")).toBeUndefined();
+});

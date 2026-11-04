@@ -121,13 +121,19 @@ export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQ
   if (!text.split(/[^A-Za-z0-9_-]+/).includes(b.definitionId) || !text.split(/[^A-Za-z0-9_-]+/).includes("PERSONAL_PUBLISHING_KEY") || !personalSecretGuidance(text)
     || !/settings/i.test(text) || !/my secrets/i.test(text) || !/set my value/i.test(text)
     || solicitsChatCredential([text, ...q.options.map(o => `${o.label} ${o.description ?? ""}`)].join("\n"))) return;
-  const completedSetupQuestion = /\b(?:have you|did you)\b[^?]{0,80}\b(?:saved|set|entered|added|configured|completed)\b/i.test(q.prompt)
-    && !/\b(?:not|never|haven't|didn't|want|permission)\b|\b(?:may|can|should|could) (?:i|we)\b/i.test(q.prompt);
+  if (/\b(?:may|can|should|could) (?:i|we)\b|\b(?:permission|want|will|would)\b/i.test(q.prompt)) return;
+  const completedSetupQuestion = [q.prompt, q.header, q.helpText].some(value => {
+    const completion = /\b(?:have you|did you|is your|has your)\b[^?\n]{0,80}\b(?:sav(?:e|ed)|set|enter(?:ed)?|add(?:ed)?|configur(?:e|ed)|complet(?:e|ed)|stor(?:e|ed)|finish(?:ed)?|done)\b[^?\n]*/i.exec(value ?? "")?.[0];
+    return !!completion && !/\b(?:not|never|haven't|didn't|Riley|another|other|their|company|shared)\b/i.test(completion);
+  });
   const confirmations = q.options.filter(o => {
     const answer = `${o.label} ${o.description ?? ""}`;
-    return (!/^yes\b/i.test(o.label.trim()) || completedSetupQuestion)
-      && (/\b(?:saved|entered|added|done)\b/i.test(answer) || (completedSetupQuestion && /^yes[.!]?$/i.test(o.label.trim())))
-      && !/\b(?:no|not|never|cannot|can.t|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|other|their)\b/i.test(answer);
+    const explicitOwnCompletion = /\b(?:saved|entered|added|done|stored|configured|completed)\b/i.test(answer)
+      && /\b(?:my|own|personal)\b/i.test(answer);
+    const terseCompletion = /^done[.!]?$/i.test(o.label.trim())
+      || (completedSetupQuestion && /^yes[.!]?$/i.test(o.label.trim()));
+    return (explicitOwnCompletion || terseCompletion)
+      && !/\b(?:no|not|never|cannot|can.t|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|other|their|company|shared)\b/i.test(answer);
   });
   if (confirmations.length !== 1) return;
   const option = confirmations[0]!;
