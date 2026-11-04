@@ -55,6 +55,7 @@ import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import {
   assertSecretFree,
   findSecretLeakInDirectory,
+  hasExpectedCodexRuntimeAuthPayload,
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresScanFile,
   normalizedSecrets,
@@ -722,7 +723,8 @@ async function runAttempt(input: {
               isEphemeralCodexRuntimeAuthFile(paperclipHome, leak.file);
             if (isManagedCodexRuntimeAuth) {
               const metadata = await lstat(leak.file);
-              if (metadata.isFile() && (metadata.mode & 0o777) === 0o600) {
+              if (metadata.isFile() && (metadata.mode & 0o777) === 0o600 &&
+                await hasExpectedCodexRuntimeAuthPayload(paperclipHome, leak.file, childEnv.OPENAI_API_KEY?.trim())) {
                 // Codex CLI API-key mode requires this one runtime auth file. It
                 // lives only in the disposable cell root, is never published,
                 // must be owner-only, and is removed with the root below.

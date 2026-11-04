@@ -1,9 +1,10 @@
-import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
-import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, isEphemeralCodexRuntimeAuthFile, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, hasExpectedCodexRuntimeAuthPayload, isEphemeralCodexRuntimeAuthFile, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
 import { writeApiKeyAuthJson } from "../../packages/adapters/codex-local/src/server/codex-home.js";
+import { applyEvalGatewayEnvironment } from "./harness-env.js";
 
 const tokens = {
   account_id: "identity-canary-private-90123",
@@ -18,6 +19,69 @@ afterEach(async () => { await Promise.all(directories.splice(0).map(root => rm(r
 
 const runtimeHash = "a".repeat(64);
 const companyCodexHome = "instances/test/companies/company/codex-home";
+const runtimeApiKey = "synthetic-codex-api-key-local-only-91234";
+
+async function legacyAuthFixture() {
+  const root = await mkdtemp(path.join(tmpdir(), "legacy-codex-auth-payload-")); directories.push(root);
+  const home = path.join(root, companyCodexHome, "skill-runtimes/agent", runtimeHash);
+  await writeApiKeyAuthJson(home, runtimeApiKey);
+  return { root, home, file: path.join(home, "auth.json") };
+}
+
+it("accepts only the configured API-key payload in production, compact and pretty formats", async () => {
+  const { root, file } = await legacyAuthFixture();
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(true);
+  for (const text of [JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }), ` \n${JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }, null, 2)}\t\r\n`]) {
+    await writeFile(file, text);
+    expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(true);
+  }
+});
+
+it.each([
+  JSON.stringify({ tokens }),
+  JSON.stringify({ OPENAI_API_KEY: "different-campaign-key" }),
+  JSON.stringify({ OPENAI_API_KEY: runtimeApiKey, extra: tokens.access_token }),
+  `{"OPENAI_API_KEY":"${tokens.access_token}","OPENAI_API_KEY":"${runtimeApiKey}"}`,
+  JSON.stringify({}),
+  JSON.stringify([runtimeApiKey]),
+  "not-json",
+  `${" ".repeat(4096)}${JSON.stringify({ OPENAI_API_KEY: runtimeApiKey })}`,
+])("rejects unexpected legacy auth payload %#", async text => {
+  const { root, file } = await legacyAuthFixture();
+  await writeFile(file, text);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
+
+it("requires a configured key and retains file safety at the new auth layout", async () => {
+  const { root, home, file } = await legacyAuthFixture();
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file)).toBe(false);
+  await chmod(file, 0o644);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+  await rm(file);
+  const outside = path.join(root, "outside-auth.json");
+  await writeFile(outside, JSON.stringify({ OPENAI_API_KEY: runtimeApiKey }), { mode: 0o600 });
+  await symlink(outside, path.join(home, "auth.json"));
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
+
+it("leaves previously admitted auth payload policy unchanged", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-codex-auth-policy-")); directories.push(root);
+  const home = path.join(root, "instances/test/companies/company/agents/agent/codex-home");
+  await mkdir(home, { recursive: true });
+  const file = path.join(home, "auth.json");
+  await writeFile(file, JSON.stringify({ tokens }), { mode: 0o600 });
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file)).toBe(true);
+});
+
+it("checks the bound gateway credential instead of the upstream provider key", async () => {
+  const { root, home, file } = await legacyAuthFixture();
+  const childEnv = { OPENAI_API_KEY: runtimeApiKey };
+  const token = "synthetic-attempt-gateway-token-23456";
+  applyEvalGatewayEnvironment(childEnv, "OPENAI_API_KEY", { token, baseUrl: "http://127.0.0.1:12345", phasePath: "/private/phase" });
+  await writeApiKeyAuthJson(home, childEnv.OPENAI_API_KEY.trim());
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, childEnv.OPENAI_API_KEY.trim())).toBe(true);
+  expect(await hasExpectedCodexRuntimeAuthPayload(root, file, runtimeApiKey)).toBe(false);
+});
 
 it.each([
   companyCodexHome,

@@ -1,5 +1,5 @@
-import { createReadStream } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { redactDiagnosticText } from "../../packages/adapter-utils/src/command-redaction.js";
@@ -113,6 +113,34 @@ export function isEphemeralCodexRuntimeAuthFile(paperclipHome: string, file: str
   const relative = path.relative(paperclipHome, file).split(path.sep).join("/");
   return isPrivateCodexIdentityAuthFile(paperclipHome, file) ||
     /^instances\/[^/]+\/companies\/[^/]+\/codex-home\/(?:(?:skill-runtimes|connector-runtimes)\/[^/]+\/[a-f0-9]{64}\/)?auth\.json$/.test(relative);
+}
+
+export async function hasExpectedCodexRuntimeAuthPayload(paperclipHome: string, file: string, expectedApiKey?: string) {
+  if (isPrivateCodexIdentityAuthFile(paperclipHome, file)) return true;
+  if (!isEphemeralCodexRuntimeAuthFile(paperclipHome, file) || !expectedApiKey) return false;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const metadata = await lstat(file);
+    if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600 || metadata.size > 4096) return false;
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || (opened.mode & 0o777) !== 0o600 || opened.size > 4096) return false;
+    const buffer = Buffer.alloc(4097);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length > 4096) return false;
+    const text = buffer.subarray(0, length).toString("utf8").trim();
+    if (!/^\{\s*"OPENAI_API_KEY"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}$/su.test(text)) return false;
+    return JSON.parse(text).OPENAI_API_KEY === expectedApiKey;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close();
+  }
 }
 
 export function isEphemeralCodexRuntimeIdentityDatabase(paperclipHome: string, file: string) {
