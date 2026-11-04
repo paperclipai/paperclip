@@ -304,6 +304,7 @@ export async function collectChatRunEvidence(
   api: Pick<RunnerApi, "get">,
   run: ChatRun,
   allowAdmissionWait = false,
+  includeWorkspaceOperations = false,
 ) {
   const admissionEvents = allowAdmissionWait ? await collectRunEvents((afterSeq, limit) =>
     api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
@@ -325,6 +326,9 @@ export async function collectChatRunEvidence(
     events: admissionEvents ?? await collectRunEvents((afterSeq, limit) =>
       api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
     ),
+    ...(includeWorkspaceOperations ? {
+      workspaceOperations: await api.get<Array<Record<string, unknown>>>(`/api/heartbeat-runs/${run.id}/workspace-operations`),
+    } : {}),
   };
 }
 
@@ -495,7 +499,7 @@ export async function runChatFlow(input: ChatFlowInput) {
             completionEvidence = { companyId: f.company.id, agentId: f.agent.id,
               companyPrefix, baseURL: api.baseURL, issue: source, child,
               tasks: finalTasks, comments: sourceComments, renderedLinks,
-              runEvidence: [await collectChatRunEvidence(api, notifications[0]!)] };
+              runEvidence: [await collectChatRunEvidence(api, notifications[0]!, false, true)] };
             verifyChatCompletion(runs, completionEvidence);
             completionReady = true;
           }

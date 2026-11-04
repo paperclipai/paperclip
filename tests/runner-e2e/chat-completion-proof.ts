@@ -24,6 +24,18 @@ const requireProof = (condition: unknown, code: string) => {
 };
 const time = (value: unknown) => typeof value === "string" ? Date.parse(value) : NaN;
 const scopeIssue = (run: Row) => run.nativeIssueId ?? run.contextSnapshot?.issueId;
+const completionEventTypes = new Set([
+  "legacy.case_handoff_cleanup_intent", "lifecycle", "run.startup.reuse", "run.performance.span",
+  "native.process_start_requested", "native.process_identity_recorded", "session.resumed",
+  "session.capabilities.updated", "session.goal.snapshot", "session.goal.cleared", "harness.diagnostic",
+  "provider.notice.recorded", "turn.submitted", "turn.accepted", "turn.started", "turn.completed",
+  "item.started", "item.delta", "item.completed", "tool.execution.started", "tool.execution.completed",
+  "run.result.proposed", "run.result.accepted", "run.terminal", "instruction_save", "run.presentation.resolved",
+]);
+const completionItemKinds = new Set([
+  "thread_lineage", "model", "goal_cleared", "userMessage", "reasoning", "agentMessage",
+  "dynamicToolCall", "verification", "usage",
+]);
 
 /** One required delivery is real paid work, not a row to hide from accounting.
  * Only these three isolated native journeys add this independently proved turn.
@@ -89,6 +101,18 @@ export function verifyChatCompletion(runs: readonly Row[], evidence: ChatComplet
   requireProof(streams.length === 1 && streams[0]!.events.length > 0, "events_missing");
   const stream = streams[0]!;
   requireProof(stream.events.every(e => typeof e.eventType === "string" && e.companyId === companyId && e.runId === run.id && e.agentId === agentId), "event_scope");
+  // Native harness work need not use a Paperclip tool. Unknown event types and
+  // item kinds (commands, file changes, searches) cannot earn this allowance.
+  requireProof(stream.events.every(e => completionEventTypes.has(e.eventType)), "additional_native_work");
+  const items = stream.events.filter(e => e.eventType.startsWith("item."));
+  for (const event of items) {
+    const prp = event.payload?.prpEvent;
+    requireProof(prp?.schema === "paperclip.prp.event.v1" && prp.runId === run.id
+      && prp.eventType === event.eventType && completionItemKinds.has(prp.payload?.kind), "additional_native_work");
+    if (prp.payload.kind !== "dynamicToolCall" && prp.payload.item != null) {
+      requireProof(prp.payload.item.type === prp.payload.kind, "additional_native_work");
+    }
+  }
   requireProof(stream.events.some(e => e.eventType === "run.result.accepted"
     && e.payload?.prpEvent?.schema === "paperclip.prp.event.v1" && e.payload.prpEvent.runId === run.id
     && e.payload.prpEvent.eventType === e.eventType), "accepted_result_missing");
@@ -112,6 +136,15 @@ export function verifyChatCompletion(runs: readonly Row[], evidence: ChatComplet
   }
   requireProof(starts.size === finishes.size && [...starts].every(([id, name]) => finishes.get(id) === name)
     && [...finishes.values()].filter(name => name === "paperclip_finish").length === 1, "tool_completion");
+  for (const event of items) {
+    const payload = event.payload.prpEvent.payload;
+    if (payload.kind !== "dynamicToolCall") continue;
+    const item = payload.item;
+    requireProof(item && (event.eventType === "item.started" && item.type === "tool_use"
+      && allowedTools.has(item.name) && starts.get(item.id) === item.name
+      || event.eventType === "item.completed" && item.type === "tool_result"
+      && item.tool_use_id === item.id && finishes.has(item.id)), "unbound_native_tool");
+  }
   return { ordinaryProviderRuns: runs.length - 1, totalProviderRuns: runs.length,
     allRunIds: runs.map(r => r.id), notificationRunId: run.id,
     deliveryId: context.chatCompletionDeliveryIds[0] as string, childId: child.id as string,

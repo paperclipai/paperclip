@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assertChatFlowRunCount } from "./chat-flow.js";
-import { needsChatCompletionProof, verifyChatCompletion } from "./chat-completion-proof.js";
+import { assertChatFlowRunCount, collectChatRunEvidence } from "../../../tests/runner-e2e/chat-flow.js";
+import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "../../../tests/runner-e2e/chat-completion-proof.js";
 
 // Shape and ordering from run 41915965118's three retained failing journeys.
 // The ordinary turns keep their existing bound; the one real completion turn
@@ -33,8 +33,8 @@ function completionRecording(id = "multi-repository", expectedRunCount = 2) {
     createdByRunId: notification.id, conversationSessionGeneration: 0,
     createdAt: "2026-11-04T21:36:15.100Z", deletedAt: null,
     body: "[RUN-2](/issues/RUN-2) is complete. Its requested document is saved on the task." }];
-  const events = ["tool.execution.started", "tool.execution.completed", "run.result.accepted"].map((eventType, index) => ({
-    companyId, runId: notification.id, agentId, eventType,
+  const events: ChatCompletionEvidence["runEvidence"][number]["events"] = ["tool.execution.started", "tool.execution.completed", "run.result.accepted"].map((eventType, index) => ({
+    companyId, runId: notification.id, agentId, eventType, seq: index + 1,
     payload: { prpEvent: { schema: "paperclip.prp.event.v1", runId: notification.id, eventType,
       payload: eventType.startsWith("tool.") ? { schema: "paperclip.tool.execution.v1", name: "paperclip_finish",
         executionId: "finish", status: index === 0 ? "running" : "completed" } : {} } },
@@ -49,6 +49,64 @@ function completionRecording(id = "multi-repository", expectedRunCount = 2) {
 }
 
 describe("delegated chat completion provider accounting", () => {
+  it("collects the live run API evidence before proving a completion", async () => {
+    const input = completionRecording();
+    const recorded = input.completionEvidence.runEvidence[0]!;
+    const native = (eventType: string, payload: Record<string, unknown>) => ({ companyId: "company", agentId: "agent",
+      runId: input.notification.id, eventType,
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", runId: input.notification.id, eventType, payload } } });
+    // The native item/tool shapes come from the retained completion stream.
+    // Use the actual collector, including its complete paged-event read.
+    recorded.events = [
+      native("item.completed", { kind: "model", model: "gpt-5.6-sol" }),
+      native("item.completed", { kind: "reasoning", item: { type: "reasoning" } }),
+      native("item.started", { kind: "dynamicToolCall", item: { type: "tool_use", id: "read", name: "get_task" } }),
+      native("tool.execution.started", { schema: "paperclip.tool.execution.v1", name: "get_task", executionId: "read", status: "running" }),
+      native("item.completed", { kind: "dynamicToolCall", item: { type: "tool_result", id: "read", tool_use_id: "read" } }),
+      native("tool.execution.completed", { schema: "paperclip.tool.execution.v1", name: "get_task", executionId: "read", status: "completed" }),
+      native("item.completed", { kind: "agentMessage", item: { type: "agentMessage" } }),
+      ...recorded.events,
+      native("item.completed", { kind: "usage", usage: input.notification.usageJson }),
+    ].map((event, index) => ({ ...event, seq: index + 1 }));
+    const workspaceOperations = [{ companyId: "company", heartbeatRunId: input.notification.id,
+      phase: "workspace_finalize", status: "succeeded", command: null }];
+    const requested: string[] = [];
+    const api = { async get<T>(path: string): Promise<T> {
+      requested.push(path);
+      const url = new URL(path, "http://fixture.invalid");
+      if (url.pathname.endsWith("/workspace-operations")) return workspaceOperations as T;
+      if (url.pathname.endsWith("/log")) return { content: "recorded completion notification" } as T;
+      if (url.pathname.endsWith("/events")) return recorded.events.filter(e => e.seq > Number(url.searchParams.get("afterSeq"))) as T;
+      throw new Error("Unexpected evidence endpoint");
+    } };
+    const collected = await collectChatRunEvidence(api, input.notification, false, true);
+    expect(verifyChatCompletion(input.runs, { ...input.completionEvidence, runEvidence: [collected] }))
+      .toMatchObject({ ordinaryProviderRuns: 2, totalProviderRuns: 3 });
+    expect(requested).toContain(`/api/heartbeat-runs/${input.notification.id}/workspace-operations`);
+    expect(collected).toMatchObject({ workspaceOperations });
+    requested.length = 0;
+    await collectChatRunEvidence(api, input.notification);
+    expect(requested).not.toContain(`/api/heartbeat-runs/${input.notification.id}/workspace-operations`);
+  });
+
+  for (const [eventType, payload] of [
+    ["item.completed", { kind: "fileChange", item: { type: "fileChange", changes: [{ path: "extra.txt" }] } }],
+    ["item.started", { kind: "commandExecution", item: { type: "commandExecution", command: "unexpected work" } }],
+    ["item.completed", { kind: "webSearch", item: { type: "webSearch" } }],
+    ["workspace.change.updated", { schema: "paperclip.workspace.diff.v1", files: [{ path: "extra.txt", operation: "add" }] }],
+    ["research.search.started", { query: "unexpected research" }],
+    ["item.completed", { kind: "dynamicToolCall", item: { type: "tool_use", id: "hidden", name: "create_task" } }],
+    ["item.completed", { kind: "unknown_provider_work" }],
+    ["item.completed", { kind: "agentMessage", item: { type: "fileChange" } }],
+    ["unrecognized.provider.work", {}],
+  ] as const) it(`rejects native work without a Paperclip tool event: ${eventType}/${"kind" in payload ? payload.kind : "event"}`, () => {
+    const input = completionRecording();
+    input.completionEvidence.runEvidence[0]!.events.push({ companyId: "company", agentId: "agent",
+      runId: input.notification.id, eventType, seq: 4,
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", runId: input.notification.id, eventType, payload } } });
+    expect(() => verifyChatCompletion(input.runs, input.completionEvidence)).toThrow(/Chat completion proof:/);
+  });
+
   for (const [id, bound] of [["multi-repository", 2], ["clarify-reuse", 3], ["plan-handoff", 4]] as const) {
     it(`accounts for the required verified notification after ${id}`, () => {
       const input = completionRecording(id, bound);
