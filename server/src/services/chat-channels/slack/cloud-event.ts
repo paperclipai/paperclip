@@ -66,7 +66,7 @@ export async function receiveSlackCloudEvent(event: SlackCloudEvent, current: Cu
   const envelope = payload as Record<string, unknown>;
   if (envelope.type !== "event_callback" || envelope.team_id !== current.teamId || envelope.api_app_id !== current.appId
     || typeof envelope.event_id !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(envelope.event_id) || envelope.event_id !== packet.eventId
-    || event.id !== `slack:${current.bindingId.slice("slack-event:".length)}:${createHash("sha256").update(envelope.event_id).digest("hex")}`)
+    || event.id !== `slack_${current.bindingId.slice("slack-event:".length)}_${createHash("sha256").update(envelope.event_id).digest("hex")}`)
     throw new Error("Slack Cloud event identity changed");
   const request = new Request("https://paperclip.invalid/slack-cloud-ingress", { method: "POST",
     headers: { "content-type": "application/json", "x-slack-request-timestamp": packet.timestamp,

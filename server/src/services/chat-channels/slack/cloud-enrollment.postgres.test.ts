@@ -1,3 +1,4 @@
+import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "./cloud-test-transport.js";
 import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -20,6 +21,7 @@ const cloudDist = process.env.SLACK_TEST_CLOUD_DIST;
 
 // Explicit paired-checkout acceptance. Never starts an embedded database or contacts Slack.
 it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment producer and reconstructed SDK owner drain the sealed PostgreSQL event lane", async () => {
+  const network = guardSlackFixtureNetwork();
   const load = (file: string) => import(/* @vite-ignore */ pathToFileURL(path.resolve(cloudDist!, file)).href);
   const [{ PostgresCloudHarnessRegistry }, { PostgresConnectorStore }, { ConnectorBroker }, { InMemoryProviderSecretStore },
     { providerRegistryFromEnvironment }, { CloudStackProvisioner }, { FakeCloudStackProvider }, { Pool }] = await Promise.all([
@@ -29,9 +31,14 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
   ]);
   await applyPendingMigrations(appUrl!); // Migration utility's max1 pool ends before runtime pools open.
   const db = createDb(appUrl!, { maxConnections: 2, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
-  const registry = await PostgresCloudHarnessRegistry.connect({ connectionString: cloudUrl!,
-    migrationsPath: path.resolve(cloudDist!, "../migrations"), runMigrations: true, maxConnections: 1 });
-  const pool = new Pool({ connectionString: cloudUrl!, max: 1 }); // app2 + registry1 + fixture1 =4.
+  const pool = new Pool({ connectionString: cloudUrl!, max: 2 }); // app2 + shared Cloud2 =4.
+  // Same private-constructor test seam as Cloud registry/pool-postgres.test.ts.
+  const registry = Reflect.construct(PostgresCloudHarnessRegistry, [pool]);
+  try {
+    await registry.applyMigrations(path.resolve(cloudDist!, "../migrations"), 30_000);
+    await registry.hydrate();
+  }
+  catch (error) { await db.$client.end({ timeout: 1 }); await registry.close(); throw error; }
   const store = new PostgresConnectorStore(pool), secrets = new InMemoryProviderSecretStore();
   const id = randomUUID(), companyId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID(), connectionId = randomUUID(), applicationId = randomUUID();
   const instanceId = `instance-${id}`, stackId = `slack-${id}`, publicId = "a".repeat(43), signingSecret = "0123456789abcdef0123456789abcdef";
@@ -93,7 +100,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     const request = { rawBody, timestamp, signature: `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(rawBody).digest("hex")}` };
     const current = await broker.slackEvents.current(instanceId, publicId);
     expect(await broker.slackEvents.receive(current, request)).toEqual({ status: 200, duplicate: false });
-    expect(wake).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
     const connector = createPaperclipCloudConnector({ config: paperclipCloudConnectorConfigFromEnv()! });
     const leased = await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 });
     expect(leased?.failedEventIds).toBeUndefined(); expect(leased?.events).toHaveLength(1);
@@ -103,14 +110,9 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     const onMessage = vi.fn(async () => {});
     runtime = createChatSdkEndpointRuntime({ companyId, endpointId, logger: "silent", callbacks: { onMessage },
       persistence: { read: async () => null, compareAndSet: async () => true, deleteIfVersion: async () => true },
-      providerConfig: { provider: "slack", userName: "paperclip-agent", credentials: { botToken: "xoxb-fixture", botUserId: "UBOT", signingSecret } } });
+      providerConfig: { provider: "slack", userName: "paperclip-agent", credentials: { apiUrl: "http://127.0.0.1:1/api/", botToken: "xoxb-fixture", botUserId: "UBOT", signingSecret } } });
     await runtime.initialize();
-    const adapter = runtime.getProviderAdapter() as unknown as { _client: { apiCall: (method: string) => Promise<unknown> } };
-    adapter._client.apiCall = vi.fn(async method => {
-      if (method === "users.info") return { ok: true, user: { id: "UOPERATOR", name: "operator", is_bot: false, profile: { display_name: "Operator" } } };
-      if (method === "conversations.info") return { ok: true, channel: { id: "CTEST", name: "fixture" } };
-      throw new Error(`Unexpected provider method ${method}`);
-    });
+    const transport = stubSlackFixtureTransport(runtime.getProviderAdapter());
     unregister = createSlackCloudEventIngress(db, { withCredentialMutationLease: withLease, resolveCredentials,
       runtimeGeneration: value => Number((value.setup as InternalSetupState).runtimeGeneration ?? 0),
       handleWebhook: async (_publicId, _provider, req, generation) => {
@@ -121,6 +123,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
       } });
     await dispatchSlackCloudEvent(db, event);
     expect(onMessage).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalled();
     expect(await connector.acknowledgeEvents({ subject: "actor", companyId, leaseId: leased!.leaseId, deliveryIds: [event.id] })).toBe(1);
     expect(await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 })).toBeNull();
     await db.update(chatEndpoints).set({ setup: { ...saved, runtimeGeneration: 2 } as InternalSetupState }).where(eq(chatEndpoints.id, endpointId));
@@ -142,6 +145,8 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
       await db.delete(companies).where(eq(companies.id, companyId));
       await pool.query("DELETE FROM cloud_harness.connector_instances WHERE id=$1", [instanceId]);
       await pool.query("DELETE FROM cloud_harness.connector_webhook_deliveries WHERE id=ANY($1::text[])", [deliveryIds]);
-    } finally { await db.$client.end({ timeout: 1 }); await pool.end(); await registry.close(); }
+    } finally { await db.$client.end({ timeout: 1 }); await registry.close();
+      try { network.assertQuiet(); } finally { network.restore(); }
+    }
   }
 }, 60_000);

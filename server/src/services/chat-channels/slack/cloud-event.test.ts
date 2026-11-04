@@ -1,3 +1,4 @@
+import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "./cloud-test-transport.js";
 import { createHmac, createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { verifySlackSignature } from "@chat-adapter/slack/webhook";
@@ -13,7 +14,7 @@ function fixture() {
   const timestamp = String(acceptedAt / 1000);
   const signature = `v0=${createHmac("sha256", binding.signingSecret).update(`v0:${timestamp}:`).update(rawBody).digest("hex")}`;
   const { signingSecret: _secret, ...identity } = binding;
-  const event: SlackCloudEvent = { id: `slack:${"b".repeat(64)}:${createHash("sha256").update("EvFIRST").digest("hex")}`,
+  const event: SlackCloudEvent = { id: `slack_${"b".repeat(64)}_${createHash("sha256").update("EvFIRST").digest("hex")}`,
     provider: "slack", event: "event_callback", installationId: binding.bindingId, bindingIds: [binding.bindingId],
     createdAt: new Date(acceptedAt).toISOString(), payload: { slackEvent: { version: 1, ...identity,
       rawBody: rawBody.toString("base64"), timestamp, signature, eventId: "EvFIRST", acceptedAt: new Date(acceptedAt).toISOString() } } };
@@ -22,29 +23,29 @@ function fixture() {
 
 describe("authenticated Slack Cloud receipt consumer", () => {
   it("crosses the real pinned Chat runtime after cold-start delay and preserves ordinary external freshness rejection", async () => {
+    const network = guardSlackFixtureNetwork();
     const f = fixture(), onMessage = vi.fn(async () => {});
     const runtime = createChatSdkEndpointRuntime({ companyId: f.binding.companyId, endpointId: f.binding.endpointId,
       logger: "silent", callbacks: { onMessage }, persistence: { read: async () => null,
         compareAndSet: async () => true, deleteIfVersion: async () => true },
       providerConfig: { provider: "slack", userName: "paperclip-agent",
-        credentials: { botToken: "xoxb-synthetic", botUserId: "UBOT", signingSecret: f.binding.signingSecret } } });
+        credentials: { apiUrl: "http://127.0.0.1:1/api/", botToken: "xoxb-synthetic", botUserId: "UBOT", signingSecret: f.binding.signingSecret } } });
     try {
       await runtime.initialize();
-      const adapter = runtime.getProviderAdapter() as unknown as { _client: { apiCall: (method: string) => Promise<unknown> } };
-      adapter._client.apiCall = vi.fn(async method => {
-        if (method === "users.info") return { ok: true, user: { id: "UOPERATOR", name: "operator", is_bot: false, profile: { display_name: "Operator" } } };
-        if (method === "conversations.info") return { ok: true, channel: { id: "CTEST", name: "fixture" } };
-        throw new Error(`Unexpected provider method ${method}`);
-      });
+      const transport = stubSlackFixtureTransport(runtime.getProviderAdapter());
       await receiveSlackCloudEvent(f.event, f.binding, request => runtime.handleWebhook(request), acceptedAt + 600_000);
       expect(onMessage).toHaveBeenCalledOnce();
+      expect(transport).toHaveBeenCalled();
       expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ provider: "slack", endpointId: f.binding.endpointId }));
       const response = await runtime.handleWebhook(new Request("https://external.invalid", { method: "POST",
         headers: { "content-type": "application/json", "x-slack-request-timestamp": f.timestamp, "x-slack-signature": f.signature },
         body: new Uint8Array(f.rawBody) }));
       expect(response.status).toBe(401);
       expect(onMessage).toHaveBeenCalledOnce();
-    } finally { await runtime.shutdown(); }
+    } finally {
+      await runtime.shutdown();
+      try { network.assertQuiet(); } finally { network.restore(); }
+    }
   });
   it("replays original evidence after a cold-start delay without refreshing its timestamp", async () => {
     const f = fixture();
