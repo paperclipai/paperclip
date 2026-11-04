@@ -425,6 +425,7 @@ export interface WakeAdmissionWriter {
     input: {
       companyId: string;
       activeExecutionRunId: string;
+      activeExecutionRunStatus: string;
       mergedContextSnapshot: Record<string, unknown>;
       durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;
@@ -435,7 +436,7 @@ export interface WakeAdmissionWriter {
       requestedByActorId: string | null;
       idempotencyKey: string | null;
     },
-  ): Promise<Record<string, unknown>>;
+  ): Promise<Record<string, unknown> | null>;
   /** Merges the wake's context into an already-queued deferred wake, guarded by its current status. */
   mergeIntoExistingDeferredWake(
     scope: TransactionScope,

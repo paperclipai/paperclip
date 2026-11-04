@@ -2741,6 +2741,17 @@ replay or access: the saved input and current principal, repository, conversatio
 runtime fence and execution containment still pass normal admission. Explicit
 conflicting App bindings remain denials.
 
+When comments join a queued run with an unclaimed queued wake, admission saves
+the accepted batch in both the run context and its authoritative primary wake in
+the same transaction as the coalesced receipt. Claim rebuilds input from that primary wake and filters deleted
+comments. It does not reconstruct input from historical coalesced receipts.
+Admission locks and rechecks the run and its same-company, same-agent primary
+wake. A changed status or mismatched source actor/binding preserves the incoming
+input as deferred work instead of consuming it into the old source. Legacy wakes
+without an authoritative batch retain their existing context-based claim path.
+An already claimed wake keeps its source unchanged for its existing recovery
+and replay path; this change does not grant it a new claim.
+
 ### Queued input after a native Stop
 
 A run-only Stop ends the current response. It does not discard queued user

@@ -2433,7 +2433,7 @@ describe("automatic retained workspace recovery", () => {
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, actor)).toBe(true);
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, { ...actor, requestedByActorId: "other-user" })).toBe(false);
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(scope, {
-        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id,
+        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id, activeExecutionRunStatus: queued.status,
         mergedContextSnapshot: mergeCoalescedContextSnapshot((await run(queued.id)).contextSnapshot, incoming,
           { preserveExistingInteractionContinuation: true }),
         source: "on_demand", triggerDetail: "manual",

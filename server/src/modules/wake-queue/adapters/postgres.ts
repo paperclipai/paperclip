@@ -49,6 +49,7 @@ import { withRecoveryContext } from "../../../services/recovery/status-only-cont
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
   queuedCommentIdsFromWakePayload,
+  queuedCommentIdsFromRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds } from "../../run-dispatch/index.js";
@@ -971,7 +972,32 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
+      const [candidate] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      )).limit(1);
+      if (!candidate) throw new Error("wake-queue: the coalesce target run was not found for this company");
+      const [primary] = candidate.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, candidate.wakeupRequestId), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+      )).for("update").limit(1) : [];
+      const [current] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, candidate.id), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      )).for("update").limit(1);
+      if (!current || current.status !== input.activeExecutionRunStatus || current.wakeupRequestId !== candidate.wakeupRequestId) return null;
+      const commentIds = queuedCommentIdsFromRunContext(input.mergedContextSnapshot);
+      const synchronizeBatch = current.status === "queued" && commentIds.length > 0
+        && primary?.status === "queued" && queuedCommentIdsFromWakePayload(primary.payload).length > 0;
+      if (current.status === "queued" && commentIds.length && current.wakeupRequestId &&
+          (!primary || !["queued", "claimed"].includes(primary.status) || primary.runId !== current.id
+            || primary.requestedByActorType !== input.requestedByActorType || primary.requestedByActorId !== input.requestedByActorId
+            || primary.payload?.issueId !== input.mergedContextSnapshot.issueId)) return null;
       await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.activeExecutionRunId });
+      if (synchronizeBatch && primary) await tx.update(agentWakeupRequests).set({
+        payload: withQueuedCommentIdsInWakePayload(primary.payload, commentIds), updatedAt: now,
+      }).where(and(eq(agentWakeupRequests.id, primary.id), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })

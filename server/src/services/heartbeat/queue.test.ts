@@ -1,13 +1,16 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
-import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { mergeCoalescedContextSnapshot } from "./run-preparation.js";
+import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
 import { settleConversationTurn } from "../agent-conversations.js";
 import { chatCompletionDeliveryService, recordChatCompletion, recordChatHandoff } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -255,6 +258,108 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "actor-changed", "foreign-primary"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+    const f = await fixture("queued");
+    const admissionAgent = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
+    await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
+    const userId = `source-user-${f.company.id}`;
+    await db.insert(authUsers).values({ id: userId, name: "Source owner", email: `${f.company.id}@queue.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
+    await db.update(companies).set({ defaultResponsibleUserId: userId }).where(eq(companies.id, f.company.id));
+    const [oldComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: userId, body: "Review source A" }).returning();
+    const [newComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: userId, body: "Review source B" }).returning();
+    await db.update(agentWakeupRequests).set({ status: scenario === "claimed-primary" ? "claimed" : "queued", runId: f.run.id, claimedAt: null,
+      requestedByActorType: "user", requestedByActorId: scenario === "actor-changed" ? "changed-source-owner" : userId,
+      payload: scenario === "legacy-envelope" ? { issueId: f.issue.id, commentId: oldComment.id }
+        : withQueuedCommentIdsInWakePayload({ issueId: f.issue.id, retainedSource: "original-source" }, [oldComment.id]),
+    }).where(eq(agentWakeupRequests.id, f.wake.id));
+    const [scanned] = await db.update(heartbeatRuns).set({ responsibleUserId: userId,
+      contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented" }, [oldComment.id]),
+    }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    let foreignPrimary: typeof agentWakeupRequests.$inferSelect | undefined;
+    if (scenario === "foreign-primary") {
+      const [company] = await db.insert(companies).values({ name: "Foreign source", issuePrefix: "FOREIGN" }).returning();
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Foreign source agent", adapterType: "process" }).returning();
+      [foreignPrimary] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "assignment", status: "queued", payload: { source: "foreign" } }).returning();
+      await db.update(heartbeatRuns).set({ wakeupRequestId: foreignPrimary.id }).where(eq(heartbeatRuns.id, f.run.id));
+    }
+    if (scenario === "delete-old") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, oldComment.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(admissionAgent);
+    deps.canStartNewExternalBotWork.mockResolvedValue(false);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false, enableNativeRunner: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    const admission = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: { filterZombieCoalesceTarget: deps.filterZombieCoalesceTarget,
+        mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
+    deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    const queue = createHeartbeatQueue(db, deps);
+    if (scenario === "running") {
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toMatchObject({ status: "running" });
+      deps.canStartNewExternalBotWork.mockResolvedValue(false);
+    }
+    const [originalPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
+    const coalesced = await queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
+      requestedByActorType: "user", requestedByActorId: userId });
+    if (["running", "actor-changed", "foreign-primary"].includes(scenario)) {
+      expect(coalesced).toBeNull();
+      const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      expect(preserved.contextSnapshot).toMatchObject({ wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id] });
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+      expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(receipts.find(row => row.id === f.wake.id)).toEqual(originalPrimary);
+      if (foreignPrimary) expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, foreignPrimary.id)))[0]).toEqual(foreignPrimary);
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    expect(coalesced).toMatchObject({ id: f.run.id, status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+    const accepted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+    expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date) });
+    const [updatedPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
+    expect(updatedPrimary).toMatchObject({ id: originalPrimary.id, companyId: originalPrimary.companyId,
+      agentId: originalPrimary.agentId, source: originalPrimary.source, requestedByActorType: originalPrimary.requestedByActorType,
+      requestedByActorId: originalPrimary.requestedByActorId, idempotencyKey: originalPrimary.idempotencyKey, requestedAt: originalPrimary.requestedAt });
+    if (scenario === "legacy-envelope" || scenario === "claimed-primary") expect(updatedPrimary.payload).toEqual(originalPrimary.payload);
+    else expect(updatedPrimary.payload?.retainedSource).toBe("original-source");
+    if (scenario === "claimed-primary") {
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+        .toMatchObject({ status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0]).toEqual(originalPrimary);
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "stopped") {
+      await createHeartbeatRunControl(db, runControlCallbacks(db)).cancelRunInternal(f.run.id, "operator Stop");
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+        .toMatchObject({ status: "cancelled", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0].status).toBe("cancelled");
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "delete-new") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, newComment.id));
+    deps.canStartNewExternalBotWork.mockResolvedValue(true);
+    const claimed = await queue.claimQueuedRun(scanned);
+    expect(claimed).toMatchObject({ id: f.run.id, status: "running",
+      contextSnapshot: { wakeCommentId: scenario === "delete-new" ? oldComment.id : newComment.id,
+        wakeCommentIds: scenario === "delete-old" ? [newComment.id] : scenario === "delete-new" ? [oldComment.id] : [oldComment.id, newComment.id] } });
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+    expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
 
   async function strandedMention(runtimeMode = "legacy") {
     const seeded = await fixture("succeeded");
