@@ -1,5 +1,6 @@
 import { writeLoginCleanup } from "./login-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -148,6 +149,7 @@ export interface LoginSessionRuntime {
  *  session, the company, the owner, and the adapter, so the promotion resolves
  *  the company slot and the sole-active-owner check for this exact session. */
 export interface CredentialPromotionContext {
+  managementContext?: ConnectionManagementContext;
   sessionId: string;
   companyId: string;
   startedByUserId: string;
@@ -210,6 +212,7 @@ export interface LoginSessionActivityEvent {
 export type LoginSessionActivityRecorder = (event: LoginSessionActivityEvent) => void;
 
 export interface StartDeviceLoginInput {
+  managementContext?: ConnectionManagementContext;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
   environmentId: string;
@@ -915,6 +918,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   async function start(
     input: StartDeviceLoginInput,
   ): Promise<StartDeviceLoginResult> {
+    await input.managementContext?.reauthorize();
     const sessionId = randomUUID();
     // The public session identifier the API returns and looks up. It is an
     // independent CSPRNG value, so it never equals the internal `sessionId` and a
@@ -1124,7 +1128,9 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         if (!credential || credential.length === 0) {
           throw new Error("missing_credential");
         }
+        await input.managementContext?.reauthorize();
         await profile.promotion.promote(credential, {
+          managementContext: input.managementContext,
           sessionId,
           companyId: input.companyId,
           startedByUserId: input.startedByUserId,
@@ -1159,12 +1165,14 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
           resultClaim: resultClaim ?? null,
         });
       const promotionContext: CredentialPromotionContext = {
+        managementContext: input.managementContext,
         sessionId,
         companyId: input.companyId,
         startedByUserId: input.startedByUserId,
         adapterType: input.adapterType,
       };
       try {
+        await input.managementContext?.reauthorize();
         return profile.promotion.runTerminalCommit
           ? await profile.promotion.runTerminalCommit(commitAuthenticated, promotionContext)
           : await commitAuthenticated();

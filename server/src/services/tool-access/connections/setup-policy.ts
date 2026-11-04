@@ -14,6 +14,11 @@ export function assertSupportedConnection(connection: typeof toolConnections.$in
   }
 }
 
+export function connectionSetupApp(applicationKey: unknown, sourceTemplateKey: unknown) {
+  return applicationKey != null ? getAppDefinitionForApplicationKey(applicationKey)
+    : typeof sourceTemplateKey === "string" ? getConnectableAppDefinition(sourceTemplateKey) : null;
+}
+
 export function createConnectionSetupPolicy(db: Db) {
   async function assertExperimentalConnectorSetupEnabled(provider: unknown, existing = false) {
     const app = typeof provider === "string" ? getConnectableAppDefinition(provider) : null;
@@ -36,8 +41,7 @@ export function createConnectionSetupPolicy(db: Db) {
       resolvedApplicationKey = application?.applicationKey;
     }
     const marker = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
-    const app = resolvedApplicationKey != null ? getAppDefinitionForApplicationKey(resolvedApplicationKey)
-      : typeof marker === "string" ? getConnectableAppDefinition(marker) : null;
+    const app = connectionSetupApp(resolvedApplicationKey, marker);
     if (app) await assertExperimentalConnectorSetupEnabled(app.slug, connection.status !== "draft");
   }
   return { assertExperimentalConnectorSetupEnabled, assertConnectorConnectionSetupEnabled };

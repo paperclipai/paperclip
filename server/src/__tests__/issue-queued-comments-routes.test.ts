@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
@@ -202,7 +202,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     if (fallback) await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed))
@@ -238,7 +238,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }).where(eq(heartbeatRuns.companyId, f.companyId));
     const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { agentWakeupRequests, heartbeatRuns }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
@@ -275,7 +275,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       })),
     ]);
     const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { agentWakeupRequests }, capture);
     try {
       const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
@@ -459,7 +459,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       continuationPolicy: "wake_assignee", requestedResolverPolicy: "human_only",
       effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
       title: "Build the app", payload: { version: 1, prompt: "Build the app?" },
-      result: { decision: "accepted" },
+      result: { version: 1, outcome: "accepted" },
     });
     const context = { issueId: seeded.issueId, interactionId, interactionKind: "request_confirmation",
       interactionStatus: "accepted", planReviewInteraction: { id: interactionId,
@@ -739,15 +739,18 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
   });
 
-  it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
+  it.each([
+    { target: null, runtime: "legacy" }, { target: "stopped-target", runtime: "legacy" },
+    { target: "system-receipt", runtime: "legacy" }, { target: null, runtime: "native" },
+  ] as const)("sends a stopped $runtime queue once with target $target", async ({ target, runtime }) => {
     const seeded = await seedQueue();
     if (target === "system-receipt") await db.update(agentWakeupRequests).set({
       requestedByActorType: "system", requestedByActorId: "heartbeat",
     }).where(eq(agentWakeupRequests.id, seeded.wakeId));
-    await db.update(agents).set({ adapterType: "claude_local",
+    await db.update(agents).set({ adapterType: runtime === "native" ? "paperclip_runner" : "claude_local",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     }).where(eq(agents.id, seeded.agentId));
-    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+    await db.update(heartbeatRuns).set({ runtimeMode: runtime, status: "succeeded",
       finishedAt: new Date("2026-08-22T15:03:00.000Z"),
     }).where(eq(heartbeatRuns.id, seeded.runId));
     await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));

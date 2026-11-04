@@ -363,7 +363,7 @@ async function main() {
     `${JSON.stringify(normalized, null, 2)}\n`,
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: "Runner Full-Stack E2E",
+    title: "E2E tests",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,
@@ -393,7 +393,7 @@ async function main() {
   )?.url;
 
   const summaryLines = [
-    "# Runner Full-Stack E2E",
+    "# E2E tests",
     "",
     `Passed: ${normalized.passed}/${selected.length}`,
     "",

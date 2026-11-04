@@ -29,6 +29,13 @@ separate. It does not cover other property operations or agent authorization.
 
 ## How to get to it (user POV)
 
+Cold collection loads use a lightweight index and batched hierarchy context,
+then fetch diagnostic details for visible rows. Delay the index, hierarchy, and
+visible-row details independently when verifying `tasks/organize`: row heights,
+title bounds, and the first-row origin should remain stable. Test nested expansion,
+scrolling to more rows, and detail/back navigation; a collection projection must
+never suppress the full task instruction fetch.
+
 ### `new-task`
 
 Use New task from the global launcher, task list, or project task view.
@@ -39,7 +46,7 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction and recent exchange first. **More messages** loads earlier messages and run activity; incoming messages remain visible while the task stays open.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A run with deferred output or a truncated legacy log offers **More run output**. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -81,7 +88,7 @@ Use a human/unassigned task to verify persistence without invoking a model.
 
 Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
 
-Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
+Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 

@@ -199,7 +199,6 @@ pub(crate) fn next_authority_config(
     next.normalized_session_id = read_identity("normalizedSessionId")?;
     next.turn_id = read_identity("turnId")?;
     next.item_id = read_identity("itemId")?;
-    next.validate()?;
     if next.runner_instance_id != current.runner_instance_id
         || next.environment_lease_id != current.environment_lease_id
         || next.normalized_session_id != current.normalized_session_id
@@ -209,6 +208,47 @@ pub(crate) fn next_authority_config(
             "run.attach authority changed an immutable session binding",
         ));
     }
+    if let Some(admission) = current
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        if admission.agent == "kimi" {
+            let proposed: crate::acpx_candidate_admission::AcpxCandidateAdmission =
+                serde_json::from_value(boundary.get("candidateAdmission").cloned().ok_or_else(
+                    || {
+                        DurableRunnerError::invalid(
+                            "Kimi authority rotation requires exact trusted candidate admission",
+                        )
+                    },
+                )?)
+                .map_err(|_| {
+                    DurableRunnerError::invalid("Kimi authority rotation admission is invalid")
+                })?;
+            admission
+                .validate_next_run(
+                    &proposed,
+                    "kimi",
+                    &admission.model,
+                    &next.run_id,
+                    &next.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            next.acpx_launch_profile
+                .as_mut()
+                .unwrap()
+                .candidate_admission = Some(proposed);
+        } else if boundary.get("candidateAdmission").is_some() {
+            return Err(DurableRunnerError::invalid(
+                "candidate authority rotation is not admitted",
+            ));
+        }
+    } else if boundary.get("candidateAdmission").is_some() {
+        return Err(DurableRunnerError::invalid(
+            "authority rotation cannot create candidate admission",
+        ));
+    }
+    next.validate()?;
     Ok(Some(next))
 }
 
@@ -394,7 +434,25 @@ pub fn run_durable_runner<E: CommandExecutor>(
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
 ) -> Result<(), DurableRunnerError> {
+    let started = Instant::now();
     config.validate()?;
+    if let Some(admission) = config
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        let remaining =
+            Duration::from_millis(admission.expires_at.saturating_sub(current_unix_ms()?));
+        // Candidate authority is absolute. Include startup/state work in this
+        // process deadline, and never let a caller's unlimited runtime widen it.
+        config.max_runtime = if config.max_runtime.is_zero() {
+            remaining.max(Duration::from_nanos(1))
+        } else {
+            config
+                .max_runtime
+                .min(remaining.max(Duration::from_nanos(1)))
+        };
+    }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
     if state.lifecycle == "revoked"
@@ -415,11 +473,14 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
+    #[cfg(unix)]
+    let mut notifications =
+        crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
+    let mut task_memory = crate::task_memory::TaskMemoryMonitor::new();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
     let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
-    let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
     let mut authenticated_once = false;
@@ -649,6 +710,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
         store.save(&state)?;
+        #[cfg(unix)]
+        if let Some(notifications) = notifications.as_mut() {
+            notifications.poll(&config, &mut state, &store);
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 
@@ -818,6 +883,13 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 return Err(DurableRunnerError::invalid(
                     "active connection lease expired; durable state is preserved",
                 ));
+            }
+            #[cfg(unix)]
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.poll(&config, &mut state, &store);
+            }
+            if let Some(task_memory) = task_memory.as_mut() {
+                task_memory.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
@@ -1326,6 +1398,7 @@ fn wait_for_old_authority_outbox_ack(
     )?;
     let target = state.highest_source_seq();
     let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let mut ack_persistence = CumulativeAckPersistence::default();
     while state.acked_source_seq < target {
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
@@ -1342,8 +1415,10 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                state.apply_ack(acked, connection.protocol_version)?;
-                store.save(state)?;
+                // As in normal ingress, checkpoint cumulative ACK bursts
+                // without fsyncing every prefix inside the delivery deadline.
+                // The final empty-outbox ACK is always persisted.
+                ack_persistence.apply(state, store, acked, connection.protocol_version)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -1851,13 +1926,17 @@ fn process_command<E: CommandExecutor>(
                 "{} command failed: {message}",
                 command.command_type
             ));
-            let result = state.fail_command(
-                command,
-                json!({
-                    "code": "command_execution_failed",
-                    "message": message,
-                }),
-            )?;
+            let mut failure = json!({
+                "code": "command_execution_failed",
+                "message": message,
+            });
+            if let Some(classification) = error.classification() {
+                failure["classification"] = json!(classification);
+            }
+            if let Some(provider_failure) = error.provider_failure() {
+                failure["providerFailure"] = provider_failure;
+            }
+            let result = state.fail_command(command, failure)?;
             store.save(state)?;
             return Ok((result, CommandLifecycle::for_terminal(command)));
         }
@@ -2413,6 +2492,17 @@ mod tests {
         }
     }
 
+    struct IncompatibleStateExecutor;
+
+    impl CommandExecutor for IncompatibleStateExecutor {
+        fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+            Err(
+                DurableRunnerError::invalid("saved provider state cannot be adopted")
+                    .with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+            )
+        }
+    }
+
     impl CommandExecutor for ShutdownFailingExecutor {
         fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
             Ok(CommandExecution::result(json!({"status": "completed"})))
@@ -2477,6 +2567,7 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -4788,6 +4879,46 @@ mod tests {
             .diagnostics
             .iter()
             .all(|diagnostic| !diagnostic.contains("test-secret")));
+        assert!(failed.result.get("classification").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn classified_executor_failure_keeps_its_closed_class_in_the_durable_result() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-command-classified-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let command = command("run.attach");
+        let (failed, _) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap();
+        let (mut recovered, _) = store.load_or_create(&config).unwrap();
+        let replay = process_command(
+            &mut recovered,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.result["code"], "command_execution_failed");
+        assert_eq!(
+            failed.result["classification"],
+            "provider_state_incompatible"
+        );
+        assert_eq!(failed, replay);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -5075,5 +5206,131 @@ mod tests {
         assert_eq!(first_lifecycle.durable_state(), Some("suspended"));
         assert_eq!(executor.calls, 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn released_kimi_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("kimi")
+                .unwrap()
+                .qualification_pending
+        );
+        let directory =
+            std::env::temp_dir().join(format!("kimi-grant-handoff-{}", std::process::id()));
+        let mut current = config(directory);
+        let mut grant = crate::acpx_candidate_admission::test_admission(
+            "run_1",
+            &current.normalized_session_id,
+        );
+        grant.agent = "kimi".to_owned();
+        grant.profile_digest = crate::generated_acpx_profiles::acpx_release_profile("kimi")
+            .unwrap()
+            .command_digest
+            .to_owned();
+        grant.platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        }
+        .to_owned();
+        grant.architecture = if cfg!(target_os = "macos") {
+            "arm64"
+        } else {
+            "x64"
+        }
+        .to_owned();
+        grant.native_closure_digest = format!(
+            "sha256:{}",
+            crate::generated_acpx_profiles::kimi_native_closure(
+                &grant.platform,
+                &grant.architecture
+            )
+            .unwrap()
+        );
+        current.acpx_launch_profile = Some(crate::durable::AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/fixture/node"),
+            args: vec!["/fixture/sidecar.cjs".to_owned()],
+            artifacts: vec![crate::durable::QualifiedLaunchArtifact {
+                path: PathBuf::from("/fixture/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        });
+        current.validate().unwrap();
+        let mut next_grant = grant.clone();
+        next_grant.run_id = "run_2".to_owned();
+        let mut attach = command("run.attach");
+        attach.payload = json!({"paperclipNextAuthority":{
+            "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                "runId":"run_2","normalizedSessionId":current.normalized_session_id,"turnId":"turn_2","itemId":"item_2"},
+            "connection":{"mode":"external"}
+        }});
+        let next = next_authority_config(&attach, &current).unwrap().unwrap();
+        assert!(next
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        assert_eq!(next.acpx_launch_profile, current.acpx_launch_profile);
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.turn_id, "turn_2");
+        assert_eq!(next.item_id, "item_2");
+        let mut injected = attach.clone();
+        injected.payload["paperclipNextAuthority"]["candidateAdmission"] = json!(next_grant);
+        assert!(next_authority_config(&injected, &current).is_err());
+        assert_eq!(next.runner_instance_id, current.runner_instance_id);
+        assert_eq!(next.environment_lease_id, current.environment_lease_id);
+        assert_eq!(next.normalized_session_id, current.normalized_session_id);
+        for (field, value) in [
+            ("companyId", json!("foreign-company")),
+            ("agent", json!("antigravity")),
+            ("model", json!("different-model")),
+            ("profileDigest", json!(format!("sha256:{}", "f".repeat(64)))),
+            (
+                "nativeClosureDigest",
+                json!(format!("sha256:{}", "e".repeat(64))),
+            ),
+            ("expiresAt", json!(grant.expires_at + 1)),
+            ("runId", json!("unbound-run")),
+            ("normalizedSessionId", json!("foreign-session")),
+        ] {
+            let mut changed = injected.clone();
+            changed.payload["paperclipNextAuthority"]["candidateAdmission"][field] = value;
+            assert!(
+                next_authority_config(&changed, &current).is_err(),
+                "{field}"
+            );
+        }
+        for field in [
+            "runnerInstanceId",
+            "environmentLeaseId",
+            "normalizedSessionId",
+        ] {
+            let mut changed = attach.clone();
+            changed.payload["paperclipNextAuthority"]["identity"][field] = json!("foreign");
+            assert!(
+                next_authority_config(&changed, &current).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = injected.clone();
+        missing.payload["paperclipNextAuthority"]
+            .as_object_mut()
+            .unwrap()
+            .remove("candidateAdmission");
+        assert!(next_authority_config(&missing, &current).unwrap().is_some());
+        let mut stale_candidate = current.clone();
+        stale_candidate
+            .acpx_launch_profile
+            .as_mut()
+            .unwrap()
+            .candidate_admission = Some(grant);
+        assert!(stale_candidate.validate().is_err());
+        assert!(next_authority_config(&injected, &stale_candidate).is_err());
     }
 }

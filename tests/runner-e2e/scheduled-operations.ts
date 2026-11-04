@@ -94,8 +94,8 @@ export async function prepareScheduledCampaign(env: NodeJS.ProcessEnv, now = Dat
   const forecast = { cadence, executionIds: manifest.executionIds, maxUsd: manifest.limits.maxUsd,
     overhead: manifest.limits.overhead, budgetScope: "model requests plus declared operating overhead reservations",
     measurements: scheduledForecast(runnerMatrix.filter(execution => manifest.executionIds.includes(execution.id)), manifest.models),
-    basis: "Retained local pilot measurements; successful samples and matching configurations are reported separately",
-    uncertainty: "Incomplete provider receipts and no invoice reconciliation; estimates are not a guarantee",
+    basis: "Retained attempt measurements with per-sample hosts; historical and current-compatible totals remain separate",
+    uncertainty: "Sample coverage, definition drift and provider export precision limit the estimate; final invoices and operating reconciliation remain pending",
     maximumRequestReservations: manifest.models.map(model => ({ model: model.price.model,
       usd: evalRequestReservation({ ...model, apiKey: "forecast", mode: "braintrust" }) })),
     maximumMonthlyTotalAllowanceUsd: "1120", pricingExpiresAt: prices.expiresAt };

@@ -1,3 +1,9 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { openEvalCostLedger } from "./cost-ledger.js";
+import { readEvalOperationsReport } from "./operations-report.js";
+import { EVAL_OVERHEAD_COMPONENTS } from "./operating-overhead.js";
 import { expect, it } from "vitest";
 import { buildRunnerCampaign } from "./history.js";
 import { runnerMatrix } from "./catalog.js";
@@ -51,4 +57,32 @@ it("keeps incomplete accounting and trace export visible independently of a pass
   expect(scheduledCampaignFindings(campaign)).toEqual(["accounting_unavailable", "trace_export_incomplete"]);
   campaign.feedbackReview.decisions[0]!.disposition = "needs_investigation";
   expect(scheduledCampaignFindings(campaign)).toContain("feedback_needs_review");
+});
+
+it("qualifies scheduled model receipts while retaining operating holds, but rejects missing usage and overruns", async () => {
+  const { campaign } = fixture();
+  const directory = await mkdtemp(path.join(tmpdir(), "scheduled-model-readiness-"));
+  const file = path.join(directory, "ledger.jsonl"), now = Date.now();
+  const ledger = await openEvalCostLedger(file, { campaignId: "scheduled-fixture", maxUsd: "20",
+    deadlineAt: new Date(now + 60_000).toISOString(), maxRequests: 10, maxConcurrent: 1,
+    overhead: { version: 1, accountingReadiness: "model_requests", reference: "synthetic-fixture", runner: "github-hosted",
+      verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(),
+      components: EVAL_OVERHEAD_COMPONENTS.map(component => ({ component, maxUsd: "1", reference: "synthetic-fixture" })) },
+    maxAttemptsPerExecution: 1 });
+  try {
+    await ledger.admitAttempt(campaign.expected[0]!, "one");
+    await ledger.reserve("model", { executionId: campaign.expected[0]!, attemptId: "one", phase: "setup" }, "2");
+    await ledger.finish("model", "cancelled");
+    campaign.operations = await readEvalOperationsReport(file);
+    expect(scheduledCampaignFindings(campaign)).toContain("accounting_incomplete");
+    await ledger.observe({ observationId: "model-final", requestId: "model", source: "provider", provider: "anthropic",
+      currency: "USD", route: "direct", classification: "reported", costUsd: "0.5", final: true });
+    campaign.operations = await readEvalOperationsReport(file);
+    expect(scheduledCampaignFindings(campaign)).not.toContain("accounting_incomplete");
+    expect(campaign.operations).toMatchObject({ heldUsd: "4.000000000", committedUsd: "4.500000000" });
+    await ledger.observe({ observationId: "overrun", requestId: "overhead:ci_compute", source: "invoice", provider: "aws",
+      currency: "USD", route: "infrastructure", classification: "reconciled", costUsd: "21", final: true });
+    campaign.operations = await readEvalOperationsReport(file);
+    expect(scheduledCampaignFindings(campaign)).toEqual(expect.arrayContaining(["accounting_incomplete", "accounting_over_budget"]));
+  } finally { await ledger.close(); await rm(directory, { recursive: true, force: true }); }
 });

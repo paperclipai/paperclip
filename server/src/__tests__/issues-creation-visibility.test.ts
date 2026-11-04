@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { activityLog, agents, authUsers, chatConversations, chatEndpoints, chatMessageLinks, issueComments, issueReadStates, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
@@ -109,7 +109,7 @@ describeEmbeddedPostgres("issue creation visibility", () => {
           : name === "legacySender" ? { version: 1 as const, sections: [{ title: "GitHub sender", rows: [{ type: "key_value" as const, label: "Provider ID", value: "external-user" }] }] } : null,
       })),
     ).returning();
-    const [appRow] = await ctx.db.insert(toolApplications).values({ companyId, name: "Chat", type: "mcp" }).returning();
+    const [appRow] = await ctx.db.insert(toolApplications).values({ companyId, name: "Chat", type: "mcp_http" }).returning();
     const [connection] = await ctx.db.insert(toolConnections).values({ companyId, applicationId: appRow!.id, name: "GitHub", uid: randomUUID(), transport: "mcp_remote", authKind: "api_key" }).returning();
     const [endpoint] = await ctx.db.insert(chatEndpoints).values({ companyId, connectionId: connection!.id, assignedAgentId: agent!.id, provider: "github", publicId: randomUUID(), sponsorUserId: userId }).returning();
     const conversations = await ctx.db.insert(chatConversations).values(["legacyLink", "outbound"].map((name) => ({
@@ -133,6 +133,7 @@ describeEmbeddedPostgres("issue creation visibility", () => {
     }
     await ctx.db.delete(issues).where(eq(issues.id, ids.private!));
     expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(3);
+    expect((await svc.unreadInboxIssueIds(companyId, userId, sql<boolean>`true`)).sort()).toEqual(expected);
     await ctx.db.insert(issueComments).values({ companyId, issueId: ids.github!, authorUserId: userId, body: "Direct API reply" });
     const beforeReply = await request(app).get(`${path}?includeRoutineExecutions=true&inboxArchivedByUserId=me`).expect(200);
     const imported = beforeReply.body.find((issue: { id: string }) => issue.id === ids.slack);
@@ -260,7 +261,7 @@ describeEmbeddedPostgres("issue creation visibility", () => {
     await ctx.db.insert(issueThreadInteractions).values(names.map((name) => ({
       companyId, issueId: ids[name]!, kind: "ask_user_questions", addresseeUserId: userId,
       effectiveResolverPolicy: "human_only" as const, createdAt: new Date("2026-01-02"),
-      payload: { version: 1 as const, ...(name === "authorization" ? { connectionAuthorization: {} } : {}),
+      payload: { version: 1 as const, questions: [], ...(name === "authorization" ? { connectionAuthorization: {} } : {}),
         questionSet: { schema: "paperclip.question_set.v1" as const, questions: [{ id: "answer", prompt: "What result do you need?", answerMode: "text" as const, required: true }] } },
     })));
     await ctx.db.insert(issueComments).values(["historical", "authorization"].map((name) => ({

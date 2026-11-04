@@ -7,8 +7,9 @@ import panelDocCorner from "./assets/panel-doc-corner.svg";
 import panelGlyphAudio from "./assets/panel-glyph-audio.svg";
 import panelGlyphSlides from "./assets/panel-glyph-slides.svg";
 import panelPlay from "./assets/panel-play.svg";
+import { usePreviewFailure } from "./ArtifactPrint";
 import { ROW_ICON, ROW_PLAY } from "./geometry";
-import { glyphOf, isAudio, labelOf, treatmentOf, type ArtifactSubject } from "./kinds";
+import { glyphOf, isAudio, labelOf, previewSourceOf, treatmentOf, type ArtifactSubject } from "./kinds";
 import { panelDateLabel } from "./when";
 
 /**
@@ -19,7 +20,8 @@ import { panelDateLabel } from "./when";
  * a 14px white glyph at (5, 5) and the type in 11px bold at (5, 22); PDF and
  * DOC use the mock's three bars, PPTX and audio the mock's own glyphs, other
  * types their lucide icon. Pictures and video show a 40px thumbnail instead,
- * video with a 32px play disc.
+ * video with a 32px play disc; a thumbnail that cannot be loaded gives way
+ * to the document icon.
  */
 
 const ICON_LABEL: CSSProperties = {
@@ -67,12 +69,14 @@ export function ArtifactRowIcon({ subject }: { subject: ArtifactSubject }) {
 }
 
 function Thumbnail({ subject }: { subject: ArtifactSubject }) {
+  const [failed, onError] = usePreviewFailure(previewSourceOf(subject));
+  if (failed) return <ArtifactRowIcon subject={subject} />;
   return (
     <span className="relative block size-10 shrink-0 overflow-hidden rounded-(--sz-4px)">
       {subject.kind === "video" && !subject.thumbnailUrl ? (
-        <video src={subject.videoUrl ?? undefined} className="absolute inset-0 h-full w-full object-cover" muted playsInline preload="metadata" />
+        <video src={subject.videoUrl ?? undefined} className="absolute inset-0 h-full w-full object-cover" muted playsInline preload="metadata" onError={onError} />
       ) : (
-        <img src={subject.thumbnailUrl ?? undefined} alt="" className="absolute inset-0 h-full w-full object-cover" />
+        <img src={subject.thumbnailUrl ?? undefined} alt="" className="absolute inset-0 h-full w-full object-cover" onError={onError} />
       )}
       {subject.kind === "video" ? (
         <span aria-hidden className="absolute flex items-center justify-center rounded-full" style={{ left: ROW_PLAY.inset, top: ROW_PLAY.inset, width: ROW_PLAY.size, height: ROW_PLAY.size, background: "var(--artifact-play-scrim)" }}>

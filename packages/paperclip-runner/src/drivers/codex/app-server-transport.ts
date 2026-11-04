@@ -46,6 +46,8 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** Establish a fresh owned provider lifetime before reading a retained conversation. */
+  prepareConversationResume?(params: Record<string, unknown>): Promise<void>;
   /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
   takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
   /**

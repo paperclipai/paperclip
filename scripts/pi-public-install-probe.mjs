@@ -52,8 +52,8 @@ assert.equal(JSON.parse(await readFile(join(server, 'package.json'), 'utf8')).na
 const { resolvePaperclipRunnerBinary } = await import(pathToFileURL(join(server, 'dist/services/native-runtime/native-codex-runner.js')));
 const { createCapabilityRunnerdCodexTransport } = await import(pathToFileURL(join(server, 'dist/vendor/paperclip-runner/live/runnerd-codex-transport.js')));
 const { QUALIFIED_ACPX_PROFILES } = await import(pathToFileURL(join(server, 'dist/vendor/paperclip-runner/drivers/acpx/qualified-profiles.js')));
-assert.equal(QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, 29);
-assert.equal(QUALIFIED_ACPX_PROFILES.pi.commandDigest, 'sha256:e80c6dc7bde12790371345ee5a12f0201d30941d26f1a780aec3d090545b2a06');
+assert.equal(QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, 37);
+assert.equal(QUALIFIED_ACPX_PROFILES.pi.commandDigest, 'sha256:42e186b921f36accf3087cf64986a88346dcdb0bdf78c2ef44a2c4f8abd3453a');
 assert.equal(Object.hasOwn(QUALIFIED_ACPX_PROFILES.pi, 'qualificationModel'), false);
 assert.equal(Object.hasOwn(QUALIFIED_ACPX_PROFILES.pi, 'reportedModelId'), false);
 const daemon = resolvePaperclipRunnerBinary();
@@ -65,6 +65,7 @@ const started = performance.now();
 const watchdog = setTimeout(() => { console.error('Pi public-install probe exceeded its cleanup deadline'); process.exit(1); }, 85_000);
 let bundle;
 let failure;
+let commandFailure;
 let settledMs;
 try {
   const workspace = join(root, 'workspace'); await mkdir(workspace);
@@ -81,11 +82,15 @@ try {
       baseInstructions: 'Credential-free admission probe. No prompt is submitted.',
       permissions: 'paperclip-runner-workspace-read-only', dynamicTools: [],
     });
-  } catch (error) { failure = String(error); }
+  } catch (error) { failure = String(error); commandFailure = error.runnerCommandResult; }
   settledMs = Math.round(performance.now() - started);
   await bundle.transport.close();
   assert.match(failure ?? '', /session\.open failed/);
-  assert.match(failure, /retryable=false, classification=session_ensure_failed/);
+  assert.match(commandFailure?.result?.message ?? '', /retryable=false, classification=provider_authentication/);
+  assert.equal(commandFailure?.result?.providerFailure?.schema, 'paperclip.provider-failure.v1');
+  assert.equal(commandFailure.result.providerFailure.provider, 'pi');
+  assert.equal(commandFailure.result.providerFailure.phase, 'startup');
+  assert.equal(commandFailure.result.providerFailure.category, 'authentication');
   assert.doesNotMatch(failure, /timed out/);
   assert.ok(settledMs < 60_000, `Pi admission took ${settledMs} ms`);
   assert.ok(evidence.some(item => item.runnerExited === true && item.runnerExitCode === 0));

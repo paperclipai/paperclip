@@ -169,7 +169,7 @@ function Sandbox({ options, children }: { options: PrimaryScenario; children: Re
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { pushToast, dismissToast } = useToastActions();
   useLayoutEffect(() => {
-    const storageKeys = ["paperclip:issue-draft", "paperclip:recent-assignees", `paperclip:recent-assignees:${companyId}`, `paperclip.recentAgentChats:${companyId}:user-board`, ...state.agents.map(a => `paperclip.recentAgentChatIssue:${companyId}:user-board:${a.id}`)];
+    const storageKeys = [`paperclip:issue-draft:${storybookAuthSession.user!.id}`, "paperclip:recent-assignees", `paperclip:recent-assignees:${companyId}`, `paperclip.recentAgentChats:${companyId}:user-board`, ...state.agents.map(a => `paperclip.recentAgentChatIssue:${companyId}:user-board:${a.id}`)];
     const previous = storageKeys.map(key => [key, localStorage.getItem(key)] as const);
     storageKeys.forEach(key => localStorage.removeItem(key));
     const changed = () => {
@@ -249,7 +249,7 @@ export function PrimaryPage({ task, drawer }: { task?: "primary" | "recent" | "e
     if (task && !launched.current) {
       launched.current = true;
       if (task === "draft") {
-        localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Review the launch mockups", description: "Keep the mobile navigation compact.", companyId, status: "todo", priority: "medium", assigneeValue: `agent:${designer.id}`, projectId: "", reviewerValue: "", approverValue: "", assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false }));
+        localStorage.setItem(`paperclip:issue-draft:${storybookAuthSession.user!.id}`, JSON.stringify({ title: "Review the launch mockups", description: "Keep the mobile navigation compact.", companyId, status: "todo", priority: "medium", assigneeValue: `agent:${designer.id}`, projectId: "", reviewerValue: "", approverValue: "", assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false }));
         openNewIssue();
       } else {
         openNewIssue({ title: "Plan next week's launch", ...(task === "explicit" ? { assigneeAgentId: designer.id } : task === "primary" ? { assigneeAgentId: state.primaryId ?? undefined } : {}) });

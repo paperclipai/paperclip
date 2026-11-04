@@ -1,3 +1,5 @@
+import { connectionManagementService } from "./connection-management.js";
+import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
 import { emailConnectionService } from "./email-connections.js";
@@ -13,6 +15,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   aiConnectionTaskPins,
+  chatEndpoints,
   companies,
   toolConnections,
   connectionGrants,
@@ -29,6 +32,7 @@ import {
 } from "@paperclipai/db";
 import {
   APP_STORE_DEFINITIONS,
+  isUuidLike,
   isConnectorFeatureEnabled,
   getAppDefinitionForApplicationKey,
   AGGREGATOR_PRIORITY, AGGREGATOR_NAMES, AGGREGATOR_CATALOG_SOURCES,
@@ -61,6 +65,30 @@ import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 
 type ConnectionRunClaims = Pick<RuntimeToolsTokenClaims, "sub" | "company_id" | "run_id" | "responsible_user_id">;
+type SavedChatSetup = NonNullable<ConnectionIntentInteraction["payload"]["savedSetup"]>;
+
+/** Opaque completion proof committed alongside the rotated vault references. */
+export function chatCredentialRotationId(setup: object): string | null {
+  const value: unknown = Reflect.get(setup, "credentialRotationId");
+  return typeof value === "string" && isUuidLike(value) ? value : null;
+}
+
+export function savedChatSetupPath(prefix: string, endpoint: { id: string; provider: string; status?: string; botExternalId?: string | null; providerAccountId?: string | null }, action?: SavedChatSetup["action"], previousRotationId?: string | null, credentialRequest?: { fields?: string[]; requireAll?: boolean }) {
+  const query = new URLSearchParams({ provider: endpoint.provider, resume: endpoint.id });
+  if (action === "enter_credentials" || action === "rotate_credentials") query.set("stage", "credentials");
+  const configured = endpoint.status !== "draft" && (
+    ["active", "paused", "revoked"].includes(endpoint.status ?? "") || !!endpoint.botExternalId || !!endpoint.providerAccountId
+  );
+  if (action === "enter_credentials" && configured) query.set("reconnect", "1");
+  if (action === "confirm_identity") query.set("stage", "identity");
+  if (action === "rotate_credentials") { query.set("reconnect", "1"); query.set("rotateSecret", "1"); query.set("afterRotationId", previousRotationId ?? "none"); }
+  if (action === "enter_credentials") {
+    const fields = CHAT_HUMAN_CREDENTIAL_FIELDS.filter(field => !credentialRequest?.fields || credentialRequest.fields.includes(field));
+    query.set("credentialFields", fields.join(","));
+    query.set("credentialMode", credentialRequest?.requireAll ? "all" : "any");
+  }
+  return `/${encodeURIComponent(prefix)}/apps/chat/connect?${query}`;
+}
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -186,7 +214,7 @@ export function connectionIntentService(db: Db) {
       throw forbidden("Runtime tool token is no longer active");
     }
     if (run.activeIdentityContextId && !failedAuthRun) {
-      const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+      const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id }, { readScope: "identity" });
       run = { ...run, responsibleUserId: current.run.responsibleUserId };
     }
     if (!run.responsibleUserId) throw forbidden("This task needs a responsible user to connect a service");
@@ -370,8 +398,8 @@ export function connectionIntentService(db: Db) {
       if (app.experimentalFeatureKey && !isConnectorFeatureEnabled(app, await instanceSettingsService(db).getExperimental())) {
         throw notFound("Connection service was not found");
       }
-      if (purpose === "channel" && service !== "agentmail") {
-        throw unprocessable("This email connection is not available");
+      if (purpose === "channel" && !getAvailableConnectionMethods(app).some(method => method.purpose === "channel")) {
+        throw unprocessable("This channel connection is not available");
       }
       const methods = purpose === "ai" ? getAvailableConnectionMethods(app).filter(method => method.transport === "runtime_auth")
         : purpose === "channel" ? getAvailableConnectionMethods(app).filter(method => method.purpose === "channel")
@@ -471,9 +499,26 @@ export function connectionIntentService(db: Db) {
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
+      const methods = await Promise.all(app.methods.map(async method => {
+        const declaredPurpose = definition ? discoveryMethods(definition).find(candidate => candidate.key === method.key)?.purpose : undefined;
+        const purpose = declaredPurpose === "channel" ? "chat" : declaredPurpose === "ai" ? "ai" : "tool";
+        const capability = await connectionManagementService(db).capability({ type: "agent", companyId: run.companyId,
+          agentId: agent.id, runId: run.id, onBehalfOfUserId: run.responsibleUserId }, "connections:configure", {
+          type: "connection_management", companyId: run.companyId, purpose, provider: service, connectionId: ready?.id,
+          operation: "configure", selfServiceUserId: ready?.createdByUserId ?? (purpose === "ai" ? run.responsibleUserId : null),
+        });
+        const toolAccess = ready && purpose === "tool" ? await (await import("./tool-gateway.js")).createToolGatewayService(db).summarizeConnectionAccessForAgent({
+          companyId: run.companyId, connectionId: ready.id, agentId: agent.id, heartbeatRunId: run.id,
+          issueId: issue?.id,
+        }) : null;
+        return { ...method, management: { ...capability, canUse: toolAccess ? toolAccess.allowedCount > 0 : Boolean(ready),
+          requiresApproval: Boolean(toolAccess?.askFirstCount), requiresHumanAuthentication: method.auth !== "none" && !ready,
+          nextApiOperation: purpose === "chat" ? "POST /api/companies/{companyId}/chat-endpoints"
+            : purpose === "ai" ? "POST /api/companies/{companyId}/ai-connections" : "POST /api/companies/{companyId}/tools/apps/connect" } };
+      }));
       candidates.push({ score, nameScore, item: {
         service, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
-        methods: app.methods, source: app.source,
+        methods, source: app.source,
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
@@ -623,7 +668,7 @@ export function connectionIntentService(db: Db) {
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"
         ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "Call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
       : !suggestions && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For available or needs_user_action tool methods or AgentMail, call connection_request with the service identifier to present its setup card. For other available or needs_user_action channel or AI methods, share the method's setupPath. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
+      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For user-requested configuration, inspect method.management and use search_api/call_api with nextApiOperation when allowed. Hand off only required authentication, consent, credentials, or decisions at the saved setupPath destination. Use connection_request when human setup or access is required. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
       : results[0]!.state === "ready" && results[0]!.methods.every(method => method.purpose === "ai")
         ? "AI authentication is available for this agent's next execution. Do not create another connection request or ask the user to reconnect."
       : results[0]!.service === "agentmail"
@@ -631,10 +676,10 @@ export function connectionIntentService(db: Db) {
           ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address. Do not request another connection."
           : "Call connection_request with service agentmail to show the inline API-key card. Do not send a setup link or ask for the key in chat. The card creates an inbox for this agent; wait for completion before claiming an email address."
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
-        ? "Choose the method relevant to the task using its purpose and label. Share its setupPath with the user to open the existing channel or AI setup flow. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
+        ? "Choose the method relevant to the task using its purpose and label. If method.management.allowed, configure through search_api/call_api using nextApiOperation. Hand off only required human authentication or consent at the saved setupPath. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
       : results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : "Call connection_request with the returned service identifier. The user already asked to connect: do not ask a generic confirmation or imitate the setup card. Follow the returned instruction." };
+      : "The user asked to connect. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call." };
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {
@@ -858,9 +903,52 @@ export function connectionIntentService(db: Db) {
     return { ...row, interaction };
   }
 
+  async function requestChatHandoff(claims: ConnectionRunClaims, endpointId: string, options: { action?: SavedChatSetup["action"]; credentialFields?: string[] } = {}) {
+    const context = await loadRunContext(claims);
+    const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, context.run.companyId)));
+    if (!endpoint || endpoint.assignedAgentId !== context.agent.id) throw forbidden("This setup is not assigned to the requesting agent");
+    await connectionManagementService(db).authorize({ type: "agent", companyId: context.run.companyId,
+      agentId: context.agent.id, runId: context.run.id, onBehalfOfUserId: context.run.responsibleUserId,
+    }, "connections:configure", { type: "connection_management", companyId: context.run.companyId,
+      connectionId: endpoint.connectionId, provider: endpoint.provider, purpose: "chat", operation: "chat.authentication_handoff" });
+    const credentialFields = CHAT_HUMAN_CREDENTIAL_FIELDS.filter(field => !options.credentialFields || options.credentialFields.includes(field));
+    if (options.action === "enter_credentials" && !credentialFields.length) throw unprocessable("Credential entry requires a supported verification field");
+    const generations = chatCredentialEntryGenerations(endpoint.setup);
+    const interaction = await interactions.createConnectionIntent(context.issue, {
+      payload: { version: 1, serviceSlug: endpoint.provider, serviceName: endpoint.provider === "github" ? "GitHub" : endpoint.provider === "slack" ? "Slack" : endpoint.provider,
+        purpose: "channel", savedSetup: { endpointId: endpoint.id, connectionId: endpoint.connectionId,
+          ...(options.action ? { action: options.action } : {}),
+          ...(options.action === "enter_credentials" ? { credentialEntry: { previousGenerations: Object.fromEntries(credentialFields.map(field => [field, generations[field]])), requireAll: !!options.credentialFields } } : {}),
+          ...(options.action === "rotate_credentials" ? { credentialRotation: { previousId: chatCredentialRotationId(endpoint.setup) } } : {}) },
+        requestingAgentId: context.agent.id, requestingAgentName: context.agent.name, phase: "authorizing" },
+      sourceRunId: context.run.id, sourceIdentityContextId: context.run.activeIdentityContextId,
+      addresseeUserId: context.run.responsibleUserId!, idempotencyKey: `chat-${options.action ?? "authentication"}:${context.issue.id}:${context.run.responsibleUserId}:${endpoint.id}${options.action === "rotate_credentials" || options.action === "enter_credentials" ? `:${context.run.id}` : ""}${options.action === "enter_credentials" ? `:${options.credentialFields ? "all" : "any"}:${credentialFields.join(",")}` : ""}`,
+    });
+    if (interaction.status !== "pending") throw conflict("This setup request has already been resolved. Follow its recorded outcome.");
+    return { interactionId: interaction.id, previousRotationId: connectionIntentPayloadSchema.parse(interaction.payload).savedSetup?.credentialRotation?.previousId ?? null };
+  }
+
   async function setupOptions(interactionId: string, options: { canManageOrganizationGrant?: boolean } = {}): Promise<ConnectionIntentSetupOptions> {
     const loaded = await loadIntent(interactionId);
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
+    if (payload.savedSetup) {
+      const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, payload.savedSetup.endpointId), eq(chatEndpoints.companyId, loaded.issue.companyId), eq(chatEndpoints.connectionId, payload.savedSetup.connectionId)));
+      if (!endpoint || endpoint.assignedAgentId !== payload.requestingAgentId) throw notFound("Saved chat setup not found");
+      if (!loaded.interaction.addresseeUserId || endpoint.sponsorUserId !== loaded.interaction.addresseeUserId) throw notFound("Saved chat setup not found");
+      await connectionManagementService(db).authorize({ type: "board", userId: loaded.interaction.addresseeUserId, source: "session", ignoreInstanceAdmin: true }, "connections:configure", {
+        type: "connection_management", companyId: loaded.issue.companyId, connectionId: endpoint.connectionId,
+        targetAgentId: endpoint.assignedAgentId, purpose: "chat", operation: "chat.authentication_handoff",
+      });
+      const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, loaded.issue.companyId));
+      return { version: 1, interaction: loaded.interaction, requestedAgentId: payload.requestingAgentId, existingConnections: [],
+        service: { service: payload.serviceSlug, name: payload.serviceName, description: null, logoUrl: null, methods: [], state: "needs_user_action", connectionId: endpoint.connectionId },
+        chatSetup: { endpointId: endpoint.id, connectionId: endpoint.connectionId,
+          path: savedChatSetupPath(company!.prefix, endpoint, payload.savedSetup.action, payload.savedSetup.credentialRotation?.previousId, {
+            fields: payload.savedSetup.credentialEntry ? Object.keys(payload.savedSetup.credentialEntry.previousGenerations) : undefined,
+            requireAll: payload.savedSetup.credentialEntry?.requireAll,
+          }) },
+      };
+    }
     const app = await resolveService(payload.serviceSlug, loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId, payload.purpose);
     if (payload.purpose === "channel") {
       const [saved] = await db.select().from(toolConnections).where(and(
@@ -1203,6 +1291,7 @@ export function connectionIntentService(db: Db) {
     usableConnectionForAgent,
     search,
     request,
+    requestChatHandoff,
     // Controller-only entry point. Runtime tokens still require a running run.
     requestForRunAuthFailure: async (runId: string) => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

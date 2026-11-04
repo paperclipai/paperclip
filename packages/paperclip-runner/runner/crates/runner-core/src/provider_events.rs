@@ -27,9 +27,12 @@ pub(crate) fn with_terminal_outcome(
     provider_events: Vec<NormalizedProviderEvent>,
     outcome_events: Vec<NormalizedProviderEvent>,
 ) -> Vec<NormalizedProviderEvent> {
-    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events
-        .into_iter()
-        .partition(|event| event.event_type == "run.result.proposed");
+    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events.into_iter().partition(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "run.result.proposed" | "session.failed"
+        )
+    });
     results
         .into_iter()
         .chain(provider_events)
@@ -671,6 +674,27 @@ fn measurement(value: &Value) -> Value {
 
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
+fn provider_performance_spans(params: &Value) -> Vec<Value> {
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    params.get("spans").and_then(Value::as_array).into_iter().flatten().take(128).filter_map(|span| {
+        let name = span.get("name")?.as_str()?;
+        if !matches!(name,
+            "provider.context.environment" | "provider.context.instructions" | "provider.skills.discovery"
+            | "provider.tools.resolve" | "provider.model.resolve" | "provider.model.stream"
+            | "provider.workspace.snapshot.track" | "provider.workspace.snapshot.patch" | "provider.workspace.snapshot.diff"
+            | "provider.workspace.git.discover" | "provider.workspace.git.default_branch"
+            | "provider.dependencies.install" | "provider.plugins.initialize") { return None; }
+        let start = span.get("startedAtMs")?.as_f64()?;
+        let end = span.get("endedAtMs")?.as_f64()?;
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start || end - start > 86_400_000.0 { return None; }
+        let count = counts.entry(name).or_default();
+        if *count >= 16 { return None; }
+        *count += 1;
+        Some(json!({"name":name,"startedAtMs":start,"endedAtMs":end,
+            "outcome":if span.get("outcome").and_then(Value::as_str)==Some("failed") {"failed"} else {"ok"}}))
+    }).collect()
+}
+
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
     let mut events = Vec::new();
     let push = |events: &mut Vec<NormalizedProviderEvent>,
@@ -685,6 +709,17 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
     };
 
     match method {
+        "paperclip/providerPerformance" => {
+            let spans = provider_performance_spans(params);
+            if !spans.is_empty() {
+                push(
+                    &mut events,
+                    "harness.diagnostic",
+                    EventPriority::P1,
+                    json!({"code":"provider_performance_spans","spans":spans}),
+                );
+            }
+        }
         "thread/compacted" => push(
             &mut events,
             "context.compacted",
@@ -1173,9 +1208,16 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
-        // session-cumulative. Keep those authorities separate so consumers do
-        // not add the same tokens twice or treat cumulative cost as a delta.
+        let turn_cost = payload.pointer("/cost/basis").and_then(Value::as_str) == Some("turn");
+        let provider_cost = if cost_is_usd {
+            payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1183,15 +1225,7 @@ fn normalize_acpx_status(
             "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": if cost_is_usd {
-                payload
-                    .pointer("/cost/amount")
-                    .and_then(Value::as_f64)
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            },
+            "providerCostUsd": if turn_cost { 0.0 } else { provider_cost },
         });
         let run_delta = json!({
             "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
@@ -1208,7 +1242,7 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -1463,6 +1497,62 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acpx_turn_cost_is_not_a_cumulative_session_price() {
+        let base = json!({"tag": "usage_update", "breakdown": {
+            "inputTokens": 30787, "outputTokens": 5763, "cachedReadTokens": 475008,
+            "cachedWriteTokens": 0, "thoughtTokens": 0
+        }, "cost": {"amount": 0.336842, "currency": "USD", "basis": "turn"}});
+        let first = normalize_acpx_status(&base, "item", "turn-1", 1);
+        assert_eq!(first[0].payload["runDeltaAvailable"], true);
+        assert_eq!(first[0].payload["runDelta"]["providerCostUsd"], 0.336842);
+        assert_eq!(first[0].payload["cumulative"]["providerCostUsd"], 0.0);
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 30787);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 5763);
+        let mut second = base.clone();
+        second["cost"]["amount"] = json!(0.001);
+        let next = normalize_acpx_status(&second, "next", "turn-2", 2);
+        assert_eq!(next[0].payload["runDelta"]["providerCostUsd"], 0.001);
+        second["cost"].as_object_mut().unwrap().remove("basis");
+        let cumulative = normalize_acpx_status(&second, "legacy", "turn-3", 3);
+        assert_eq!(
+            cumulative[0].payload["cumulative"]["providerCostUsd"],
+            0.001
+        );
+        assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn performance_diagnostics_keep_only_bounded_content_free_measurements() {
+        let mut spans = vec![json!({"name":"private prompt","startedAtMs":1,"endedAtMs":2})];
+        for _ in 0..200 {
+            spans.push(
+                json!({"name":"provider.model.stream","startedAtMs":1000,"endedAtMs":1010,
+                "outcome":"failed","authorization":"private","attributes":{"prompt":"private"}}),
+            );
+        }
+        let events =
+            normalize_codex_notification("paperclip/providerPerformance", &json!({"spans":spans}));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "harness.diagnostic");
+        assert_eq!(events[0].priority, EventPriority::P1);
+        let rows = events[0].payload["spans"].as_array().unwrap();
+        assert_eq!(rows.len(), 16);
+        assert_eq!(
+            rows[0],
+            json!({"name":"provider.model.stream","startedAtMs":1000.0,"endedAtMs":1010.0,"outcome":"failed"})
+        );
+        assert!(!events[0].payload.to_string().contains("private"));
+        assert!(normalize_codex_notification(
+            "paperclip/providerPerformance",
+            &json!({"spans":[
+                {"name":"provider.model.stream","startedAtMs":10,"endedAtMs":1},
+                {"name":"provider.model.stream","startedAtMs":0,"endedAtMs":86400001}
+            ]})
+        )
+        .is_empty());
+    }
 
     #[test]
     fn unrelated_information_retains_only_bounded_run_log_diagnostics() {

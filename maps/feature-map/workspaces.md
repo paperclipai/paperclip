@@ -57,6 +57,44 @@ Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx)
 
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
+For experimental native remote storage, follow the
+[deployment prerequisites and explicit local import](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+With durable Postgres, S3, and a stable key configured, a new disposable
+Paperclip Runner sandbox task with a supported fresh source enrolls by default.
+Verify an explicit `remoteWorkspaceStorageEnabled: false` disables new enrollment,
+and an existing host workspace or configured local folder stays on its legacy
+path until explicitly imported. An enrolled workspace must keep remote authority
+when enrollment is disabled and fail admission if persistence prerequisites are
+lost. Write ordinary/binary files and, for Git, staged, unstaged, and unpushed
+work. Finish the run and inspect its saved version. Replace the webserver and
+verify the next task turn uses the same remote folder without a controller
+checkout. Then release the saved allocation and verify a new one restores the
+files, Git state, and managed same-project repositories without the old sandbox
+or original Git remote. Authorized referenced Git repositories must be editable
+task copies; explicitly read-only sources must fail admission. Separate workspaces
+may run concurrently; shared concurrent writers
+must be rejected.
+
+The Files panel must label **Live workspace** or **Saved copy** with its save
+time. Confirm browse, preview, and download agree. A missing allocation with
+unsaved work must report unavailability rather than show an old save as current.
+Close must retain dirty/unfinished work and reject custom cleanup/teardown
+commands; a clean saved workspace can release compute while retaining files.
+Manual runtime commands, jobs, repairs, and service starts must reject remote
+workspaces before local filesystem access; agent task execution remains supported.
+The archive, storage, migration, retention, and lifecycle regression suites
+exercise these contracts separately. This recipe records required deployment
+checks; it does not claim a live provider or webserver replacement passed.
+
+For a repository-free isolated task, complete an explicitly fresh retry, save a
+marker, then send ordinary new input. It must retain the bound attempt directory
+and marker. A later explicitly fresh retry must use a separate clean sibling.
+The [production preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and real private directories; it also rejects changed bindings.
+The [directory boundary suite](../../server/src/services/isolated-task-directory.test.ts)
+checks namespace, missing-directory and symlink refusal. Neither suite proves a
+hosted provider turn.
+
 For slow source preparation, configure a short PostgreSQL idle-transaction
 timeout in a disposable instance. Hold preparation beyond that interval and
 verify it retains its source lock, rejects competing preparation, and leaves
@@ -148,9 +186,13 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
 
 - A link or running badge does not prove the service is reachable from the user’s browser.
 - Workspace IDs, runtime leases, and repository paths are not interchangeable.
+- Remote workspace snapshots require external Postgres, S3, and the original
+  encryption key. Edits after the last save still depend on the sandbox; there
+  is no periodic workspace backup. The experiment does not remove the instance
+  volume or establish zero-outage deployment for other data paths.
 - Terminal workspace cleanup wakes after committed task/workspace/PR changes and
-  restores cooldown deadlines at startup. Empty lanes stop scanning. Display Git
-  results can lag by thirty seconds. Compatible records share one advisory Git
+  restores cooldown deadlines at startup. Empty lanes stop scanning. Metadata
+  reads do not inspect storage. Compatible records share one advisory Git
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
   The [worker tests](../../server/src/__tests__/terminal-workspace-work.test.ts)

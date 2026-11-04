@@ -36,6 +36,10 @@ Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
 
+First-agent onboarding offers only Claude and Codex, subject to instance adapter
+availability. Other providers remain available through Add agent after onboarding.
+A saved draft for another provider requires a new choice.
+
 ### `cli-setup`
 
 Use `paperclipai onboard --help` or `paperclipai run --help` to select an isolated data directory before setup.

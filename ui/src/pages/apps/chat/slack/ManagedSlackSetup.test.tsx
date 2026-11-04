@@ -63,6 +63,47 @@ it("opens manager authorization directly when there is no saved workspace", asyn
   expect(navigation).toHaveBeenCalledWith({ authorizationUrl: "https://slack.com/oauth" });
   expect(api.provisionManagedSlack).not.toHaveBeenCalled();
 });
+it.each([0, 1, 2])("offers workspace reconnection before an app exists with %i active workspaces", async (activeWorkspaces) => {
+  endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: Array.from({ length: activeWorkspaces }, (_, i) => ({ grantId: `grant-${i}`, workspaceName: `Workspace ${i}` })) });
+  await render();
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe("Reconnect your Slack workspace to continue setting up this agent.");
+  const reconnect = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Reconnect Slack workspace");
+  expect(reconnect).toBeDefined();
+  expect(reconnect!.disabled).toBe(false);
+  expect(container.textContent).not.toContain("Connect another Slack workspace");
+  expect(api.authorizeSlackManager).not.toHaveBeenCalled();
+  await act(async () => reconnect!.click());
+  expect(api.authorizeSlackManager).toHaveBeenCalledExactlyOnceWith("endpoint");
+  expect(navigation).toHaveBeenCalledWith({ authorizationUrl: "https://slack.com/oauth" });
+  expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+});
+it.each([0, 1, 2])("offers workspace reconnection after an authorization request fails with %i active workspaces", async (activeWorkspaces) => {
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: Array.from({ length: activeWorkspaces }, (_, i) => ({ grantId: `grant-${i}`, workspaceName: `Workspace ${i}` })) });
+  api.authorizeSlackManager.mockRejectedValueOnce(new Error("Reconnect your Slack workspace to continue setting up this agent."));
+  await render({ autoStart: activeWorkspaces === 0 });
+  if (activeWorkspaces) {
+    const connectAnother = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Connect another Slack workspace");
+    await act(async () => connectAnother!.click());
+  }
+  const reconnect = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Reconnect Slack workspace");
+  expect(reconnect).toBeDefined();
+  expect(reconnect!.disabled).toBe(false);
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
+  await act(async () => reconnect!.click());
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(2);
+  expect(navigation).toHaveBeenCalledWith({ authorizationUrl: "https://slack.com/oauth" });
+  expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+});
+it("keeps one workspace reconnect action when a saved app needs reauthorization", async () => {
+  endpoint.setup!.slackRegistration = { status: "failed", appId: "app", managerGrantId: "grant", errorCode: "slack_manager_reauthorize" } as NonNullable<ChatEndpoint["setup"]>["slackRegistration"];
+  await render();
+  const reconnect = Array.from(container.querySelectorAll("button")).filter(item => item.textContent === "Reconnect Slack workspace");
+  expect(reconnect).toHaveLength(1);
+  await act(async () => reconnect[0]!.click());
+  expect(api.authorizeSlackManager).toHaveBeenCalledExactlyOnceWith("endpoint");
+  expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+});
 it("does not start while Choose agent is visible or after Save & exit", async () => {
   await render({ autoStart: false });
   expect(api.provisionManagedSlack).not.toHaveBeenCalled();

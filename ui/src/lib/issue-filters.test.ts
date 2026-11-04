@@ -69,6 +69,14 @@ function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {
   };
 }
 
+it("separates monitored waits from In Progress in task filters", () => {
+  const monitored = makeIssue({ id: "waiting", status: "in_progress", displayStatus: "monitoring" });
+  const working = makeIssue({ id: "working", status: "in_progress" });
+  const rows = [monitored, working];
+  expect(applyIssueFilters(rows, { ...defaultIssueFilterState, statuses: ["monitoring"] }).map(row => row.id)).toEqual(["waiting"]);
+  expect(applyIssueFilters(rows, { ...defaultIssueFilterState, statuses: ["in_progress"] }).map(row => row.id)).toEqual(["working"]);
+});
+
 describe("issue filters", () => {
   it("hides automation by default while an opt-in includes every creation source", () => {
     const issues = [makeIssue({ id: "human", createdByUserId: "person" }), makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" }), makeIssue({ id: "system" })];
@@ -78,6 +86,18 @@ describe("issue filters", () => {
     expect(applyIssueFilters(issues, defaultIssueFilterState, null, false)).toEqual(issues);
     expect(countActiveIssueFilters(defaultIssueFilterState, true)).toBe(0);
     expect(countActiveIssueFilters({ ...defaultIssueFilterState, showAgentCreatedTasks: true }, true)).toBe(1);
+  });
+
+  it("selects only routine executions even when automatic tasks are hidden", () => {
+    const routine = makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" });
+    const issues = [makeIssue({ id: "manual", createdByUserId: "person" }), routine,
+      makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "channel", originKind: "chat_channel" })];
+    const filters = { ...defaultIssueFilterState, routineTasksOnly: true };
+    expect(applyIssueFilters(issues, filters, null, true)).toEqual([routine]);
+    expect(applyIssueFilters(issues, { ...filters, statuses: ["done"] })).toEqual([]);
+    expect(countActiveIssueFilters(filters, true)).toBe(1);
+    expect(normalizeIssueFilterState({ routineTasksOnly: true }).routineTasksOnly).toBe(true);
+    expect(normalizeIssueFilterState({ routineTasksOnly: "true" }).routineTasksOnly).toBe(false);
   });
 
   it("defaults legacy and invalid preferences to hidden without losing other filters", () => {

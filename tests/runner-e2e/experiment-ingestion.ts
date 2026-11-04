@@ -3,7 +3,7 @@ import { mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { isEvalProjectId } from "./eval-otlp-payload.js";
 
-export const EVAL_EXPERIMENT_LIMITS = { maxRequests: 3, maxTotalBytes: 4 * 1024 * 1024, maxScores: 8 } as const;
+export const EVAL_EXPERIMENT_LIMITS = { maxRequests: 3, maxTotalBytes: 4 * 1024 * 1024, maxScores: 14 } as const;
 
 export async function openExperimentIngestion(input: {
   receiptPath: string; campaignId: string; projectId: string; deadlineAt: number; transport?: typeof fetch;

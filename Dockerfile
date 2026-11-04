@@ -122,10 +122,11 @@ WORKDIR /app/packages/paperclip-runner
 COPY packages/paperclip-runner/rust-toolchain.toml ./
 COPY packages/paperclip-runner/runner ./runner
 COPY packages/paperclip-runner/protocol ./protocol
+COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ./
 # Cargo fingerprints source mtimes. Normalize them here and after the full
 # source copy below so a fresh checkout cannot invalidate unchanged inputs.
 RUN find runner protocol -type f -exec touch -d @0 {} + \
-  && touch -d @0 rust-toolchain.toml \
+  && touch -d @0 rust-toolchain.toml acpx-profiles.json antigravity-distributions.json \
   && cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
 
 FROM runner-build AS build
@@ -133,7 +134,7 @@ WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
-  && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
+  && touch -d @0 packages/paperclip-runner/rust-toolchain.toml packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json
 # Both the browser bundle and server stamp need the source commit. Declare it
 # after the stable dependency layers, before either application build.
 ARG PAPERCLIP_BUILD_COMMIT=""
@@ -145,8 +146,11 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # next RUN as an environment variable. The production stage below declares the
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
+# NODE_OPTIONS covers the Node build steps. tsc is a native binary and ignores it.
 ENV NODE_OPTIONS=--max-old-space-size=4096
-RUN pnpm --filter @paperclipai/server build
+# The image needs no declarations, and CI type-checks this source separately.
+# Emitting without either cuts the tsc step from more than 10 GiB to about 2.5 GiB.
+RUN PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN pnpm --filter @paperclipai/server build:runtime \
   && test -f server/dist-runtime/index.mjs || (echo "ERROR: server runtime bundle missing" && exit 1)
@@ -194,7 +198,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY --chown=node:node --from=build /app /app
 
-COPY --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain

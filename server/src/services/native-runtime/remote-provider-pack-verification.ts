@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { runRemoteProviderVerification } from "./remote-provider-pack.js";
@@ -13,6 +14,11 @@ export type ProviderPackIdentity = {
   schema: string;
   digest: string;
   payload: {
+    compatibility?: { opencode: number; acpx: number };
+    contractDigest?: string;
+    acpxProfileDigests?: Record<string, string>;
+    providers?: Record<string, unknown>;
+    candidateProviders?: Record<string, unknown>;
     pins: { opencode: string; [key: string]: string | null };
     target: { platform: string; architecture: string };
     runnerSourceRevision: string;
@@ -20,12 +26,76 @@ export type ProviderPackIdentity = {
   };
 };
 
-export async function verifyRemoteProviderPack({ runner, cwd, packRoot, manifest }: {
+export type ProviderPackInstallation = { root: string; manifest: unknown; immutable: boolean };
+export type PackProvider = { kind: "opencode" } | { kind: "acpx"; agent: string };
+
+/** Admission of a build-qualified, OS-protected installation. Source revisions,
+ * dependency pins and unrelated provider changes are provenance, not an interface.
+ * The interface is the hand-maintained compatibility revision plus the pack's
+ * computed contract digest; a pack without a digest predates that check and
+ * is replaced rather than reused.
+ * The metadata comes from the trusted runner, never from a provider tool result.
+ */
+function compatibleInstallation<T extends ProviderPackIdentity>(
+  installation: ProviderPackInstallation, expected: T, packRoot: string,
+  provider: PackProvider, requireExactIdentity: boolean, requireCurrentOpenCodeProxy: boolean,
+): T {
+  const actual = installation.manifest as T | null;
+  const payload = actual?.payload;
+  const contract = expected.payload.compatibility?.[provider.kind];
+  if (!installation.immutable || installation.root !== packRoot || !payload
+    || actual.schema !== expected.schema
+    || actual.digest !== `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}`
+    || canonicalProviderPackJson(payload.target) !== canonicalProviderPackJson(expected.payload.target)
+    || (requireExactIdentity ? actual.digest !== expected.digest
+      : !Number.isSafeInteger(contract) || contract! < 1 || payload.compatibility?.[provider.kind] !== contract
+        || !/^sha256:[a-f0-9]{64}$/.test(expected.payload.contractDigest ?? "")
+        || payload.contractDigest !== expected.payload.contractDigest)
+    || typeof payload.pins?.opencode !== "string") {
+    throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack interface or installation is incompatible");
+  }
+  // Launch profiles and recovery receipts bind the selected installation's own
+  // bytes, never the current controller's artifact hashes.
+  for (const [name, expectedArtifact] of Object.entries(expected.payload.artifacts)) {
+    const artifact = payload.artifacts?.[name];
+    if (artifact?.path !== expectedArtifact.path || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256)) {
+      throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack artifact identity is invalid");
+    }
+  }
+  if (provider.kind === "opencode" && requireCurrentOpenCodeProxy
+    && payload.artifacts.opencodeProxy?.sha256 !== expected.payload.artifacts.opencodeProxy?.sha256) {
+    throw new Error("runner_remote_provider_artifact_incompatible: installed proxy does not match the requested OpenCode diagnostics");
+  }
+  if (provider.kind === "acpx") {
+    const agent = provider.agent;
+    const currentProfile = expected.payload.acpxProfileDigests?.[agent];
+    const selected = expected.payload.providers?.[agent] ?? expected.payload.candidateProviders?.[agent];
+    const installed = payload.providers?.[agent] ?? payload.candidateProviders?.[agent];
+    // ACPX's existing qualified launch profiles remain authoritative for the
+    // selected agent. Other providers in the same pack do not invalidate it.
+    if (currentProfile ? payload.acpxProfileDigests?.[agent] !== currentProfile
+      : !selected || !installed || ["version", "profileDigest", "closureDigest", "qualification", "path"].some(key =>
+          (installed as Record<string, unknown>)[key] !== (selected as Record<string, unknown>)[key])) {
+      throw new Error("runner_remote_provider_artifact_incompatible: selected ACPX provider profile is incompatible");
+    }
+  }
+  return structuredClone(actual);
+}
+
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
-  manifest: ProviderPackIdentity;
-}): Promise<void> {
+  manifest: T;
+  installation?: ProviderPackInstallation;
+  provider?: PackProvider;
+  requireExactIdentity?: boolean;
+  requireCurrentOpenCodeProxy?: boolean;
+}): Promise<T> {
+  if (installation) {
+    if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
+    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
+  }
   const expected = Buffer.from(
     canonicalProviderPackJson(manifest),
     "utf8",
@@ -82,4 +152,5 @@ export async function verifyRemoteProviderPack({ runner, cwd, packRoot, manifest
       "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
     );
   }
+  return structuredClone(manifest);
 }

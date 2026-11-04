@@ -292,6 +292,23 @@ describe("native backend factory", () => {
     });
   });
 
+  it("reports Cursor Cloud capabilities without inheriting native Codex promises", async () => {
+    const input = execution({ kind: "cursor_cloud", model: "explicit-model", cursorCloud: {
+      schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/project" }],
+    } });
+    input.session.driverKind = "cursor_cloud_api";
+    const backend = createRunnerdNativeSessionBackend(preparedExecution(input), {
+      transportFactory: () => { throw new Error("descriptor must not launch the transport"); },
+    });
+    const descriptor = await backend.descriptor();
+    expect(descriptor).toMatchObject({ name: "cursor_cloud_api", version: "cursor-cloud-v1", capabilities: {
+      resume: true, dynamicTools: true, runtimeRequestResolution: false, runtimeRequestHandoff: false,
+      steering: false, goals: false, threadLineage: false,
+      unsupported: expect.arrayContaining(["native_permissions", "native_questions", "preprompt_model_acknowledgment"]),
+    } });
+    expect(descriptor.capabilities.typedEventFamilies).toBeUndefined();
+  });
+
   it("defers remote ACPX workspace admission to the runner filesystem", async () => {
     const remoteWorkspace = "/home/daytona/paperclip-workspace";
     const transport = new FakeCodexTransport();
@@ -358,6 +375,36 @@ describe("native backend factory", () => {
     });
     expect(captured).toBe(composeNativeSystemInstructions(input.runtimeContext, "Updated custom entry."));
     await session.close({ reason: "test complete" });
+  });
+
+  it("recovers with admitted instructions after the old bundle is removed", async () => {
+    const input = preparedExecution(execution());
+    if (!("runtimeContext" in input)) throw new Error("fixture requires runtime context");
+    const retainedSystemInstructions = composeNativeSystemInstructions(input.runtimeContext, "Keep assigned instructions.");
+    const original = await createNativeSessionBackend(input, {
+      codexTransportFactory: () => new FakeCodexTransport(),
+      environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    }).openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", agentId: "agent", issueId: "issue" },
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller replacement" });
+    rmSync(input.runtimeContext.instructions.bundle.rootPath, { recursive: true });
+    const transport = new FakeCodexTransport();
+    transport.readResponse = { thread: { id: transport.threadId, sessionId: transport.providerSessionId, cwd: WORKSPACE, turns: [] } };
+    const factory = vi.fn(() => transport);
+    expect(() => createNativeSessionBackend(input, { codexTransportFactory: factory })).toThrow();
+    expect(factory).not.toHaveBeenCalled();
+    const backend = createNativeSessionBackend(input, {
+      retainedSystemInstructions, codexTransportFactory: factory,
+      workingDirectoryAuthority: "remote_runner", environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const recovered = await backend.recoverSession!({ ...snapshot, activeTurnId: null }, { signal: new AbortController().signal });
+    expect(recovered).toMatchObject({ recovered: true });
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ baseInstructions: retainedSystemInstructions }));
+    expect(transport.calls.some(call => call.method === "thread/start" || call.method === "turn/start")).toBe(false);
+    if (recovered.recovered) await recovered.session.close({ reason: "test complete" });
   });
 
   describe("runner-prepared launch working directory", () => {
@@ -654,26 +701,23 @@ describe("native backend factory", () => {
     })).toThrow("ACPX candidate direct execution requires completed qualification");
   });
 
+  // The last source-bound Copilot, Grok and Pi identities, and retained Cursor declarations.
   it.each([
+    ["copilot", { agentProfileVersion: 91, commandDigest: "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9" }],
+    ["grok", { agentProfileVersion: 19, commandDigest: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" }],
+    ["pi", { agentProfileVersion: 36, commandDigest: "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc" }],
     ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
-    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v14-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v13-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v14-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v18-identity.json"],
     ["cursor", "../../test/fixtures/cursor-acp/profile-v9-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v7-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v9-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v10-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v11-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v9-identity.json"],
-  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, path) => {
-    const historical = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
+  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, source) => {
+    const historical = typeof source === "string"
+      ? (({ declaration, commandDigest }) => ({ agentProfileVersion: declaration.agentProfileVersion, commandDigest }))(JSON.parse(readFileSync(new URL(source, import.meta.url), "utf8")))
+      : source;
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "custom/explicit-test-model" : "explicit-fixture-model");
     Object.assign(input.provider, { agent, model: current.qualificationModel, profile: { ...current,
-      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+      agentProfileVersion: historical.agentProfileVersion, commandDigest: historical.commandDigest } });
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
       .toThrow("does not match the qualified agentProfileVersion");
     input.provider.profile.agentProfileVersion = current.agentProfileVersion;

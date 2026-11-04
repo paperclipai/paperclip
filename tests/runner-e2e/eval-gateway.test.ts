@@ -6,7 +6,7 @@ import { connect } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
 import { beginEvalAgentPhase, createEvalAttemptPhase, readEvalAttemptPhase } from "./attempt-phase.js";
-import { evalRequestReservation, EvalUsageStream, forwardEvalRequest, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
+import { boundedEvalPayload, evalRequestReservation, EvalUsageStream, forwardEvalRequest, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
 const directories: string[] = [], closes: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); });
 const identity = { executionId: "hello", attemptId: "attempt", phase: "agent" as const };
@@ -86,12 +86,14 @@ it("stops at the campaign cap before any upstream request", async () => {
   await expect(forwardEvalRequest({ ...f, transport })).rejects.toThrow("spending cap");
   expect(transport).not.toHaveBeenCalled();
 });
-it.each(["direct", "braintrust"] as const)("retains request-policy cost provenance without changing the %s cache policy", async mode => {
+it.each((["direct", "braintrust"] as const).flatMap(mode => (["alias", "snapshot"] as const).map(model => ({ mode, model }))))(
+  "retains request-policy cost provenance for $model responses without changing the $mode cache policy", async ({ mode, model }) => {
   const f = await fixture();
   const pricedRoute = { ...route, mode, price: { ...route.price, model: "gpt-5.6-sol", inputUsdPerMillion: "4", cachedReadUsdPerMillion: "0.4",
-    outputUsdPerMillion: "20", cacheWrite30mUsdPerMillion: "5", cacheWrite12hUsdPerMillion: "10" } };
+    outputUsdPerMillion: "20", cacheWrite30mUsdPerMillion: "5", cacheWrite12hUsdPerMillion: "10", responseModels: ["gpt-5.6-sol-reviewed-snapshot"] } };
   const payload = { ...f.payload, model: pricedRoute.price.model, prompt_cache_retention: "24h", stream: true };
-  const body = { ...usage, model: pricedRoute.price.model, usage: { ...usage.usage, input_tokens_details: { cache_write_tokens: 6, cached_tokens: 2 } } };
+  const body = { ...usage, model: model === "alias" ? pricedRoute.price.model : pricedRoute.price.responseModels[0],
+    usage: { ...usage.usage, input_tokens_details: { cache_write_tokens: 6, cached_tokens: 2 } } };
   const transport = vi.fn<typeof fetch>(async () => new Response(`data: ${JSON.stringify({ type: "response.completed", response: body })}\n\n`, {
     headers: { "content-type": "text/event-stream", "x-bt-used-endpoint": "OPENAI_API_KEY", "x-bt-cached": "MISS" },
   }));
@@ -101,6 +103,7 @@ it.each(["direct", "braintrust"] as const)("retains request-policy cost provenan
     cacheWriteAttribution: { source: "request_policy", version: "openai-prompt-cache-2026-10-20", ttl: "30m" } } });
   expect(f.receipts.at(-1)).toEqual(receipt);
   expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000138800", heldUsd: "0.000000000", inflight: 0 });
+  expect((await readEvalCostLedger(f.file)).state.snapshot()).toMatchObject({ knownUsd: "0.000138800", heldUsd: "0.000000000", unknownRequests: 0 });
 });
 it("retains cancelled and provider-error requests as unknown, including repeated retries", async () => {
   const f = await fixture();
@@ -134,6 +137,71 @@ it("admits local function and custom tools inside a Codex namespace", async () =
   const result = await forwardEvalRequest({ ...f, payload: { ...f.payload, tools }, transport });
   expect(result.outcome).toBe("succeeded");
   expect(transport).toHaveBeenCalledOnce();
+});
+it("validates the native daemon's namespace envelope before reserving and forwarding", async () => {
+  const f = await fixture();
+  const localTool = (name: string) => ({ type: "function", name, description: "Synthetic local tool",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, strict: true });
+  const tools = [...Array.from({ length: 7 }, (_, index) => localTool(`local_${index}`)),
+    { type: "namespace", name: "local_tools", description: "Synthetic local namespace",
+      tools: Array.from({ length: 5 }, (_, index) => localTool(`operation_${index}`)) }];
+  const payload = Object.freeze({ ...f.payload, tools });
+  const normalized = boundedEvalPayload(payload, { provider: route.provider, price: route.price, maximumOutputTokens: 100 });
+  expect(normalized).toEqual({ ...payload, max_output_tokens: 100, service_tier: "default" });
+  expect(payload).not.toHaveProperty("service_tier");
+  expect(payload.max_output_tokens).toBe(500);
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+  const transport = vi.fn<typeof fetch>(async (_url, init) => {
+    expect(JSON.parse(init!.body as string)).toEqual(normalized);
+    expect((await readEvalCostLedger(f.file)).state.snapshot().inflight).toBe(1);
+    return response();
+  });
+  const receipt = await forwardEvalRequest({ ...f, payload, transport });
+  expect(receipt).toMatchObject({ outcome: "succeeded", costUsd: "0.000068000", final: true });
+  expect(transport).toHaveBeenCalledOnce();
+});
+it.each([
+  { type: "namespace", name: " ", tools: [{ type: "function", name: "local" }] },
+  { type: "namespace", name: "local", description: {}, tools: [{ type: "function", name: "local" }] },
+  { type: "namespace", name: "local", tools: [] },
+  { type: "namespace", name: "local", tools: null },
+  { type: "namespace", name: "local", tools: [null] },
+  { type: ["function"], name: "local" },
+  { type: ["custom"], name: "local" },
+  { type: "namespace", name: "local", tools: [{ type: ["function"], name: "local" }] },
+  { type: "namespace", name: "local", tools: [{ type: ["custom"], name: "local" }] },
+  ...[undefined, null, 7, "", " "].flatMap(name => ["function", "custom"].flatMap(type =>
+    [{ type, name }, { type: "namespace", name: "local", tools: [{ type, name }] }])),
+  { type: "namespace", name: "local", tools: [{ type: "function", name: "local" }], future_hosted_tool: true },
+  { type: "namespace", name: "local", tools: [{ type: "namespace", name: "nested", tools: [{ type: "function", name: "local" }] }] },
+  ...["web_search", "file_search", "image_generation", "code_interpreter", "computer", "mcp", "unknown"].map(type =>
+    ({ type: "namespace", name: "local", tools: [{ type }] })),
+])("rejects malformed, nested, or hosted namespace tools before any side effects", async tool => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(), persist = vi.fn();
+  const payload = { ...f.payload, tools: [tool] };
+  expect(() => boundedEvalPayload(payload, f.route)).toThrow("unqualified_hosted_tool");
+  await expect(forwardEvalRequest({ ...f, payload, transport, persist })).rejects.toThrow("unqualified_hosted_tool");
+  expect(transport).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
+it.each(["flat", "namespace"] as const)("bounds the total %s tool definitions including namespace wrappers", async shape => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(), persist = vi.fn();
+  const tool = { type: "function", name: "local_tool" };
+  const tools = shape === "flat" ? Array.from({ length: 1024 }, () => tool)
+    : [{ type: "namespace", name: "local", tools: Array.from({ length: 1023 }, () => tool) }];
+  expect(boundedEvalPayload({ ...f.payload, tools }, f.route).tools).toEqual(tools);
+  const payload = { ...f.payload, tools: [...tools, tool] };
+  await expect(forwardEvalRequest({ ...f, payload, transport, persist })).rejects.toThrow("unqualified_hosted_tool");
+  expect(transport).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
+it("keeps Anthropic custom tools and output limits separate from OpenAI namespaces", () => {
+  const anthropic = { provider: "anthropic" as const, price: { ...route.price, provider: "anthropic" as const }, maximumOutputTokens: 100 };
+  const tools = [{ name: "local_tool", input_schema: { type: "object" } }, { type: "custom", name: "other_tool" }];
+  expect(boundedEvalPayload({ model: "fixture", tools, max_tokens: 500 }, anthropic))
+    .toEqual({ model: "fixture", tools, max_tokens: 100, service_tier: "standard_only" });
+  expect(() => boundedEvalPayload({ model: "fixture", tools: [{ type: "namespace", name: "local", tools }] }, anthropic))
+    .toThrow("unqualified_hosted_tool");
 });
 it.each([
   { type: "namespace", name: "local", tools: [{ type: "web_search" }] },
@@ -386,6 +454,66 @@ it("refuses missing or unreviewed attribution checkpoints before request dispatc
 const provisionalBound = { version: 1 as const, scope: "full_lifecycle" as const, evidenceSha256: "a".repeat(64),
   configurationSha256: costBoundConfigurationSha256({ provider: route.provider, mode: route.mode, price: route.price,
     maximumInputTokens: route.maximumInputTokens, maximumOutputTokens: route.maximumOutputTokens, reservation: evalRequestReservation(route) }) };
+it.each(["json", "sse"] as const)("prices a declared exact response snapshot from forwarded %s bytes and replays the ledger", async format => {
+  const f = await fixture();
+  const selected = { ...route, price: { ...route.price, model: "gpt-5.4-mini", responseModels: ["gpt-5.4-mini-2026-03-17"], version: "snapshot-fixture-2" } };
+  const bound = { ...provisionalBound, configurationSha256: costBoundConfigurationSha256({
+    provider: selected.provider, mode: selected.mode, price: selected.price,
+    maximumInputTokens: selected.maximumInputTokens, maximumOutputTokens: selected.maximumOutputTokens, reservation: evalRequestReservation(selected),
+  }) };
+  const returned = { ...usage, model: selected.price.responseModels[0] };
+  const wire = Buffer.from(format === "sse" ? `data: ${JSON.stringify({ type: "response.completed", response: returned })}\r\n\r\ndata: [DONE]\r\n\r\n` : JSON.stringify(returned));
+  const forwarded: Uint8Array[] = [];
+  const transport = vi.fn<typeof fetch>(async (_url, init) => {
+    expect(JSON.parse(init!.body as string).model).toBe(selected.price.model);
+    expect((await readEvalCostLedger(f.file)).state.snapshot().inflight).toBe(1);
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      for (let index = 0; index < wire.length; index += 3) controller.enqueue(wire.subarray(index, index + 3));
+      controller.close();
+    } }), { headers: { "content-type": format === "sse" ? "text/event-stream" : "application/json", "x-bt-used-endpoint": selected.endpointName! } });
+  });
+  const receipt = await forwardEvalRequest({ ...f, route: { ...selected, provisionalBound: bound },
+    payload: { ...f.payload, model: selected.price.model }, transport, onChunk: async chunk => { forwarded.push(chunk); } });
+  expect(Buffer.concat(forwarded)).toEqual(wire);
+  expect(receipt).toMatchObject({ outcome: "succeeded", costUsd: "0.000068000", usageComplete: true, final: true, usage: { model: returned.model } });
+  expect(f.receipts.at(-1)).toEqual(receipt);
+  const replay = (await readEvalCostLedger(f.file)).state;
+  expect(replay.snapshot()).toMatchObject({ knownUsd: "0.000068000", heldUsd: "0.000000000", unknownRequests: 0, boundedUnresolvedRequests: 0, inflight: 0 });
+  const request = [...replay.requests.values()][0]!;
+  expect(request.boundInvalidated).not.toBe(true);
+  expect(request.observations).toEqual(expect.arrayContaining([expect.objectContaining({
+    classification: "estimated", model: returned.model, costUsd: "0.000068000", pricingVersion: selected.price.version,
+  })]));
+  expect(transport).toHaveBeenCalledOnce();
+});
+
+it.each(["listed-partial", "unlisted-snapshot", "unlisted-suffix", "no-mapping"] as const)("preserves unknown usage and the correct bound for %s response bytes", async reason => {
+  const f = await fixture();
+  const selected = { ...route, price: { ...route.price, model: "gpt-5.4-mini",
+    ...(reason === "no-mapping" ? {} : { responseModels: ["gpt-5.4-mini-2026-03-17"] }) } };
+  const bound = { ...provisionalBound, configurationSha256: costBoundConfigurationSha256({
+    provider: selected.provider, mode: selected.mode, price: selected.price,
+    maximumInputTokens: selected.maximumInputTokens, maximumOutputTokens: selected.maximumOutputTokens, reservation: evalRequestReservation(selected),
+  }) };
+  const model = reason === "unlisted-snapshot" ? "gpt-5.4-mini-2026-03-18"
+    : reason === "unlisted-suffix" ? "gpt-5.4-mini-2026-03-17-extra" : "gpt-5.4-mini-2026-03-17";
+  const returned = { ...usage, model, ...(reason === "listed-partial" ? { status: "in_progress", usage: undefined } : {}) };
+  const receipt = await forwardEvalRequest({ ...f, route: { ...selected, provisionalBound: bound }, payload: { ...f.payload, model: selected.price.model },
+    transport: async () => new Response(JSON.stringify(returned), { headers: { "x-bt-used-endpoint": selected.endpointName! } }) });
+  expect(receipt.costUsd).toBeNull();
+  const replay = (await readEvalCostLedger(f.file)).state;
+  expect(replay.snapshot()).toMatchObject({ knownUsd: "0.000000000", heldUsd: "0.003000000", unknownRequests: 1,
+    boundedUnresolvedRequests: reason === "listed-partial" ? 1 : 0, inflight: 0 });
+  expect([...replay.requests.values()][0]!.boundInvalidated === true).toBe(reason !== "listed-partial");
+});
+
+it("does not admit a declared response snapshot as the request model", async () => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(), persist = vi.fn();
+  const selected = { ...route, price: { ...route.price, responseModels: ["fixture-2026-03-17"] } };
+  await expect(forwardEvalRequest({ ...f, route: selected, payload: { ...f.payload, model: selected.price.responseModels[0] }, transport, persist })).rejects.toThrow("unqualified_model");
+  expect(transport).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
 it("retains a reviewed model bound through a partial response and durable reload without releasing the hold", async () => {
   const f = await fixture();
   const receipt = await forwardEvalRequest({ ...f, route: { ...route, provisionalBound }, transport: async () => {
@@ -411,9 +539,10 @@ it.each(["no-headers", "route", "failover", "model", "input-limit", "output-limi
   expect([...replay.requests.values()][0]!.boundInvalidated).toBe(true);
 });
 
-it("refuses a changed model limit or rate with a stale reviewed bound before dispatch", async () => {
+it("refuses a changed model limit, rate or response mapping with a stale reviewed bound before dispatch", async () => {
   const f = await fixture(), transport = vi.fn<typeof fetch>();
-  for (const changed of [{ ...route, maximumInputTokens: 500 }, { ...route, price: { ...route.price, inputUsdPerMillion: "20" } }]) {
+  for (const changed of [{ ...route, maximumInputTokens: 500 }, { ...route, price: { ...route.price, inputUsdPerMillion: "20" } },
+    { ...route, price: { ...route.price, responseModels: ["fixture-2026-03-17"] } }]) {
     await expect(forwardEvalRequest({ ...f, route: { ...changed, provisionalBound }, transport })).rejects.toThrow("configuration changed");
   }
   expect(transport).not.toHaveBeenCalled();

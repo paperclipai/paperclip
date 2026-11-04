@@ -3,14 +3,17 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   companies,
+  projects,
   agents,
   companyMemberships,
   companyFastResponses,
   costEvents,
+  costAdjustments,
+  activityLog,
   fastResponseRequests,
   connectionGrants,
   connectionGrantMembers,
@@ -36,8 +39,11 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { settleConversationTurn } from "../services/agent-conversations.js";
 import { buildLowTrustSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
-import { deliverBudgetEnforcement } from "../services/budgets.js";
-let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
+import { deliverBudgetEnforcement, flushBudgetEvaluationWork } from "../services/budgets.js";
+import { withAccountingTransaction } from "../services/accounting-transaction.js";
+import { deleteAgentDependencies } from "../services/agent-deletion.js";
+import { billingReconciliationService } from "../services/billing-reconciliation.js";
+let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined,
   db: ReturnType<typeof createDb>,
   home: string;
 beforeAll(async () => {
@@ -46,12 +52,15 @@ beforeAll(async () => {
   );
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "fast-response-fixture");
-  database = await startEmbeddedPostgresTestDatabase(
+  const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+  if (external && !new URL(external).pathname.endsWith("_test")) throw new Error("Fast-response tests require a database ending in _test");
+  database = external ? undefined : await startEmbeddedPostgresTestDatabase(
     "paperclip-fast-response-db-",
   );
-  db = createDb(database.connectionString);
+  db = createDb(external ?? database!.connectionString);
 }, 90000);
 afterAll(async () => {
+  await db?.$client.end({ timeout: 1 });
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });
@@ -184,6 +193,7 @@ describe("fast response accepted turns", () => {
       const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ usageKind: "fast_response", costCents: 2 });
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
       const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
       expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
       delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
@@ -192,6 +202,118 @@ describe("fast response accepted turns", () => {
       release(); await delivery;
       expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
     } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
+  it.each(["company", "agent", "policy"] as const)("settles while an unrelated %s accounting row is locked", async locked => {
+    const f = await fixture(), request = await f.enqueue();
+    const [policy] = await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 100, notifyEnabled: false }).returning();
+    let providerEntered!: () => void, finishProvider!: () => void, unlock!: () => void, lockedRow!: () => void;
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { lockedRow = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await providerGate; return structuredClone(outcome); });
+    const pending = f.service.process(request);
+    await entered;
+    const blocker = db.transaction(async tx => {
+      if (locked === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      if (locked === "agent") await tx.select().from(agents).where(eq(agents.id, f.agentId)).for("no key update");
+      if (locked === "policy") await tx.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)).for("no key update");
+      lockedRow(); await lockGate;
+    });
+    let finished = false;
+    void pending.finally(() => { finished = true; }).catch(() => undefined);
+    try {
+      await acquired; finishProvider();
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "succeeded", text: outcome.text });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe("settled");
+    } finally { unlock(); finishProvider(); await blocker; await pending.catch(() => undefined); }
+  });
+  it.each(["company", "project"] as const)("denies paid admission when %s manual pause wins its control fence", async scope => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Control fence" }).returning();
+    await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issueId));
+    const request = await f.enqueue();
+    let unlock!: () => void, locked!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const holding = db.transaction(async tx => {
+      if (scope === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      else await tx.select().from(projects).where(eq(projects.id, project.id)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await gate;
+      if (scope === "company") await tx.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+      else await tx.update(projects).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(projects.id, project.id));
+    });
+    const pid = await acquired;
+    const pending = f.service.process(request);
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 3000 });
+      unlock(); await holding;
+      expect(await pending).toMatchObject({ status: "unavailable" });
+      expect(f.provider).not.toHaveBeenCalled();
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, request.id)))[0].status).toBe("skipped");
+    } finally { unlock(); await holding; await pending.catch(() => undefined); }
+  });
+  it.each([
+    { recoveryFirst: true, priced: true, corrected: false }, { recoveryFirst: false, priced: true, corrected: false },
+    { recoveryFirst: true, priced: false, corrected: false }, { recoveryFirst: false, priced: false, corrected: false },
+    { recoveryFirst: true, priced: true, corrected: true },
+  ])("keeps a real result with recovery first: $recoveryFirst, priced: $priced, corrected: $corrected", async ({ recoveryFirst, priced, corrected }) => {
+    const f = await fixture(), request = await f.enqueue();
+    const realOutcome: FastResponseOutcome = priced ? structuredClone(outcome) : { ...structuredClone(outcome), receipt: {
+      ...outcome.receipt, costCents: null, costStatus: "unpriced", pricingProvenance: { source: "unknown" } } };
+    let finishProvider!: () => void, providerEntered!: () => void;
+    const gate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await gate; return realOutcome; });
+    const pending = f.service.process(request);
+    await entered;
+    await db.update(fastResponseRequests).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(fastResponseRequests.id, request.id));
+    let originalHash: string | null = null;
+    try {
+      if (recoveryFirst) {
+        await Promise.all([f.service.sweepPending(), f.service.sweepPending()]);
+        const [event] = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+        expect(event.costStatus).toBe("unpriced"); originalHash = event.receiptHash;
+        if (corrected) await billingReconciliationService(db).adjust(f.companyId, event.id, { idempotencyKey: "invoice-before-receipt",
+          expectedCents: "0", correctedCents: "0.005", reason: "Verified invoice before provider completed", pricing: { source: "operator" } }, "alice");
+      }
+      finishProvider();
+      expect(await pending).toMatchObject({ status: "succeeded", text: outcome.text });
+      await f.service.sweepPending();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ costStatus: priced ? "reported" : "unpriced", costCents: corrected ? 0.005 : priced ? 0.001 : 0 });
+      expect(events[0]).toMatchObject({ inputTokens: 80, cachedInputTokens: 0, outputTokens: 16,
+        providerRequestId: outcome.receipt.providerRequestId });
+      const corrections = await db.select().from(costAdjustments).where(eq(costAdjustments.companyId, f.companyId));
+      expect(corrections).toHaveLength(recoveryFirst ? corrected ? 2 : 1 : 0);
+      if (recoveryFirst) {
+        expect(events[0]).toMatchObject({ receiptHash: originalHash, reportedCostCents: "0.0000000",
+          reportedUsageJson: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null } });
+        expect(corrections.find(row => row.idempotencyKey.endsWith(":late-receipt") || row.idempotencyKey.endsWith(":late-usage"))?.previousUsageJson)
+          .toMatchObject({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null });
+        if (priced && !corrected) expect(JSON.parse(corrections[0].pricing.evidence as string)).toMatchObject({ inputTokens: 80, outputTokens: 16 });
+      }
+      if (corrected) {
+        expect(events[0].pricingProvenance).toEqual({ source: "operator" });
+        const observed = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "accounting.late_receipt_observed")));
+        expect(observed).toHaveLength(1);
+        expect(observed[0].details).toMatchObject({ effectiveCostCents: "0.0050000", costCents: "0.0010000", inputTokens: 80, outputTokens: 16 });
+      }
+      expect((await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, request.id)))[0]).toMatchObject({
+        status: "succeeded", costEventId: events[0].id, inputTokens: 80, outputTokens: 16 });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe(priced ? "settled" : "held");
+      expect(await db.select().from(issueComments).where(and(eq(issueComments.companyId, f.companyId), eq(issueComments.origin, "fast_response"))))
+        .toHaveLength(recoveryFirst ? 0 : 1);
+      expect(f.provider).toHaveBeenCalledOnce();
+    } finally { finishProvider(); await pending.catch(() => undefined); }
   });
   it("does not enqueue or infer while the experimental setting is disabled", async () => {
     const f = await fixture();
@@ -508,6 +630,8 @@ describe("fast response accepted turns", () => {
           .where(eq(budgetReservations.fastResponseRequestId, row.id))
       )[0].state,
     ).toBe("held");
+    await expect(withAccountingTransaction(db, f.companyId, tx => deleteAgentDependencies(tx, f.companyId, f.agentId)))
+      .rejects.toMatchObject({ status: 409, details: { code: "agent_fast_response_accounting_pending" } });
   });
   it("sponsors accepted unlinked senders using only destination-authorized context", async () => {
     const f = await fixture();

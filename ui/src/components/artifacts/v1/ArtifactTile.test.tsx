@@ -96,4 +96,77 @@ describe("the Artifacts page tiles", () => {
     expect(container.querySelector('[data-artifact-sheet="preview"]')?.textContent).toContain("Brand strategy");
     expect(container.querySelector("[data-artifact-front]")).not.toBeNull();
   });
+
+  it("keeps the 4:3 print until a single picture loads, and shows the icon sheet when its file cannot be loaded", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ArtifactTileGrid>
+            <ArtifactSingleTile subject={testSubject({ kind: "image", filename: "hero.png", thumbnailUrl: "/api/attachments/gone/content" })} now={NOW} />
+          </ArtifactTileGrid>
+        </MemoryRouter>,
+      ),
+    );
+    const print = container.querySelector<HTMLElement>("[data-artifact-print]")!;
+    expect([print.style.width, print.style.height]).toEqual(["240px", "180px"]);
+    act(() => { print.querySelector("img")!.dispatchEvent(new Event("error")); });
+    expect(container.querySelector("[data-artifact-print]")).toBeNull();
+    const sheet = container.querySelector('[data-artifact-front] [data-artifact-sheet="icon"]');
+    expect(sheet?.textContent).toContain("PNG");
+    expect(sheet?.querySelector(".lucide-image")).not.toBeNull();
+    expect(container.querySelector('button[data-testid="artifact-v1-single-tile"]')?.getAttribute("aria-label")).toBe("Open hero.png");
+  });
+
+  it("stands a picture stack's front as the icon sheet, where audio stands, when the picture cannot be loaded, and prints a new picture back in its place", () => {
+    const render = (thumbnailUrl: string) =>
+      act(() =>
+        root.render(
+          <MemoryRouter>
+            <ArtifactTileGrid>
+              <ArtifactStackTile identifier="ACM-5" title="Shoot cap product photos" count={6} updatedAt="2026-09-27T15:12:00" front={testSubject({ kind: "image", filename: "cap.png", thumbnailUrl })} now={NOW} />
+              <ArtifactStackTile identifier="ACM-6" title="Record the jingle" count={2} updatedAt="2026-09-27T15:12:00" front={testSubject({ kind: "file", filename: "jingle.mp3" })} now={NOW} />
+            </ArtifactTileGrid>
+          </MemoryRouter>,
+        ),
+      );
+    const tiles = () => Array.from(container.querySelectorAll<HTMLElement>('[data-testid="artifact-v1-stack-tile"]'));
+    const placement = (el: HTMLElement | null) => el && [el.style.left, el.style.top, el.style.width, el.style.height];
+    render("/api/attachments/gone/content");
+    let [pictures, audio] = tiles();
+    const printed = placement(pictures.querySelector<HTMLElement>("[data-artifact-print]"));
+    expect(printed?.[2]).toBe("245px");
+    act(() => { pictures.querySelector("[data-artifact-print] img")!.dispatchEvent(new Event("error")); });
+    expect(pictures.querySelector("[data-artifact-print]")).toBeNull();
+    expect(pictures.querySelector('[data-artifact-stack="media"]')).not.toBeNull();
+    expect(pictures.querySelector('[data-artifact-sheet="icon"]')?.textContent).toContain("PNG");
+    const front = pictures.querySelector<HTMLElement>("[data-artifact-front]")!;
+    const audioFront = audio.querySelector<HTMLElement>("[data-artifact-front]")!;
+    expect([front.style.left, front.style.top]).toEqual([audioFront.style.left, audioFront.style.top]);
+    expect(audio.querySelector("[data-artifact-print]")).toBeNull();
+    // A newer artifact takes the front: the stack's geometry and the front's face both start over from the new source.
+    render("/api/attachments/fresh/content");
+    [pictures] = tiles();
+    expect(pictures.querySelector('[data-artifact-sheet="icon"]')).toBeNull();
+    expect(pictures.querySelector("[data-artifact-print] img")?.getAttribute("src")).toBe("/api/attachments/fresh/content");
+    expect(placement(pictures.querySelector<HTMLElement>("[data-artifact-print]"))).toEqual(printed);
+  });
+
+  it("shows the icon sheet without a play disc for a video whose stream cannot be loaded", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ArtifactTileGrid>
+            <ArtifactSingleTile subject={testSubject({ kind: "video", filename: "reel.webm", videoUrl: "/api/files/gone.webm" })} now={NOW} />
+          </ArtifactTileGrid>
+        </MemoryRouter>,
+      ),
+    );
+    expect(container.querySelector("[data-artifact-print] .lucide-play")).not.toBeNull();
+    act(() => { container.querySelector("[data-artifact-print] video")!.dispatchEvent(new Event("error")); });
+    expect(container.querySelector("[data-artifact-print]")).toBeNull();
+    const sheet = container.querySelector('[data-artifact-sheet="icon"]');
+    expect(sheet?.textContent).toContain("WEBM");
+    expect(sheet?.querySelector(".lucide-film")).not.toBeNull();
+    expect(sheet?.querySelector(".lucide-play")).toBeNull();
+  });
 });

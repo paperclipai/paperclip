@@ -17,6 +17,7 @@ import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { cn } from "../lib/utils";
+import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -53,6 +54,7 @@ function GlobalToolbar({
 }
 
 export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
     breadcrumbToolbar,
@@ -117,7 +119,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           {currentCrumb.leading ? (
             <span className="flex shrink-0 items-center self-center">{currentCrumb.leading}</span>
           ) : null}
-          <span className="min-w-0 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
+          <span className="min-w-0 flex-1 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
           <CrumbIdentifier identifier={currentCrumb.identifier} />
         </h1>
         {globalToolbarSlots}
@@ -131,18 +133,19 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
         <BreadcrumbList className="flex-nowrap">
           {breadcrumbs.map((crumb, i) => {
             const isLast = i === breadcrumbs.length - 1;
+            const pinnedIdentifier = taskDetailLayout && isLast && Boolean(crumb.identifier);
             return (
               <Fragment key={i}>
                 {i > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
-                  {isLast || !crumb.href ? (
+                <BreadcrumbItem className={cn(isLast ? "min-w-0" : "shrink-0", pinnedIdentifier && "flex-1")}>
+                  {crumb.control ?? (isLast || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
-                      <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline")}>
+                      <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline", pinnedIdentifier && "flex-1")}>
                         {crumb.leading && (
                           <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
                         )}
                         {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
-                        <span className="min-w-0 truncate">{crumb.label}</span>
+                        <span className={cn("min-w-0 truncate", pinnedIdentifier && "flex-1")}>{crumb.label}</span>
                         {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
                       </BreadcrumbPage>
                     ) : (
@@ -177,8 +180,8 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                         </Link>
                       )}
                     </BreadcrumbLink>
-                  )}
-                  {crumb.trailing && <span className="flex shrink-0 items-center">{crumb.trailing}</span>}
+                  ))}
+                  {!crumb.control && crumb.trailing && <span className="flex shrink-0 items-center">{crumb.trailing}</span>}
                 </BreadcrumbItem>
               </Fragment>
             );
@@ -195,7 +198,9 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4 md:px-6">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          {breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
+          {breadcrumbs[0].control ? (
+            <h1 className="min-w-0 text-sm font-semibold uppercase tracking-wider">{breadcrumbs[0].control}</h1>
+          ) : breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
             <h1 className="flex items-baseline gap-1.5 text-sm font-semibold uppercase tracking-wider">
               {breadcrumbs[0].leading && (
                 <span className="flex shrink-0 items-center self-center">{breadcrumbs[0].leading}</span>
@@ -209,6 +214,9 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
             </h1>
           )}
         </div>
+        {coordinatorEnabled && !breadcrumbs[0].control && breadcrumbs[0].trailing ? (
+          <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
+        ) : null}
         {globalToolbarSlots}
       </div>
     );
