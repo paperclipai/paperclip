@@ -281,6 +281,7 @@ import {
   legacyControllerBootId,
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 
 
 import {
@@ -2080,18 +2081,21 @@ export function heartbeatService(
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
-      const authorizeFailedChatRetryExecution = () =>
-        db.transaction((tx) =>
-          authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
-            phase: "execution",
-            wakeupRequestId: run.wakeupRequestId,
-            companyId: run.companyId,
-            agentId: run.agentId,
-            issueId: readNonEmptyString(context.issueId),
-            runId: run.id,
-            contextSnapshot: context,
-          }),
-        );
+      const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
+        retryChatControlAdmission(async () => {
+          executionControl.controller.signal.throwIfAborted();
+          await controllerLease.assertOwned(stage);
+          return db.transaction((tx) =>
+            authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
+              phase: "execution",
+              wakeupRequestId: run.wakeupRequestId,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              issueId: readNonEmptyString(context.issueId),
+              runId: run.id,
+              contextSnapshot: context,
+            }));
+        });
       const isFailedChatRunRetry = await authorizeFailedChatRetryExecution();
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2826,10 +2830,9 @@ export function heartbeatService(
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
-        await controllerLease.assertOwned("dispatching");
         // Recheck after preparation. The final locked gate commits a dispatch
         // claim before entering adapter bootstrap or contacting a provider.
-        await authorizeFailedChatRetryExecution();
+        await authorizeFailedChatRetryExecution("dispatching");
         if (
           !(await withChatControlRecoveryGate(
             run,
@@ -2854,7 +2857,7 @@ export function heartbeatService(
           }
           return { dispatched: false };
         }
-        const enforceContinuationOwnership = Boolean(issueId && (isResolvedInteractionContinuationWakeContext(context) ||
+        const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
           ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {

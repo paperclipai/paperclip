@@ -187,8 +187,10 @@ pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover
 ```
 
 This source lane requires a complete server/UI build and disposable S3 and
-Postgres. Each controller has an independent compiled build and cache; shared
-workspace dependencies mean it is not released-container or Railway evidence.
+Postgres. Each controller has an independent compiled build and cache. The copied
+app retains the checkout's `cli/` and `packages/` dependency links, including the
+development Runner vendor entry. Shared workspace dependencies mean this is
+not released-container or Railway evidence.
 The read-only recovery observer captures the live predecessor's identity just
 before handoff, then requires a new controller generation, authenticated Runner
 attachment, and new canonical events for the original execution. No fixture
