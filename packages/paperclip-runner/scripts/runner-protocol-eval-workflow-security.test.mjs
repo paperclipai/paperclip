@@ -349,6 +349,15 @@ test('TestOps receives only a closed projection created inside the report bounda
   const workflow = await readFile(workflowPath, 'utf8');
   const report = workflow.slice(workflow.indexOf('  report:'), workflow.indexOf('  testops_report:'));
   const publisher = workflow.slice(workflow.indexOf('  testops_report:'), workflow.indexOf('  publish_history:'));
+  const publicationCondition = publisher.match(/^    if: (.+)$/mu)?.[1];
+  assert.ok(publicationCondition);
+  const admits = (cancelled, enabled = true, selected = true) => Function('always', 'cancelled', 'needs',
+    `return ${publicationCondition}`)(() => true, () => cancelled,
+    { authorize: { outputs: { testops_enabled: String(enabled) } }, testops_selection: { result: selected ? 'success' : 'failure' } });
+  assert.equal(admits(false), true);
+  assert.equal(admits(true), false);
+  assert.equal(admits(false, false), false);
+  assert.equal(admits(false, true, false), false);
   assert.match(report, /environment:.*runner-e2e-private-history/u);
   assert.match(report, /Create the closed TestOps projection inside the report boundary[\s\S]*runner-protocol-testops\.mjs export/u);
   assert.match(report, /Transfer only the closed TestOps results and receipt[\s\S]*path: runner-protocol-testops-projection\//u);

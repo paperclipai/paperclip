@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases } from "./runner-protocol-testops.mjs";
+import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure } from "./runner-protocol-testops.mjs";
+import { testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
 
 const context = { runId: "123", workflowSha: "a".repeat(40), sourceSha: "a".repeat(40), evalsSha: "b".repeat(40),
   allureJobRunId: "7", jobId: 9, launchId: 11, accountingMode: "legacy" };
@@ -112,6 +113,7 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
   payload.passed = true;
   cell.usage = { inputTokens: 10, unexpected: "PRIVATE-SECRET" };
   const projected = projectResults({ selection: selected, campaign, payloads })[0];
+  assert.equal(projected.evidence.schema, "paperclip.runner-protocol-testops-evidence/v1");
   assert.deepEqual(projected.evidence.usage, { inputTokens: 10 });
   assert.ok(!JSON.stringify(projected).includes("PRIVATE-SECRET"));
   payload.checks[0].id = "PRIVATE-SECRET";
@@ -122,6 +124,17 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
   cell.usage.inputTokens = 10;
   campaign.source.evals.sha = "c".repeat(40);
   assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /campaign_binding/);
+});
+
+test("retains closed API failure codes and status without raw messages or fabricated codes", async () => {
+  await assert.rejects(testopsClient("private-token", async () => new Response("private-body", { status: 401 })), error => {
+    assert.deepEqual(protocolTestOpsFailure(error), { code: "testops_auth_http", httpStatus: 401 });
+    return true;
+  });
+  assert.deepEqual(protocolTestOpsFailure(new Error("runner_testops_job_binding")), { code: "runner_testops_job_binding", httpStatus: null });
+  const unknown = protocolTestOpsFailure(Object.assign(new Error("PRIVATE-SECRET"), { code: "testops_auth_http", status: 401 }));
+  assert.deepEqual(unknown, { code: "runner_testops_execution_failed", httpStatus: null });
+  assert.ok(!JSON.stringify(unknown).includes("PRIVATE-SECRET"));
 });
 
 test("preserves real behavior failures and infrastructure failures", () => {

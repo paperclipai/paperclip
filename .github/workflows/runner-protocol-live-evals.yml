@@ -1378,7 +1378,7 @@ jobs:
 
   testops_report:
     name: Publish and verify every selected protocol result in TestOps
-    if: always() && needs.authorize.outputs.testops_enabled == 'true' && needs.testops_selection.result == 'success'
+    if: always() && !cancelled() && needs.authorize.outputs.testops_enabled == 'true' && needs.testops_selection.result == 'success'
     needs: [authorize, testops_selection, catalog, build_runner, prepare_controller, eval_shard_0, eval_shard_1, report]
     runs-on: ubuntu-latest
     timeout-minutes: 8

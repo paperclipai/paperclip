@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
+import { failureProjection, testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
 
 export const contract = JSON.parse(await readFile(new URL("./runner-protocol-testops-contract.json", import.meta.url), "utf8"));
 const fail = code => { throw new Error(`runner_testops_${code}`); };
@@ -133,7 +133,7 @@ export function projectResults({ selection, campaign, payloads = new Map() }) {
     const status = cell?.passed ? "passed" : !recorded || cell.disposition === "infrastructure_failure" ? "broken" : "failed";
     const checks = rawChecks.map(check => ({ id: check.id, kind: expected.checks[check.id], passed: check.passed === true }));
     const uuid = randomUUID();
-    const evidence = { schema: "paperclip.runner-protocol-testops-evidence/v1", ...selection,
+    const evidence = { ...selection, schema: "paperclip.runner-protocol-testops-evidence/v1",
       cases: undefined, caseId: expected.caseId, model: contract.model, provider: contract.provider, driver: contract.driver,
       attemptId: cell?.finalAttemptId ?? null, disposition: cell?.disposition ?? "infrastructure_failure", checks,
       recorded: Boolean(recorded), usage: publicUsage(cell?.usage) };
@@ -191,6 +191,12 @@ async function githubOutputs(values) {
     Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""));
 }
 async function readJson(file) { return JSON.parse(await readFile(file, "utf8")); }
+export function protocolTestOpsFailure(error) {
+  const apiFailure = failureProjection(error, "metadata_inspection");
+  return { code: /^runner_testops_[a-z_]{1,80}$/.test(error?.message) ? error.message
+    : apiFailure.code === "unknown_failure" ? "runner_testops_execution_failed" : apiFailure.code,
+    httpStatus: apiFailure.httpStatus };
+}
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "selection") {
@@ -236,5 +242,5 @@ async function main() {
   } else fail("command");
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(error => { console.error(/^runner_testops_[a-z_]+$/.test(error.message) ? error.message : "runner_testops_execution_failed"); process.exitCode = 1; });
+  main().catch(error => { console.error(JSON.stringify(protocolTestOpsFailure(error))); process.exitCode = 1; });
 }
