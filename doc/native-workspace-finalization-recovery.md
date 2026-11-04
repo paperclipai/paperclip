@@ -19,6 +19,34 @@ cleanup run. This includes descriptor reads that fail inside runtime selection. 
 preparation failure; another owner or a stale claim prevents cleanup. Settling
 that claim and recording file retention share a transaction.
 
+Modern `remoteWorkspace` preparation references use the same failure-retention
+producer as workspace-sync descriptors. A failed native run can also retain an
+expired `awaiting_runner_reattach` coordinator after its task execution lock was
+released. The orphan-lease owner may record a file-only preservation obligation
+for that historical state only when the exact allocation remains active,
+unreleased and ephemeral. It rechecks the task, run, coordinator generation,
+prepared workspace writer, complete allocation history, current controller and
+cleanup state under short row locks. A reusable allocation, accepted result,
+competing writer, manual recovery state or ambiguous cleanup stays held.
+
+The transaction pins the existing StopAndRetain intent before provider I/O. The
+ordinary cleanup owner stops only the recorded allocation and rechecks all its
+current owners before dispatch. Normal checkpoint restart must first publish its
+task and coordinator claim; that claim prevents preservation intake. After a pin,
+the released task execution lock prevents an observed run from resuming itself.
+No row lock spans provider or archive I/O. Conflicting native or cleanup owners
+produce a nonblocking busy result after transaction rollback.
+
+Only matching source and generation fingerprints plus the exact stopped-and-retained
+receipt let the native environment settlement owner retire that stale coordinator
+into manual terminal reconciliation. The existing workspace worker then verifies
+and saves the original files. The interrupted provider checkpoint and its unknown
+effects remain unknown; this path admits no provider turn, accepts no result and
+changes no task status. A changed or malformed modern workspace claim remains a
+cleanup hold even when it is ineligible for automatic preservation. It cannot fall
+through to destructive orphan cleanup. Already released or mismatched historical
+sources require their owning reconciliation and are not rearmed by this path.
+
 The reconciliation candidate scan selects the complete workspace-sync record and
 the native status wake identifier from each saved run. It keeps their JSON types
 and reads full evidence later where finalization or recovery needs it. Saved
