@@ -44,6 +44,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   counts.nativeControllersUnchanged = controllers.unchanged;
   counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
   counts.nativeControllersArchivedFailed = controllers.archivedFailed;
+  counts.nativeControllersPreservedFailed = controllers.preservedFailed;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
   phase("workspaces");
