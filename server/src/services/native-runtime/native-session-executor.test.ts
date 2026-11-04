@@ -14349,7 +14349,7 @@ describe("runnerd provider runtime wiring", () => {
         ? priorNativeRunDb(mode === "foreign-scope" ? { ...first, binding: { ...first.binding, agentId: "foreign" } } : first,
           mode === "active" ? "running" : "succeeded").select(fields as never)
         : ordinarySelect(fields as never)) as Db["select"];
-      const throughExecutor = policy === "warm" && ["canonical", "local-receipt", "pending-outbox"].includes(mode);
+      const throughExecutor = policy === "warm" && ["canonical", "local-receipt", "pending-outbox", "cold-ready"].includes(mode);
       let inspected = false;
       const resume = vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockImplementation(async (_db, request) => {
         if (request.inspectCheckpoint) inspected = true;
@@ -14526,7 +14526,7 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn: vi.fn(), warmCheckpointEnabled: false, isRetired: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn: vi.fn(), warmCheckpointEnabled: false, parkWarmTurn: vi.fn(), parkingControllerDetached: false, canParkWarmTurn: false, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -14582,7 +14582,7 @@ describe("runnerd provider runtime wiring", () => {
     } finally { owner.mockRestore(); }
   });
 
-  it.each(["success", "checkpoint-fails", "provider-fails", "disabled"])("checkpoints successful hosted warm turns before release: %s", async mode => {
+  it.each(["success", "checkpoint-fails", "provider-fails", "disabled", "parked", "refused"])("checkpoints successful hosted warm turns before release: %s", async mode => {
     const current = { ...scopedNativeExecution(`plugin-cold-checkpoint-${mode}`),
       schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
@@ -14591,11 +14591,13 @@ describe("runnerd provider runtime wiring", () => {
         lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } };
     const home = await mkdtemp(join(tmpdir(), "plugin-checkpoint-account-"));
     await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
-    const session = { close: vi.fn(async () => {}), snapshot: vi.fn(async () => ({ sessionId: "native-thread", providerSessionId: "account-session", identity: { sessionId: current.session.normalizedSessionId } })) };
+    const session = { close: vi.fn(async () => {}), detachControllerForRestart: vi.fn(async () => {}), snapshot: vi.fn(async () => ({ sessionId: "native-thread", providerSessionId: "account-session", identity: { sessionId: current.session.normalizedSessionId } })) };
     const checkpoint = vi.fn(async () => { if (mode === "checkpoint-fails") throw new Error("fixture checkpoint failed"); });
     const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => ({
       ...createOwner(input), warmCheckpointEnabled: mode !== "disabled", checkpointWarmTurn: checkpoint,
+      canParkWarmTurn: mode === "parked" || mode === "refused", parkingControllerDetached: mode === "parked",
+      parkWarmTurn: async detach => { if (mode === "refused") return false; await detach(); return true; },
     }));
     const task = vi.fn(async () => ({ kind: "description", taskId: "task", launchPreparationVersion: 1,
       projectAuthCheckVersion: 1, warmTaskVersion: 1, warmCheckpointVersion: 1,
@@ -14618,15 +14620,22 @@ describe("runnerd provider runtime wiring", () => {
         expect(session.snapshot).not.toHaveBeenCalled();
       } else {
         expect(checkpoint).toHaveBeenCalledExactlyOnceWith("native-thread");
-        expect(session.close).not.toHaveBeenCalled();
+        if (mode === "refused") expect(session.close).toHaveBeenCalledOnce();
+        else expect(session.close).not.toHaveBeenCalled();
       }
       if (mode === "checkpoint-fails") expect(logs.join("")).toContain("no verified cold checkpoint");
+      if (mode === "parked") {
+        expect(session.detachControllerForRestart).toHaveBeenCalledOnce();
+        await closeIdleWarmNativeSessionsForRestart();
+        expect(session.close).not.toHaveBeenCalled();
+      }
     } finally { owner.mockRestore(); await rm(home, { recursive: true, force: true }); }
   });
 
-  it.each(["codex", "fresh", "missing-capability", "missing-account", "acpx", "installed-codex", "installed-claude", "checkpoint-on", "checkpoint-off", "checkpoint-acpx"] as const)("negotiates task-only execution: %s", async mode => {
+  it.each(["codex", "fresh", "missing-capability", "missing-account", "acpx", "installed-codex", "installed-claude", "checkpoint-on", "checkpoint-off", "checkpoint-acpx", "parking-on", "parking-off", "parking-checkpoint-missing", "parking-capability-missing"] as const)("negotiates task-only execution: %s", async mode => {
     const current = scopedNativeExecution(`plugin-warm-${mode}`);
     vi.stubEnv("PAPERCLIP_HOSTED_WARM_CHECKPOINT", mode === "checkpoint-on" || mode === "checkpoint-acpx" ? "1" : "");
+    vi.stubEnv("PAPERCLIP_HOSTED_RUNNER_PARKING", mode.startsWith("parking-") && mode !== "parking-off" ? "1" : "");
     const installed = mode.startsWith("installed-");
     current.session.lifecyclePolicy = installed ? {mode:"per_turn",idleTimeoutMs:null} : {mode:"warm",idleTimeoutMs:300000};
     if(mode==="acpx" || mode==="installed-claude" || mode==="checkpoint-acpx") current.provider={kind:"acpx",agent:"claude",model:"fixture",permissionMode:"deny-all"} as never;
@@ -14636,7 +14645,9 @@ describe("runnerd provider runtime wiring", () => {
     const task=vi.fn(async(operation:any)=> operation.kind === "stop" || operation.kind === "complete" ? {kind:"accepted",taskId:"warm-task"}
       : operation.kind === "status" ? {kind:"status",taskId:"warm-task",phase:"completed",executionStopped:true}
       : {kind:"description",taskId:"warm-task",launchPreparationVersion:1,projectAuthCheckVersion:1,
-      ...(mode!=="missing-capability" ? {warmTaskVersion:1,warmCheckpointVersion:1}:{}),runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}});
+      ...(mode!=="missing-capability" ? {warmTaskVersion:1}:{}),
+      ...(mode!=="parking-checkpoint-missing" ? {warmCheckpointVersion:1}:{}),
+      ...(mode!=="parking-capability-missing" ? {hostedParkingVersion:1}:{}),runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}});
     state.createBackend.mockClear();state.createTransport.mockClear();
     try {
       const backend=createRunnerdBackend({db:leaseDb(current),execution:current,runnerInstanceId:"runner",runnerIngressAuthorized:true,
@@ -14650,7 +14661,8 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({lifecyclePolicy:current.session.lifecyclePolicy});
       expect(owner.mock.calls.at(-1)![0]).toMatchObject({warmTaskVersion:1,onCredentials:undefined});
       expect(owner.mock.calls.at(-1)![0].accountIdentity).toBe(installed ? undefined : "account");
-      expect(owner.mock.calls.at(-1)![0].warmCheckpointVersion).toBe(mode === "checkpoint-on" ? 1 : undefined);
+      expect(owner.mock.calls.at(-1)![0].warmCheckpointVersion).toBe(["checkpoint-on", "parking-on", "parking-capability-missing"].includes(mode) ? 1 : undefined);
+      expect(owner.mock.calls.at(-1)![0].hostedParkingVersion).toBe(mode === "parking-on" ? 1 : undefined);
     } finally {owner.mockRestore();vi.unstubAllEnvs();await rm(home,{recursive:true,force:true});}
   });
 

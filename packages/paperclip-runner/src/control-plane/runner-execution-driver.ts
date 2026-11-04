@@ -64,6 +64,8 @@ export interface RunnerExecutionDriver {
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
   }) => Promise<Record<string, unknown>>;
+  /** Deliver a freshly persisted source-authority ticket to a reserved parked owner before connecting. */
+  claimParkedRunner?: (input: { identity: DurableRecoveryIdentity; bootstrapTicket: string }) => Promise<void>;
   /** A provider-verified immutable completed-turn source, admitted only after its live owner stopped. */
   resumeColdCheckpoint?: RunnerColdCheckpoint;
   /** Active-connection recovery budget. Omitted for the existing local mode. */

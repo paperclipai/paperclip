@@ -10,13 +10,17 @@ import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.
 import type { NativeExecutionContext } from "./native-execution-context.js";
 
 export async function verifyPluginRunnerTaskReattachment(
-  task: (operation: unknown) => Promise<unknown>, identity: unknown,
+  task: (operation: unknown) => Promise<unknown>, identity: unknown, parkedClaim?: { parkId: string; claimId: string },
 ): Promise<void> {
   const operation = environmentTaskOperationSchema.parse({ kind: "read_state", identity });
   if (operation.kind !== "read_state") throw new Error("Plugin Runner recovery identity unavailable");
   const status = environmentTaskResultSchema.parse(await task({ kind: "status" }));
   if (status.kind !== "status" || status.executionStopped || status.phase !== "running") {
     throw new Error("Plugin Runner is not running");
+  }
+  if (status.retention && (!parkedClaim || status.retention.parkId !== parkedClaim.parkId ||
+      status.retention.state !== "claiming" || status.retention.claimId !== parkedClaim.claimId)) {
+    throw new Error("native_adopted_runner_authentication_timeout: Plugin Runner parked claim metadata unavailable or changed");
   }
   const result = environmentTaskResultSchema.parse(await task(operation));
   if (result.kind !== "state" || result.state.schema !== "paperclip.runner.durable.state.v1"
@@ -45,6 +49,11 @@ export function createPluginRunnerTaskOwner(input: {
   pollMs?: number;
   warmTaskVersion?: 1;
   warmCheckpointVersion?: 1;
+  hostedParkingVersion?: 1;
+  parkedClaim?: { parkId: string; claimId: string };
+  parkedClaimConsumed?: boolean;
+  revalidateAdoption?: () => Promise<void>;
+  beforePark?: (checkpoint: PluginEnvironmentTaskColdCheckpoint) => Promise<void>;
   resumeCheckpoint?: PluginEnvironmentTaskColdCheckpoint;
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
@@ -52,6 +61,9 @@ export function createPluginRunnerTaskOwner(input: {
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let activeAuthority: DurablePrpControlPlane | undefined;
+  let latestCheckpoint: PluginEnvironmentTaskColdCheckpoint | undefined;
+  let hostRetentionStarted = input.parkedClaim !== undefined;
+  let parkingControllerDetached = false;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
@@ -88,7 +100,7 @@ export function createPluginRunnerTaskOwner(input: {
     const context = input.executionContext;
     if (!context) return;
     const abort = () => {
-      if (input.executionContext !== context || !context.active) return;
+      if (input.executionContext !== context || !context.active || detached) return;
       stopRequested = true;
       void call({ kind: "stop" }).catch(rejectFailure);
     };
@@ -139,6 +151,7 @@ export function createPluginRunnerTaskOwner(input: {
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
     if (launched || !result.projectAuthCheckAtSubmit) await checkProjectAuth(result.launch.configurationId);
     preparedLaunchId = result.launch.configurationId;
+    if (preparedIdentity?.runId !== requirements.identity.runId) latestCheckpoint = undefined;
     preparedIdentity = requirements.identity;
     return result.launch;
   };
@@ -200,12 +213,17 @@ export function createPluginRunnerTaskOwner(input: {
       launch: { runnerVersion: native.runnerVersion, runnerDigest: native.runnerDigest,
         maxOutboxBytes: native.maxOutboxBytes, p0ReserveBytes: native.p0ReserveBytes,
         maxRuntimeMs: native.maxRuntimeMs, maxLifetimeMs: native.maxLifetimeMs,
-        reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy,
+        reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy?.mode === "warm" &&
+          input.hostedParkingVersion === 1 && input.warmCheckpointVersion === 1 && input.harness === "codex"
+          ? { ...native.lifecyclePolicy, retention: "host" } : native.lifecyclePolicy,
       },
     });
+    hostRetentionStarted = native.lifecyclePolicy?.mode === "warm" && input.hostedParkingVersion === 1 &&
+      input.warmCheckpointVersion === 1 && input.harness === "codex";
     launched = true;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
+        if (detached) return false;
         stopRequested = true;
         if (native.lifecyclePolicy?.mode === "warm" && submitted) void stopAndConfirm().catch(rejectFailure);
         return true;
@@ -276,7 +294,7 @@ export function createPluginRunnerTaskOwner(input: {
       activate: () => {
         activation = (async () => {
           if (input.adoptIdentity) {
-            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity, input.parkedClaim);
           } else await running;
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
           const ingress = await endpoint();
@@ -293,6 +311,7 @@ export function createPluginRunnerTaskOwner(input: {
       ready: async () => { await activation; },
       failure,
       checkpoint: async (settlement: "settled" | "unsettled") => {
+        if (detached) return;
         if (submitted) { stopRequested = true; await stopAndConfirm(); }
         if (submitted && input.accountIdentity && input.onCredentials) {
           const snapshot = await call({ kind: "credentials", accountIdentity: input.accountIdentity });
@@ -322,7 +341,17 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
-    ...(input.resumeCheckpoint ? { resumeColdCheckpoint: input.resumeCheckpoint } : {}),
+    get resumeColdCheckpoint() { return input.resumeCheckpoint; },
+    get claimParkedRunner() {
+      if (!input.parkedClaim || input.parkedClaimConsumed) return undefined;
+      return async ({ identity, bootstrapTicket }: { identity: DurableRecoveryIdentity; bootstrapTicket: string }) => {
+        if (!input.adoptIdentity || Object.entries(input.adoptIdentity).some(([key, value]) => identity[key as keyof DurableRecoveryIdentity] !== value)) {
+          throw new Error("Plugin parked Runner adoption identity mismatch");
+        }
+        await input.revalidateAdoption?.();
+        await call({ kind: "claim", ...input.parkedClaim!, bootstrapTicket });
+      };
+    },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
@@ -342,7 +371,7 @@ export function createPluginRunnerTaskOwner(input: {
         // Authenticated PRP detects disconnects; this cache never asserts termination.
         return stoppedState === undefined;
       },
-      signal: async () => { stopRequested = true; await stopAndConfirm(); return true; },
+      signal: async () => { if (detached) return false; stopRequested = true; await stopAndConfirm(); return true; },
     } } : {}),
   };
   const readWorkspaceFile = async (path: string, maxBytes: number): Promise<Buffer> => {
@@ -364,14 +393,44 @@ export function createPluginRunnerTaskOwner(input: {
     if (!activeAuthority || !isSettledRemoteWarmControlState(activeAuthority.store.state as unknown as Record<string, unknown>, identity)) {
       throw new Error("Plugin Runner cold checkpoint journal unsettled");
     }
+    latestCheckpoint = undefined;
     const result = await call({ kind: "checkpoint", identity, providerSessionId });
     if (released || stopRequested || stoppedState || detached || result.kind !== "checkpoint" ||
         result.checkpoint.providerSessionId !== providerSessionId ||
         Object.entries(identity).some(([key, value]) => result.checkpoint.identity[key as keyof DurableRecoveryIdentity] !== value)) {
       throw new Error("Plugin Runner cold checkpoint identity mismatch");
     }
+    latestCheckpoint = result.checkpoint;
   };
-  return { launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn,
+  const parkWarmTurn = async (detach: () => Promise<void>) => {
+    if (input.hostedParkingVersion !== 1 || input.harness !== "codex" || !latestCheckpoint || !preparedIdentity ||
+        Object.entries(preparedIdentity).some(([key, value]) => latestCheckpoint!.identity[key as keyof DurableRecoveryIdentity] !== value)) {
+      throw new Error("Plugin Runner parking requires the current cold checkpoint");
+    }
+    const checkpoint = latestCheckpoint;
+    if (!input.beforePark) throw new Error("Plugin Runner durable parking owner unavailable");
+    await input.beforePark(checkpoint);
+    let refused = false;
+    try {
+      try {
+        const result = await call({ kind: "park", identity: checkpoint.identity, resumeCheckpoint: checkpoint });
+        if (result.kind === "accepted" && result.parkRefused === true) { refused = true; return false; }
+      } catch { /* A lost reply must inspect this same saved task, never Stop it. */ }
+      const status = await call({ kind: "status" });
+      if (status.kind !== "status" || status.executionStopped === true || status.retention?.state !== "parked") {
+        throw new Error("Plugin Runner parking remains unconfirmed");
+      }
+      return true;
+    } finally {
+      if (!refused) {
+        parkingControllerDetached = true;
+        await detach();
+      }
+    }
+  };
+  return { launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn, parkWarmTurn,
+    get parkingControllerDetached() { return parkingControllerDetached; },
+    get canParkWarmTurn() { return hostRetentionStarted && input.hostedParkingVersion === 1 && input.harness === "codex" && latestCheckpoint !== undefined; },
     get warmCheckpointEnabled() { return input.warmCheckpointVersion === 1 && input.harness === "codex"; },
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.

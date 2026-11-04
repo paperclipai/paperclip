@@ -278,6 +278,16 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // A parking probe never selects/restores a provider or activates credentials.
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected

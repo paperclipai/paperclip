@@ -87,6 +87,58 @@ process-cold continuation when the provider preserves the selected native
 history; it does not establish recovery from loss of that storage or qualify a
 hosted deployment.
 
+## Hosted parking between Codex turns
+
+With `PAPERCLIP_HOSTED_RUNNER_PARKING=1`, Core can also request host retention
+when an environment advertises both checkpoint and parking version 1. The
+completed turn must have a verified cold checkpoint. The Runner accepts a park
+only at its exact settled command and event cursors. It disconnects from PRP,
+keeps its provider process, and waits on its task-private host control channel.
+The host can then release the wake hold without releasing workspace mounts.
+Time spent parked can exceed the old controller connection lease. A new
+controller reserves that same task and supplies fresh bootstrap authority before
+attaching the next run.
+
+The host controls capacity and can evict a parked task. A subsequent turn can
+restore the same provider history after proving that the old execution stopped.
+If the host is unreachable, Core must reconcile that task before admitting a
+replacement. Active turns and unresolved tool requests cannot enter parking.
+ACPX uses its existing session lifecycle. This feature is disabled by default.
+
+## Host-managed parking
+
+`PAPERCLIP_HOSTED_RUNNER_PARKING=1` additionally permits hosted native Codex
+launches to negotiate warm `retention: "host"` when the provider advertises both
+`warmCheckpointVersion: 1` and `hostedParkingVersion: 1`. The existing warm mode
+and default idle timeout remain unchanged for other launches. Parking also
+requires a verified checkpoint from the just-completed turn.
+
+Core persists a token-free park intent before requesting parking. Once the
+provider acknowledges the parked state, Core detaches and drains its old route
+without suspending or stopping Runner, then removes its warm timer and owner.
+Normal server shutdown therefore leaves that parked process with the host.
+A lost reply is reconciled against the same task. An uncertain park remains an
+idle blocker until a provider observation or successful adoption settles it;
+no idle polling is added. A narrowly attested capacity refusal instead closes
+the current owner gracefully and preserves its cold continuation without
+changing the successful turn result.
+
+A new lease reserves the same process with an opaque park ID and the incoming
+run ID as claim ID. Core validates that reservation, reconstructs the source
+controller checkpoint after restart, and fences its writer with the current run
+owner. It issues and durably flushes a fresh single-use source bootstrap before
+sending the protected claim and opening outbound transport. The bearer remains
+transient; lease metadata and logs contain no bootstrap ticket. Reauthentication
+then uses the existing `run.attach` protocol to admit the successor.
+
+A `bootstrapBound` claim observation means the host has already bound a ticket,
+even if delivery acknowledgement was lost. Core does not replace that secret.
+Before any successor attachment or work, an exact settled source may be stopped
+under current authority, independently confirmed stopped, and continued through
+its verified cold checkpoint. Staged transitions and work that already began
+retain their adoption/reconciliation path. Neither an uncertain claim nor an
+old controller authorizes another executor or a signal to a successor.
+
 ## Adoption and retired launch artifacts
 
 A live runner is adopted with its admitted artifact binding and authenticated

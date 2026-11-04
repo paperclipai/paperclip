@@ -40,6 +40,8 @@ import { resolvePluginTaskResume, resolvePluginTaskColdCheckpoint } from "../env
 import { assertColdCheckpointRunnerState } from "../../vendor/paperclip-runner/index.js";
 import { environmentTaskResultSchema, environmentTaskColdCheckpointSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
+import { clearHostedParkingScope, hasUnresolvedHostedParking, holdHostedParking } from "./hosted-parking-obligations.js";
+import { isCompletedParkedSourceRecovery, retireBoundParkedRunner } from "./hosted-parked-runner.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
@@ -672,7 +674,7 @@ const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof cre
 const closingWarmNativeSessions = new Map<string, Promise<void>>();
 
 export function readNativeSessionIdleWork(): IdleLocalWork {
-  return warmNativeSessions.size !== 0 || closingWarmNativeSessions.size !== 0 ? "present" : "none";
+  return warmNativeSessions.size !== 0 || closingWarmNativeSessions.size !== 0 || hasUnresolvedHostedParking() ? "present" : "none";
 }
 registerIdleLocalWorkProbe(readNativeSessionIdleWork);
 
@@ -5383,7 +5385,7 @@ async function migrateRunnerdStateRootForExecution(input: {
           || !durableIdentityMatchesExecution(identity, input.execution)) {
           throw new Error("native_plugin_recovery_lease_mismatch");
         }
-        await verifyPluginRunnerTaskReattachment(target.runnerTask, identity);
+        await verifyPluginRunnerTaskReattachment(target.runnerTask, identity, target.runnerTaskParkedClaim);
         return;
       }
       await verifyRemoteRunnerReattachment({
@@ -6999,6 +7001,30 @@ async function releaseWarmNativeSession(
       if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       if (requireCleanClose) throw error;
     } finally { entry.busy = false; }
+    return;
+  }
+  const owner = pluginTaskSessionOwners.get(entry.session);
+  if (owner?.canParkWarmTurn && entry.session.detachControllerForRestart) {
+    entry.busy = true;
+    try {
+      const parked = await owner.parkWarmTurn(async () => {
+        await entry.githubAccess?.stop();
+        await entry.session.detachControllerForRestart!();
+      });
+      if (parked === false) {
+        entry.closeOnReleaseReason = "host parking capacity unavailable";
+        await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
+      }
+      clearHostedParkingScope(sessionId);
+    } catch {
+      if (!owner.parkingControllerDetached) {
+        armWarmNativeSessionIdleTimer(sessionId, entry, idleTimeoutMs);
+        return;
+      }
+      // Lost parking replies remain obligations; this detached owner must never signal a successor.
+      holdHostedParking(sessionId, entry.runId);
+    } finally { entry.busy = false; }
+    forgetWarmNativeSession(sessionId, entry);
     return;
   }
   armWarmNativeSessionIdleTimer(sessionId, entry, idleTimeoutMs);
@@ -8646,6 +8672,21 @@ async function executePaperclipNativeSessionWithinScope(
     : null;
   const stagedRestart = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
+  let parkedSourceRecovery = false;
+  const parkedRecoveryTarget = input.runnerExecutionTarget;
+  if (input.restartRecovery && parkedRecoveryTarget?.kind === "remote" && parkedRecoveryTarget.transport === "sandbox" &&
+      parkedRecoveryTarget.runnerTaskParkedClaim?.claimId === input.execution.binding.runId && input.execution.session.lifecyclePolicy.mode === "warm" &&
+      !await loadNativeRunnerCheckpointHeader(input.db, input.execution.binding)) {
+    await restoreWarmRunnerdController({ ...input, restartRecovery: undefined });
+    const root = scopedRunnerdStateRoot(input.execution);
+    const identity = readRunnerdDurableIdentity(root);
+    if (identity) {
+      const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+        NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
+      parkedSourceRecovery = isCompletedParkedSourceRecovery({ currentRunId: input.execution.binding.runId,
+        claimId: parkedRecoveryTarget.runnerTaskParkedClaim.claimId, hasCurrentCheckpoint: false, identity, control });
+    }
+  }
   if (input.useRunnerd) await restoreWarmRunnerdController(input);
   const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
   const redactIdentityText = (text: string) => redactSensitiveText(
@@ -8728,7 +8769,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
-  if (input.useRunnerd && !input.restartRecovery && !input.backend &&
+  if (input.useRunnerd && (!input.restartRecovery || parkedSourceRecovery) && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
       !idleWarmNativeSessionOwnerRunId(input)) {
@@ -8744,7 +8785,8 @@ async function executePaperclipNativeSessionWithinScope(
       }
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId &&
-        runnerdAuthorityLifecycleWithVerifiedBackup({ root, identity, execution: input.execution, allowVerifiedBackup: true }) !== "suspended") {
+        runnerdAuthorityLifecycleWithVerifiedBackup({ root, identity, execution: input.execution, allowVerifiedBackup: true }) !== "suspended" &&
+        !pluginColdCheckpointVerified(root, identity)) {
       remoteWarmRecovery = await inspectRemoteWarmSessionRecovery({
         db: input.db, execution: input.execution, target: input.runnerExecutionTarget, identity,
         readControlState: () => record(JSON.parse(readBoundedNativeFile(
@@ -8772,7 +8814,7 @@ async function executePaperclipNativeSessionWithinScope(
       retainedWarmOwnerRunId: idleWarmNativeSessionOwnerRunId(input) ?? remoteWarmRecovery?.identity.runId,
       allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
       onLog: input.onLog,
-      restartRecovery: input.restartRecovery,
+      restartRecovery: parkedSourceRecovery ? undefined : input.restartRecovery,
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
     });
@@ -9883,12 +9925,31 @@ async function executePaperclipNativeSessionWithinScope(
     }
     const resolveWake = () => timeController("wake_binding", () => resolveCurrentWakeCommentsBinding(input.db, input.execution.binding));
     const expectedCurrentWakeComments = await (executionContext ? executionContext.wait(resolveWake) : resolveWake());
+    const parkedTarget = input.runnerExecutionTarget;
+    if (remoteWarmRecovery && parkedTarget?.kind === "remote" && parkedTarget.transport === "sandbox" &&
+        parkedTarget.runnerTask && parkedTarget.runnerTaskParkedClaim) {
+      const root = scopedRunnerdStateRoot(input.execution);
+      const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+        NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
+      const source = remoteWarmRecovery;
+      const retired = await retireBoundParkedRunner({ task: parkedTarget.runnerTask,
+        identity: { runnerInstanceId: source.identity.runnerInstanceId, environmentLeaseId: source.identity.environmentLeaseId,
+          runId: source.identity.runId, normalizedSessionId: source.identity.normalizedSessionId, turnId: source.identity.turnId, itemId: source.identity.itemId }, targetRunId: input.execution.binding.runId, parkedClaim: parkedTarget.runnerTaskParkedClaim, control,
+        authorize: () => source.revalidate(leaseOwner) }).catch(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      if (retired) {
+        remoteWarmRecovery = undefined;
+        parkedTarget.runnerTaskParkedClaim = undefined;
+        await recoverPluginRunnerCheckpoint(input, root);
+      }
+    }
+    const warmRecoveryForBackend = remoteWarmRecovery;
     let remoteWarmRecoveryPending = remoteWarmRecovery !== undefined;
     let runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await timeController("backend_setup", () => {
           const create = () => createRunnerdBackend({
             ...input,
+            restartRecovery: parkedSourceRecovery ? undefined : input.restartRecovery,
             onDiagnosticLease: ownDiagnosticLease,
             providerPackAdmissionSource,
             recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
@@ -9907,10 +9968,10 @@ async function executePaperclipNativeSessionWithinScope(
             pluginTaskDescription,
             retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : undefined,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
-            remoteWarmRecovery: remoteWarmRecovery ? {
-              ...remoteWarmRecovery,
+            remoteWarmRecovery: warmRecoveryForBackend ? {
+              ...warmRecoveryForBackend,
               revalidate: async () => {
-                if (remoteWarmRecoveryPending) await remoteWarmRecovery.revalidate(leaseOwner);
+                if (remoteWarmRecoveryPending) await warmRecoveryForBackend.revalidate(leaseOwner);
               },
             } : undefined,
             trace,
@@ -10124,7 +10185,10 @@ async function executePaperclipNativeSessionWithinScope(
               );
             },
             onSession: async (session) => {
-              if (session) runnerdBackend?.bindDiagnosticSession?.(session);
+              if (session) {
+                runnerdBackend?.bindDiagnosticSession?.(session);
+                clearHostedParkingScope(nativeSessionScopeKey(input.execution));
+              }
               if (session && input.runnerExecutionTarget?.kind === "remote"
                 && input.runnerExecutionTarget.transport === "sandbox") {
                 rmSync(resolve(scopedRunnerdStateRoot(input.execution), "plugin-runner-state.json"), { force: true });
@@ -10412,7 +10476,7 @@ async function executePaperclipNativeSessionWithinScope(
     }
     const protocolIntegrityFailure =
       error instanceof NativeSessionProtocolIntegrityError ? error : null;
-    const ownershipUnverified =
+    const ownershipUnverified = error instanceof NativeRunnerOwnershipUnverifiedError ||
       nativeSessionFailureSourceCode(error) ===
       NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT;
     const attemptFailureStep = async (operation: () => unknown) => {
@@ -13255,13 +13319,36 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
+    let parkedClaimConsumed = false;
+    if (remoteTarget.runnerTaskParkedClaim) {
+      const status = environmentTaskResultSchema.parse(await pluginTask({ kind: "status" }));
+      const claim = remoteTarget.runnerTaskParkedClaim;
+      if (status.kind !== "status" || status.executionStopped === true || status.phase !== "running" ||
+          status.retention && (status.retention.state !== "claiming" || status.retention.parkId !== claim.parkId || status.retention.claimId !== claim.claimId)) {
+        throw new NativeRunnerOwnershipUnverifiedError();
+      }
+      parkedClaimConsumed = status.retention === undefined || status.retention.bootstrapBound === true;
+    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
       onCredentials: input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
       warmTaskVersion: description.warmTaskVersion,
-      warmCheckpointVersion: process.env.PAPERCLIP_HOSTED_WARM_CHECKPOINT === "1" && provider.kind === "codex"
+      warmCheckpointVersion: (process.env.PAPERCLIP_HOSTED_WARM_CHECKPOINT === "1" || process.env.PAPERCLIP_HOSTED_RUNNER_PARKING === "1") && provider.kind === "codex"
         ? description.warmCheckpointVersion : undefined,
+      hostedParkingVersion: process.env.PAPERCLIP_HOSTED_RUNNER_PARKING === "1" && provider.kind === "codex" && description.warmCheckpointVersion === 1
+        ? description.hostedParkingVersion : undefined,
+      parkedClaim: remoteTarget.runnerTaskParkedClaim, parkedClaimConsumed,
+      revalidateAdoption: input.remoteWarmRecovery?.revalidate,
+      beforePark: async checkpoint => {
+        const updated = await input.db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          runnerTaskParkIntent: { identity: checkpoint.identity, resumeCheckpoint: checkpoint },
+        })}::jsonb` }).where(and(eq(environmentLeases.id, remoteTarget.leaseId!), eq(environmentLeases.companyId, input.execution.binding.companyId),
+          eq(environmentLeases.heartbeatRunId, input.execution.binding.runId), eq(environmentLeases.status, "active"),
+          sql`${environmentLeases.metadata}->'runnerTaskColdCheckpoint' = ${JSON.stringify(checkpoint)}::jsonb`,
+          sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
+        if (updated.length !== 1) throw new Error("Plugin Runner parking owner changed");
+      },
       resumeCheckpoint,
       adoptIdentity: adoptionIdentity ?? (adopting && prior ? {
         runnerInstanceId: prior.runnerInstanceId, environmentLeaseId: prior.environmentLeaseId,
