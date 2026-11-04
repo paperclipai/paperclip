@@ -55,7 +55,8 @@ Separately from env bindings, the **server itself** consumes a company secret
 named `GITHUB_TOKEN`, `GH_TOKEN`, or `PAPERCLIP_GITHUB_TOKEN` (by name, no
 binding needed) to authenticate server-side git operations — cloning private
 GitHub repos for repo-only project workspaces and refreshing worktree base
-refs. See
+refs — and to read GitHub skill sources when the company has no GitHub
+connection installed. See
 [Execution workspaces](../guides/board-operator/execution-workspaces-and-runtime-services.md#private-repositories-and-repo-only-project-workspaces).
 
 ## User-Specific Secrets
