@@ -30,7 +30,7 @@ it("retains the real ZIP expansion scanner and reports its distinct bound with i
  execFileSync("python3",["-c","import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_DEFLATED); f=z.open('synthetic.txt','w'); block=b'0'*1048576; [f.write(block) for _ in range(257)]; f.close(); z.close()",zip],{stdio:"pipe",timeout:30000});
  const evidence=await packageEvidence(f.input);
  expect(evidence.leaks).toMatchObject([{reason:"zip inspection exceeded its expanded-byte bound"}]);
- expect(privateAttemptDiagnostic({stage:"seal-original",evidence})).toMatchObject({packagingBudget:{bound:"zip-expanded-bytes",inventoryComplete:true,scanFinished:true,requiredEvidenceComplete:false,qualification:"unqualified"}});
+ expect(privateAttemptDiagnostic({stage:"seal-original",evidence})).toMatchObject({carrierReasons:[{source:"packaging",carrier:"blob-zip",reason:"zip inspection exceeded its expanded-byte bound",count:1}],packagingBudget:{bound:"zip-expanded-bytes",inventoryComplete:true,scanFinished:true,requiredEvidenceComplete:false,qualification:"unqualified"}});
  expect(evidence.files).not.toContain("blob-report/oversized.zip");
 });
 it("a completed small scan reports exact closed metadata but cannot qualify an outcome without required carriers",async()=>{
