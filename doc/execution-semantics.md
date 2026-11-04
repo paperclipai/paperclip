@@ -937,6 +937,13 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+When an admitted continuation reuses a sandbox after verified cleanup, an
+unpublished preparation uses a directory bound to its writer epoch and lease.
+Earlier unpublished directories and their receipts stay intact. Repeating the
+same preparation retains its directory and receipt check. A published workspace
+on the same allocation retains its recorded directory. Automatic bootstrap
+timeout retries still require a fresh allocation under the policy above.
+
 ### Saved chat Retry preparation
 
 Task Retry can meet a busy chat identity or endpoint lock before its source is authorized.
@@ -2789,6 +2796,23 @@ existing non-null App claim. This historical identity proof grants no publicatio
 replay or access: the saved input and current principal, repository, conversation,
 runtime fence and execution containment still pass normal admission. Explicit
 conflicting App bindings remain denials.
+
+When comments join a queued run with an unclaimed queued wake, admission saves
+the accepted batch in both the run context and its authoritative primary wake in
+the same transaction as the coalesced receipt. Claim rebuilds input from that primary wake and filters deleted
+comments. It does not reconstruct input from historical coalesced receipts.
+Admission locks and rechecks the run and its same-company, same-agent primary
+wake. A changed status, mismatched binding, or mismatched durable-receipt actor preserves the incoming
+input as deferred work instead of consuming it into the old source. Legacy wakes
+without an authoritative batch retain their existing context-based claim path.
+An already claimed wake keeps its source unchanged for its existing recovery
+and replay path; this change does not grant it a new claim.
+Ordinary mixed-author comments keep their existing coalescing behavior. The
+primary wake retains its original actor, and each new receipt records its own
+actual actor. Coalescing updates the queued batch while preserving the original
+trigger comment fields, so recovery still verifies the original source actor.
+Same-named agents with different IDs retain separate authority;
+their new input is deferred without changing the other agent's queued work.
 
 ### Queued input after a native Stop
 
