@@ -1,0 +1,28 @@
+# Preserve native sessions when enrolling a legacy workspace
+
+A retained native session binds both its Core workspace address and the provider's
+sandbox address. Migrating files to object storage must preserve these addresses;
+a new `.paperclip-workspaces` directory alone is not session continuity.
+
+The offline workspace owner records selected native source bindings in its
+successful migration operation. It checks the source again before publication.
+The workspace points to that operation; arbitrary metadata is insufficient.
+Each binding retains company/workspace, agent, task, normalized session, source
+run, logical address, and the shared provider address. Conflicting or missing
+identity blocks publication without deleting source files.
+
+Runtime selection uses the original logical address only for the exact retained
+session. The remote workspace owner restores at the original provider address,
+refuses another base path or an occupied unowned root, and may publish into a
+verified empty directory on a newly allocated sandbox. The environment owner
+includes the migration operation in its reusable lease fingerprint, so existing
+warm policy obtains a fresh allocation and then reuses it normally. A verified
+migration binding permits restoration of the exact retained warm backup into
+that new allocation. Existing backup digest and identity checks remain required.
+
+Verification covers real PostgreSQL, filesystem restore after removal of the old
+controller workspace, unchanged provider bytes, warm and per-turn policy, forged
+receipts, wrong targets, occupied roots, and reusable-lease replacement. The live
+acceptance gate is an ordinary agent continuation through the packaged offline
+migration, followed by a rolling deployment with active ownership transfer.
+Named staging enrollment remains pending until this proof and the PR gates pass.

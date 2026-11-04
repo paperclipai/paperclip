@@ -2677,6 +2677,14 @@ describe("verified native harness backups", () => {
     ).toBe(false);
   });
 
+  it("requires verified migration continuity before restoring a retained warm session into a fresh sandbox", () => {
+    const acquisition = { acquisitionOutcome: "created" as const, reusableLeaseConfigured: true, backupAvailable: true };
+    expect(shouldRestoreNativeHarnessBackupIntoSandbox(acquisition)).toBe(false);
+    expect(shouldRestoreNativeHarnessBackupIntoSandbox({ ...acquisition, migratedSessionContinuation: true })).toBe(true);
+    expect(shouldRestoreNativeHarnessBackupIntoSandbox({ ...acquisition, migratedSessionContinuation: true, backupAvailable: false })).toBe(false);
+    expect(shouldRestoreNativeHarnessBackupIntoSandbox({ ...acquisition, migratedSessionContinuation: true, acquisitionOutcome: "resumed" })).toBe(false);
+  });
+
   it("accepts a complete digest-matched backup and rejects corruption", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-harness-backup-"));
     try {

@@ -22,6 +22,8 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
+import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
+
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
@@ -233,6 +235,7 @@ export async function migrateRemoteWorkspace(input: {
       const current = await inspect(tx as unknown as Db, input);
       if (current.authority) return { workspace, authority: current.authority, operation: null, source: current.source, sourceFingerprint: "", issueBinding: current.issueBinding, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[] };
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
+      const nativeSessionContinuity = await inspectNativeWorkspaceMigration(tx as unknown as Db, workspace);
       const source = remoteWorkspaceSourceSchema.parse(input.source ?? current.source);
       const sourceFingerprint = fingerprint(workspace);
       const marker = current.marker;
@@ -241,6 +244,7 @@ export async function migrateRemoteWorkspace(input: {
         const [operation] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
           eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration")));
         if (!operation) throw new Error("remote_workspace_migration_operation_missing");
+        if (canonical(operation.metadata?.nativeSessionContinuity ?? null) !== canonical(nativeSessionContinuity)) throw new Error("native_workspace_migration_source_changed");
         // Older operations only admitted the task's current workspace. Preserve
         // that binding when resuming an import journaled before this field existed.
         const issueBinding = Object.hasOwn(operation.metadata ?? {}, "sourceIssueBinding")
@@ -254,6 +258,7 @@ export async function migrateRemoteWorkspace(input: {
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
         issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
+          ...(nativeSessionContinuity ? { nativeSessionContinuity } : {}),
           nestedWorkspaceScope: { version: 1, state: "pending" },
           ...(current.legacyRecoverySources.length ? { legacyRecoverySources: current.legacyRecoverySources } : {}),
           ...(current.archivedGitSource ? { archivedGitSource: gitSourceProof(current.archivedGitSource) } : {}),
@@ -347,9 +352,12 @@ export async function migrateRemoteWorkspace(input: {
             || saved.sourceOperationId !== child.operationId) throw new Error("nested_workspace_snapshot_changed");
         }
         if (canonical(validation.legacyRecoverySources) !== canonical(reserved.legacyRecoverySources)) throw new Error("remote_workspace_migration_source_changed");
+        const continuity = await inspectNativeWorkspaceMigration(tx as unknown as Db, workspace);
+        if (canonical(continuity) !== canonical(operation.metadata?.nativeSessionContinuity ?? null)) throw new Error("native_workspace_migration_source_changed");
         const authority: RemoteWorkspaceAuthority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: ref.id,
           source: reserved.source, location: null, writerRunId: null, dirty: false };
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
+        if (continuity) metadata.nativeWorkspaceMigration = nativeWorkspaceMigrationMarker(operation.id);
         if (reserved.legacyRecoverySources.length) {
           metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
           for (const source of reserved.legacyRecoverySources) {

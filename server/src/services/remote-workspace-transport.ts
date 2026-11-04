@@ -279,7 +279,7 @@ export async function captureRemoteWorkspaceArchive(input: {
 }
 
 export async function restoreRemoteWorkspaceDirectory(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; allowEmptyRoot?: boolean;
 }) {
   if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
   const id = input.restorationIdentity;
@@ -293,11 +293,12 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');
-  (async()=>{const [helper,archive,root,digest,identity]=process.argv.slice(1);
+  (async()=>{const [helper,archive,root,digest,identity,allowEmpty]=process.argv.slice(1);
    if(!/^[a-f0-9]{64}$/.test(identity))throw Error('invalid_identity');
    const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
-   if(prior){
-    if(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root)throw Error('unsafe_root');
+   if(prior&&(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root))throw Error('unsafe_root');
+   const empty=prior&&allowEmpty==='true'&&(await fs.readdir(root)).length===0;
+   if(prior&&!empty){
     const runtime=path.join(root,'.paperclip-runtime'),marker=path.join(runtime,'workspace-restored.json');
     const dir=await fs.lstat(runtime);if(!dir.isDirectory()||dir.isSymbolicLink())throw Error('unsafe_receipt');
     const file=await fs.lstat(marker);if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
@@ -308,9 +309,10 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
    const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
-   if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
+   if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
+   if(empty)await fs.rmdir(root);await fs.rename(staged,root);
   })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
-  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
+  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true)]);
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

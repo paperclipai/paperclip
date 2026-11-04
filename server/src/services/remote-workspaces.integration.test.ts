@@ -1,3 +1,6 @@
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { readNativeWorkspaceMigration, migratedNativeExecutionCwd, canRestoreMigratedNativeSession } from "./native-runtime/native-workspace-migration.js";
+import { buildNativeHarnessBackupManifest, verifyNativeHarnessBackup } from "./native-runtime/native-session-executor.js";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
@@ -8,7 +11,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
+import { activityLog, agents, agentTaskSessions, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
   executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -90,6 +93,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, ids.company));
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, ids.company));
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, ids.company));
+    await db.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, ids.company));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, ids.company));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, ids.company));
     await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.companyId, ids.company));
@@ -435,6 +439,84 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect((await fs.stat(path.join(restored.remoteRoot, "empty-folder"))).isDirectory()).toBe(true);
     const browse = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
+  }, 60_000);
+
+  it.each(["per_turn", "warm", "occupied", "foreign-target", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {
+    const original = path.join(root, "old-controller", "workspace"); await fs.mkdir(original, { recursive: true });
+    await fs.writeFile(path.join(original, "saved.txt"), "retained work");
+    const remote = await target("legacy-provider-root");
+    const [local] = await db.insert(executionWorkspaces).values({ companyId: ids.company, sourceIssueId: ids.issue,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Retained session",
+      cwd: original, providerRef: original }).returning();
+    const sessionId = randomUUID(), runnerInstanceId = randomUUID();
+    const execution = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1",
+      provider: { kind: "codex", model: null }, binding: { companyId: ids.company, agentId: ids.agent,
+        issueId: ids.issue, runId: ids.run, executionWorkspaceId: local.id },
+      task: { identifier: "RWP-1", title: "Retained work", description: null, prompt: "Continue.", workMode: "standard" },
+      workspace: { cwd: original, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: sessionId, driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: scenario === "warm" ? "warm" : "per_turn", idleTimeoutMs: scenario === "warm" ? 120000 : null } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Save work." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    if (execution.schema !== "paperclip.native-execution-input.v1") throw new Error("Unexpected fixture schema");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), nativeSessionId: sessionId,
+      runnerInstanceId, runnerProfileJson: { nativeExecutionInput: execution, sessionCheckpoint: { sessionId }, nativeWorkspaceSync: {
+        schema: "paperclip.native-workspace-sync/v3", state: "finalized", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+        finalHostSha256: "c".repeat(64), workspaceId: local.id, leaseId: ids.lease, providerLeaseId: `allocation-${ids.lease}`,
+        remoteCwd: remote.remoteCwd, resourceDisposition: "destroy",
+      } } }).where(eq(heartbeatRuns.id, ids.run));
+    await db.insert(agentTaskSessions).values({ companyId: ids.company, agentId: ids.agent, adapterType: "paperclip_runner",
+      taskKey: ids.issue, lastRunId: ids.run });
+    await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
+    const backupRoot = path.join(root, "private-state"), current = path.join(backupRoot, "failover-backups", "current");
+    await fs.mkdir(path.join(current, "runner"), { recursive: true }); await fs.mkdir(path.join(current, "codex-home"));
+    await fs.writeFile(path.join(current, "runner", "state.json"), "unchanged opaque provider state");
+    await fs.writeFile(path.join(current, "manifest.json"), JSON.stringify(buildNativeHarnessBackupManifest({ backupRoot: current,
+      execution, runnerInstanceId, sourceProviderLeaseId: "retained-allocation", providerSessionIdentity: {
+        providerSessionId: "retained-thread", providerBackendSessionId: "retained-backend", providerSessionIdentity: null } })));
+    expect(verifyNativeHarnessBackup({ root: backupRoot, execution, runnerInstanceId })).not.toBeNull();
+    await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, source: { kind: "empty" }, apply: true });
+    const migrated = await workspace(local.id);
+    const receipt = await readNativeWorkspaceMigration(db, migrated);
+    expect(receipt?.remoteCwd).toBe(remote.remoteCwd);
+    const continuation = { companyId: ids.company, workspaceId: local.id, agentId: ids.agent, issueId: ids.issue, sessionId, logicalCwd: original, remoteCwd: remote.remoteCwd };
+    expect(await canRestoreMigratedNativeSession(db, continuation)).toBe(true);
+    expect(await canRestoreMigratedNativeSession(db, { ...continuation, sessionId: randomUUID() })).toBe(false);
+    expect(await canRestoreMigratedNativeSession(db, { ...continuation, remoteCwd: "/foreign" })).toBe(false);
+    expect(migratedNativeExecutionCwd(receipt, { agentId: ids.agent, issueId: ids.issue, sessionId })).toBe(original);
+    expect(migratedNativeExecutionCwd(receipt, { agentId: randomUUID(), issueId: ids.issue, sessionId })).toBeNull();
+    await fs.rm(path.join(root, "old-controller"), { recursive: true });
+    ids.run = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: ids.run, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    await db.update(environmentLeases).set({ heartbeatRunId: ids.run }).where(eq(environmentLeases.id, ids.lease));
+    const reserved = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: ids.run,
+      agentId: ids.agent, environmentId: ids.environment, existingWorkspaceId: local.id, projectId: null, projectWorkspaceId: null, source: { kind: "empty" } });
+    const preparation = { db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote };
+    if (scenario === "forged-receipt") {
+      await db.update(executionWorkspaces).set({ metadata: { ...reserved.metadata,
+        nativeWorkspaceMigration: { schema: "paperclip.native-workspace-migration.v1", operationId: randomUUID() } } }).where(eq(executionWorkspaces.id, local.id));
+      await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow("native_workspace_migration_receipt_invalid"); return;
+    }
+    if (scenario === "occupied") {
+      await fs.writeFile(path.join(remote.remoteCwd, "unrelated.txt"), "do not overwrite");
+      await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow();
+      expect(await fs.readFile(path.join(remote.remoteCwd, "unrelated.txt"), "utf8")).toBe("do not overwrite"); return;
+    }
+    if (scenario === "foreign-target") {
+      remote.remoteCwd = path.join(root, "different-provider-root");
+      await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow("native_workspace_migration_target_changed"); return;
+    }
+    const prepared = await prepareRemoteWorkspace(preparation);
+    expect(prepared.remoteRoot).toBe(remote.remoteCwd);
+    expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("retained work");
+    const successor = { ...execution, workspace: { ...execution.workspace,
+      cwd: migratedNativeExecutionCwd(receipt, { agentId: ids.agent, issueId: ids.issue, sessionId }) ?? prepared.remoteRoot } };
+    expect(verifyNativeHarnessBackup({ root: backupRoot, execution: successor, runnerInstanceId })).not.toBeNull();
+    expect(verifyNativeHarnessBackup({ root: backupRoot, execution: { ...successor, workspace: { ...successor.workspace,
+      cwd: prepared.remoteRoot } }, runnerInstanceId })).toBeNull();
+    expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
   it.each(["path", "file-url"] as const)("cold restores an imported secondary %s repository and acquires only a new descriptor", async sourceKind => {
