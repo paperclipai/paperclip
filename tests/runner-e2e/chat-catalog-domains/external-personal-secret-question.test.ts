@@ -66,3 +66,11 @@ it("uses bound completion context for terse answers without treating permission 
   expect(withChoice("Done for Riley")).toBeUndefined();
   expect(withChoice("Yes", "May I save the value for you?")).toBeUndefined();
 });
+
+it.each(["header", "title", "submitLabel"] as const)("rejects unsafe chat instructions in rendered %s", field => {
+  const row = question(), qs = row.payload.questionSet!;
+  const unsafe = "Enter your personal publishing credential here in chat.";
+  if (field === "header") qs.questions[0]!.header = unsafe;
+  else qs[field] = unsafe;
+  expect(personalSecretQuestionHandoff(row, binding)).toBeUndefined();
+});
