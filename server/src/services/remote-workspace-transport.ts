@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
-import { remoteWorkspaceArchiveScript } from "./remote-workspace-snapshot-archive.js";
+import { remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage } from "./remote-workspace-snapshot-archive.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
@@ -26,6 +26,7 @@ export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
   "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
+const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};`;
 
 type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "restore" | "cleanup";
 
@@ -57,8 +58,10 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
     // One-shot providers can return combined output in stdout. Keep the same
     // exact safe diagnostics; never forward arbitrary output from either stream.
-    const reported = [result.stderr.trim(), result.stdout.trim()]
-      .find(value => [gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(value));
+    const output = [result.stderr.trim(), result.stdout.trim()];
+    const reported = output.find(value => [gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(value))
+      ?? (operation === "capture" || operation === "archive_helper"
+        ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value) : undefined);
     throw new Error(reported ?? "remote_workspace_operation_failed");
   }
   return result.stdout;
@@ -196,7 +199,7 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
   if (!/^[a-f0-9-]{36}$/.test(operationId)) throw new Error("remote_workspace_operation_identity_invalid");
   const directory = path.posix.join(remoteCwd, ".paperclip-runtime", "workspace-snapshots", operationId);
   const helper = path.posix.join(directory, "archive.cjs");
-  const install = String.raw`const fs=require('node:fs/promises'),path=require('node:path');${DISK_FULL_CHECK}(async()=>{
+  const install = String.raw`const fs=require('node:fs/promises'),path=require('node:path');${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}(async()=>{
    const [root,dir,file,body]=process.argv.slice(1);let p='/';
    for(const s of root.split('/').filter(Boolean)){p=path.join(p,s);await fs.mkdir(p,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}
    for(const s of path.relative(root,dir).split('/')){p=path.join(p,s);await fs.mkdir(p,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const st=await fs.lstat(p);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}
@@ -205,7 +208,7 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
    // A failed write can leave partial bytes. Remove only the temporary file this run created.
    try{await fs.writeFile(temp,Buffer.from(body,'base64'),{mode:0o600,flag:'wx'});await fs.rename(temp,file);}
    catch(e){if(e?.code!=='EEXIST')await fs.rm(temp,{force:true}).catch(()=>{});throw e;}
-  })().catch(error=>{if(diskFull(error))process.stderr.write(${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)});process.exitCode=1});`;
+  })().catch(error=>{process.stderr.write(diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}:captureFailure(error)??'remote_workspace_archive_helper_failed');process.exitCode=1});`;
   await command(target, "archive_helper", ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
   return { directory, helper, archive: path.posix.join(directory, "workspace.pcws"), receipt: path.posix.join(directory, "receipt.json") };
 }
@@ -232,7 +235,7 @@ export async function captureRemoteWorkspaceArchive(input: {
   const staged = await installArchiveHelper(input.target, input.remoteCwd, input.operationId);
   // Publish the archive and receipt as one immutable directory. Concurrent
   // invocations own separate attempts; no invocation unlinks another's archive.
-  const capture = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');${DISK_FULL_CHECK}(async()=>{
+  const capture = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}(async()=>{
    const [helper,root,directory]=process.argv.slice(1),canonical=path.join(directory,'captured');
    const readPair=async(dir,layout,required)=>{
     const st=await fs.lstat(dir).catch(e=>{if(e.code==='ENOENT')return null;throw e});if(!st)return null;
@@ -258,7 +261,8 @@ export async function captureRemoteWorkspaceArchive(input: {
   })().catch(error=>{
    const gitOperation='remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace';
    process.stderr.write(typeof error?.stderr==='string'&&error.stderr.trim()===gitOperation?gitOperation
-    :diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}:'remote_workspace_capture_failed');process.exitCode=1;
+    :diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}
+    :captureFailure({message:typeof error?.stderr==='string'?error.stderr.trim():null})??captureFailure(error)??'remote_workspace_capture_failed');process.exitCode=1;
   });`;
   const { layout, ...receipt } = JSON.parse(await command(input.target, "capture", ["-e", capture, staged.helper, input.remoteCwd, staged.directory])) as {
     manifestDigest: string; sha256: string; byteSize: number; entries: number; layout: "legacy" | "captured";

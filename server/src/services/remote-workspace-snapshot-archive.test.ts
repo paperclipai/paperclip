@@ -290,6 +290,30 @@ describe("portable remote workspace archives", () => {
     await expect(capture(cwd)).rejects.toThrow("unsafe_symlink");
     await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("redacts a real missing-source error in the serialized capture helper", async () => {
+    const helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "snapshot.pcws");
+    await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", path.join(root, "SYNTHETIC_PRIVATE_MISSING_SOURCE"), archivePath], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_fs_enoent" });
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("redacts a real exclusive-write error without replacing a preexisting archive", async () => {
+    const cwd = await source(), helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "SYNTHETIC_PRIVATE_ARCHIVE.pcws");
+    await fs.writeFile(path.join(cwd, "saved.txt"), "retained source bytes\n");
+    await fs.writeFile(archivePath, "preexisting archive bytes\n");
+    await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, archivePath], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_fs_eexist" });
+    expect(await fs.readFile(archivePath, "utf8")).toBe("preexisting archive bytes\n");
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+  it("keeps an unrecognized real filesystem error private in the serialized capture helper", async () => {
+    const helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "snapshot.pcws");
+    await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", path.join(root, "SYNTHETIC_PRIVATE_NAME".repeat(20)), archivePath], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed" });
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("preserves shallow repository boundaries and a nested managed checkout", async () => {
     const base = await source(); await git(base, "init", "-q", "-b", "main");
     for (const value of ["one", "two"]) {

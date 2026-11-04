@@ -292,6 +292,37 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
+  it.each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
+    const privateName = "SYNTHETIC_PRIVATE_FILENAME", outside = path.join(scratch, privateName);
+    await fs.writeFile(outside, "outside source bytes\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await fs.symlink(`../${privateName}`, path.join(workspace, "link"));
+    const { remote, execute } = target({}, outputMode), operationId = randomUUID();
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow(/^remote_workspace_archive_unsafe_symlink$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(outside, "utf8")).toBe("outside source bytes\n");
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+    expect(await fs.readlink(path.join(workspace, "link"))).toBe(`../${privateName}`);
+    const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  it.each(["split", "one-shot"] as const)("retains a closed filesystem failure for a missing canonical archive with %s output", async outputMode => {
+    const operationId = randomUUID(), canonical = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId, "captured");
+    await fs.mkdir(canonical, { recursive: true });
+    const receipt = '{"SYNTHETIC_PRIVATE_METADATA":"retained receipt"}';
+    await fs.writeFile(path.join(canonical, "receipt.json"), receipt);
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained unsaved source bytes\n");
+    const { remote, execute } = target({}, outputMode);
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow(/^remote_workspace_archive_fs_enoent$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(path.join(canonical, "receipt.json"), "utf8")).toBe(receipt);
+    expect(await fs.readdir(canonical)).toEqual(["receipt.json"]);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained unsaved source bytes\n");
+  });
+
   it.each(["split", "one-shot"] as const)("preserves only the fixed unfinished Git operation diagnostic with %s output", async outputMode => {
     await git(workspace, "init", "--initial-branch=main");
     await fs.writeFile(path.join(workspace, "work.txt"), "base\n"); await git(workspace, "add", "."); await git(workspace, "commit", "-m", "base");
@@ -359,6 +390,18 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
   });
 
+  it.each(["split", "one-shot"] as const)("preserves a Git child disk failure with %s output without its private text", async outputMode => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    const bin = path.join(scratch, "controlled-bin"); await fs.mkdir(bin);
+    const gitWrapper = path.join(bin, "git");
+    await fs.writeFile(gitWrapper, "#!/bin/sh\nprintf '%s' 'No space left on device: SYNTHETIC_PRIVATE_GIT_PATH' >&2\nexit 2\n", { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` }, outputMode);
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace$/);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+
   it.each([
     { label: "private stdout", stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "" },
     { label: "private stderr", stdout: "", stderr: "SYNTHETIC_PRIVATE_STDERR" },
@@ -366,6 +409,11 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     { label: "prefixed stdout diagnostic", stdout: "SYNTHETIC_PRIVATE_PATH\nremote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace", stderr: "" },
     { label: "unrelated helper diagnostic", stdout: "remote_workspace_capture_failed", stderr: "" },
     { label: "diagnostic split between streams", stdout: "remote_workspace_sandbox_", stderr: "disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" },
+    { label: "suffixed capture validation", stdout: "", stderr: "remote_workspace_archive_unsafe_symlink\nSYNTHETIC_PRIVATE_FILENAME" },
+    { label: "prefixed capture filesystem failure", stdout: "SYNTHETIC_PRIVATE_PATH\nremote_workspace_archive_fs_enoent", stderr: "" },
+    { label: "unknown capture filesystem code", stdout: "remote_workspace_archive_fs_eintr", stderr: "" },
+    { label: "unknown capture validation", stdout: "", stderr: "remote_workspace_archive_Synthetic_PRIVATE" },
+    { label: "capture failure split between streams", stdout: "remote_workspace_archive_", stderr: "unsafe_symlink" },
   ])("keeps $label private", async ({ stdout, stderr }) => {
     const { remote, execute } = target();
     execute.mockResolvedValueOnce({ exitCode: 1, stdout, stderr, timedOut: false, signal: null,
@@ -373,6 +421,37 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["prepare", "repository", "restore", "cleanup"] as const)("keeps new capture diagnostics private during %s", async operation => {
+    const { remote, execute } = target();
+    const failed = { exitCode: 1, stdout: "remote_workspace_archive_fs_enoent", stderr: "", timedOut: false,
+      signal: null, pid: process.pid, startedAt: new Date().toISOString() };
+    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
+    execute.mockResolvedValueOnce(failed);
+    const request = operation === "prepare"
+      ? prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: workspace, source: { kind: "empty" },
+        preparationIdentity: "a".repeat(64), resolveGitAuth: async () => null })
+      : operation === "repository"
+        ? prepareRemoteRepository({ target: remote, remoteCwd: workspace, repoUrl: "https://example.invalid/fixture.git", ref: null, resolveGitAuth: async () => null })
+        : operation === "cleanup"
+          ? cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+          : (async () => {
+            const archivePath = path.join(scratch, "restore.pcws"); await fs.writeFile(archivePath, "synthetic archive");
+            return restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(scratch, "restored"), archivePath,
+              manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) });
+          })();
+    await expect(request).rejects.toThrow(/^remote_workspace_operation_failed$/);
+    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 2 : 1);
+  });
+
+  it("keeps the existing disk diagnostic ahead of a new capture diagnostic", async () => {
+    const { remote, execute } = target();
+    const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: diskFull, stderr: "remote_workspace_archive_fs_enoent",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(diskFull);
   });
 
   it("keeps the existing safe stderr diagnostic when stdout reports another safe failure", async () => {
