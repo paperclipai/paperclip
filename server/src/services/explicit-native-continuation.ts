@@ -241,7 +241,8 @@ export async function admitExplicitNativeContinuation(input: {
           and result.schema_status = 'accepted' and result.result_json#>>'{terminal,runTerminalState}' = 'succeeded')`,
     )),
   )).for("update");
-  const sourceChecks = actions.map(action => ({ cause: action.cause, evidence: action.evidence }));
+  const sourceChecks: Array<{ id?: string; cause: string; evidence: Record<string, unknown> }> =
+    actions.map(action => ({ id: action.id, cause: action.cause, evidence: action.evidence }));
   if (nativeQueuedSend) {
     const [latest] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
@@ -351,7 +352,7 @@ export async function admitExplicitNativeContinuation(input: {
         sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
       )).limit(1);
       const recovery = readSystemRecovery(action.evidence);
-      const snapshotSettled = completedResult && freshIntent && recovery?.state === "complete"
+      const snapshotSettled = completedResult && freshIntent && action.id && recovery?.state === "complete"
         && await verifiedWorkspaceSnapshotReceipt(db, { companyId, issueId, runId: run.id,
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       if (completedResult && !(freshIntent && snapshotSettled))

@@ -154,7 +154,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     if (!lease.providerLeaseId) throw invalid("lease_allocation_missing");
     if (!lease.provider || lease.provider === "local") throw invalid("lease_provider_invalid");
     const preparingRetention = options.prepareNativeRetention && run.runtimeMode === "native" && run.status === "failed"
-      && descriptor?.state === "prepared" && descriptor.resourceDisposition === "keep_running"
+      && legacyDescriptor?.state === "prepared" && legacyDescriptor.resourceDisposition === "keep_running"
       && lease.leasePolicy === "reuse_by_environment" && ["released", "retained"].includes(lease.status);
     const reusableExport = descriptor && (acceptedExportResult || remoteDescriptor && remoteAuthority)
       && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
