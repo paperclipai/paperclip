@@ -1193,7 +1193,6 @@ describe("automatic retained workspace recovery", () => {
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, completed.id)))
         .toEqual([expect.objectContaining({ schemaStatus: "accepted" })]);
       expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
-      const app = boardRecoveryApp();
       expect((await request(app).get(`/api/issues/${f.issueId}/queued-comments`).expect(200)).body.entries).toEqual([]);
       expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body.interruption)
         .toMatchObject({ state: "resolved", canRetry: false });
