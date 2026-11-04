@@ -6,7 +6,7 @@ import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import type { StorageService } from "../../storage/types.js";
@@ -152,7 +152,8 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     const [binding] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, owner.authorityRunId), eq(heartbeatRuns.companyId, owner.companyId),
       eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.nativeSessionId, inactiveSource.normalizedSessionId),
-      eq(heartbeatRuns.runnerInstanceId, inactiveSource.runnerInstanceId)));
+      eq(heartbeatRuns.runnerInstanceId, inactiveSource.runnerInstanceId), eq(heartbeatRuns.status, "succeeded"),
+      isNotNull(heartbeatRuns.finishedAt)));
     const [lease] = await tx.select({ stamp: sql<unknown>`${environmentLeases.metadata}->'nativeHarnessBackup'` })
       .from(environmentLeases).where(and(eq(environmentLeases.companyId, owner.companyId),
         eq(environmentLeases.issueId, owner.issueId), eq(environmentLeases.providerLeaseId, inactiveSource.providerLeaseId),
@@ -165,8 +166,11 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     // The task share lock serializes publication with execution checkout. A
     // turn that ran during upload also changes the immutable backup manifest.
     const manifest = await readFile(join(inactiveSource.root, "manifest.json"));
+    const identity = JSON.parse(manifest.toString("utf8"));
     const state = JSON.parse(await readFile(join(inactiveSource.root, "runner", "runner-state.json"), "utf8"));
     if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== inactiveSource.manifestSha256
+      || identity.normalizedSessionId !== stamp.normalizedSessionId || identity.runnerInstanceId !== stamp.runnerInstanceId
+      || identity.sourceProviderLeaseId !== stamp.sourceProviderLeaseId || identity.completedAt !== stamp.completedAt
       || state.runId !== owner.authorityRunId || state.lifecycle !== "suspended") fail("prestage_source_changed");
   }
 }

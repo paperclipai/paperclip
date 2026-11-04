@@ -224,7 +224,7 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     await expect(migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) }))
       .rejects.toThrow("native_harness_migration_source_unsettled");
   });
-  it.each(["source_advanced", "queued_turn", "lease_revoked", "owner_changed"])("keeps the published source when %s happens during pre-copy upload", async change => {
+  it.each(["source_advanced", "queued_turn", "lease_revoked", "owner_changed", "run_failed"])("keeps the published source when %s happens during pre-copy upload", async change => {
     const f = await inactiveFixture(); await persistNativeHarnessBackup(f);
     const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
     const put = f.storage.putFile.bind(f.storage);
@@ -237,6 +237,7 @@ describeEmbeddedPostgres("durable native provider backups", () => {
         .where(eq(environmentLeases.providerLeaseId, f.providerLeaseId));
       if (change === "owner_changed") await f.db.update(nativeRunFinalizations).set({ controllerGeneration: 2 })
         .where(eq(nativeRunFinalizations.runId, f.runId));
+      if (change === "run_failed") await f.db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
       return result;
     });
     await expect(persistNativeHarnessBackup(f)).rejects.toThrow(change === "owner_changed" ? "native_runner_checkpoint_owner_lost"
