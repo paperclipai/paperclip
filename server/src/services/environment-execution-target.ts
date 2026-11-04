@@ -1,4 +1,4 @@
-import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
+import { environmentTaskParkedClaimSchema, environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
@@ -273,6 +273,9 @@ export async function resolveEnvironmentExecutionTarget(input: {
         persistentProcessSessions: false, independentControlCommands: false, incrementalSessionOutput: false,
         concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
       sandboxLeaseAcquisition:acquisition,
+      ...((lease.metadata?.providerMetadata as { parkedClaim?: unknown } | undefined)?.parkedClaim ? {
+        runnerTaskParkedClaim: environmentTaskParkedClaimSchema.parse((lease.metadata!.providerMetadata as { parkedClaim: unknown }).parkedClaim),
+      } : {}),
       ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
       runnerTask: async (operation, context) => {
         const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
@@ -281,6 +284,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
         if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
           acquisition.outcome = "replacement";
           acquisition.providerLeaseId = result.taskId;
+          target.runnerTaskParkedClaim = undefined;
         }
         return result;
       },

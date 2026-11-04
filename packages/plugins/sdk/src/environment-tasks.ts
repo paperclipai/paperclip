@@ -21,6 +21,8 @@ export const environmentTaskColdCheckpointSchema = z.object({
 }).strict();
 export type PluginEnvironmentTaskColdCheckpoint = z.infer<typeof environmentTaskColdCheckpointSchema>;
 
+export const environmentTaskParkedClaimSchema = z.object({ parkId: providerId.max(1024), claimId: runnerIdentity }).strict();
+
 const identifier = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 const secureUrl = z.string().url().refine(value => {
   const url = new URL(value);
@@ -106,7 +108,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
       reconnectGraceMs: z.number().int().nonnegative().optional(),
       lifecyclePolicy: z.discriminatedUnion("mode", [
         z.object({ mode: z.literal("per_turn"), idleTimeoutMs: z.null() }).strict(),
-        z.object({ mode: z.literal("warm"), idleTimeoutMs: z.number().int().positive().max(86_400_000) }).strict(),
+        z.object({ mode: z.literal("warm"), idleTimeoutMs: z.number().int().positive().max(86_400_000), retention: z.literal("host").optional() }).strict(),
       ]),
     }).strict().optional(),
   }).strict(),
@@ -118,6 +120,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),
   z.object({ kind: z.literal("read_state"), identity: durableIdentity, resumeFrom: providerId.optional(), resumeCheckpoint: environmentTaskColdCheckpointSchema.optional() }).strict(),
+  z.object({ kind: z.literal("park"), identity: durableIdentity, resumeCheckpoint: environmentTaskColdCheckpointSchema }).strict(),
+  z.object({ kind: z.literal("claim"), parkId: providerId.max(1024), claimId: runnerIdentity, bootstrapTicket: z.string().min(1).max(65_536) }).strict(),
   z.object({ kind: z.literal("checkpoint"), identity: durableIdentity, providerSessionId: z.string().min(1).max(1024) }).strict(),
   z.object({ kind: z.literal("archive_state"), priorIdentity: durableIdentity,
     archiveKey: z.string().regex(/^[a-f0-9]{24}$/), resumeFrom: providerId, resumeCheckpoint: environmentTaskColdCheckpointSchema.optional() }).strict(),
@@ -125,12 +129,13 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
-  z.object({ kind: z.literal("stop") }).strict(),
+  z.object({ kind: z.literal("stop"), ifParkedClaim: z.object({ parkId: providerId.max(1024), claimId: runnerIdentity,
+    resumeCheckpoint: environmentTaskColdCheckpointSchema }).strict().optional() }).strict(),
 ]);
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("checkpoint"), taskId: providerId, checkpoint: environmentTaskColdCheckpointSchema }).strict(),
-  z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
+  z.object({ kind: z.literal("accepted"), taskId: providerId, parkRefused: z.literal(true).optional() }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
@@ -148,6 +153,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
     warmCheckpointVersion: z.literal(1).optional(),
+    hostedParkingVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
@@ -164,6 +170,10 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     preparationStopped: z.boolean().optional(),
     /** The provider retains this task's recoverable session state for a later launch. */
     sessionStateAvailable: z.boolean().optional(),
+    retention: z.discriminatedUnion("state", [
+      z.object({ state: z.enum(["parking", "parked", "retiring"]), parkId: providerId.max(1024), bootstrapBound: z.literal(true).optional() }).strict(),
+      z.object({ state: z.literal("claiming"), parkId: providerId.max(1024), claimId: runnerIdentity, bootstrapBound: z.literal(true).optional() }).strict(),
+    ]).optional(),
   }).strict(),
   z.object({
     kind: z.literal("connection"), taskId: providerId,

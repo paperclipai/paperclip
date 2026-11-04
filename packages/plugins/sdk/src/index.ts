@@ -467,7 +467,7 @@ export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 
-export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentTaskColdCheckpointSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentTaskColdCheckpointSchema, environmentTaskParkedClaimSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
 export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskExecutionContext, PluginEnvironmentTaskColdCheckpoint } from "./environment-tasks.js";
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 

@@ -1,3 +1,4 @@
+import { clearHostedParkingScope, hasUnresolvedHostedParking, holdHostedParking } from "../services/native-runtime/hosted-parking-obligations.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
@@ -579,5 +580,72 @@ describe("hosted completed-turn cold checkpoint ownership", () => {
       if (mode === "valid") await expect(selected).resolves.toEqual(checkpoint);
       else await expect(selected).rejects.toThrow();
     } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+describe("protected hosted parking operations", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
+    normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: `sha256:${"b".repeat(64)}`, identity, providerSessionId: "thread" };
+  it.each(["valid", "refused", "unnegotiated", "intent", "receipt", "foreign"])("requires a fenced current park intent: %s", async mode => {
+    const value = row();
+    Object.assign(value.lease.metadata, { runnerTaskIdentity: submit.runner, runnerTaskHostRetention: mode !== "unnegotiated",
+      runnerTaskColdCheckpoint: checkpoint, runnerTaskParkIntent: { identity: Object.fromEntries(Object.entries(identity).reverse()),
+        resumeCheckpoint: { ...checkpoint, ...(mode === "intent" ? { sourceId: "other" } : {}) } } });
+    const workers = worker({ kind: "accepted", taskId: "attempt-1", ...(mode === "refused" ? { parkRefused: true } : {}) });
+    const store = database(value);
+    const operation = { kind: "park" as const, identity: { ...identity, ...(mode === "foreign" ? { runId: "other" } : {}) },
+      resumeCheckpoint: { ...checkpoint, ...(mode === "receipt" ? { sourceId: "other" } : {}) } };
+    const run = executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation });
+    if (mode === "valid" || mode === "refused") {
+      await expect(run).resolves.toMatchObject({ kind: "accepted", ...(mode === "refused" ? { parkRefused: true } : {}) });
+      if (mode === "refused") expect(new PgDialect().sqlToQuery(store.sets[0].metadata as never).sql).toContain("- 'runnerTaskParkIntent'");
+    }
+    else { await expect(run).rejects.toThrow(); expect(workers.call).not.toHaveBeenCalled(); }
+  });
+  it.each(["valid", "missing", "other-run", "other-park", "inactive"])("binds transient claim tickets to the reserved successor: %s", async mode => {
+    const value = row();
+    Object.assign(value.lease.metadata, { providerMetadata: mode === "missing" ? {} : { parkedClaim: { parkId: "park", claimId: "run" } } });
+    if (mode === "inactive") value.lease.status = "retained";
+    const store = database(value), workers = worker();
+    const operation = { kind: "claim" as const, parkId: mode === "other-park" ? "other" : "park",
+      claimId: mode === "other-run" ? "other-run" : "run", bootstrapTicket: "single-use-private-ticket" };
+    const run = executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation });
+    if (mode === "valid") await expect(run).resolves.toMatchObject({ kind: "accepted" });
+    else { await expect(run).rejects.toThrow(); expect(workers.call).not.toHaveBeenCalled(); }
+    expect(JSON.stringify(store.sets)).not.toContain(operation.bootstrapTicket);
+  });
+  it.each(["valid", "foreign-claim", "foreign-source", "foreign-park", "expired", "inactive"])("fences conditional retirement before provider dispatch: %s", async mode => {
+    const value = row();
+    const sourceIdentity = { ...identity, runId: "source-run" };
+    const source = { ...checkpoint, identity: sourceIdentity };
+    Object.assign(value.lease.metadata, { runnerTaskIdentity: { ...submit.runner, runId: sourceIdentity.runId }, runnerTaskColdCheckpoint: source,
+      providerMetadata: { parkedClaim: { parkId: "park", claimId: "run" } } });
+    if (mode === "expired") value.lease.expiresAt = new Date(0);
+    if (mode === "inactive") value.lease.status = "retained";
+    const workers = worker();
+    const operation = { kind: "stop" as const, ifParkedClaim: { parkId: mode === "foreign-park" ? "other" : "park",
+      claimId: mode === "foreign-claim" ? "other" : "run", resumeCheckpoint: { ...source, ...(mode === "foreign-source" ? { sourceId: "other" } : {}) } } };
+    const run = executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation });
+    if (mode === "valid") {
+      await expect(run).resolves.toMatchObject({ kind: "accepted" });
+      expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ operation }), 15_000);
+    } else { await expect(run).rejects.toThrow(); expect(workers.call).not.toHaveBeenCalled(); }
+  });
+  it.each(["parked", "stopped", "uncertain"])("settles unresolved parking from exact provider observations: %s", async mode => {
+    const scope = `park-obligation-${mode}`;
+    holdHostedParking(scope, "run");
+    try {
+      const observed = { kind: "status", taskId: "attempt-1", phase: "running", executionStopped: mode === "stopped",
+        ...(mode === "parked" ? { retention: { state: "parked", parkId: "park" } } : {}) };
+      await executeEnvironmentTask(database().db, worker(observed) as never, { companyId: "company", leaseId, operation: { kind: "status" } });
+      expect(hasUnresolvedHostedParking()).toBe(mode === "uncertain");
+    } finally { clearHostedParkingScope(scope); }
+  });
+  it.each(["parking", "parked", "claiming", "retiring"] as const)("preserves provider retention observations: %s", state => {
+    const retention = { state, parkId: "park", ...(state === "claiming" ? { claimId: "run" } : {}) };
+    const result = parseEnvironmentTaskResult({ kind: "status" }, "task", { kind: "status", taskId: "task", phase: "running", retention });
+    expect(result).toMatchObject({ retention });
   });
 });
