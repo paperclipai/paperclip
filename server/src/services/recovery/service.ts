@@ -203,6 +203,7 @@ const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
+const DISPOSITION_REPAIR_ADMISSION_REJECTED_NOTE = "repair_admission_rejected";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
@@ -3222,6 +3223,7 @@ export function recoveryService(
       maxAttempts: input.legacyEpisode?.maxAttempts ?? DISPOSITION_REPAIR_MAX_ATTEMPTS,
       attemptCount: input.attemptCount,
       lastAttemptAt: new Date(),
+      reopenCancelledWithNote: DISPOSITION_REPAIR_ADMISSION_REJECTED_NOTE,
     });
   }
 
@@ -4028,7 +4030,7 @@ export function recoveryService(
       // repair action must not subsequently cause escalation.
       await recoveryActionsSvc.resolveActiveForIssue({
         companyId: current.companyId, sourceIssueId: current.id, actionId: action.id,
-        status: "cancelled", outcome: "cancelled", resolutionNote: "repair_admission_rejected",
+        status: "cancelled", outcome: "cancelled", resolutionNote: DISPOSITION_REPAIR_ADMISSION_REJECTED_NOTE,
       });
     }
     return scheduled ? "queued" : "skipped";

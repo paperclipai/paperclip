@@ -251,4 +251,16 @@ describe("legacy continuation persisted authority", () => {
     const repair = (await f.runs()).find(r => r.id !== f.runId)!;
     expect(repair.contextSnapshot).toMatchObject({ legacyDispositionEpisode: { id: f.runId, attempt: 1 } });
   });
+  it("reuses one rejected repair action for an unchanged fingerprint across sweeps", async () => {
+    const f = await fixture();
+    const rejecting = recoveryService(db, { enqueueWakeup: async () => null });
+    for (let sweep = 0; sweep < 4; sweep += 1) await rejecting.reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    const rejected = await f.actions();
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ kind: "deliberate_wait_without_target", status: "cancelled", attemptCount: 0, resolutionNote: "repair_admission_rejected" });
+    expect(await f.runs()).toHaveLength(1);
+    await f.createRecovery().reconcileStrandedAssignedIssues({ companyId: f.companyId });
+    expect(await f.actions()).toEqual([expect.objectContaining({ id: rejected[0].id, status: "active", attemptCount: 1 })]);
+    expect(await f.runs()).toHaveLength(2);
+  });
 });

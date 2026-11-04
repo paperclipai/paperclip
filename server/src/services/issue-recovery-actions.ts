@@ -68,6 +68,10 @@ export type UpsertIssueRecoveryActionInput = {
   // evidence/attempt metadata without silently changing the recorded owner or
   // the wake/monitor contract that made that owner authoritative.
   preserveExistingOwner?: boolean;
+  // A cancellation with this note did not end the recovery identity. With no
+  // active action, reopen that row as if newly created instead of inserting
+  // another for the same (kind, cause, fingerprint).
+  reopenCancelledWithNote?: string;
 };
 
 export type ResolveIssueRecoveryActionInput = {
@@ -307,6 +311,44 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       timeoutAt: input.timeoutAt ?? null,
       lastAttemptAt: input.lastAttemptAt ?? now,
     };
+  }
+
+  async function reopenCancelled(
+    tx: DbOrTransaction,
+    input: UpsertIssueRecoveryActionInput,
+    resolutionNote: string,
+    ownerType: IssueRecoveryActionOwnerType,
+    now: Date,
+  ) {
+    const [cancelled] = await tx
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+          eq(issueRecoveryActions.kind, input.kind),
+          eq(issueRecoveryActions.cause, input.cause),
+          eq(issueRecoveryActions.fingerprint, input.fingerprint),
+          eq(issueRecoveryActions.status, "cancelled"),
+          eq(issueRecoveryActions.resolutionNote, resolutionNote),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(1);
+    if (!cancelled) return [];
+    return tx
+      .update(issueRecoveryActions)
+      .set({
+        ...buildInsertValues(input, ownerType, now),
+        outcome: null,
+        resolutionNote: null,
+        resolvedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(issueRecoveryActions.id, cancelled.id), eq(issueRecoveryActions.status, "cancelled")))
+      .returning();
   }
 
   // Resolve the prior active action, then insert a new one in one transaction.
@@ -550,6 +592,10 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       const [created] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
+        const reopened = input.reopenCancelledWithNote
+          ? await reopenCancelled(tx, input, input.reopenCancelledWithNote, ownerType, now)
+          : [];
+        if (reopened.length > 0) return reopened;
         return tx
           .insert(issueRecoveryActions)
           .values(buildInsertValues(input, ownerType, now))
