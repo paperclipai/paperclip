@@ -162,6 +162,12 @@ Confirmations whose source work is still syncing show “Preparing approval…�
 disable acceptance until the server reports readiness. Refresh that state automatically;
 rejection and revision remain available. Live tool reviews keep their own approval flow.
 
+Confirmation and checkbox confirmation prompts use the shared Markdown renderer.
+Links, lists, emphasis, code and paragraph breaks remain readable in the task
+composer, classic cards and expanded receipts.
+Prompt images appear as references and diagrams as source text. Checkbox groups
+use the rendered prompt as their accessible label.
+
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
 messages while the card is open. Questions use their compact history entry as the
@@ -439,21 +445,23 @@ width tokens and configurable column order. Review the complete composition in
   level. Task IDs and names use natural, case-insensitive ordering; timestamps use
   their raw value. Tags sort by their
   alphabetized names; missing values stay last in both directions. Equal values
-  retain their order. The initial collection uses Task ID ascending as its
-  default order, with no active header, direction arrow or persistent highlight.
-  A header becomes active only after the user sorts by it; the first click sorts
-  ascending.
+  retain their order. Task lists default to Last updated descending, with the
+  Last updated header active and its downward arrow visible. Parent tasks stay
+  before their descendants; roots and siblings use newest-first update order.
+  With nesting disabled, all tasks use that order in one flat list. Explicit
+  URL sorting and saved user sorting retain precedence over the default.
+  Subtask lists use the same default while keeping checklist controls available.
 - A horizontal ellipsis stays pinned to the right edge of the header, outside
   horizontal scrolling. Its “Columns” flyout lists all nine columns in their current order
   with checkmarks on the right. Toggling columns updates both header and rows
   immediately and keeps the flyout open. Keep at least one column visible; nesting
   controls remain available even when Task is hidden. Reset defaults shows only
   Task, Task ID, and Last updated and restores the default column order.
-  Reset also clears the active sort, direction arrow and persistent header highlight.
+  Reset also restores Last updated descending and its active header.
   Other columns remain available in the menu; hiding and re-enabling a column
   preserves its position until reset.
   Hiding the sorted column clears the explicit sort and restores the default
-  collection order without highlighting another header.
+  collection order. Last updated shows the active sort when that column is visible.
 - The refresh's compact flyout uses the shared DropdownMenu primitives. The
   Paper reference defines a 200px surface with an 8px radius, 12px content
   padding, 32px items separated by 4px, regular-weight muted labels and 14px
@@ -626,6 +634,18 @@ and full page consume the same `TaskList` collection.
   is clipped on that side; resize and scrolling update the indicators.
   Sidebar links exercise the memory router; destination pages, creation API
   behavior, production preferences and production routes are outside this preview.
+
+Coordinator adopts the same four-option menu with Inbox as its initial and
+fallback view. Its last-used view is stored per user across organizations;
+explicit view URLs take precedence, and organization-filter links without a
+view open All tasks. Unread uses the server's viewer read state. Coordinator's
+Needs attention view retains its canonical pending-decision task feed.
+Status filters preserve Inbox and Unread. Unread loads accessible read ancestors
+as hierarchy context, without counting them as unread matches.
+Its sidebar groups Chat, Tasks and Needs you with space after New task and
+before More, and keeps global search beside the organization menu (below it
+in the collapsed rail).
+Recents appears only when it contains entries, without an empty state.
 
 ### Reuse collection behavior as well as appearance
 

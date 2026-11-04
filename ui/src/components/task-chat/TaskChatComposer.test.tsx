@@ -12,7 +12,7 @@ import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
@@ -24,6 +24,7 @@ import {
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
 import { queryKeys } from "../../lib/queryKeys";
 import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
+import { waitForStoppedRuns } from "../../lib/wait-for-stopped-runs";
 
 // The session lookup never answers on its own; tests set the account directly.
 vi.mock("../../api/auth", async (importOriginal) => {
@@ -3173,6 +3174,113 @@ describe("TaskChatComposer", () => {
 
 describe("composer Stop", () => {
   function stopButton() { return container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]'); }
+
+  function nativeStopAwaitingContainment(): HeartbeatRun & { runtimeMode: "native" } {
+    const observed: Partial<HeartbeatRun> & { runtimeMode: "native" } = {
+      id: "run", companyId: "company", status: "cancelled", runtimeMode: "native",
+      resultJson: { executionCancellation: { state: "requested" }, nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: "run", companyId: "company",
+        scope: "run", dispatched: true, dispatchState: "acknowledged",
+      } } };
+    return observed as HeartbeatRun & { runtimeMode: "native" };
+  }
+
+  it.each([{ runIds: ["first"] }, { runIds: ["first", "second"] }])("clears a timed-out Stop only after every exact target is confirmed: $runIds", async ({ runIds }) => {
+    vi.useFakeTimers();
+    try {
+      const onStop = vi.fn(() => waitForStoppedRuns(runIds, {
+        getRun: vi.fn(async id => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      }));
+      const onAdd = vi.fn();
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(["unrelated"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      if (runIds.length > 1) {
+        render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set([runIds[0]])} />);
+        await act(async () => {});
+        expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      }
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(runIds)} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(onAdd).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a newer Stop attempt independent of an earlier target's confirmation", async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = (id: string) => () => waitForStoppedRuns([id], {
+        getRun: vi.fn(async () => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("first")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("second")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["first"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["second"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retains an ordinary Stop error when unrelated stop proof arrives", async () => {
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={async () => { throw new Error("Stop permission denied"); }} />);
+    flushSync(() => stopButton()!.click()); await flushAsync();
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["run"])} />);
+    await flushAsync();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Stop permission denied");
+  });
+
+  it("finishes one Stop without a stale warning when the server proves containment after native acknowledgement", async () => {
+    const requested = nativeStopAwaitingContainment();
+    let publishContainment!: (value: HeartbeatRun) => void;
+    const getRun = vi.fn(() => new Promise<HeartbeatRun>(resolve => { publishContainment = resolve; }));
+    const onStop = vi.fn(() => waitForStoppedRuns([requested.id], { initialRuns: [requested], getRun }));
+    const onAdd = vi.fn();
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+    flushSync(() => stopButton()!.click());
+    await flushAsync();
+    expect(stopButton()?.getAttribute("aria-label")).toBe("Stopping…");
+    expect(getRun).toHaveBeenCalledExactlyOnceWith(requested.id);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    // The run can already appear Stopped while the independent execution proof
+    // is settling. Removing the action must neither prove Stop nor erase a draft.
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} />);
+    typeText("Keep this note.");
+    await act(async () => publishContainment({ ...requested, resultJson: { ...requested.resultJson,
+      executionCancellation: { state: "acknowledged", proof: "provider_termination_receipt" } } }));
+    await flushAsync();
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(editable().textContent).toBe("Keep this note.");
+  });
+
+  it("does not mistake a native acknowledgement or disappearing Stop action for physical containment", async () => {
+    vi.useFakeTimers();
+    try {
+      const requested = nativeStopAwaitingContainment();
+      const getRun = vi.fn(async () => requested);
+      const onStop = vi.fn(() => waitForStoppedRuns([requested.id], { initialRuns: [requested], getRun, timeoutMs: 1000 }));
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={onStop} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+    } finally { vi.useRealTimers(); }
+  });
 
   it("switches Stop to Send with text, whitespace back to Stop, without interrupting on keyboard submit", async () => {
     const onStop = vi.fn(async () => {});

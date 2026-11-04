@@ -1,5 +1,7 @@
 import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
+import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -80,7 +82,7 @@ vi.mock("../../sentry.js", async () => {
     captureRunFailure: mockCaptureRunFailure,
   };
 });
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeControllerIdentity } from "./native-restart-recovery.js";
 
 // Exact v5 wire prompt from before the task-monitor upgrade (#15446).
 const historicalPrompt = {
@@ -150,12 +152,112 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
-    const hardRestart = !["warm", "same-server"].includes(scenario);
+  it("preserves a retry when another task owns its routine slot and continues startup recovery", async () => {
+    const candidates = [await seedRun("ROUTINE-COLLISION"), await seedRun("AFTER-ROUTINE-COLLISION")]
+      .sort((a, b) => a.runId.localeCompare(b.runId));
+    const [waiting, unrelated] = candidates;
+    const holder = await seedRun("ROUTINE-SLOT-OWNER", waiting.db);
+    const routineId = randomUUID();
+    const now = new Date();
+    await waiting.db.update(issues).set({ executionRunId: null, originKind: "routine_execution",
+      originId: routineId, originFingerprint: "scheduled" }).where(eq(issues.id, waiting.issueId));
+    await waiting.db.update(issues).set({ originKind: "routine_execution",
+      originId: routineId, originFingerprint: "scheduled" }).where(eq(issues.id, holder.issueId));
+    await waiting.db.update(heartbeatRuns).set({ status: "failed", finishedAt: now,
+      nativePhase: "retryable_failure", runnerProfileJson: { ...waiting.preparedProfile,
+        nativeWorkspaceSync: remotePreparedWorkspace(),
+        sessionCheckpoint: { identity: { companyId, agentId, issueId: waiting.issueId, runId: waiting.runId,
+          sessionId: waiting.native.normalizedSessionId }, providerSessionId: "retained-routine-session" },
+      } }).where(eq(heartbeatRuns.id, waiting.runId));
+    await waiting.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      leaseOwner: "predecessor-routine-controller", leaseExpiresAt: new Date(now.getTime() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, waiting.runId));
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(runtimeRoot, waiting.runId),
+      identity: transportOptions(waiting, runtimeRoot).prpIdentity,
+      expectedRunnerVersion: "routine-recovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      await registerNativeRunnerCheckpoint({ db: waiting.db,
+        binding: { companyId, issueId: waiting.issueId, runId: waiting.runId }, bootId: successor.bootId, authority });
+    } finally { await authority.stop(); }
+    await waiting.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0), failureCode: "provider_transport_interrupted",
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+        providerSessionEstablished: true, providerEventsExist: false } })
+      .where(eq(nativeRunFinalizations.runId, waiting.runId));
+    const state = async () => ({
+      run: await waiting.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.runId)),
+      coordinator: await waiting.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, waiting.runId)),
+      checkpoint: await waiting.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, waiting.runId)),
+      task: await waiting.db.select().from(issues).where(eq(issues.id, waiting.issueId)),
+      holder: await waiting.db.select().from(issues).where(eq(issues.id, holder.issueId)),
+    });
+    const before = await state();
+    expect(before.checkpoint.length).toBeGreaterThan(0);
+    const onClaim = vi.fn();
+    const input = { db: waiting.db, controller: successor, restartKind: "hard" as const, now };
+    const dispositions = await claimNativeRestartRecoveries({ ...input, onClaim,
+      runIds: candidates.map(candidate => candidate.runId) });
+    expect(dispositions).toEqual([
+      { kind: "awaiting_evidence", runId: waiting.runId, reason: "routine_execution_busy",
+        retryAt: new Date(now.getTime() + 30_000) },
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: unrelated.runId }),
+    ]);
+    expect(onClaim).toHaveBeenCalledOnce();
+    expect(onClaim.mock.calls[0][0].runId).toBe(unrelated.runId);
+    expect(await state()).toEqual(before);
+    expect(await waiting.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiting.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(0);
+    expect(await waiting.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, waiting.runId))).toHaveLength(0);
+
+    const heartbeat = heartbeatService(waiting.db);
+    try {
+      await expect(heartbeat.recoverNativeRunsAfterRestart(now, [waiting.runId]))
+        .resolves.toMatchObject({ claims: [], awaitingEvidenceRunIds: [waiting.runId] });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(await state()).toEqual({ ...before, run: [{ ...before.run[0],
+      nextEventSeq: before.run[0].nextEventSeq + 1, updatedAt: expect.any(Date) }] });
+
+    await waiting.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, holder.issueId));
+    const recovered = (await Promise.all([1, 2].map(() => claimNativeRestartRecoveries({ ...input,
+      runIds: [waiting.runId] })))).flat();
+    expect(recovered.filter(row => row.kind === "reattach_remote_runner")).toHaveLength(1);
+    const after = await state();
+    expect(after.run[0].runnerProfileJson).toEqual(before.run[0].runnerProfileJson);
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(after.coordinator[0]).toMatchObject({ attempt: 2, controllerGeneration: 1 });
+    expect(after.task[0].executionRunId).toBe(waiting.runId);
+    expect(await waiting.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiting.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);
+  });
+
+  it("defers another database constraint failure without calling it a routine wait", async () => {
+    const fixture = await seedRun("UNRELATED-DATABASE-FAILURE");
+    const db = new Proxy(fixture.db, { get(target, key) {
+      if (key === "transaction") return () => target.transaction(async tx => {
+        await tx.execute(sql`create temp table recovery_constraint_control
+          (id integer constraint recovery_unrelated_unique unique) on commit drop`);
+        await tx.execute(sql`insert into recovery_constraint_control values (1), (1)`);
+      });
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const onClaim = vi.fn();
+    await expect(claimNativeRestartRecoveries({ db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId], onClaim })).resolves.toEqual([{ kind: "awaiting_evidence",
+      runId: fixture.runId, reason: NATIVE_RESTART_RECOVERY_FAILED, retryAt: expect.any(Date) }]);
+    expect(onClaim).not.toHaveBeenCalled();
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", controllerGeneration: 0, leaseOwner: null });
+  });
+
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "finalizer-wait", "warm-suspended", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+    const hardRestart = !["warm", "same-server", "warm-suspended"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
-    const warmSuspended = scenario.startsWith("diskless-warm-suspended");
+    const warmSuspended = scenario === "warm-suspended" || scenario.startsWith("diskless-warm-suspended");
     const resumedAfterSuspension = perTurn || warmSuspended;
+    const suspendedBeforeThird = perTurn || (diskless && warmSuspended);
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;
     const tunnel = await createRunnerTestTlsTunnel({ port: Number(process.env.PAPERCLIP_TEST_RUNNER_PORT),
       key: process.env.PAPERCLIP_TEST_RUNNER_TLS_KEY!, cert: process.env.NODE_EXTRA_CA_CERTS! });
@@ -310,6 +412,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       };
       const first = hardRestart ? await executeInController(firstOptions) : await executeFirst();
       expect(first.exitCode).toBe(0);
+      if (scenario === "warm-suspended") expect(await closeIdleWarmNativeSessionsForRestart())
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
       await finalizeNativeRun({ db: fixture.db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       const snapshot = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
       expect(snapshot.exitCode).toBe(0);
@@ -405,6 +509,23 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           ...(perTurn ? { sessionCheckpoint: admission.checkpoint } : {}) } }).where(eq(heartbeatRuns.id, row.id));
       };
       await admitContinuation(nextOptions.execution);
+      let continuationLeaseOwner: string | undefined;
+      if (scenario === "finalizer-wait") {
+        const retryAt = new Date(Date.now() + 60_000);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: "fixture-finalizer", leaseExpiresAt: retryAt })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        await expect(executePaperclipNativeSession(nextOptions)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+        const [waiting] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, nextRunId));
+        expect(waiting).toMatchObject({ phase: "retryable_failure", attempt: 0, nextAttemptAt: retryAt });
+        const calls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
+        expect(calls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        const [claim] = await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: next.runnerInstanceId,
+          runIds: [nextRunId], now: retryAt });
+        expect(claim).toBeDefined();
+        continuationLeaseOwner = claim.leaseOwner;
+      }
       if (scenario.endsWith("-read-retry")) {
         let rejectedReads = 0;
         await expect(executePaperclipNativeSession({ ...nextOptions,
@@ -422,7 +543,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         // Retry with the partial PRP projection left by the failed read. No
         // fixture writes a suspended receipt or changes the surviving Runner.
       }
-      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession(nextOptions);
+      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession({ ...nextOptions,
+        ...(continuationLeaseOwner ? { leaseOwner: continuationLeaseOwner } : {}) });
       expect(second.exitCode).toBe(0);
       if (scenario === "diskless-live-inspection") expect("inspectionOverridden" in second && second.inspectionOverridden).toBe(true);
       const historyAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
@@ -476,9 +598,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const finalCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
       expect(finalCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(3);
       expect(finalCalls.stdout.split("\n").filter(line => line === "thread/start")).toHaveLength(1);
-      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (resumedAfterSuspension ? 1 : 0));
+      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (suspendedBeforeThird ? 1 : 0));
       const finalProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
-      if (resumedAfterSuspension) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
+      if (suspendedBeforeThird) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
       else expect(finalProcess.stdout).toBe(processAfter.stdout);
       expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: perTurn ? 0 : 1, busy: 0, failed: 0 });
       const suspended = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });

@@ -66,7 +66,7 @@ describe("dev-runner watched snapshot", () => {
 
     const fileSystem = {
       existsSync: fs.existsSync,
-      readdirSync(target: fs.PathLike, options?: fs.ObjectEncodingOptions & { withFileTypes: true }) {
+      readdirSync(target: fs.PathLike, options: fs.ObjectEncodingOptions & { withFileTypes: true }) {
         if (target === routesDir) {
           fs.rmSync(routesDir, { recursive: true, force: true });
         }
@@ -84,6 +84,8 @@ describe("dev-runner watched snapshot", () => {
     const root = createTempRoot("paperclip-dev-runner-snapshot-diff-");
     const missingPath = path.join(root, "server", "deleted.ts");
     const fileSystem = {
+      existsSync: fs.existsSync,
+      readdirSync: fs.readdirSync,
       statSync() {
         const error = new Error("not a directory") as NodeJS.ErrnoException;
         error.code = "ENOTDIR";

@@ -1208,9 +1208,16 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
-        // session-cumulative. Keep those authorities separate so consumers do
-        // not add the same tokens twice or treat cumulative cost as a delta.
+        let turn_cost = payload.pointer("/cost/basis").and_then(Value::as_str) == Some("turn");
+        let provider_cost = if cost_is_usd {
+            payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1218,15 +1225,7 @@ fn normalize_acpx_status(
             "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": if cost_is_usd {
-                payload
-                    .pointer("/cost/amount")
-                    .and_then(Value::as_f64)
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            },
+            "providerCostUsd": if turn_cost { 0.0 } else { provider_cost },
         });
         let run_delta = json!({
             "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
@@ -1243,7 +1242,7 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -1498,6 +1497,31 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acpx_turn_cost_is_not_a_cumulative_session_price() {
+        let base = json!({"tag": "usage_update", "breakdown": {
+            "inputTokens": 30787, "outputTokens": 5763, "cachedReadTokens": 475008,
+            "cachedWriteTokens": 0, "thoughtTokens": 0
+        }, "cost": {"amount": 0.336842, "currency": "USD", "basis": "turn"}});
+        let first = normalize_acpx_status(&base, "item", "turn-1", 1);
+        assert_eq!(first[0].payload["runDeltaAvailable"], true);
+        assert_eq!(first[0].payload["runDelta"]["providerCostUsd"], 0.336842);
+        assert_eq!(first[0].payload["cumulative"]["providerCostUsd"], 0.0);
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 30787);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 5763);
+        let mut second = base.clone();
+        second["cost"]["amount"] = json!(0.001);
+        let next = normalize_acpx_status(&second, "next", "turn-2", 2);
+        assert_eq!(next[0].payload["runDelta"]["providerCostUsd"], 0.001);
+        second["cost"].as_object_mut().unwrap().remove("basis");
+        let cumulative = normalize_acpx_status(&second, "legacy", "turn-3", 3);
+        assert_eq!(
+            cumulative[0].payload["cumulative"]["providerCostUsd"],
+            0.001
+        );
+        assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
 
     #[test]
     fn performance_diagnostics_keep_only_bounded_content_free_measurements() {

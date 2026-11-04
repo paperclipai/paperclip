@@ -87,11 +87,11 @@ participation, while the cleanup remains in activity history. Record an explicit
 user recovery decision on a separate task and verify it still counts. This
 browser journey remains manual.
 
-Cold-open verification: load Mine with the task-index response delayed while
-approvals/runs resolve. Only the stable list placeholder should appear until the
+Cold-open verification: load Mine with its snapshot response delayed while
+approvals resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
-100-row index, with parent/run context by ID; sidebar badges use the count endpoint.
+100-row snapshot with parent/run context; sidebar badges use the count endpoint.
 The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
 barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.

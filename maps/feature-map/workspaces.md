@@ -70,8 +70,9 @@ work. Finish the run and inspect its saved version. Replace the webserver and
 verify the next task turn uses the same remote folder without a controller
 checkout. Then release the saved allocation and verify a new one restores the
 files, Git state, and managed same-project repositories without the old sandbox
-or original Git remote. Read-only cross-project referenced folders must fail
-admission. Separate workspaces may run concurrently; shared concurrent writers
+or original Git remote. Authorized referenced Git repositories must be editable
+task copies; explicitly read-only sources must fail admission. Separate workspaces
+may run concurrently; shared concurrent writers
 must be rejected.
 
 The Files panel must label **Live workspace** or **Saved copy** with its save

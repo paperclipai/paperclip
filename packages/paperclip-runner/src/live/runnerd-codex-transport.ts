@@ -508,6 +508,11 @@ function retargetRunAttachPayload(
       provider.runtimeContext = structuredClone(runtimeContext);
     }
     payload.provider = provider;
+  } else if (provider.kind === "cursor_cloud" && currentInstructions !== undefined) {
+    provider.instructions = currentInstructions.context && runtimeContext !== undefined
+      ? retargetComposedInstructions(currentInstructions.text, currentInstructions.context, runtimeContext)
+      : currentInstructions.text;
+    payload.provider = provider;
   }
   if (authorizedTools !== null) payload.authorizedTools = authorizedTools;
   if (completionContract !== undefined) {
@@ -1240,12 +1245,15 @@ export interface CapabilityRunnerdProcessEvidence {
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
   observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   homeMode?: "isolated" | "preconfigured";
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: (event: PrpEvent, sourceIdentity: DurableRecoveryIdentity) => Promise<void>;
   recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
+  cursorCloud?: import("../contracts/cursor-cloud.js").NativeCursorCloudConfig;
+  cursorCloudProxyPath?: string;
+  cursorCloudProxySha256?: string;
   recoveryPurpose?: "execution" | "stop_cleanup";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -2719,11 +2727,13 @@ async function settleRetainedRunnerdSessionOwned(
         input.recordEpoch({ ...epochIdentity, phase: "launch_intent" }),
       );
       await authorize();
+      const bootstrapTicket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+      await core.flushCheckpoint();
       handle = spawnRunner({
         connectUrl: core.connectUrl,
         stateDirectory: resolve(root, "runner"),
         identity: input.identity,
-        ticket: core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
+        ticket: bootstrapTicket,
         maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
         p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
         maxRuntimeMs: 30_000,
@@ -3035,7 +3045,7 @@ async function settleRetainedRunnerdSessionOwned(
 }
 
 type BuildOwnedCliArtifact =
-  "acpx-runtime-sidecar.cjs" | "opencode-app-server-proxy.cjs";
+  "acpx-runtime-sidecar.cjs" | "opencode-app-server-proxy.cjs" | "cursor-cloud-app-server-proxy.cjs";
 
 function buildOwnedCliArtifactCandidates(
   artifact: BuildOwnedCliArtifact,
@@ -3352,6 +3362,16 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       ? { PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: input.runtimeContextPath }
       : {}),
   };
+  if (input.provider === "cursor_cloud") {
+    const env = input.options.environment ?? {};
+    if (!env.CURSOR_API_KEY?.trim()) throw new Error("cursor_cloud_api_key_required");
+    const selected: NodeJS.ProcessEnv = { CURSOR_API_KEY: env.CURSOR_API_KEY, ...commonIdentity };
+    for (const name of ["PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT", "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH", "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH", "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN", "PAPERCLIP_CURSOR_CLOUD_RELAY_URL", "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT"]) {
+      if (!env[name]) throw new Error("cursor_cloud_relay_binding_required");
+      selected[name] = env[name];
+    }
+    return selected;
+  }
   if (input.provider === "opencode") {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
@@ -5111,6 +5131,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
     if (provider === "codex" && this.options.homeMode !== "preconfigured") {
+      if (this.#core?.unclaimedBootstrapCheckpoint()) {
+        await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
+      }
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
@@ -5141,6 +5164,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
+    const cursorCloudProxyPath = provider === "cursor_cloud"
+      ? this.options.cursorCloudProxyPath ?? resolveBuildOwnedCliArtifact("cursor-cloud-app-server-proxy.cjs") : undefined;
+    const runnerCursorCloudLaunchProfile = cursorCloudProxyPath ? {
+      command: providerNodeCommand,
+      commandSha256: this.options.providerNodeCommandSha256 ?? `sha256:${createHash("sha256").update(readFileSync(providerNodeCommand)).digest("hex")}`,
+      proxyScript: cursorCloudProxyPath,
+      proxyScriptSha256: this.options.cursorCloudProxySha256 ?? `sha256:${createHash("sha256").update(readFileSync(cursorCloudProxyPath)).digest("hex")}`,
+    } : undefined;
+
     const effectiveCodexCommand = provider === "codex"
       ? this.options.codexCommand ?? resolveCodexCommand(undefined, this.options.environment, String(params.cwd ?? tmpdir()))
       : undefined;
@@ -5229,10 +5261,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ), {
         options: this.options, root: this.#root, cwd: String(params.cwd ?? tmpdir()),
         codexHome, providerNodeCommand, codexCommand: effectiveCodexCommand,
-        opencodeProxyPath, acpxSidecarPath,
+        opencodeProxyPath, acpxSidecarPath, cursorCloudProxyPath,
       }),
     };
-    return { runAttachTemplate, runnerAcpxLaunchProfile, runnerOpenCodeLaunchProfile,
+    return { runAttachTemplate, runnerAcpxLaunchProfile, runnerOpenCodeLaunchProfile, runnerCursorCloudLaunchProfile,
       environment: withRunnerdProviderTrace(
         createCapabilityRunnerdProviderEnvironment({
           provider,
@@ -5319,6 +5351,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         mode: 0o700,
       });
     }
+    const unclaimedBootstrap = core.unclaimedBootstrapCheckpoint();
     const prepared = await this.#prepareLaunch(params, identity, dynamicTools);
     const { runAttachTemplate } = prepared;
     // Preserve the first generation's provider attachment seed independently
@@ -5326,8 +5359,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // continuation; the control-plane copy serves a controller/runner resume.
     this.#runAttachTemplate = structuredClone(runAttachTemplate);
     core.persistRunAttachTemplate(runAttachTemplate);
-    core.queueCommand("run.prepare", runAttachTemplate);
-    core.queueCommand("session.open", { reuse: "same_session" });
+    if (!unclaimedBootstrap) {
+      core.queueCommand("run.prepare", runAttachTemplate);
+      core.queueCommand("session.open", { reuse: "same_session" });
+    }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
       : null;
@@ -5368,6 +5403,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerDigest: runnerArtifact.digest,
       acpxLaunchProfile: prepared.runnerAcpxLaunchProfile,
       opencodeLaunchProfile: prepared.runnerOpenCodeLaunchProfile,
+      cursorCloudLaunchProfile: prepared.runnerCursorCloudLaunchProfile,
       environment: prepared.environment,
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
@@ -5452,7 +5488,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       controlPlaneDirectory,
       "control-plane-state.json",
     );
-    const localProvider =
+    const supportsWarmRecovery =
       this.options.provider === undefined ||
       this.options.provider === "codex" ||
       this.options.provider === "opencode" ||
@@ -5461,6 +5497,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.options.readRunnerState === undefined &&
       this.options.runnerStateDirectory === undefined &&
       this.options.runnerFilesystemRoot === undefined && !this.options.prepareLaunch;
+    const supportsColdRotation = supportsWarmRecovery ||
+      (this.options.provider === "cursor_cloud" && localStateOwner);
     const localRunnerStatePath = resolve(
       this.#root,
       "runner",
@@ -5480,7 +5518,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? readControlPlaneState(controlPlaneDirectory)
         : null;
     } catch (error) {
-      if (localProvider && localStateOwner && !hasRunnerWarmBoundary) {
+      if (supportsColdRotation && localStateOwner && !hasRunnerWarmBoundary) {
         quarantineLocalRuntimeState(this.#root, error);
       }
       throw error;
@@ -5532,7 +5570,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // No malformed or unsupported transition is reinterpreted as legacy.
       if (
         (!localStateOwner && !this.options.readRunnerState) ||
-        !localProvider ||
+        !supportsWarmRecovery ||
         !controlPlaneState ||
         !candidateRunnerState ||
         (this.options.controlPlaneRegistration !== undefined &&
@@ -5636,7 +5674,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity.itemId === desiredIdentity.itemId;
     let rotatedAuthority = false;
     if (controlPlaneState === null) {
-      if (!localProvider) {
+      if (!supportsColdRotation) {
         throw new Error("PRP provider resume state is unavailable");
       }
       const archivedState = latestArchivedControlPlaneState(
@@ -5674,7 +5712,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity = desiredIdentity;
       rotatedAuthority = true;
     } else if (!exactAuthority && warmRecovery === null) {
-      if (!localProvider || controlPlaneState === null) {
+      if (!supportsColdRotation || controlPlaneState === null) {
         throw new Error("native_runner_prp_run_rotation_unavailable");
       }
       if (localStateOwner) {
@@ -5760,6 +5798,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
+    const cursorCloudProxyPath = provider === "cursor_cloud"
+      ? this.options.cursorCloudProxyPath ?? resolveBuildOwnedCliArtifact("cursor-cloud-app-server-proxy.cjs") : undefined;
+    const runnerCursorCloudLaunchProfile = cursorCloudProxyPath ? {
+      command: providerNodeCommand,
+      commandSha256: this.options.providerNodeCommandSha256 ?? `sha256:${createHash("sha256").update(readFileSync(providerNodeCommand)).digest("hex")}`,
+      proxyScript: cursorCloudProxyPath,
+      proxyScriptSha256: this.options.cursorCloudProxySha256 ?? `sha256:${createHash("sha256").update(readFileSync(cursorCloudProxyPath)).digest("hex")}`,
+    } : undefined;
+
     const opencodeExecutable =
       provider === "opencode" && preparesProviderLaunch
         ? resolveRunnerOpenCodeExecutable(this.options)
@@ -6139,6 +6186,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           runnerDigest: runnerArtifact.digest,
           acpxLaunchProfile: runnerAcpxLaunchProfile,
           opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
+          cursorCloudLaunchProfile: runnerCursorCloudLaunchProfile,
           environment: this.options.prepareLaunch ? {} : withRunnerdProviderTrace(
             createCapabilityRunnerdProviderEnvironment({
               provider,
@@ -7988,6 +8036,7 @@ function openedThreadModelProvider(
   model: unknown,
 ): string {
   if (provider === "opencode" && typeof model === "string") return model.split("/", 1)[0]!;
+  if (provider === "cursor_cloud") return "cursor";
   if (provider === "claude_managed") return "anthropic";
   if (provider === "aws_agentcore") return "aws";
   if (provider === "acpx") {
@@ -8073,6 +8122,14 @@ export interface RunnerCommandFailure extends Error {
   readonly runnerCommandResult: unknown;
 }
 
+// Runner composes this whole ACPX rejection from closed codes; provider text
+// travels only in providerFailure. Keep its classification in the reported error.
+function closedAcpxRejection(message: unknown): string | null {
+  return typeof message === "string"
+    && /^failed to start ACPX provider: ACPX sidecar command [a-z.]+ was rejected \(retryable=(?:true|false), classification=[a-z0-9_]+\)$/.test(message)
+    ? message : null;
+}
+
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 export async function waitForRunnerCommand(input: {
   type: string;
@@ -8094,7 +8151,8 @@ export async function waitForRunnerCommand(input: {
     if (command !== undefined && command.status !== "pending") {
       const detail = record(record(command.result).result);
       const reportedResult = readProviderFailure(detail.providerFailure)
-        ? { ...record(command.result), result: { code: detail.code, message: "Provider request failed" } } : command.result;
+        ? { ...record(command.result), result: { code: detail.code,
+          message: closedAcpxRejection(detail.message) ?? "Provider request failed" } } : command.result;
       const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(reportedResult,
         (key, value) => key === "providerFailure" ? undefined : value)}`) as RunnerCommandFailure;
       Object.defineProperty(error, "runnerCommandResult", { value: structuredClone(command.result), enumerable: false });

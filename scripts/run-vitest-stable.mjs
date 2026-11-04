@@ -94,6 +94,7 @@ const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
 const nativeRunnerSuites = [
   "server/src/services/native-runtime/plugin-runner-probe.test.ts",
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+  "server/src/services/native-runtime/native-ingress-bootstrap-retry.integration.test.ts",
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
@@ -513,9 +514,9 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     await runVitest(
       ["--project", "@paperclipai/server",
         // Each file owns its database, home, and processes. Keep cases serial,
-        // but overlap long real lease windows in two isolated fork workers.
+        // but overlap long real lease windows in four isolated fork workers.
         ...(hasSharedTestDatabase ? serializedServerVitestArgs
-          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=4"]),
         ...nativeRunnerSuites],
       "native runner vertical-slice suite",
     );
@@ -543,11 +544,11 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
           "--project",
           "@paperclipai/server",
           // Files have separate fork processes and isolated homes/configs.
-          // Keep each file's cases serial; overlap only two independent files.
+          // Keep each file's cases serial; overlap three independent files.
           // An explicit shared test database cannot be isolated this way.
           ...(hasSharedTestDatabase
             ? serializedServerVitestArgs
-            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
+            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"]),
           ...shardFiles,
         ],
         `${groupName} shard ${shardIndex + 1}/${shardCount}`,
@@ -724,7 +725,7 @@ try {
       const serverArgs = project !== "@paperclipai/server" ? []
         : options.mode === serializedModeName || hasSharedTestDatabase
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
-          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"];
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"];
       await runVitest(["--project", project, ...serverArgs, ...files],
         `selected ${project}: ${files.length} files`, null, true);
     }

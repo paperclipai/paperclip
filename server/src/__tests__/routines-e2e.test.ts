@@ -37,6 +37,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {
@@ -156,6 +157,13 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
+    vi.doMock("../services/index.js", async () => {
+      const [{ accessService }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+        import("../services/access.js"), import("../services/document-annotations.js"),
+        import("../services/activity-log.js"), import("../services/routines.js"),
+      ]);
+      return { accessService, documentAnnotationService, logActivity, routineService };
+    });
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     vi.clearAllMocks();
   });
@@ -172,6 +180,19 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     app.use("/api", routineRoutes(db));
     app.use(errorHandler);
     return app;
+  }
+
+  async function createAuthenticatedApp() {
+    const { actorMiddleware } = await import("../middleware/auth.js");
+    const { routineRoutes } = await import("../routes/routines.js");
+    const { errorHandler } = await import("../middleware/index.js");
+    const resolveSession = vi.fn(async () => null);
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession }));
+    app.use("/api", routineRoutes(db));
+    app.use(errorHandler);
+    return { app, resolveSession };
   }
 
   async function postRoutineRun(
@@ -284,7 +305,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
           for (const pending of routineResourceRequests(app, id)) {
             const response = await pending;
             expect(response.status, JSON.stringify(response.body)).toBe(404);
-            expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+            expect(response.body).toEqual({ error: pending.url.includes("/routine-triggers/")
               ? "Routine trigger not found" : "Routine not found" });
           }
         }
@@ -313,7 +334,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         for (const pending of routineResourceRequests(app, id!, tid!)) {
           const response = await pending;
           expect(response.status, JSON.stringify(response.body)).toBe(404);
-          expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+          expect(response.body).toEqual({ error: pending.url.includes("/routine-triggers/")
             ? "Routine trigger not found" : "Routine not found" });
         }
       }
@@ -439,45 +460,69 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     },
   );
 
-  it("accepts Sentry alert HTTP deliveries once per failed run and rejects repair-task recursion", async () => {
+  it("uses the normal public webhook for verified caller provenance and routine-wide receipts", async () => {
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
-    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ projectId,
-      assigneeAgentId: agentId, title: "Repair {{task_identifier}}", description: "Run {{run_id}} on {{task_id}}",
-      concurrencyPolicy: "always_enqueue" });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Ordinary webhook", concurrencyPolicy: "always_enqueue",
+    });
     expect(created.status).toBe(201);
     const routineId = created.body.id;
-    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" });
-    expect(configured.status).toBe(201);
-    const { trigger, secretMaterial } = configured.body;
-    const path = `/api/routine-triggers/public/${trigger.publicId}/sentry-run-failures`;
-    const publicApp = await createApp({ type: "none" });
-    const [source] = await db.insert(issues).values({ companyId, projectId, title: "Source failure", status: "blocked" }).returning();
-    const [failedRun] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: source!.id, status: "failed" }).returning();
-    const event = (taskId: string, runId: string) => ({ action: "triggered", data: { event: { tags: [
-      ["event_kind", "run_failure"], ["task_id", taskId], ["run_id", runId],
-    ] } } });
-    const deliver = (payload: unknown, secret = secretMaterial.webhookSecret) => request(publicApp).post(path)
-      .set("Authorization", `Bearer ${secret}`).send(payload);
-    expect((await deliver(event(source!.id, failedRun!.id), "invalid")).status).toBe(401);
-    expect((await deliver({ action: "triggered", data: { event: {} } })).body).toMatchObject({ status: "ignored", routineStarted: false });
-    const first = await deliver(event(source!.id, failedRun!.id));
+    const a = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "app_webhook" });
+    const b = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "app_webhook" });
+    expect(a.status).toBe(201); expect(b.status).toBe(201);
+    const [source] = await db.insert(issues).values({ companyId, title: "Caller source", createdByUserId: userId }).returning();
+    const [caller] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: source!.id, status: "running" }).returning();
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
+    const { app: publicApp, resolveSession } = await createAuthenticatedApp();
+    const delivery = (config: typeof a.body, scope = "routine") => request(publicApp)
+      .post(new URL(config.secretMaterial.webhookUrl).pathname)
+      .set("Authorization", `Bearer ${config.secretMaterial.webhookSecret}`)
+      .set("X-Paperclip-Source-Run-Token", token).set("X-Paperclip-Idempotency-Scope", scope)
+      .set("Idempotency-Key", "external-occurrence-1").send({ event: "any-provider.failure", createdByRunId: randomUUID() });
+    expect((await delivery(a.body, "global")).status).toBe(400);
+    const first = await delivery(a.body), retry = await delivery(b.body);
     expect(first.status, JSON.stringify(first.body)).toBe(202);
-    expect(first.body.status).toBe("issue_created");
-    const replay = await deliver(event(source!.id, failedRun!.id));
-    expect(replay.body.id).toBe(first.body.id);
-    const [ownFailure] = await db.insert(heartbeatRuns).values({ companyId, agentId,
-      nativeIssueId: first.body.linkedIssueId, status: "failed" }).returning();
-    const recursive = await deliver(event(first.body.linkedIssueId, ownFailure!.id));
-    expect(recursive.status).toBe(202);
-    expect(recursive.body).toMatchObject({ status: "ignored", routineStarted: false });
-    const history = await request(board).get(`/api/routines/${routineId}/runs`);
-    expect(history.body).toHaveLength(1);
-    expect(history.body[0].triggerPayload).toMatchObject({ source: "sentry_run_failure", taskId: source!.id, runId: failedRun!.id });
-    await request(board).patch(`/api/routines/${routineId}`).send({ status: "paused" });
-    expect((await deliver(event(source!.id, failedRun!.id))).status).toBe(409);
+    expect(retry.status).toBe(202);
+    expect(first.body.createdByRunId).toBe(caller!.id);
+    expect(retry.body.id).toBe(first.body.id);
+    expect(await db.select().from(routineRuns)).toHaveLength(1);
+    expect(await db.select().from(issues)).toHaveLength(2);
+    expect(resolveSession).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, caller!.id));
+    expect((await delivery(a.body)).status).toBe(401);
+    expect(await db.select().from(routineRuns)).toHaveLength(1);
+    const removedPath = new URL(a.body.secretMaterial.webhookUrl).pathname.replace(/\/fire$/, "/sentry-run-failures");
+    expect((await request(publicApp).post(removedPath).send({})).status).toBe(404);
+  });
+
+  it("preserves the authenticated caller and upstream routine through the routine HTTP API", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const create = (title: string) => request(board).post(`/api/companies/${companyId}/routines`)
+      .send({ projectId, assigneeAgentId: agentId, title });
+    const upstream = await create("Upstream routine"), downstream = await create("API consumer");
+    expect(upstream.status).toBe(201); expect(downstream.status).toBe(201);
+    const source = await request(board).post(`/api/routines/${upstream.body.id}/run`).send({});
+    expect(source.status, JSON.stringify(source.body)).toBe(202);
+    const [task] = await db.select().from(issues).where(eq(issues.id, source.body.linkedIssueId));
+    const [caller] = await db.update(heartbeatRuns).set({ status: "running" })
+      .where(eq(heartbeatRuns.id, task!.executionRunId!)).returning();
+    const { app } = await createAuthenticatedApp();
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
+    const response = await request(app).post(`/api/routines/${downstream.body.id}/run`)
+      .set("Authorization", `Bearer ${token}`).send({ source: "api" });
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    expect(response.body.createdByRunId).toBe(caller!.id);
+    const [receipt] = await db.select().from(routineRuns).where(eq(routineRuns.id, response.body.id));
+    expect(receipt?.createdByRunId).toBe(caller!.id);
+    const { readTaskCreationProvenance } = await import("../services/task-creation-provenance.js");
+    expect(await readTaskCreationProvenance(db, companyId, response.body.linkedIssueId))
+      .toEqual({ status: "complete", routineIds: [upstream.body.id, downstream.body.id].sort(), shareable: true });
   });
 
   it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {

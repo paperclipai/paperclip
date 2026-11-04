@@ -50,6 +50,18 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
+    fixture.collapsed = collapsed;
+    await renderSidebar();
+    const listener = vi.fn();
+    document.addEventListener("keydown", listener);
+    try {
+      const button = container.querySelector<HTMLButtonElement>('.design-sidebar-brand button[aria-label="Global search"]');
+      expect(button).not.toBeNull();
+      await act(async () => button!.click());
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ key: "k", metaKey: true }));
+    } finally { document.removeEventListener("keydown", listener); }
+  });
   it.each([false, true])("opens the task form from New task above Chat when collapsed is %s", async (collapsed) => {
     fixture.collapsed = collapsed;
     await renderSidebar();
@@ -150,13 +162,13 @@ describe("Coordinator Needs You badge", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); });
     await flush();
     expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
-    expect(decisionLink().textContent).toBe("Needs You");
+    expect(decisionLink().textContent).toBe("Needs you");
   });
 
   it("announces the full outstanding count when the sidebar is collapsed", async () => {
     fixture.collapsed = true;
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Needs You, 2 decisions");
+    expect(decisionLink().getAttribute("aria-label")).toBe("Needs you, 2 decisions");
   });
 });
 

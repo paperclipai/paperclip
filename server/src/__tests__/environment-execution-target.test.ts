@@ -31,6 +31,7 @@ function createRecordingTrace() {
     parent: unknown;
     ended: boolean;
     setAttribute(key: string, value: unknown): void;
+    setStatus(status: { code: number; message?: string }): void;
     end(): void;
   }> = [];
   const tracer = {
@@ -47,6 +48,7 @@ function createRecordingTrace() {
         setAttribute(key: string, value: unknown) {
           span.attributes[key] = value;
         },
+        setStatus(_status: { code: number; message?: string }) {},
         end() {
           span.ended = true;
         },
@@ -624,7 +626,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
   async function runnerWithExecute(input: {
     provider: string;
     tracer: unknown;
-    execute: (...args: unknown[]) => Promise<unknown>;
+    execute: (input: { onLog?: (s: string, c: string) => Promise<void> }) => Promise<unknown>;
   }) {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
@@ -646,7 +648,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       tracer: input.tracer as never,
     });
     return (target as { runner?: {
-      execute(input: { command: string; args?: string[] }): Promise<unknown>;
+      execute(input: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string; stdin?: string }): Promise<unknown>;
     } }).runner!;
   }
 

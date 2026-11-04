@@ -1,6 +1,8 @@
 import { createDb } from "@paperclipai/db";
 import { closeIdleWarmNativeSessionsForRestart, executePaperclipNativeSession } from "../../services/native-runtime/native-session-executor.js";
 import { dockerCommandRunner } from "./docker-command-runner.js";
+import { createServer } from "node:http";
+import { registerLocalRuntimeApiServer } from "../../runtime-api.js";
 
 // Separate TypeScript fixture import time from actual controller admission.
 process.send?.({ ready: true });
@@ -14,8 +16,11 @@ process.once("message", async (input: {
   options: Parameters<typeof executePaperclipNativeSession>[0];
 }) => {
   const target = input.options.runnerExecutionTarget;
-  if (target?.kind !== "remote") throw new Error("Expected remote worker target");
+  if (target?.kind !== "remote" || target.transport !== "sandbox") throw new Error("Expected remote worker target");
+  const api = createServer((_request, response) => { response.writeHead(404).end(); });
+  registerLocalRuntimeApiServer(api);
   try {
+    await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
     const runner = dockerCommandRunner(input.container);
     let inspectionOverridden = false;
     const execute = runner.execute.bind(runner);
@@ -55,6 +60,9 @@ process.once("message", async (input: {
     process.send?.({ result: { ...result, inspectionOverridden } });
   } catch (error) {
     process.send?.({ error: error instanceof Error ? error.stack : String(error) });
+  } finally {
+    api.closeAllConnections();
+    await new Promise<void>(resolve => api.close(() => resolve()));
   }
 });
 setInterval(() => undefined, 60_000);

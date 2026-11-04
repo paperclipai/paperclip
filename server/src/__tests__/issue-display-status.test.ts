@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import request from "supertest";
 import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusCards } from "@paperclipai/db";
-import { companySearchQuerySchema, createIssueSchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { companySearchQuerySchema, createIssueSchema, defaultStatusCardRefreshPolicy, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { issueService } from "../services/issues.js";
 import { companySearchService } from "../services/company-search.js";
@@ -52,7 +52,7 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
     expect(result.results[0]?.issue).toMatchObject({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" });
     expect(result.filterOptionCounts.displayStatus?.monitoring).toBe(1);
     expect(result.filterOptionCounts.status.in_progress).toBe(1);
-    const [card] = await ctx.db.insert(statusCards).values({ companyId: f.companyId, interestPrompt: "Watch deployment", mentionedIssueIds: [f.issueId], refreshPolicy: { mode: "manual" } }).returning();
+    const [card] = await ctx.db.insert(statusCards).values({ companyId: f.companyId, interestPrompt: "Watch deployment", mentionedIssueIds: [f.issueId], refreshPolicy: defaultStatusCardRefreshPolicy }).returning();
     expect(await statusCardService(ctx.db).listMentionedIssues(card!)).toEqual([expect.objectContaining({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" })]);
     // Existing agent/API lifecycle filters keep their original meaning.
     expect(await svc.count(f.companyId, { status: "in_progress" })).toBe(1);
@@ -74,7 +74,7 @@ describeEmbeddedPostgres("Monitoring task presentation", () => {
     const [dependent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ship after deployment", status: "blocked" }).returning();
     await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.issueId, relatedIssueId: dependent!.id, type: "blocks" });
     const svc = issueService(ctx.db);
-    const list = await svc.list(f.companyId, { includeBlockedBy: true });
+    const list = await svc.list(f.companyId, { includeBlockedBy: true }) as Array<Awaited<ReturnType<typeof svc.list>>[number] & Pick<Issue, "blockedBy">>;
     expect(list.find(row => row.id === dependent!.id)?.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);
     const detail = await request(routeApp(ctx.db, f.actor, issueRoutes)).get(`/api/issues/${dependent!.id}`).expect(200);
     expect(detail.body.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);

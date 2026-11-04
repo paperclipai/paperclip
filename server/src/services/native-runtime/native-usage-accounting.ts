@@ -46,10 +46,12 @@ function nativeUsageMeasurement(usage: Record<string, unknown>) {
 }
 
 export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
+  if (provider.kind === "cursor_cloud") return "cursor";
   if (provider.kind === "acpx") {
     if (provider.agent === "cursor") return "cursor";
     if (provider.agent === "copilot") return "github";
     if (provider.agent === "pi") return "openrouter";
+    if (provider.agent === "grok") return "xai";
   }
   return "openai";
 }
@@ -126,6 +128,7 @@ export function nativeUsageCostUsd(
   usage: Record<string, unknown> | null,
   provider?: NativeExecutionInput["provider"],
 ) {
+  if (provider?.kind === "cursor_cloud") return undefined;
   // The ACP normalization contract fills absent per-turn cost with zero and
   // reports actual cost cumulatively. Until it carries an authoritative run
   // delta with provenance, neither value is a candidate's billed USD receipt.

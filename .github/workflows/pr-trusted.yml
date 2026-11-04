@@ -370,7 +370,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -415,6 +415,14 @@ jobs:
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
+
+      - name: Typecheck the server in low-memory layers
+        env:
+          PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
+        run: pnpm --filter @paperclipai/server typecheck
+
+      - name: Typecheck test projects against the server declarations
+        run: node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
 
       - name: Verify repository-wide CLI guidance safety
         run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
@@ -641,7 +649,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest 1/2","command":"test:typescript:vitest --shard=1/2","task":"ci:runner-vitest"},{"lane_label":"vitest 2/2","command":"test:typescript:vitest --shard=2/2","release_crate":true,"task":"ci:runner-vitest"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package","command":"test:typescript:vitest --shard=1/2","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --shard=2/2","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -776,7 +784,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -825,6 +833,23 @@ jobs:
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      - name: Compute the Runner debug crate cache key
+        id: runner_debug_crate_key
+        if: hashFiles('scripts/runner-debug-crate-cache.mjs') != ''
+        run: node scripts/runner-debug-crate-cache.mjs plan
+
+      - name: Restore the Runner debug crate (read only)
+        id: runner_debug_crate
+        if: hashFiles('scripts/runner-debug-crate-cache.mjs') != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.runner_debug_crate_key.outputs.paths }}
+          key: ${{ steps.runner_debug_crate_key.outputs.key }}
+
+      - name: Mark the restored Runner debug crate current
+        if: ${{ steps.runner_debug_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-debug-crate-cache.mjs mark-current
 
       - name: Verify Runner Rust through Turbo
         if: matrix.command == 'check:runner' && hashFiles('turbo.json') != ''
@@ -1010,7 +1035,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1351,7 +1376,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false

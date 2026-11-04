@@ -1,3 +1,4 @@
+import { hasMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
@@ -211,7 +212,10 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     }
     const [environment] = await db.select().from(environments).where(eq(environments.id, lease.environmentId));
     if (!environment) throw new SystemRecoveryFailure("source_unavailable", "service_required");
-    sources.push({ lease, environment, reference: legacyDescriptor, remoteReference: remoteDescriptor,
+    const preservationOnly = legacyDescriptor ? await hasMigratedLegacyWorkspaceSource(db, {
+      companyId: input.companyId, runId: run.id, reference: legacyDescriptor,
+    }) : false;
+    sources.push({ lease, environment, reference: legacyDescriptor, preservationOnly, remoteReference: remoteDescriptor,
       remoteWorkspace: remoteDescriptor ? remoteWorkspace : null, remoteCwd });
   }
   return { run, action, sources };

@@ -17,6 +17,11 @@ export interface IssueCreationSourceRecord {
 
 const CREATION_ACTIVITY_ACTIONS = ["issue.created", "issue.child_created"];
 
+/** The route supplies a fresh UUID; a different returned issue is reused. */
+export function childCreatedByRequest(proposedIssueId: string, returnedIssueId: string) {
+  return proposedIssueId === returnedIssueId;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }

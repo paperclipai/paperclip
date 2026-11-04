@@ -7,7 +7,8 @@ import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-acce
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
-import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspaceGitScanCode } from "./retries.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
+import { RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -1350,8 +1351,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const nonRetryablePreflightCode =
       nonRetryablePreflightFailureCode(outerErr);
     const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
+    const remoteWorkspacePreparationTimeout = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof RemoteWorkspacePreparationTimeoutError
+      ? outerErr : null;
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1377,7 +1382,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         workspaceGitScan: {
           code: workspaceGitScanFailure.code,
           phase: "workspace_setup",
-          retryable: isTransientWorkspaceGitScanCode(workspaceGitScanFailure.code),
+          retryable: isTransientWorkspacePreparationCode(workspaceGitScanFailure.code),
         },
       } : null) ??
       workspaceValidationSetupFailure?.resultJson ??
@@ -1404,7 +1409,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
       ...controllerLeaseLossResultJson(signal),
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      ...(!providerDispatchStarted
+        ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+        : {}),
     };
     const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
       error: message,
@@ -1425,7 +1432,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : setupFailureResultJson
           ? { resultJson: setupFailureResultJson }
           : {}),
-    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }).catch(() => ({ run: null, updated: false as const }));
+    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
     if (!setupFailureWrite.updated) {
       logger.info(
         {
@@ -1491,11 +1498,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             () => undefined,
           );
         }
-        // No provider work began. Retry temporary host scan failures with
-        // the existing durable failure budget, before releasing execution.
-        // Generic recovery must not grant a second budget on exhaustion.
         if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
-          await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
+          await (isTransientWorkspacePreparationCode(livenessRun.errorCode)
             ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {

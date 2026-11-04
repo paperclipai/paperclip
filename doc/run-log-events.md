@@ -100,8 +100,24 @@ adapters extract these fields; arbitrary exception objects, request bodies,
 headers, environment variables, and stacks are excluded. Unknown categories retain
 their explanation. The cause stays in company-scoped run records and the run log;
 it is not added to first-party Telemetry, Observability attributes, or Sentry
-failure reports. The reportable run error keeps its existing generic text. Startup
-receipts retain it across controller restart before any provider turn exists.
+failure reports. The reportable run error keeps its existing generic text, except
+that an ACPX startup rejection keeps Runner's closed rejection text and its
+classification. Startup receipts retain the cause across controller restart before
+any provider turn exists.
+
+When a failed ACPX control closes the session before polling, the resulting
+`turn.failed` event retains that control's closed-code error. A later closed-session
+check does not replace it, and a closed code does not infer a provider explanation.
+The terminal still reports `recoverable: false` and no observed provider terminal;
+it does not prove termination or authorize replay.
+
+Every ACPX session ensure rejection carries a startup cause. When the provider
+returned no ACP error, the cause keeps the rejection's own redacted message with
+category `unknown`. A provider can type the failure with ACP's
+authentication-required code, or with a known error type or `errorKind` in the ACP
+error data. The cause then uses that category, and the rejection classification is
+`provider_<category>`, such as `provider_quota_exhausted`, instead of
+`session_ensure_failed`.
 
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from
 `state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
@@ -130,8 +146,18 @@ that restores a released task execution binding. The claim locks the task,
 coordinator, and original run in that order. It preserves the assignee and checks
 current execution/checkout owners, other live work, dependencies, pause holds,
 and stop/successor records before restoring the binding. Attachment authorization
-keeps its existing requirement for that exact binding. Skipped retry candidates
-wait 30 seconds before recheck so they cannot fill every bounded claim batch.
+keeps its existing requirement for that exact binding. Remote retry claims also
+require the exact saved controller authority and reject a newer task run. The
+event does not prove that a remote provider survived or permit provider replay.
+Skipped local retry candidates wait 30 seconds before recheck. Remote admission
+holds use the existing bounded system-recovery backoff independently of provider
+attempts. Permanent ineligibility or policy exhaustion records the terminal
+automatic recovery disposition and board action without releasing the retained
+execution binding, provider, or checkpoint. These settled holds schedule no
+further retry. Repeated blocked visits record only a changed hold reason.
+The same durable hold prevents background stale-lock cleanup and queue release
+from clearing either task binding until the remote termination receipt contract
+is satisfied. A terminal heartbeat status is not a provider-stop receipt.
 Undated retries sort first. A failed candidate cannot discard earlier committed
 claims. Queued waiters do not block the original execution owner from recovery;
 they still wait for that owner to settle before normal queue promotion.
@@ -274,8 +300,13 @@ create a task warning, recovery action, Telemetry event, or OpenTelemetry export
 
 ## Native Restart Recovery Run-Log Event
 
-Paperclip writes a `native.recovery.transition` event for every native restart
-classification and for graceful restart suspension. This immutable run-log
+Paperclip writes a `native.recovery.transition` event for native restart
+classifications and for graceful restart suspension. A blocked remote retry
+records a changed hold reason once; repeated visits with the same hold reason,
+an existing future deadline, or a live lease do not append another transition.
+Exhausting the automatic admission policy records its terminal disposition even
+when the underlying hold reason remains the same.
+This immutable run-log
 record lets operators reconstruct recovery decisions without exporting data to
 Paperclip Telemetry or OpenTelemetry.
 
@@ -475,6 +506,16 @@ byte budgets, including truncation markers. `retrievalTruncated` directs callers
 to the full adapter-bounded text in the run error or transcript. Other provider
 metadata and action payloads are not copied.
 
+When an ACP request fails with a JSON-RPC error, the engine also keeps the
+provider explanation. It reads a string `data`, or the string `data.details`, or
+the string `data.message`, in that order. It adds the explanation on a new line
+after the error message unless the message already contains it. The combined
+text passes through the same redaction and the 4,096-character title bound
+before it becomes the run error, the summary, and the `acpx.error` `message`.
+A numeric JSON-RPC error code appears as the optional integer `rpcCode` in
+`errorMeta` and in the `acpx.error` record. Errors without these fields keep
+their existing message and omit `rpcCode`.
+
 Recovery still uses the typed failure category and the adapter's existing
 classifier. Provider warnings do not become failures, and timeouts or lost
 control channels keep their authoritative failure messages. These diagnostics
@@ -496,7 +537,9 @@ Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
-(`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+(`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
+retries a failed renewal until the lease deadline, so `renewal_error` means the
+attempts still failed with an error when the deadline passed.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -510,11 +553,14 @@ initiator IDs or reason text.
 A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
 during setup that fails the run before adapter dispatch. It holds the closed
 cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
-last successful renewal), `renewalPendingMs` (age of a renewal query still in
-flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
-`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
-at a stalled database query; a long `deadlineLateMs` points at a blocked event
-loop. Failure reports carry these bounded numbers and the cause label only.
+last successful renewal), `renewalPendingMs` (age of a renewal operation still
+in progress, including its retries and retry waits, or `null`), `deadlineLateMs`
+(how late the deadline callback ran, when the lease deadline ended the run,
+otherwise `null`), and `renewalCount`. A long `renewalPendingMs` can mean a
+stalled database query or repeated failed attempts with retry waits; the cause
+label tells them apart (`renewal_deadline` or `renewal_error`). A long
+`deadlineLateMs` points at a blocked event loop. Failure reports carry these
+bounded numbers and the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use

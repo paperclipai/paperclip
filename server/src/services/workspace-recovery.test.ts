@@ -22,35 +22,40 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifica
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
 import { environmentService } from "./environments.js";
+import { taskRepositoryRelativePath } from "./execution-workspace-repositories.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { projectTaskInterruption } from "./task-interruption-presentation.js";
+import { projectTaskInterruption, taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
 import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { getStorageService } from "../storage/index.js";
+import * as storageBackend from "../storage/index.js";
+import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
-import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations } from "@paperclipai/db";
+import { companyObservability, executionWorkspaceRepositories, issueWorkProducts, authUsers, companyMemberships, agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations } from "@paperclipai/db";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { finalizeNativeRun } from "./native-runtime/native-run-finalizer.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
+import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../vendor/paperclip-runner/index.js";
 import { issueThreadInteractions } from "@paperclipai/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -105,7 +110,16 @@ describe("automatic retained workspace recovery", () => {
     if (external) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   }, 30_000);
   afterAll(async () => {
-    await db?.$client.end(); await temporary?.cleanup(); await rm(root, { recursive: true, force: true });
+    await db?.$client.end(); await temporary?.cleanup();
+    const makeWritable = async (directory: string): Promise<void> => {
+      const entry = await lstat(directory);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) return;
+      await chmod(directory, 0o700);
+      for (const child of await readdir(directory, { withFileTypes: true })) {
+        if (child.isDirectory()) await makeWritable(path.join(directory, child.name));
+      }
+    };
+    await makeWritable(root); await rm(root, { recursive: true, force: true });
     if (priorHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = priorHome;
     if (priorInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = priorInstance;
   });
@@ -183,7 +197,7 @@ describe("automatic retained workspace recovery", () => {
       ownerType: "board", cause: mode === "native" ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation",
       fingerprint: runId, nextAction: "Manual repair required", evidence: { runId, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery } });
     const runtime = { resumeRunLease: vi.fn(async (_input: { lease: EnvironmentLease }) => ({ providerLeaseId, metadata: { remoteCwd: remote } })),
-      retryPendingSandboxTeardown: vi.fn(async () => ({ providerLeaseId, state: "stopped" })) };
+      retryPendingSandboxTeardown: vi.fn(async (_input: { lease: EnvironmentLease }) => ({ providerLeaseId, state: "stopped" })) };
     const environmentRuntime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
       acquireRunLease: vi.fn(), releaseRunLease: vi.fn(), ...runtime,
       resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [], declared: null, narrowing: null }),
@@ -194,19 +208,201 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  function boardRecoveryApp() {
+  it.each(["retained", "removed", "child", "expired-owner", "no-descriptor"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
+    vi.stubEnv("DATABASE_URL", connectionString);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "63".repeat(32));
+    const f = await seed("native", mode !== "no-descriptor");
+    // The fixture's command runner supports native copyback; the provider
+    // snapshot boundary separately needs its real-file syncOut capability.
+    targets.get(f.lease.id)!.runner!.syncIn = async operations => {
+      for (const operation of operations) for (const file of operation.files)
+        await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+      return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
+    };
+    targets.get(f.lease.id)!.runner!.syncOut = async operations => {
+      for (const operation of operations) for (const file of operation.files)
+        await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+      return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
+    };
+    if (mode === "no-descriptor") {
+      const secondId = randomUUID(), secondProviderId = randomUUID(), secondRemote = path.join(root, secondId);
+      await cp(f.remote, secondRemote, { recursive: true });
+      const second: typeof f.lease = { ...f.lease, id: secondId, providerLeaseId: secondProviderId,
+        metadata: { ...f.lease.metadata, remoteCwd: secondRemote } };
+      second.metadata = { ...second.metadata,
+        remoteExecutionTermination: remoteTerminationReceipt(second, { providerLeaseId: secondProviderId, state: "stopped" }) };
+      await db.insert(environmentLeases).values(second);
+      targets.set(secondId, { ...targets.get(f.lease.id)!, leaseId: secondId, remoteCwd: secondRemote });
+      f.runtime.retryPendingSandboxTeardown.mockImplementation(async ({ lease }) => ({
+        providerLeaseId: lease.providerLeaseId!, state: "stopped",
+      }));
+      f.runtime.resumeRunLease.mockImplementation(async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId!,
+        metadata: { remoteCwd: lease.metadata!.remoteCwd as string } }));
+      const source = await run(f.runId);
+      await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id, secondId] },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+    }
+    const sourceIssueId = mode === "child" ? randomUUID() : f.issueId;
+    if (mode === "child") {
+      await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, title: "Ancestor workspace owner" });
+      await db.update(issues).set({ parentId: sourceIssueId }).where(eq(issues.id, f.issueId));
+    }
+    await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId,
+      name: "Existing files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.host });
+    await db.update(issues).set({ executionWorkspaceId: f.issueId }).where(eq(issues.id, f.issueId));
+    if (mode === "expired-owner" || mode === "no-descriptor") await db.update(nativeRunFinalizations).set({ phase: "observed",
+      leaseOwner: "stopped-old-controller", leaseExpiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    try {
+      await migrateRemoteWorkspace({ db, storage: getStorageService(), companyId: f.companyId,
+        workspaceId: f.issueId, apply: true, writersStopped: true });
+      if (mode !== "retained") await rm(f.host, { recursive: true });
+      await requestWorkspaceRecovery({ ...f, idempotencyKey: randomUUID(), actorId: "board" });
+      await recoverRetainedWorkspace(f.input);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      expect(await readFile(path.join(f.host, "saved.txt")).catch(() => null)).toBeNull();
+      expect(await run(f.runId)).toMatchObject({ status: "failed", runnerProfileJson: mode === "no-descriptor" ? {} : { nativeWorkspaceSync: { state: "prepared" } } });
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ workspaceRepairRequired: false });
+      const restored = path.join(root, randomUUID()); await mkdir(restored);
+      const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+        sourceRunIds: [f.runId], cwd: restored });
+      expect(copies).toHaveLength(mode === "no-descriptor" ? 2 : 1);
+      expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      if (mode === "no-descriptor") {
+        const source = await run(f.runId);
+        await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] },
+        } }).where(eq(heartbeatRuns.id, f.runId));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, f.runId));
+        for (const copy of copies) {
+          await db.update(workspaceOperations).set({ status: "running" }).where(eq(workspaceOperations.id, copy.operationId));
+          expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+          await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, copy.operationId));
+        }
+        const [allocation] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.lease.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(environmentLeases).set({ providerLeaseId: allocation.providerLeaseId }).where(eq(environmentLeases.id, f.lease.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      }
+      if (mode === "child" || mode === "expired-owner" || mode === "no-descriptor") {
+        // The parent must not receive the child's task-scoped recovery copy.
+        if (mode === "child") expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: sourceIssueId,
+          sourceRunIds: [f.runId], cwd: restored })).toHaveLength(0);
+        vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
+        const nextRunId = randomUUID(), nextLeaseId = randomUUID(), sourceRun = await run(f.runId);
+        const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+          authorType: "user", authorUserId: "operator", body: "/new" }).returning();
+        const continuationInput = { db, companyId: f.companyId, issueId: f.issueId,
+          agentId: sourceRun.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
+          commentId: comment.id, successorRunId: nextRunId };
+        if (mode === "expired-owner" || mode === "no-descriptor") {
+          for (const changed of [{ phase: "retryable_failure", leaseOwner: null }, { phase: "observed", leaseOwner: "new-controller" }]) {
+            await db.update(nativeRunFinalizations).set(changed).where(eq(nativeRunFinalizations.runId, f.runId));
+            expect(await admitExplicitNativeContinuation({ ...continuationInput, dryRun: true })).toBeNull();
+          }
+          await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+          await db.update(heartbeatRuns).set({ runnerProfileJson: { ...sourceRun.runnerProfileJson,
+            legacyWorkspaceRecoveryMigration: { invalid: true } } }).where(eq(heartbeatRuns.id, f.runId));
+          expect(await admitExplicitNativeContinuation({ ...continuationInput, dryRun: true })).toBeNull();
+          await db.update(heartbeatRuns).set({ runnerProfileJson: sourceRun.runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
+        }
+        expect(await admitExplicitNativeContinuation(continuationInput)).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
+        await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: sourceRun.agentId,
+          nativeIssueId: f.issueId, runtimeMode: "native", status: "running" });
+        const storage = { ...getStorageService(), provider: "s3" as const };
+        const reserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+          runId: nextRunId, agentId: sourceRun.agentId, environmentId: f.lease.environmentId!,
+          projectId: null, projectWorkspaceId: null, existingWorkspaceId: f.issueId, source: { kind: "empty" } });
+        const [lease] = await db.insert(environmentLeases).values({ id: nextLeaseId, companyId: f.companyId,
+          issueId: f.issueId, heartbeatRunId: nextRunId, environmentId: f.lease.environmentId,
+          provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+        const nextRoot = path.join(root, nextRunId); await mkdir(nextRoot);
+        const target = { ...targets.get(f.lease.id)!, leaseId: nextLeaseId, remoteCwd: await realpath(nextRoot) };
+        const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved,
+          runId: nextRunId, lease: lease as EnvironmentLease, target });
+        expect(prepared.workspace.sourceIssueId).toBe(sourceIssueId);
+        expect(await readFile(path.join(prepared.remoteRoot, ".paperclip-recovered", copies[0]!.operationId, "files", "saved.txt"), "utf8"))
+          .toBe("finished work\n");
+      }
+      if (mode === "retained" || mode === "no-descriptor") {
+        const [receipt] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, copies[0]!.operationId));
+        for (const metadata of [{ ...receipt.metadata, leaseId: randomUUID() }, { ...receipt.metadata, providerLeaseId: randomUUID() },
+          { ...receipt.metadata, recoveryActionId: randomUUID() }, { ...receipt.metadata, archive: { broken: true } }]) {
+          await db.update(workspaceOperations).set({ metadata }).where(eq(workspaceOperations.id, receipt.id));
+          expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        }
+        await db.update(workspaceOperations).set({ metadata: receipt.metadata, status: "running" }).where(eq(workspaceOperations.id, receipt.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+        await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, receipt.id));
+        expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      }
+    } finally {
+      // This journey admits a successor; retire that fixture writer before the
+      // next case exercises the instance-wide offline migration fence.
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(and(
+        eq(heartbeatRuns.companyId, f.companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+      vi.unstubAllEnvs();
+    }
+  }, 30_000);
+
+  function boardRecoveryApp(actor: { userId: string; source: "local_implicit" | "session"; companyIds?: string[] } = { userId: "local-board", source: "local_implicit" }) {
     const app = express();
     app.use(express.json());
-    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "local-board" }; next(); });
+    app.use((req, _res, next) => { req.actor = { type: "board", ...actor }; next(); });
     app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
     app.use(errorHandler);
     return app;
   }
 
-  async function acceptedRemoteExport() {
+  type RecoverySourceLayout = "retained" | "published" | "raw";
+
+  async function acceptedRemoteExport(sourceLayout: RecoverySourceLayout = "retained") {
     const f = await seed("native", false);
-    const source = await run(f.runId), workspaceId = randomUUID();
-    const remoteCwd = await realpath(f.remote);
+    const source = await run(f.runId);
+    let workspaceId: string = randomUUID(), remoteCwd = await realpath(f.remote);
+    let preparedReference: Awaited<ReturnType<typeof prepareRemoteWorkspace>>["reference"] | undefined;
+    if (sourceLayout === "published") {
+      // Fresh modern sources retain the actual publisher's path and authority.
+      // The explicit raw fixture remains available for refusal coverage.
+      targets.get(f.lease.id)!.remoteCwd = remoteCwd;
+      const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      await db.update(issues).set({ status: "in_progress", executionRunId: f.runId, executionLockedAt: new Date() })
+        .where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const leaseMetadata = { ...f.lease.metadata };
+      delete leaseMetadata.remoteExecutionTermination;
+      const [activeLease] = await db.update(environmentLeases).set({ status: "active", releasedAt: null,
+        cleanupStatus: null, metadata: leaseMetadata }).where(eq(environmentLeases.id, f.lease.id)).returning();
+      const reserved = await reserveRemoteWorkspace({ db, companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, agentId: source.agentId, environmentId: activeLease.environmentId!,
+        projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source: { kind: "empty" } });
+      const prepared = await prepareRemoteWorkspace({ db, workspace: reserved, runId: f.runId,
+        lease: activeLease as EnvironmentLease, target: targets.get(f.lease.id)! });
+      workspaceId = prepared.workspace.id; remoteCwd = prepared.remoteRoot; preparedReference = prepared.reference;
+      for (const name of ["existing.txt", "saved.txt"]) await cp(path.join(f.remote, name), path.join(remoteCwd, name));
+      await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),
+        metadata: { ...prepared.lease.metadata,
+          remoteExecutionTermination: remoteTerminationReceipt(prepared.lease, { providerLeaseId: f.providerLeaseId, state: "stopped" }) },
+      }).where(eq(environmentLeases.id, f.lease.id));
+      await db.update(heartbeatRuns).set({ status: source.status, finishedAt: source.finishedAt,
+        error: source.error, errorCode: source.errorCode }).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(issues).set({ status: issue.status, executionRunId: issue.executionRunId,
+        executionLockedAt: issue.executionLockedAt }).where(eq(issues.id, f.issueId));
+    } else if (sourceLayout === "retained") {
+      const publishedRoot = path.join(path.dirname(f.remote), ".paperclip-workspaces", workspaceId);
+      await mkdir(path.dirname(publishedRoot), { recursive: true });
+      await rename(f.remote, publishedRoot);
+      f.remote = publishedRoot;
+      remoteCwd = await realpath(f.remote);
+    }
     const git = (args: string[], cwd = remoteCwd) => new Promise<string>((resolve, reject) =>
       execFile("git", args, { cwd }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
     await git(["init"]);
@@ -218,7 +414,7 @@ describe("automatic retained workspace recovery", () => {
     const authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
       source: { kind: "empty" }, writerRunId: f.runId, dirty: true,
       location: { environmentId: f.lease.environmentId!, leaseId: f.lease.id, providerLeaseId: f.providerLeaseId, remoteCwd } };
-    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
+    if (sourceLayout !== "published") await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
       name: "Completed remote work", cwd: remoteCwd, providerType: "cloud_sandbox", mode: "isolated_workspace",
       strategyType: "project_primary", status: "active", metadata: { remoteWorkspace: authority } });
     await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, f.issueId));
@@ -234,7 +430,7 @@ describe("automatic retained workspace recovery", () => {
       canonicalSha256: "contract", createdByActorType: "system", createdByActorId: "test" });
     await db.update(heartbeatRuns).set({ completionContractId: contractId, resultJson: {}, runnerProfileJson: {
       adapterDispatch: { adapterType: "paperclip_runner" },
-      remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: lease.id,
+      remoteWorkspace: preparedReference ?? { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: lease.id,
         providerLeaseId: f.providerLeaseId, remoteCwd, epoch: 1, state: "prepared", snapshotId: null },
     } }).where(eq(heartbeatRuns.id, f.runId));
     await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
@@ -245,8 +441,676 @@ describe("automatic retained workspace recovery", () => {
     await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted", evidence: { runId: f.runId } })
       .where(eq(issueRecoveryActions.id, f.actionId));
     await adoptSystemRecovery(db, f);
-    return { ...f, source, workspaceId, resultId, git, commit };
+    return { ...f, ...(sourceLayout === "published" ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
   }
+
+  async function interruptedRemotePreparation(interruption: "shutdown" | "lease" = "shutdown", sourceLayout: RecoverySourceLayout = "retained") {
+    const f = await acceptedRemoteExport(sourceLayout);
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.delete(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+    const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, completionContractId: null,
+      status: "interrupted", executionStage: "preparing",
+      errorCode: interruption === "lease" ? "lease_released_before_terminal" : "server_shutdown_interrupted",
+      controllerBootId: randomUUID(),
+      error: interruption === "lease" ? "Environment lease released before preparation settled" : "Interrupted by graceful server shutdown (SIGTERM)",
+      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery,
+        ...(interruption === "lease" ? { cancellation: { source: "unknown", expected: false,
+          initiator: { type: "system" }, reason: "Environment lease released before preparation settled",
+          recordedAt: new Date().toISOString() } } : {}) },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ statusVersion: 2 }).where(eq(issues.id, f.issueId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${f.runId}`, status: "resolved", outcome: "blocked",
+      evidence: { runId: f.runId, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery,
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked", actionOutcome: "unknown" },
+        nativeBootstrapFailureBlock: { runId: f.runId, previousStatus: "in_progress", statusVersion: 2 } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    await adoptSystemRecovery(db, f);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
+    return f;
+  }
+
+  async function failedRemotePreparation(sourceLayout: RecoverySourceLayout = "retained") {
+    const f = await interruptedRemotePreparation("shutdown", sourceLayout);
+    const source = await run(f.runId);
+    const error = "Repository access is no longer available; refresh the repository catalog";
+    await terminalizeLegacyExecution({ db, run: source, status: "failed", reconcileIfNeeded: false,
+      patch: { errorCode: "setup_failed", error, executionStage: "preparing",
+        startedAt: new Date(Date.now() - 1000), contextSnapshot: { ...source.contextSnapshot, source: "native_status_decision" },
+        resultJson: { ...source.resultJson, stopReason: "adapter_failed",
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } } });
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
+      eventType: "error", stream: "system", level: "error", message: error });
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
+      eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
+      payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1000, durableSettlement: true } });
+    return f;
+  }
+
+  it("admits one HTTP Retry after a failed native preparation has verified saved work", async () => {
+    const f = await failedRemotePreparation();
+    await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId);
+    expect(source).toMatchObject({ runtimeMode: "legacy", runtimeModeResolvedAt: null, executionStage: "preparing",
+      status: "failed", errorCode: "setup_failed", nativeIssueId: null, nativeSessionId: null,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(await hasVerifiedWorkspaceRepair(db, source)).toBe(true);
+    const app = boardRecoveryApp(), heartbeat = heartbeatService(db);
+    const intent = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+    const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+    expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(receipt.requestId);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "queued", contextSnapshot: {
+      previousRunId: f.runId, taskRetryRequestId: receipt.requestId } });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId)))[0])
+      .toMatchObject({ status: "coalesced", runId: successors[0].id });
+    expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_preserved_workspace" });
+    const remote = source.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: remote.snapshotId });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+    expect((await run(f.runId)).error).toBe(source.error);
+  }, 30_000);
+
+  it("resumes the same failed-preparation HTTP Retry from the real preservation worker", async () => {
+    const f = await failedRemotePreparation();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null,
+      metadata: { ...lease.metadata, remoteExecutionTermination: null } }).where(eq(environmentLeases.id, lease.id));
+    let releaseStop!: () => void;
+    const stopped = new Promise<void>(resolve => { releaseStop = resolve; });
+    f.runtime.retryPendingSandboxTeardown.mockImplementation(async () => {
+      await stopped;
+      return { providerLeaseId: f.providerLeaseId, state: "stopped" };
+    });
+    const errors = vi.fn(), heartbeat = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, heartbeat.resumeRemoteStopComments);
+    const successors = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${requestId}`));
+    let requestId: string;
+    try {
+      await worker.ready;
+      const app = boardRecoveryApp(), intent = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
+      requestId = receipt.requestId;
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(requestId);
+      await expect.poll(() => f.runtime.retryPendingSandboxTeardown.mock.calls.length, { timeout: 20_000 }).toBe(1);
+      expect(await successors()).toHaveLength(0);
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].metadata?.remoteExecutionTermination).toBeFalsy();
+      releaseStop();
+      await expect.poll(async () => (await successors()).length, { timeout: 20_000 }).toBe(1);
+      const [successor] = await successors();
+      expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: requestId });
+      expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject({ mode: "resume_preserved_workspace" });
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      const remote = (await run(f.runId)).runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+      const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId, snapshotId: remote.snapshotId });
+      try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+      finally { await saved.cleanup(); }
+      await Promise.all([heartbeat.resumeTaskRetry(f.companyId, requestId), heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+      expect(await successors()).toHaveLength(1);
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+      expect((await run(f.runId))).toMatchObject({ status: "failed", errorCode: "setup_failed" });
+      expect(errors).not.toHaveBeenCalled();
+    } finally { releaseStop(); await coordinator.stop(); await worker.stop(); }
+  }, 40_000);
+
+  it.each(["delayed_provider_event", "native_input", "session_checkpoint", "controller_recovery", "process", "coordinator",
+    "runtime_selected", "live_controller", "missing_error", "missing_measurement", "foreign_error", "unknown_result",
+    "wrong_snapshot", "wrong_generation", "active_writer", "missing_stop", "foreign_stop", "additional_unstopped_lease",
+    "operator_stop", "newer_input", "reassigned", "wrong_actor", "actor_permission_revoked",
+    "provider_usage", "unknown_usage", "invalid_ledger_scope", "foreign_ledger_scope",
+    "array_usage", "false_usage", "zero_usage", "empty_usage_string", "empty_usage_object",
+    "active_lease", "pending_cleanup", "cleanup_failed", "cleanup_unknown", "cleanup_inflight", "unreleased", "foreign_lease_issue", "local_provider_claim"] as const)(
+    "holds a failed-preparation HTTP Retry when current proof changes: %s", async gate => {
+      const f = await failedRemotePreparation();
+      await recoverRetainedWorkspace(f.input);
+      const source = await run(f.runId), heartbeat = heartbeatService(db);
+      const actorId = gate === "actor_permission_revoked" ? randomUUID() : "local-board";
+      if (gate === "actor_permission_revoked") {
+        await db.insert(authUsers).values({ id: actorId, name: "Retry owner", email: `${actorId}@example.invalid`, createdAt: new Date(), updatedAt: new Date() });
+        await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: actorId, membershipRole: "owner" });
+      }
+      const app = boardRecoveryApp({ userId: actorId, source: gate === "actor_permission_revoked" ? "session" : "local_implicit", companyIds: [f.companyId] });
+      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      if (gate === "delayed_provider_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
+        agentId: source.agentId, eventType: "session.started", stream: "system", payload: { sessionId: randomUUID() },
+        nativeSource: { sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1, protocolSchemaVersion: 1,
+          canonicalPayload: { type: "session.started", sessionId: randomUUID() } } });
+      if (["native_input", "session_checkpoint", "controller_recovery"].includes(gate)) {
+        const key = gate === "native_input" ? "nativeExecutionInput" : gate === "session_checkpoint" ? "sessionCheckpoint" : "nativeControllerRecovery";
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson, [key]: { sessionId: randomUUID() } } })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (gate === "process") await db.update(heartbeatRuns).set({ processPid: 1386 }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "coordinator") {
+        await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
+        await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
+          issueId: f.issueId, runId: f.runId, phase: "observed", attempt: 1 });
+      }
+      if (gate === "runtime_selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "live_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "missing_error" || gate === "missing_measurement") await db.delete(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.seq, gate === "missing_error" ? 1 : 2)));
+      if (gate === "foreign_error") {
+        const [foreign] = await db.insert(agents).values({ companyId: f.companyId, name: "Other owner", adapterType: "paperclip_runner" }).returning();
+        await db.update(heartbeatRunEvents).set({ agentId: foreign.id })
+          .where(and(eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.seq, 1)));
+      }
+      if (["array_usage", "false_usage", "zero_usage", "empty_usage_string", "empty_usage_object"].includes(gate)) {
+        const invalid = gate === "array_usage" ? [] : gate === "false_usage" ? false : gate === "zero_usage" ? 0
+          : gate === "empty_usage_string" ? "" : {};
+        await db.update(heartbeatRuns).set({ usageJson: sql`${JSON.stringify(invalid)}::jsonb` }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (["provider_usage", "unknown_usage", "invalid_ledger_scope", "foreign_ledger_scope"].includes(gate)) {
+        const ledgerScope = { issueId: gate === "foreign_ledger_scope" ? randomUUID() : f.issueId, projectId: null, billingCode: null };
+        await db.update(heartbeatRuns).set({ usageJson: gate === "provider_usage" ? { ledgerScope, inputTokens: 0 }
+          : gate === "unknown_usage" ? { ledgerScope, unknown: true }
+            : { ledgerScope: gate === "invalid_ledger_scope" ? { ...ledgerScope, providerWorkStarted: false } : ledgerScope } })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (gate === "unknown_result") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        output: "Unknown provider work must not be replayed" } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "wrong_snapshot") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+        remoteWorkspace: { ...(source.runnerProfileJson!.remoteWorkspace as Record<string, unknown>), snapshotId: randomUUID() } } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "wrong_generation") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(${workspaceOperations.metadata}, '{generation}', '999')` })
+        .where(and(eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "workspace_recovery")));
+      if (gate === "active_writer") await db.update(executionWorkspaces).set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{remoteWorkspace,writerRunId}', ${JSON.stringify(randomUUID())}::jsonb)` })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      if (gate === "missing_stop" || gate === "foreign_stop") {
+        const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ metadata: { ...lease.metadata, remoteExecutionTermination: gate === "missing_stop"
+          ? null : { ...(lease.metadata!.remoteExecutionTermination as Record<string, unknown>), runId: randomUUID() } } })
+          .where(eq(environmentLeases.id, lease.id));
+      }
+      if (["active_lease", "pending_cleanup", "cleanup_failed", "cleanup_unknown", "cleanup_inflight", "unreleased", "local_provider_claim"].includes(gate)) {
+        await db.update(environmentLeases).set({
+          ...(gate === "active_lease" ? { status: "active" } : gate === "pending_cleanup" ? { status: "pending_cleanup" } : {}),
+          ...(gate === "cleanup_failed" ? { cleanupStatus: "failed" } : gate === "cleanup_unknown" ? { cleanupStatus: null } : {}),
+          ...(gate === "unreleased" ? { releasedAt: null } : {}),
+          ...(gate === "cleanup_inflight" ? { metadata: sql`jsonb_set(${environmentLeases.metadata}, '{pendingCleanupInFlight}', 'true')` } : {}),
+          ...(gate === "local_provider_claim" ? { provider: "local", providerLeaseId: null,
+            metadata: sql`${environmentLeases.metadata} - 'remoteExecutionTermination'` } : {}),
+        }).where(eq(environmentLeases.id, f.lease.id));
+      }
+      if (gate === "foreign_lease_issue") {
+        const [foreign] = await db.insert(issues).values({ companyId: f.companyId, title: "Other task", status: "blocked", assigneeAgentId: source.agentId }).returning();
+        await db.update(environmentLeases).set({ issueId: foreign.id }).where(eq(environmentLeases.id, f.lease.id));
+      }
+      if (gate === "additional_unstopped_lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        issueId: f.issueId, heartbeatRunId: f.runId, environmentId: f.lease.environmentId,
+        provider: "daytona", providerLeaseId: randomUUID(), status: "active" });
+      if (gate === "operator_stop") await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted",
+        resultJson: { ...source.resultJson, cancellation: requestedRunCancellation({ cancelledByActorType: "user", cancelledByUserId: "local-board" }, "Stop requested") } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "newer_input") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+        issueId: f.issueId, contextSnapshot: { issueId: f.issueId, source: "issue.comment.reopen" }, status: "running" });
+      if (gate === "reassigned") await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: "board" }).where(eq(issues.id, f.issueId));
+      if (gate === "wrong_actor") await db.update(agentWakeupRequests).set({ requestedByActorId: "another-user" })
+        .where(eq(agentWakeupRequests.id, receipt.requestId));
+      if (gate === "actor_permission_revoked") await db.update(companyMemberships).set({ status: "suspended" })
+        .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, actorId)));
+      await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId), heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
+      expect((await run(f.runId)).error).toBe(source.error);
+    }, 30_000);
+
+  it.each(["settled", "active", "provider_handle"] as const)("keeps unsupported mixed local and remote source leases held: %s", async state => {
+    const f = await failedRemotePreparation();
+    await recoverRetainedWorkspace(f.input);
+    await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.runId, issueId: f.issueId,
+      provider: "local", providerLeaseId: state === "provider_handle" ? randomUUID() : null,
+      status: state === "active" ? "active" : "released", releasedAt: new Date(), cleanupStatus: "success" });
+    const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+    await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId);
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
+  }, 30_000);
+
+  it.each(["plain", "unsupported_warning", "warning_presentation", "provider_warning", "measurement"] as const)(
+    "keeps the existing-directory readiness settlement contract: %s", async mode => {
+    const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), sourceRunId = randomUUID(),
+      successorRunId = randomUUID(), requestId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Preparation settlement", issuePrefix: `S${companyId.slice(0, 6)}` });
+    fixtureCompanyIds.add(companyId);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue existing directory", status: "blocked", assigneeAgentId: agentId });
+    const cwd = await materializeIsolatedTaskDirectory({ companyId, issueId });
+    await writeFile(path.join(cwd, "saved.txt"), "existing task work\n");
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Task directory", cwd }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issueId));
+    const error = "The selected existing task directory has no Git checkout.";
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
+      status: "failed", finishedAt: new Date(), errorCode: "workspace_validation_failed", error, executionStage: "preparing",
+      contextSnapshot: { issueId }, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      usageJson: { ledgerScope: { issueId, projectId: null, billingCode: null } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        workspaceValidation: { reason: "git_worktree_base_not_git_checkout", issueId,
+          resolvedWorkspaceSource: "task_session", requestedExecutionWorkspaceMode: "isolated_workspace",
+          issueExecutionWorkspacePreference: "reuse_existing", issueExecutionWorkspaceId: workspace.id,
+          issueProjectId: null, issueProjectWorkspaceId: null, resolvedWorkspaceCwd: cwd } } });
+    if (mode.includes("warning")) await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId,
+      eventType: "agent_observability.unavailable", level: "warn", stream: "system",
+      message: mode === "warning_presentation" ? "Changed presentation" : "Company observability was not applied: this harness is not supported.",
+      payload: { reason: "unsupported_harness", revision: randomUUID() },
+      ...(mode === "provider_warning" ? { nativeSource: { sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1,
+        protocolSchemaVersion: 1, canonicalPayload: { type: "agent_observability.unavailable" } } } : {}) });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "error", level: "error", stream: "system", message: error });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "lifecycle", level: "info", stream: "system",
+      message: "task.run.measured", payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1, durableSettlement: mode !== "measurement" } });
+    const [successor] = await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, issueId, status: "queued",
+      contextSnapshot: { issueId, previousRunId: sourceRunId, taskRetryRequestId: requestId } }).returning();
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "coalesced", runId: successor.id, requestedByActorType: "user", requestedByActorId: "local-board",
+      idempotencyKey: `task-retry:${randomUUID()}`, payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: requestId, sourceRunId, actorId: "local-board", actorSource: "session", strategy: "evaluate" } } });
+    const reuse = mode === "plain" || mode === "unsupported_warning";
+    expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject(reuse
+      ? { mode: "reuse_current_workspace", retryIntentId: requestId, sourceRunId, workspaceId: workspace.id, cwd }
+      : { mode: "fresh_isolated_workspace", retryIntentId: requestId, sourceRunId, retainedSourceIds: [] });
+    expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
+  });
+
+  it.each(["complete", "catalog", "catalog_warning", "catalog_unknown_warning", "catalog_provider_warning", "invalid_published_root"] as const)(
+    "dispatches the recovered failed-preparation Retry once through the native provider boundary (%s)", async mode => {
+    const unavailableCatalog = mode !== "complete" && mode !== "invalid_published_root", withWarning = mode.includes("warning");
+    const localStorage = getStorageService();
+    const databaseUrl = process.env.DATABASE_URL, masterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    const experimental = await instanceSettingsService(db).getExperimental();
+    let storage: { mockRestore(): void } | undefined;
+    let ownedHeartbeat: ReturnType<typeof heartbeatService> | undefined;
+    let recoveryCoordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let recoveryWorker: ReturnType<typeof registerWorkspaceRecoveryWork> | undefined;
+    try {
+      storage = vi.spyOn(storageBackend, "getStorageService").mockReturnValue({ ...localStorage, provider: "s3" });
+      process.env.DATABASE_URL = connectionString; process.env.PAPERCLIP_SECRETS_MASTER_KEY = "63".repeat(32);
+      await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+      const f = await failedRemotePreparation(mode === "invalid_published_root" ? "raw" : "published");
+      await recoverRetainedWorkspace(f.input);
+      const source = await run(f.runId), nextDirectory = path.join(root, randomUUID(), "next");
+      await mkdir(nextDirectory, { recursive: true });
+      const nextRemote = await realpath(nextDirectory);
+      await db.insert(authUsers).values({ id: "local-board", name: "Local operator", email: "local-board@example.invalid",
+        createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "local-board", membershipRole: "owner" });
+      await db.update(agents).set({ defaultEnvironmentId: f.lease.environmentId,
+        adapterConfig: withWarning ? { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4.1-flash-1017" }
+          : { provider: "codex", model: "gpt-6.1-sol" } }).where(eq(agents.id, source.agentId));
+      if (withWarning) await db.insert(companyObservability).values({ companyId: f.companyId, revision: randomUUID(), enabled: true,
+        destination: { provider: "otlp", endpointBaseUrl: "https://collector.example.invalid/otel" },
+        capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
+      await db.update(environments).set({ config: { provider: "fake", image: "fake:test" } }).where(eq(environments.id, f.lease.environmentId!));
+      const environment = environmentService(db), oldTarget = targets.get(f.lease.id)!;
+      oldTarget.runner!.syncIn = async operations => {
+        for (const operation of operations) for (const file of operation.files) {
+          await mkdir(path.dirname(file.targetPath), { recursive: true });
+          await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+        }
+        return { filesTransferred: operations.reduce((count, operation) => count + operation.files.length, 0), bytesTransferred: 0, operations: [] };
+      };
+      const executeCommand = oldTarget.runner!.execute;
+      const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+        acquireRunLease: async input => {
+          const lease = await environment.acquireLease({ companyId: input.companyId, environmentId: input.environment.id,
+            issueId: input.issueId, heartbeatRunId: input.heartbeatRunId, executionWorkspaceId: input.executionWorkspaceId,
+            provider: "fake", providerLeaseId: randomUUID(), leasePolicy: "retain_on_failure",
+            metadata: { driver: "sandbox", remoteCwd: nextRemote, agentId: input.agentId } });
+          targets.set(lease.id, { ...oldTarget, leaseId: lease.id, remoteCwd: nextRemote,
+            runner: { ...oldTarget.runner!, execute: executeCommand },
+            sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: lease.providerLeaseId! } });
+          return lease;
+        },
+        releaseRunLease: async input => environment.releaseLease(input.lease.id, input.status, { cleanupStatus: "success",
+          remoteExecutionTermination: remoteTerminationReceipt(input.lease, { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) }),
+        resumeRunLease: async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId!, metadata: { remoteCwd: lease.metadata?.remoteCwd } }),
+        retryPendingSandboxTeardown: async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId, state: "stopped" }),
+        realizeWorkspace: async () => ({ cwd: nextRemote, metadata: { remoteCwd: nextRemote } }),
+        execute: async input => executeCommand({ command: input.command, args: input.args, cwd: input.cwd,
+          env: input.env, stdin: input.stdin, timeoutMs: input.timeoutMs }),
+        resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [], declared: null, narrowing: null }),
+      }] });
+      const workProductId = randomUUID(), evidenceRef = `work_product:${workProductId}`;
+      await db.insert(issueWorkProducts).values({ id: workProductId, companyId: f.companyId, issueId: f.issueId,
+        type: "artifact", provider: "paperclip", title: "Continued saved work", status: "ready_for_review", reviewState: "approved" });
+      const inputs: NativeExecutionInput[] = [], startTurn = vi.fn();
+      const backendFactory = (execution: NativeExecutionInput): NativeSessionBackend => {
+        inputs.push(execution);
+        const identity = { companyId: f.companyId, agentId: source.agentId, issueId: f.issueId,
+          runId: execution.binding.runId, sessionId: execution.session.normalizedSessionId! };
+        const turnId = `turn-${identity.runId}`, result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+        result.completionClaim.contractRevision = execution.completionContract.contract.revision;
+        result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({
+          ...result.completionClaim.criteria[0]!, criterionId: criterion.id, evidenceRefs: [evidenceRef] }));
+        result.evidence = [{ kind: "work_product", ref: evidenceRef }]; result.verification[0]!.artifactRef = evidenceRef;
+        let started!: () => void;
+        const turnStarted = new Promise<void>(resolve => { started = resolve; });
+        const session: NativeSession = {
+          identity: () => identity,
+          async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+          async *events() {
+            await turnStarted;
+            const current = await run(identity.runId);
+            yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:terminal`, sourceSeq: 1,
+              sourceInstanceId: current.runnerInstanceId!, sourceKind: "runner", runId: identity.runId,
+              normalizedSessionId: identity.sessionId, turnId, eventType: "turn.completed", schemaVersion: 1,
+              priority: 0, emittedAt: new Date().toISOString(), payload: {} } satisfies PrpEvent;
+          },
+          async startTurn(input) {
+            expect(execution.provider).toMatchObject({ kind: "codex", model: "gpt-6.1-sol" });
+            expect(await readFile(path.join(execution.workspace.cwd!, "saved.txt"), "utf8")).toBe("finished work\n");
+            await writeFile(path.join(execution.workspace.cwd!, "continued.txt"), "continued from preserved work\n");
+            startTurn(input); started(); return { turnId };
+          },
+          async result() { await turnStarted; return { result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId }; },
+          async snapshot() { return { backendKind: "mock", sessionId: "recovered-preparation", identity,
+            providerSessionId: "recovered-preparation", activeTurnId: null, pendingRuntimeRequests: [], lineage: [], cursor: "1" }; },
+          async close() {},
+        };
+        return { async descriptor() { return { kind: "mock", name: "recovered-preparation", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
+          runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+        async openSession() { return session; } };
+      };
+      const heartbeat = heartbeatService(db, { environmentRuntime: runtime, nativeSessionBackendFactory: backendFactory });
+      ownedHeartbeat = heartbeat;
+      const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+      expect(successors).toHaveLength(1);
+      if (unavailableCatalog) {
+        const repoUrl = "https://github.com/example/revoked.git";
+        await db.insert(executionWorkspaceRepositories).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+          requestedByIssueId: f.issueId, repositoryIdentity: repoUrl, repoUrl, catalogRepositoryId: "revoked-before-dispatch",
+          relativePath: taskRepositoryRelativePath(repoUrl), requestKey: randomUUID(), state: "ready", pinnedCommit: f.commit });
+      }
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(and(
+        eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "running")));
+      await heartbeat.resumeQueuedRuns(); await heartbeat.drainActiveRunExecutions();
+      const completed = await run(successors[0].id);
+      if (mode === "invalid_published_root") {
+        expect(completed).toMatchObject({ status: "failed", runtimeMode: "legacy", errorCode: "setup_failed",
+          error: "remote_workspace_published_path_invalid" });
+        expect(inputs).toHaveLength(0); expect(startTurn).not.toHaveBeenCalled();
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, completed.id))).toHaveLength(0);
+        expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+        expect((await run(f.runId)).error).toBe(source.error);
+        return;
+      }
+      if (unavailableCatalog) {
+        expect(completed).toMatchObject({ status: "failed", errorCode: "setup_failed",
+          error: "Repository access is no longer available; refresh the repository catalog" });
+        expect(inputs).toHaveLength(0); expect(startTurn).not.toHaveBeenCalled();
+        const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+        expect(await readFile(path.join(workspace.cwd!, "saved.txt"), "utf8")).toBe("finished work\n");
+        expect((await run(f.runId)).error).toBe(source.error);
+        expect(completed).toMatchObject({ runtimeMode: "legacy", runtimeModeResolvedAt: null, executionStage: "preparing",
+          nativeIssueId: null, nativeSessionId: null, usageJson: { ledgerScope: expect.any(Object) },
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+        expect(completed.usageJson).toEqual({ ledgerScope: { issueId: f.issueId, projectId: null, billingCode: null } });
+        if (withWarning) {
+          const [warning] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, completed.id), eq(heartbeatRunEvents.seq, 1)));
+          expect(warning).toMatchObject({ eventType: "agent_observability.unavailable", stream: "system", level: "warn",
+            payload: { reason: "unsupported_harness", revision: expect.any(String) }, sourceEventId: null, sourceInstanceId: null });
+          if (mode === "catalog_unknown_warning") await db.update(heartbeatRunEvents).set({ payload: { ...warning.payload, reason: "unknown" } }).where(eq(heartbeatRunEvents.id, warning.id));
+          if (mode === "catalog_provider_warning") await db.update(heartbeatRunEvents).set({ sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, warning.id));
+        }
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+        const errors = vi.fn();
+        recoveryCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
+        recoveryWorker = registerWorkspaceRecoveryWork(db, recoveryCoordinator, runtime, heartbeat.resumeRemoteStopComments);
+        await recoveryWorker.ready;
+        const retryIntent = { observedRunId: completed.id, idempotencyKey: randomUUID() };
+        const retry = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+        const resumed = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+          sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`));
+        await expect.poll(async () => await hasVerifiedWorkspaceRepair(db, await run(completed.id)), { timeout: 20_000 }).toBe(true);
+        if (mode === "catalog_unknown_warning" || mode === "catalog_provider_warning") {
+          await heartbeat.resumeTaskRetry(f.companyId, retry.requestId);
+          expect(await resumed()).toHaveLength(0); expect(startTurn).not.toHaveBeenCalled();
+          return;
+        }
+        await expect.poll(async () => (await resumed()).length, { timeout: 20_000 }).toBe(1);
+        const [continuation] = await resumed();
+        expect(continuation).toMatchObject({ status: "queued", contextSnapshot: { previousRunId: completed.id,
+          taskRetryRequestId: retry.requestId } });
+        expect(await readFreshWorkspaceReadiness(db, continuation)).toMatchObject({ mode: "resume_preserved_workspace" });
+        expect((await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retry.requestId);
+        expect(await resumed()).toHaveLength(1); expect(startTurn).not.toHaveBeenCalled();
+        expect(errors).not.toHaveBeenCalled();
+        return;
+      }
+      expect({ status: completed.status, error: completed.error, runtimeMode: completed.runtimeMode })
+        .toEqual({ status: "succeeded", error: null, runtimeMode: "native" });
+      expect(inputs).toHaveLength(1); expect(startTurn).toHaveBeenCalledOnce();
+      expect(path.basename(path.dirname(inputs[0].workspace.cwd!))).toBe(".paperclip-workspaces");
+      expect(completed.runnerProfileJson?.nativeExecutionInput).toMatchObject({ provider: { kind: "codex", model: "gpt-6.1-sol" } });
+      expect(await readFile(path.join(inputs[0].workspace.cwd!, "continued.txt"), "utf8")).toBe("continued from preserved work\n");
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, completed.id)))
+        .toEqual([expect.objectContaining({ schemaStatus: "accepted" })]);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId); expect(startTurn).toHaveBeenCalledOnce();
+      expect((await run(f.runId)).error).toBe(source.error);
+    } finally {
+      try {
+        await recoveryCoordinator?.stop(); await recoveryWorker?.stop();
+        await ownedHeartbeat?.drainActiveRunExecutions();
+      } finally {
+        storage?.mockRestore();
+        if (databaseUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = databaseUrl;
+        if (masterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = masterKey;
+        await instanceSettingsService(db).updateExperimental(experimental);
+      }
+    }
+  }, 40_000);
+
+  it.each(["shutdown", "lease"] as const)("admits HTTP Retry once after an interrupted Runner preparation recovers its remote workspace (%s)", async interruption => {
+    const f = await interruptedRemotePreparation(interruption);
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    const intent = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+    const app = boardRecoveryApp();
+    const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+    expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(receipt.requestId);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId });
+    expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_preserved_workspace" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect((await run(f.runId)).status).toBe("interrupted");
+    const remote = (await run(f.runId)).runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: remote.snapshotId });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+  }, 30_000);
+
+  it.each([false, true].flatMap(alreadyRecovered => (["shutdown", "lease"] as const).map(interruption => ({ alreadyRecovered, interruption }))))(
+    "automatically retries interrupted preparation after preservation ($interruption, startup=$alreadyRecovered)", async ({ alreadyRecovered, interruption }) => {
+    const f = await interruptedRemotePreparation(interruption);
+    if (alreadyRecovered) await recoverRetainedWorkspace(f.input);
+    const restarted = createDb(connectionString);
+    try {
+      const heartbeat = heartbeatService(restarted);
+      await Promise.all(await reconcileRetainedWorkspaces(restarted, f.environmentRuntime,
+        heartbeat.resumeRemoteStopComments, true) ?? []);
+      await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+        heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        eq(heartbeatRuns.retryOfRunId, f.runId)));
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+      expect((await run(f.runId)).status).toBe("interrupted");
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    } finally { await restarted.$client.end(); }
+  }, 30_000);
+
+  it("retries unpublished preparation from its preserved ancestor without an old failure-block receipt", async () => {
+    const f = await seed("legacy", false);
+    await requestWorkspaceRecovery({ ...f, idempotencyKey: randomUUID(), actorId: "board" });
+    await recoverRetainedWorkspace(f.input);
+    const ancestor = await run(f.runId), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: ancestor.agentId, status: "running" });
+    const app = boardRecoveryApp(), heartbeat = heartbeatService(db);
+    const first = (await request(app).post(`/api/issues/${f.issueId}/retry`).send({
+      observedRunId: f.runId, idempotencyKey: randomUUID(),
+    }).expect(202)).body;
+    await heartbeat.resumeTaskRetry(f.companyId, first.requestId);
+    const admitted = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(admitted).toHaveLength(1);
+    const interruptedId = admitted[0].id;
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "interrupted", executionStage: "preparing",
+      startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(), controllerBootId: randomUUID(),
+      errorCode: "lease_released_before_terminal", error: "Lease released before preparation settled",
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { cancellation: { source: "unknown", expected: false, initiator: { type: "system" },
+        reason: "Lease released before preparation settled", recordedAt: new Date().toISOString() } },
+    }).where(eq(heartbeatRuns.id, interruptedId));
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    const lease = { id: leaseId, companyId: f.companyId, heartbeatRunId: interruptedId,
+      provider: "daytona", providerLeaseId };
+    await db.insert(environmentLeases).values({ ...lease, issueId: f.issueId, environmentId: f.lease.environmentId,
+      status: "released", cleanupStatus: "success", releasedAt: new Date(),
+      metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId, state: "stopped" }) },
+    });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: ancestor.agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${interruptedId}`,
+      status: "resolved", outcome: "blocked", nextAction: "Recorded actions require reconciliation",
+      evidence: { runId: interruptedId, originalFailureCode: "lease_released_before_terminal",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: interruptedId, replay: "blocked", actionOutcome: "unknown" } },
+    });
+    const intent = { observedRunId: interruptedId, idempotencyKey: randomUUID() };
+    const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: interruptedId });
+    expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(receipt.requestId);
+    const restored = path.join(root, randomUUID()); await mkdir(restored);
+    const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [interruptedId], cwd: restored });
+    expect(copies).toHaveLength(1);
+    expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  }, 30_000);
+
+  it.each(["local", "none"])("continues verified interrupted preparation with %s leases", async provider => {
+    const f = await interruptedRemotePreparation();
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (provider === "none") await db.delete(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    else await db.update(environmentLeases).set({ provider: "local", metadata: {} }).where(eq(environmentLeases.id, f.lease.id));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeRemoteStopComments(await run(f.runId));
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+  }, 30_000);
+
+  it.each(["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
+    "operator_stop_metadata", "missing_stop_receipt", "unrecorded_interruption",
+    "retry_exhausted", "human_reblock", "paused", "reassigned"] as const)(
+    "keeps the interrupted preparation continuation behind %s", async gate => {
+      const f = await interruptedRemotePreparation("lease");
+      await recoverRetainedWorkspace(f.input);
+      const source = await run(f.runId);
+      if (gate === "provider_started") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        runId: f.runId, agentId: source.agentId, seq: 1, eventType: "native.process_start_requested", stream: "system" });
+      if (gate === "provider_dispatch_recorded") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: true }, output: randomBytes(128 * 1024).toString("base64"),
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "runtime_selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "live_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "wrong_snapshot") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
+        remoteWorkspace: { ...(source.runnerProfileJson!.remoteWorkspace as Record<string, unknown>), snapshotId: randomUUID() },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "operator_stop") await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted" }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "operator_stop_metadata") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        cancellation: requestedRunCancellation({ cancelledByActorType: "user", cancelledByUserId: "operator" }, "Stop requested"),
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "unrecorded_interruption") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        cancellation: null,
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "missing_stop_receipt") {
+        const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ metadata: { ...lease.metadata, remoteExecutionTermination: null } })
+          .where(eq(environmentLeases.id, f.lease.id));
+      }
+      if (gate === "retry_exhausted") await db.update(heartbeatRuns).set({ scheduledRetryAttempt: 2 }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "human_reblock") await db.update(issues).set({ statusVersion: 3 }).where(eq(issues.id, f.issueId));
+      if (gate === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, source.agentId));
+      if (gate === "reassigned") await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: "board" }).where(eq(issues.id, f.issueId));
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeRemoteStopComments(await run(f.runId));
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        eq(heartbeatRuns.retryOfRunId, f.runId)))).toHaveLength(0);
+      if (["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
+        "operator_stop_metadata", "missing_stop_receipt", "unrecorded_interruption"].includes(gate)) {
+        const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+          actorId: "local-board", actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
+        await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+        expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+          eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      }
+      if (gate === "human_reblock" || gate === "reassigned") {
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
+      }
+      expect((await run(f.runId)).error).toBe(source.error);
+    }, 30_000);
+
+  it("uses a pending Retry as the sole successor after interrupted preparation recovers", async () => {
+    const f = await interruptedRemotePreparation();
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+      actorId: "local-board", actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
+    await recoverRetainedWorkspace(f.input);
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!)]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      inArray(heartbeatRuns.status, ["queued", "scheduled_retry"])));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].status).toBe("queued");
+    expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_preserved_workspace" });
+  }, 30_000);
+
+  it("cancels the interrupted preparation retry when a user blocks the task before it starts", async () => {
+    const f = await interruptedRemotePreparation();
+    await recoverRetainedWorkspace(f.input);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeRemoteStopComments(await run(f.runId));
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successor.status).toBe("scheduled_retry");
+    await db.update(issues).set({ status: "blocked", statusVersion: 4 }).where(eq(issues.id, f.issueId));
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 300_000));
+    expect(await run(successor.id)).toMatchObject({ status: "cancelled", errorCode: "issue_blocked" });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
+  }, 30_000);
 
   it.each([false, true])("keeps Retry behind an accepted remote export and resumes only its saved result (review pending: %s)", async reviewPending => {
     const f = await acceptedRemoteExport();
@@ -338,12 +1202,17 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it.each([
-    { status: "failed", runtimeMode: "native", uploadFailure: "none" },
-    { status: "cancelled", runtimeMode: "native", uploadFailure: "none" },
-    { status: "failed", runtimeMode: "legacy", uploadFailure: "final" },
-    { status: "failed", runtimeMode: "legacy", uploadFailure: "initial" },
-  ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects ($uploadFailure upload failure)", async ({ status, runtimeMode, uploadFailure }) => {
+    { status: "failed", runtimeMode: "native", scenario: "none" },
+    { status: "failed", runtimeMode: "native", scenario: "registration" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_after_dispatch" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_existing_hold" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_existing_hold_after_dispatch" },
+    { status: "cancelled", runtimeMode: "native", scenario: "none" },
+    { status: "failed", runtimeMode: "legacy", scenario: "final" },
+    { status: "failed", runtimeMode: "legacy", scenario: "initial" },
+  ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects ($scenario)", async ({ status, runtimeMode, scenario }) => {
     const f = await seed(runtimeMode, false);
+    let retryRequestId: string | undefined;
     const remoteCwd = await realpath(f.remote);
     targets.get(f.lease.id)!.remoteCwd = remoteCwd;
     f.runtime.resumeRunLease.mockImplementation(async () => ({ providerLeaseId: f.providerLeaseId, metadata: { remoteCwd } }));
@@ -361,7 +1230,7 @@ describe("automatic retained workspace recovery", () => {
       metadata: { ...boundLease.metadata, remoteCwd, agentId: (await run(f.runId)).agentId } })
       .where(eq(environmentLeases.id, f.lease.id));
     const before = await run(f.runId);
-    if (uploadFailure === "final") {
+    if (scenario === "final") {
       // A reused allocation can fail during preparation, before native input or
       // its finalization coordinator exists. Keep a real saved predecessor and
       // the ordinary exact lease handoff; neither grants a new provider turn.
@@ -415,7 +1284,7 @@ describe("automatic retained workspace recovery", () => {
       expect((await recoverySources.inspectWorkspaceRecoverySource(db, f.input)).sources).toHaveLength(1);
       const failedUpload = vi.spyOn(getStorageService(), "putFile").mockRejectedValueOnce(new Error("Synthetic saved-copy outage"));
       try {
-        if (uploadFailure === "initial") {
+        if (scenario === "initial") {
           // Exercise the original setup boundary, not a failed final save that
           // retries the same operation. The initial ledger reservation survives.
           await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
@@ -453,7 +1322,48 @@ describe("automatic retained workspace recovery", () => {
         epoch: authority.epoch, snapshotId: authority.snapshotId });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
       expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
-      if (uploadFailure === "final") await makeRetryDue(f.actionId);
+      if (scenario === "final") await makeRetryDue(f.actionId);
+    }
+    if (scenario.startsWith("registration")) {
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+      await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed", originalDiagnostic: true },
+        runnerProfileJson: { ...(await run(f.runId)).runnerProfileJson, nativeResourceDisposition: "keep_running" },
+      }).where(eq(heartbeatRuns.id, f.runId));
+      const [stopped] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      const termination = stopped.metadata!.remoteExecutionTermination as Record<string, unknown>;
+      await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment", releasedAt: new Date(String(termination.confirmedAt)), metadata: { ...stopped.metadata,
+        sandboxStopAndRetainReceipt: { ...termination, schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
+          pluginId: stopped.metadata!.pluginId, method: "environmentStopLease", requestId: randomUUID() },
+      } }).where(eq(environmentLeases.id, f.lease.id));
+      const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId,
+        issueId: f.issueId, runtimeMode: "legacy", status: "failed", errorCode: "setup_failed", finishedAt: new Date(),
+        executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        createdAt: new Date(before.createdAt.getTime() + 1), contextSnapshot: { issueId: f.issueId },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).returning();
+      if (scenario.endsWith("after_dispatch")) await appendHeartbeatRunEvent(db, {
+        companyId: f.companyId, runId: later.id, agentId: before.agentId, eventType: "adapter.invoke", stream: "system",
+        level: "info", message: "Execution started before the contradictory bootstrap result.", payload: null,
+      });
+      const existingHold = scenario.includes("existing_hold");
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: existingHold ? "active_run_watchdog" : "stranded_assigned_issue",
+        cause: existingHold ? "legacy_execution_requires_reconciliation" : "stranded_assigned_issue", fingerprint: `latest-setup:${later.id}`,
+        ownerType: "board", nextAction: "Inspect the failed setup before continuing.",
+        evidence: existingHold ? { runId: later.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } }
+          : { latestRunId: later.id, latestRunStatus: "failed", latestRunErrorCode: "setup_failed" } });
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId, status: "running" });
+      const app = boardRecoveryApp(), retryIntent = { observedRunId: later.id, idempotencyKey: randomUUID() };
+      const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+      retryRequestId = retry.requestId;
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retryRequestId);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId!);
+      const [registered] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
+        sql`${issueRecoveryActions.evidence}->>'runId' = ${f.runId}`));
+      expect(registered).toBeDefined();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(3);
+      f.actionId = f.input.actionId = registered.id;
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => {}) ?? []);
     }
     await recoverRetainedWorkspace(f.input);
     const recoveredAction = await action(f.actionId);
@@ -474,24 +1384,44 @@ describe("automatic retained workspace recovery", () => {
     }
     finally { await extracted.cleanup(); }
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
-    expect(await run(f.runId)).toMatchObject({ status, errorCode: uploadFailure === "initial" ? "setup_failed" : "execution_interrupted",
+    expect(await run(f.runId)).toMatchObject({ status, errorCode: scenario === "initial" ? "setup_failed" : "execution_interrupted",
       runnerProfileJson: { remoteWorkspace: { state: "saved", snapshotId: saved!.snapshotId } } });
-    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .toHaveLength(retryRequestId ? 1 : 0);
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(0);
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery_snapshot")))).toHaveLength(0);
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(uploadFailure === "final" ? 2 : 1);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" ? 2 : 1);
     expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(runtimeMode === "legacy" ? 2 : 1);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
     const [settledLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    if (retryRequestId) {
+      expect(settledLease).toMatchObject({ status: "released", leasePolicy: "reuse_by_environment" });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      if (scenario.endsWith("after_dispatch")) {
+        expect(queued).toHaveLength(0);
+        expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retryRequestId)))[0])
+          .toMatchObject({ status: "deferred_issue_execution", runId: null });
+        return;
+      }
+      expect(queued).toHaveLength(1);
+      expect(await readFreshWorkspaceReadiness(db, queued[0]))
+        .toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ executionWorkspaceId: workspaceId });
+      expect((await run(f.runId)).resultJson).toMatchObject({ originalDiagnostic: true });
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(1);
+      return;
+    }
     if (runtimeMode === "legacy") {
       expect(settledLease).toMatchObject({ status: "released",
-        leasePolicy: uploadFailure === "initial" ? "retain_on_failure" : "reuse_by_execution_workspace" });
+        leasePolicy: scenario === "initial" ? "retain_on_failure" : "reuse_by_execution_workspace" });
       expect((await run(f.runId)).runtimeMode).toBe("legacy");
       expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual([]);
-      if (uploadFailure === "final") expect(snapshots.find(snapshot => snapshot.id === authority.snapshotId)).toMatchObject({ status: "superseded" });
+      if (scenario === "final") expect(snapshots.find(snapshot => snapshot.id === authority.snapshotId)).toMatchObject({ status: "superseded" });
       else expect(snapshots.find(snapshot => snapshot.generation === 1)).toMatchObject({ status: "pending" });
       // Explicit Retry may admit the preserved files. Saturate agent capacity
       // so this tests admission without dispatching a new agent turn.
@@ -504,7 +1434,7 @@ describe("automatic retained workspace recovery", () => {
       expect(await readFreshWorkspaceReadiness(db, successor))
         .toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toEqual([]);
-      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(uploadFailure === "final" ? 2 : 1);
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" ? 2 : 1);
       return;
     }
     if (status === "failed") {
@@ -772,16 +1702,34 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(0);
   }, 30_000);
 
-  it.each(["HTTP Retry", "new comment", "automatic cleanup"] as const)("repairs an unregistered historical deadline failure through %s without admitting work before verified stop", async entry => {
+  it.each(["HTTP Retry", "manual admission Retry", "new comment", "automatic cleanup"] as const)("repairs a retained failure through %s without admitting work before verified stop", async entry => {
     const f = await seed("native", true, "keep_running");
     const source = await run(f.runId);
-    await db.update(heartbeatRuns).set({ resultJson: null, errorCode: "execution_finalization_deadline_exceeded" })
+    const manual = entry === "manual admission Retry";
+    await db.update(heartbeatRuns).set({ resultJson: null,
+      errorCode: manual ? "native_restart_recovery_blocked" : "execution_finalization_deadline_exceeded",
+      ...(manual ? { processPid: 1386, nativePhase: "terminal_failure" } : {}) })
       .where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ status: "active", leasePolicy: "reuse_by_environment",
       releasedAt: null, cleanupStatus: null, metadata: f.lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
-    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
-      cause: "execution_finalization_deadline_exceeded", evidence: { runId: f.runId, providerOwnership: "unverified",
-        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    if (manual) {
+      const systemRecovery = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(f.runId))!,
+        new SystemRecoveryFailure("allocation_ownership_ambiguous", "user_action_required"));
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", resultId: null,
+        failureCode: "native_restart_recovery_blocked", failureDetail: { recoveryMode: "exact_checkpoint_resume", systemRecovery } })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
+      await db.update(issueRecoveryActions).set({ status: "active", outcome: "blocked", cause: "native_restart_recovery_blocked",
+        fingerprint: `native-restart:${f.runId}`, returnOwnerAgentId: source.agentId, wakePolicy: null, maxAttempts: 3,
+        evidence: { runId: f.runId, automaticAdmissionExhausted: true, executorStopEvidence: "unverified",
+          providerPid: 1386, checkpointPreserved: true },
+        nextAction: "Automatic admission checks exhausted; original executor stop and state remain unverified" })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+    } else {
+      await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
+        cause: "execution_finalization_deadline_exceeded", evidence: { runId: f.runId, providerOwnership: "unverified",
+          automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    }
     // Leave admission observable without substituting a fake model turn.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
     let releaseStop!: () => void;
@@ -803,7 +1751,9 @@ describe("automatic retained workspace recovery", () => {
       app.use(errorHandler);
       let requestId: string | undefined;
       let commentId: string | undefined;
-      if (entry === "HTTP Retry") {
+      if (manual) expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body.interruption)
+        .toMatchObject({ state: "failed", canRetry: true, observedRunId: f.runId });
+      if (entry === "HTTP Retry" || manual) {
         const body = { idempotencyKey: randomUUID(), observedRunId: f.runId };
         const retry = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202);
         requestId = retry.body.requestId;
@@ -832,12 +1782,16 @@ describe("automatic retained workspace recovery", () => {
         if (entry === "automatic cleanup") await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0 });
       }
       await expect.poll(() => f.runtime.retryPendingSandboxTeardown.mock.calls.length, { timeout: 20_000 }).toBe(1);
-      if (requestId) await heartbeat.resumeTaskRetry(f.companyId, requestId);
-      else await heartbeat.resumeQueuedRuns();
+      if (!manual) {
+        if (requestId) await heartbeat.resumeTaskRetry(f.companyId, requestId);
+        else await heartbeat.resumeQueuedRuns();
+      }
       expect(await successors()).toHaveLength(0);
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].metadata)
         .not.toHaveProperty("remoteExecutionTermination");
+      if (manual) expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
       await expect(readFile(path.join(f.host, "saved.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       releaseStop();
       await expect.poll(async () => (await successors()).length, { timeout: 20_000 }).toBe(1);
@@ -1384,7 +2338,9 @@ describe("automatic retained workspace recovery", () => {
         existingWorkspaceId: kind === "same" ? first.workspace.id : null });
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: nextWorkspace, runId: nextRun.id,
         lease: nextLease as EnvironmentLease, target: { ...target, remoteCwd: resumed!.metadata!.remoteCwd as string } });
-      expect(prepared.remoteRoot).toBe(path.join(allocationRoot, ".paperclip-workspaces", nextWorkspace.id));
+      const expectedRemoteRoot = kind === "same" ? first.remoteRoot : path.join(allocationRoot, ".paperclip-workspaces",
+        `${nextWorkspace.id}-${readRemoteWorkspaceAuthority(nextWorkspace.metadata)!.epoch}-${nextLease.id}`);
+      expect(prepared.remoteRoot).toBe(expectedRemoteRoot);
       if (kind === "same") expect(await readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("prior task work\n");
       else expect(prepared.remoteRoot).not.toBe(first.remoteRoot);
       await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: nextRun.id, lease: prepared.lease,
@@ -1606,6 +2562,66 @@ describe("automatic retained workspace recovery", () => {
       if (mode === "native_snapshot") expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceSync)
         .toMatchObject({ state: "prepared", finalHostSha256: null });
     }
+  }, 30_000);
+
+  it.each(["stopped", "unverified_stop"])("retries a recovered snapshot with sibling holds once: %s", async state => {
+    const f = await seed("native", false);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+      baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: f.issueId,
+      leaseId: f.lease.id, providerLeaseId: f.providerLeaseId, remoteCwd: f.remote, resourceDisposition: "keep_running",
+    } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "board", outcome: "blocked",
+      cause: "provider_failure_meaning_unverified", fingerprint: randomUUID(), nextAction: "Inspect original failure",
+      evidence: { runId: f.runId, automaticRecovery: { replay: "blocked" } } });
+    const source = await run(f.runId);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    await recoverRetainedWorkspace(f.input);
+    const recovered = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(recovered.state).toBe("complete");
+    expect(recovered.intentId).toBeNull();
+    if (state === "unverified_stop") await db.update(environmentLeases).set({ metadata: f.lease.metadata })
+      .where(eq(environmentLeases.id, f.lease.id));
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+      actorId: "board", actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    const service = heartbeatService(db);
+    await Promise.all([service.resumeTaskRetry(f.companyId, receipt.requestId!), service.resumeTaskRetry(f.companyId, receipt.requestId!)]);
+    const turns = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    if (state === "unverified_stop") {
+      expect(turns).toHaveLength(0);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(wake.payload?.executionWait).toMatchObject({ reason: "remote_cleanup" });
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+        retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } });
+      const commentId = randomUUID(), messageWakeId = randomUUID();
+      await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "board", body: "Keep my saved message while the previous environment stops." });
+      await db.insert(agentWakeupRequests).values({ id: messageWakeId, companyId: f.companyId, agentId: wake.agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", requestedAt: new Date(wake.requestedAt.getTime() + 1),
+        payload: { issueId: f.issueId, commentId } });
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ intentId: messageWakeId,
+        retryWait: { reason: "remote_cleanup" } });
+      await db.update(agentWakeupRequests).set({ status: "coalesced" }).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const newInput = await taskInterruptionPresentation(db, task);
+      expect(newInput).toMatchObject({ state: "working", intentId: messageWakeId });
+      expect(newInput).not.toHaveProperty("retryWait");
+      return;
+    }
+    expect(turns).toHaveLength(1);
+    expect(turns[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
+    expect(await readFreshWorkspaceReadiness(db, turns[0])).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    const fresh = path.join(root, randomUUID()); await mkdir(fresh);
+    const attached = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [turns[0].id], cwd: fresh });
+    expect(await readFile(path.join(attached[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    const final = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(final).toMatchObject({ generationId: recovered.generationId, attempts: recovered.attempts,
+      retriesUsed: recovered.retriesUsed, preservationOperationIds: recovered.preservationOperationIds, intentId: receipt.requestId });
+    expect((await run(f.runId)).status).toBe("failed");
   }, 30_000);
 
   it.each(["copyback_unknown", "source_unavailable", "executor_unknown"])("ordinary task Retry evaluates fresh isolation independently: %s", async failure => {
@@ -1942,7 +2958,7 @@ describe("automatic retained workspace recovery", () => {
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, actor)).toBe(true);
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, { ...actor, requestedByActorId: "other-user" })).toBe(false);
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(scope, {
-        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id,
+        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id, activeExecutionRunStatus: queued.status,
         mergedContextSnapshot: mergeCoalescedContextSnapshot((await run(queued.id)).contextSnapshot, incoming,
           { preserveExistingInteractionContinuation: true }),
         source: "on_demand", triggerDetail: "manual",

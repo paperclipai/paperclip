@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  canStop?: boolean;
   phase:
     | "working"
     | "waiting_for_provider"
@@ -100,6 +101,9 @@ export interface ExecutionReconciliation {
  * and recovery records; ordinary product surfaces render this projection. */
 export interface TaskInterruptionPresentation {
   providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
+  workspaceFailure?: { message: string };
+  /** A persisted Retry admission wait, normalized to public text by the server. */
+  retryWait?: { reason: string; message: string };
   intentId: string | null;
   responsibility: "system" | "user";
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";

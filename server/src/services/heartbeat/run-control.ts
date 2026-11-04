@@ -12,6 +12,8 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProc
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
+import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
+import { publishLiveEvent } from "../live-events.js";
 import { DEFERRED_WAKE_CONTEXT_KEY } from "./queue.js";
 import { CANCELLABLE_HEARTBEAT_RUN_STATUSES } from "./recovery.js";
 import {
@@ -37,6 +39,7 @@ import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isAcknowledgedNativeStop,
+  acknowledgedNativeApiStopExecutionHasStopped,
   acknowledgedNativeStopExecutionHasStopped,
 } from "../acknowledged-native-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../../vendor/paperclip-runner/index.js";
@@ -50,7 +53,8 @@ import {
   isUserCommentContinuationReason,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
-import { isCancelledNativeStartup } from "../cancelled-native-startup.js";
+import { isCancelledNativeStartup, isInterruptedNativePreparation } from "../cancelled-native-startup.js";
+import { settleInterruptedNativeBootstrap } from "../legacy-execution-recovery.js";
 import {
   executionBlockerPredicate,
   getExecutionBlocker,
@@ -123,7 +127,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
@@ -190,6 +194,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   startNextQueuedRunForAgent: ReturnType<typeof createHeartbeatQueue>["startNextQueuedRunForAgent"];
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   timerClaimWasFirstHeartbeat: ReturnType<typeof createHeartbeatRetries>["timerClaimWasFirstHeartbeat"];
+  scheduleBoundedRetry: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetry"];
   wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "releaseIssueExecution">;
   applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
@@ -506,39 +511,82 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
       }
     }
-    const stopped = state?.status === "cancelled" ? await getRun(runId) : null;
-    // Native interrupt acknowledgement is not physical containment. Publish the
-    // shared Stop receipt only after every exact remote lease confirms teardown.
-    // Keep workspace preservation separate: a stopped provider can still owe files.
-    if (stopped?.status === "cancelled" &&
-        parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
-        (stopped.runtimeMode === "native" ? isAcknowledgedNativeStop(stopped)
-          : stopped.runtimeMode === "legacy" && await runUsedConversationAdapter(db, stopped)) &&
-        await remoteExecutionHasStopped(db, companyId, runId)) {
-      await db.update(heartbeatRuns).set({
-        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-          executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
-            state: "acknowledged", acknowledgedAt: new Date().toISOString(),
-            proof: "provider_termination_receipt" },
-          ...(stopped.runtimeMode === "legacy" ? { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } : {}),
-                 })}::jsonb`,
-        updatedAt: new Date(),
-      }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.status, "cancelled"),
-        sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
-        stopped.runtimeMode === "native" ? sql`${heartbeatRuns.resultJson}->'nativeCancellation' = ${JSON.stringify(stopped.resultJson?.nativeCancellation)}::jsonb` : undefined));
+    // Finalization can append a harmless event after proof was read. Retry
+    // only a lost API compare-and-set, with fresh complete proof each time.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stopped = state?.status === "cancelled" ? await getRun(runId) : null;
+      // Native interrupt acknowledgement is not physical containment. Require
+      // exact remote lease teardown, or the API provider's terminal receipt and
+      // the local controller's retirement, before publishing shared Stop proof.
+      // Keep workspace preservation separate: a stopped provider can still owe files.
+      if (stopped?.status === "cancelled" && stopped.companyId === companyId &&
+          parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
+          (stopped.runtimeMode === "native" ? isAcknowledgedNativeStop(stopped)
+            : stopped.runtimeMode === "legacy" && await runUsedConversationAdapter(db, stopped))) {
+        const apiStopped = stopped.runtimeMode === "native" && await acknowledgedNativeApiStopExecutionHasStopped(db, stopped);
+        if (!apiStopped && !await remoteExecutionHasStopped(db, companyId, runId)) return;
+        const acknowledged = await db.update(heartbeatRuns).set({
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
+              state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+              proof: apiStopped ? "provider_api_stop_receipt" : "provider_termination_receipt" },
+            ...(stopped.runtimeMode === "legacy" ? { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } : {}),
+                   })}::jsonb`,
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+          apiStopped ? and(eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.driverKind, "cursor_cloud_api"),
+            eq(heartbeatRuns.nextEventSeq, stopped.nextEventSeq),
+            eq(heartbeatRuns.agentId, stopped.agentId), eq(heartbeatRuns.nativeIssueId, stopped.nativeIssueId!),
+            isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId),
+            eq(heartbeatRuns.nativeSessionId, stopped.nativeSessionId!), eq(heartbeatRuns.runnerInstanceId, stopped.runnerInstanceId!),
+            sql`${heartbeatRuns.runnerProfileJson}->'executionPlacement' = ${JSON.stringify({ kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" })}::jsonb`,
+            sql`${heartbeatRuns.runnerProfileJson}->>'backend' = 'cursor_cloud_api'`,
+            sql`jsonb_build_object(
+              'companyId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'companyId',
+              'runId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'runId',
+              'agentId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'agentId',
+              'issueId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'issueId'
+            ) = ${JSON.stringify({ companyId, runId, agentId: stopped.agentId, issueId: stopped.nativeIssueId })}::jsonb`,
+            sql`jsonb_build_object(
+              'normalizedSessionId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'session'->'normalizedSessionId',
+              'driverKind', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'session'->'driverKind'
+            ) = ${JSON.stringify({ normalizedSessionId: stopped.nativeSessionId, driverKind: "cursor_cloud_api" })}::jsonb`,
+            sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->>'kind' = 'cursor_cloud'`,
+            sql`not exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
+              and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`) : undefined,
+          stopped.runtimeMode === "native" ? sql`${heartbeatRuns.resultJson}->'nativeCancellation' = ${JSON.stringify(stopped.resultJson?.nativeCancellation)}::jsonb` : undefined)).returning({ id: heartbeatRuns.id });
+        if (acknowledged.length > 0) {
+          publishLiveEvent({
+            companyId: stopped.companyId,
+            type: "heartbeat.run.status",
+            payload: buildHeartbeatRunStatusLiveEventPayload(stopped),
+          });
+        }
+        if (!apiStopped || acknowledged.length > 0) return;
+      } else return;
     }
   }
 
   async function resumeRemoteStopComments(run: NonNullable<Awaited<ReturnType<typeof getRunExecutionWait>>>, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
+    let interruptedPreparation = false;
+    if (run.status === "interrupted" && run.runtimeMode === "legacy" &&
+        !run.runtimeModeResolvedAt && run.executionStage === "preparing") {
+      const current = await getRun(run.id, { includeExecutionEvidence: true });
+      if (current && await isInterruptedNativePreparation(db, current)) {
+        const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false });
+        if (settled) { run = settled; interruptedPreparation = true; }
+      }
+    }
     const [preparationCoordinator] = run.runtimeMode === "legacy" && run.status === "cancelled" && !run.runtimeModeResolvedAt
       ? await db.select().from(nativeRunFinalizations).where(and(
           eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
         )) : [];
     const cancelledPreparation = run.runtimeMode === "legacy" &&
       await isCancelledNativeStartup(db, run, preparationCoordinator);
-    if (run.runtimeMode !== "native" && !cancelledPreparation &&
+    if (run.runtimeMode !== "native" && !cancelledPreparation && !interruptedPreparation &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
         !(await remoteExecutionHasStopped(db, run.companyId, run.id)) &&
         !(await recordedLocalExecutionStopped(db, run))) return;
@@ -568,6 +616,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       requestId ? eq(agentWakeupRequests.id, requestId) : undefined,
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    if (interruptedPreparation && !pending.length && !requestId && !(await getSchedulingSuppression()).suppressed) {
+      const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues).where(and(
+        eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+      ));
+      if (task?.assigneeAgentId === run.agentId && ["todo", "in_progress", "in_review"].includes(task.status)) {
+        await dependencies.scheduleBoundedRetry(run.id);
+      }
+    }
     for (const wake of pending) {
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) {
         await resumeDeferredChatWake(db, { companyId: run.companyId, agentId: run.agentId,
@@ -1258,7 +1314,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const pendingNativeRetry =
       run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+          .select(nativeManualAdmissionOwnerColumns)
           .from(nativeRunFinalizations)
           .where(
             and(

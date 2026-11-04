@@ -15,6 +15,7 @@ import type {
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
   HarnessGoalOperation,
+  HarnessSessionRecoveryResult,
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
@@ -82,6 +83,7 @@ export interface NativeSessionRecoveryResult {
   recovered: boolean;
   session?: NativeSession;
   reason?: string;
+  failureClass?: HarnessSessionRecoveryResult["failureClass"];
 }
 
 /** Runner-owned cause: the process was restored, but its active turn was lost. */
@@ -118,6 +120,7 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
  */
 export interface NativeSessionCancellation {
   cleanup: Promise<void>;
+  terminalDrainTimeoutMs?: number;
 }
 
 export interface NativeSessionSnapshotOptions {
@@ -275,6 +278,17 @@ export interface NativeSessionBackend {
     snapshot: PersistedNativeSession,
     options: NativeSessionRecoveryOptions,
   ): Promise<NativeSessionRecoveryResult>;
+}
+
+/** Same-session recovery is forbidden here, and the runner proved that the
+ * saved provider session cannot be restored by its build. Retrying the same
+ * run cannot succeed. */
+export class NativeProviderStateIncompatibleError extends Error {
+  readonly code = "native_provider_state_incompatible";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderStateIncompatibleError";
+  }
 }
 
 /** A provider failed terminal is not a missing completion proposal. */

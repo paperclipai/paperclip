@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatConversations, chatEndpoints, companies, createDb, type Db, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
+import { HttpError } from "../errors.js";
+import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { heartbeatService } from "./heartbeat.js";
 import { taskChatRetryCanAwaitRecovery, taskChatRetryExecutionStopped } from "./chat-channels/task-retry-authority.js";
+import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { buildExecutionContinuation } from "./execution-continuation.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -35,6 +39,49 @@ describe("durable task Retry admission", () => {
       contextSnapshot: { issueId }, finishedAt: new Date() });
     return { db, companyId, issueId, actorId: "board", observedRunId: runId, idempotencyKey: randomUUID() };
   }
+  it.each(["valid", "wrong_run", "wrong_actor", "wrong_source", "wrong_generation", "unadmitted", "missing_authorization"])(
+    "dispatches a preparation Retry with no recovery-action row only from its exact admitted receipt: %s", async state => {
+      const input = await seed();
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, input.issueId));
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed",
+        executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+      const receipt = await requestTaskRetry(input), successorRunId = randomUUID();
+      const continuation = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, input.issueId)).for("update");
+        const result = await admitExplicitNativeContinuation({ db: tx as unknown as Db,
+          companyId: input.companyId, issueId: input.issueId, agentId: source.agentId,
+          actorId: input.actorId, actorType: "user", reason: "task_retry", commentId: null,
+          successorRunId, taskRetryRequestId: receipt.requestId!,
+        });
+        await tx.insert(heartbeatRuns).values({ id: successorRunId, companyId: input.companyId, agentId: source.agentId,
+          issueId: input.issueId, status: "queued", contextSnapshot: { issueId: input.issueId } });
+        await tx.update(agentWakeupRequests).set({ status: "coalesced", runId: successorRunId })
+          .where(eq(agentWakeupRequests.id, receipt.requestId!));
+        return result;
+      });
+      expect(continuation).toMatchObject({ previousRunId: source.id, taskRetryRequestId: receipt.requestId });
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, input.issueId))).toHaveLength(0);
+      const [admitted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const taskRetry = admitted.payload!.taskRetry as Record<string, unknown>;
+      if (state !== "valid") await db.update(agentWakeupRequests).set({
+        ...(state === "wrong_run" ? { runId: source.id } : {}),
+        ...(state === "wrong_actor" ? { requestedByActorId: "other-user" } : {}),
+        ...(state === "unadmitted" ? { status: "deferred_issue_execution" } : {}),
+        ...(state === "wrong_source" ? { payload: { ...admitted.payload, taskRetry: { ...taskRetry, sourceRunId: randomUUID() } } } : {}),
+        ...(state === "wrong_generation" ? { payload: { ...admitted.payload, taskRetry: { ...taskRetry, generationId: randomUUID() } } } : {}),
+        ...(state === "missing_authorization" ? { payload: { ...admitted.payload,
+          taskRetry: Object.fromEntries(Object.entries(taskRetry).filter(([key]) => key !== "continuation")) } } : {}),
+      }).where(eq(agentWakeupRequests.id, admitted.id));
+      const result = buildExecutionContinuation({ db, companyId: input.companyId, issueId: input.issueId,
+        agentId: source.agentId, runId: successorRunId,
+        context: { issueId: input.issueId, explicitUserContinuation: continuation }, summary: null, exposeLowTrustRaw: false });
+      if (state === "valid") await expect(result).resolves.toMatchObject({ interruptedRunId: source.id });
+      else await expect(result).rejects.toThrow("continuation_user_authorization_missing");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0])
+        .toMatchObject({ status: "failed", resultJson: source.resultJson });
+    });
   it("serializes concurrent clicks and remembers each key after completion", async () => {
     const input = await seed();
     const second = { ...input, idempotencyKey: randomUUID() };
@@ -57,6 +104,90 @@ describe("durable task Retry admission", () => {
     expect(await requestTaskRetry(input)).toMatchObject({ accepted: false, stale: true });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
   });
+  it.each(["stopped", "running", "owned", "changed_workspace", "changed_source", "missing_stop", "destroyed", "foreign_task"].flatMap(state =>
+    ["retry", "message"].map(entry => ({ state, entry }))).concat([{ state: "stopped", entry: "preview" }]))(
+    "preserves the actual remote writer behind a newer setup failure only with exact stopped authority: $entry $state", async ({ state, entry }) => {
+      const input = await seed();
+      const [latest] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+      const writerId = randomUUID(), workspaceId = randomUUID(), pluginId = randomUUID();
+      const sourceIssueId = state === "foreign_task" ? randomUUID() : input.issueId;
+      if (sourceIssueId !== input.issueId) await db.insert(issues).values({ id: sourceIssueId,
+        companyId: input.companyId, title: "Another task", status: "blocked", assigneeAgentId: latest.agentId });
+      await db.update(heartbeatRuns).set({ errorCode: "setup_failed", resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      } }).where(eq(heartbeatRuns.id, latest.id));
+      await db.insert(heartbeatRuns).values({ id: writerId, companyId: input.companyId, agentId: latest.agentId,
+        issueId: sourceIssueId, nativeIssueId: sourceIssueId, runtimeMode: "native",
+        status: state === "running" ? "running" : "failed", finishedAt: state === "running" ? null : new Date(),
+        createdAt: new Date(latest.createdAt.getTime() - 60_000),
+        contextSnapshot: { issueId: sourceIssueId, executionWorkspaceId: workspaceId },
+        resultJson: { workspaceRestoreFailure: "restore_failed", originalDiagnostic: true },
+      });
+      await db.insert(nativeRunFinalizations).values({ companyId: input.companyId, issueId: sourceIssueId,
+        runId: writerId, phase: "terminal_failure", leaseOwner: state === "owned" ? "live-controller" : null });
+      const [environment] = await db.insert(environments).values({ name: `Stopped source ${writerId}`, driver: "sandbox" }).returning();
+      const [lease] = await db.insert(environmentLeases).values({ companyId: input.companyId, issueId: sourceIssueId,
+        heartbeatRunId: writerId, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
+        status: "released", cleanupStatus: "success", leasePolicy: "reuse_by_environment", acquiredAt: new Date(Date.now() - 60_000),
+        releasedAt: new Date(),
+      }).returning();
+      const confirmedAt = lease.releasedAt!.toISOString();
+      const identity = { companyId: input.companyId, runId: writerId, leaseId: lease.id,
+        provider: lease.provider, providerLeaseId: lease.providerLeaseId, confirmedAt };
+      const metadata = { driver: "sandbox", pluginId, sandboxProviderPlugin: true, remoteCwd: "/work",
+        ...(state === "missing_stop" ? {} : {
+          remoteExecutionTermination: { ...identity, schema: "paperclip.remote-termination.v1", state: state === "destroyed" ? "destroyed" : "stopped" },
+          sandboxStopAndRetainReceipt: { ...identity, schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
+            pluginId, method: "environmentStopLease", requestId: randomUUID() },
+        }),
+      };
+      await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, lease.id));
+      const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, epoch: 3,
+        snapshotId: randomUUID(), leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work", state: "prepared" };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: {
+        ...reference, ...(state === "changed_source" ? { providerLeaseId: randomUUID() } : {}),
+      } } }).where(eq(heartbeatRuns.id, writerId));
+      const authority = { schema: "paperclip.remote-workspace.v1", epoch: state === "changed_workspace" ? 4 : 3,
+        snapshotId: reference.snapshotId, source: { kind: "empty" }, writerRunId: writerId, dirty: true,
+        location: { environmentId: environment.id, leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work" } };
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: input.companyId, sourceIssueId,
+        name: "Unfinished remote writer", mode: "isolated_workspace", strategyType: "project_primary", cwd: "/work",
+        providerType: "cloud_sandbox", metadata: { remoteWorkspace: authority } });
+      await db.update(environmentLeases).set({ executionWorkspaceId: workspaceId }).where(eq(environmentLeases.id, lease.id));
+      await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, input.issueId));
+
+      if (entry === "retry") {
+        const receipt = await requestTaskRetry(input);
+        expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
+      } else {
+        const [comment] = await db.insert(issueComments).values({ companyId: input.companyId, issueId: input.issueId,
+          authorType: "user", authorUserId: input.actorId, body: "Continue from saved work.",
+          createdAt: new Date() }).returning();
+        for (let attempt = 0; attempt < 2; attempt++) await db.transaction(tx => admitExplicitNativeContinuation({
+          db: tx as unknown as typeof db, companyId: input.companyId, issueId: input.issueId, agentId: latest.agentId,
+          actorType: "user", actorId: input.actorId, commentId: comment.id, successorRunId: randomUUID(),
+          reason: "issue_commented", dryRun: entry === "preview",
+        }));
+      }
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, writerId));
+      const repairs = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, input.issueId)))
+        .filter(action => action.evidence.workspaceRestoreRecovery);
+      if (state === "stopped" && entry !== "preview") {
+        expect(source.resultJson).toMatchObject({ originalDiagnostic: true,
+          workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+        expect(repairs).toHaveLength(1);
+        expect(repairs[0].evidence.runId).toBe(writerId);
+      } else {
+        expect(source.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+        expect(repairs).toHaveLength(0);
+      }
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0])
+        .toMatchObject({ status: "released", leasePolicy: "reuse_by_environment", metadata });
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0].metadata?.remoteWorkspace)
+        .toEqual(authority);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, input.companyId))).toHaveLength(2);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(entry === "retry" ? 1 : 0);
+    });
   it.each(["prepared", "mismatched", "owned"] as const)("reconstructs missing native preservation on deliberate Retry only for an exact unowned source: %s", async state => {
     const input = await seed();
     const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
@@ -356,4 +487,73 @@ describe("durable task Retry admission", () => {
       .toMatchObject({ status: "skipped", error: "task_retry_superseded" });
   });
 
+  async function seedChatTask() {
+    const input = await seed();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    const [application] = await db.insert(toolApplications).values({ companyId: input.companyId, name: "Slack", type: "chat" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: input.companyId, applicationId: application.id,
+      name: "Slack", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({ companyId: input.companyId, connectionId: connection.id,
+      provider: "slack", publicId: randomUUID(), assignedAgentId: issue.assigneeAgentId!, status: "active" }).returning();
+    await db.insert(chatConversations).values({ companyId: input.companyId, endpointId: endpoint.id, issueId: input.issueId,
+      externalConversationId: "channel", externalThreadId: randomUUID(), externalLabel: "#retry", state: "waiting" });
+    return input;
+  }
+  const chatIdentityLock = (companyId: string, principalId: string) =>
+    sql`pg_try_advisory_xact_lock(hashtextextended(${`chat-identity:${companyId}:${principalId}`}, 0))`;
+
+  it("waits out brief chat authorization contention without a second request", async () => {
+    const input = await seedChatTask();
+    const principalId = randomUUID(), actionId = randomUUID();
+    let calls = 0, locked!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { locked = resolve; });
+    const mayRelease = new Promise<void>(resolve => { release = resolve; });
+    // Another chat transaction owns this principal's authorization lock.
+    const holder = db.transaction(async tx => {
+      expect((await tx.execute<{ locked: boolean }>(sql`select ${chatIdentityLock(input.companyId, principalId)} as locked`))[0].locked).toBe(true);
+      locked(); await mayRelease;
+    });
+    await held;
+    const prepareChatRetry = async (tx: Db) => {
+      calls += 1;
+      if (calls === 2) release();
+      // Mirror the production authorization check, including its rollback.
+      const [row] = await tx.execute<{ locked: boolean }>(sql`select ${chatIdentityLock(input.companyId, principalId)} as locked`);
+      if (!row?.locked) throw new NativeChatReviewPresentationContentionError();
+      return { actionId };
+    };
+    try {
+      const receipt = await requestTaskRetry({ ...input, prepareChatRetry });
+      expect(receipt).toMatchObject({ accepted: true, chatActionId: actionId });
+      expect(calls).toBeGreaterThan(1);
+      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: receipt.requestId, status: "deferred_issue_execution",
+        payload: { taskRetry: { chatActionId: actionId } } });
+      expect((await requestTaskRetry({ ...input, prepareChatRetry })).requestId).toBe(receipt.requestId);
+    } finally { release(); await holder; }
+  });
+
+  it("returns a retryable conflict when chat authorization stays busy", async () => {
+    const input = await seedChatTask();
+    let calls = 0;
+    const failure = await requestTaskRetry({ ...input, prepareChatRetry: async () => {
+      calls += 1;
+      throw new NativeChatReviewPresentationContentionError();
+    } }).catch(error => error);
+    expect(failure).toBeInstanceOf(HttpError);
+    expect(failure).toMatchObject({ status: 409, details: { code: "task_retry_busy", retryable: true } });
+    expect(calls).toBe(10);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+  });
+
+  it("does not retry an authorization denial", async () => {
+    const input = await seedChatTask();
+    let calls = 0;
+    await expect(requestTaskRetry({ ...input, prepareChatRetry: async () => {
+      calls += 1;
+      throw new HttpError(403, "denied");
+    } })).rejects.toMatchObject({ status: 403 });
+    expect(calls).toBe(1);
+  });
 });
