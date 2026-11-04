@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { chatEndpoints, chatSlackRegistrations, toolConnections, type Db } from "@paperclipai/db";
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
@@ -52,31 +52,43 @@ export async function stageSlackCloudEnrollmentIntent(db: Db, endpointId: string
 }
 
 export async function reconcilePendingSlackCloudEnrollments(db: Db, now: Date): Promise<number | null> {
-  if (!paperclipCloudConnectorConfigFromEnv()) return null;
-  const scheduled = and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudIntent'->>'nextAttemptAt' is not null`);
-  const order = sql`${chatEndpoints.setup}->'slackCloudIntent'->>'nextAttemptAt'`;
+  const config = paperclipCloudConnectorConfigFromEnv();
+  if (!config) return null;
+  const recoverable = and(
+    sql`${chatEndpoints.setup}->'slackCloudIntent'->>'nextAttemptAt' is null`,
+    sql`${chatEndpoints.setup}->'slackCloudIntent'->>'failureCode' = 'connector_configuration_unavailable'`,
+    sql`${chatEndpoints.setup}->'slackCloudIntent'->>'instanceId' = ${config.instanceId}`,
+  );
+  const scheduled = and(eq(chatEndpoints.provider, "slack"), or(
+    sql`${chatEndpoints.setup}->'slackCloudIntent'->>'nextAttemptAt' is not null`, recoverable));
+  const order = sql`coalesce(${chatEndpoints.setup}->'slackCloudIntent'->>'nextAttemptAt', '')`;
   const pending = await db.select().from(chatEndpoints).where(scheduled).orderBy(order).limit(1);
   const owner = owners.get(db);
+  const deadline = (intent: Intent | undefined) => {
+    if (!intent) return Number.POSITIVE_INFINITY;
+    if (intent.nextAttemptAt === null) return intent.failureCode === "connector_configuration_unavailable" && intent.instanceId === config.instanceId
+      ? now.getTime() : Number.POSITIVE_INFINITY;
+    const parsed = Date.parse(intent.nextAttemptAt);
+    return Number.isFinite(parsed) ? parsed : now.getTime();
+  };
   let next = Number.POSITIVE_INFINITY;
   for (const endpoint of pending) {
     const intent = (endpoint.setup as InternalSetupState).slackCloudIntent!;
-    if (intent.nextAttemptAt === null) continue;
-    let due = Date.parse(intent.nextAttemptAt);
-    if (!Number.isFinite(due)) due = now.getTime();
+    let due = deadline(intent);
+    if (!Number.isFinite(due)) continue;
     if (due <= now.getTime()) {
       if (owner) await owner(endpoint.id);
       else logger.warn({ endpointId: endpoint.id, reason: "slack_enrollment_owner_not_ready" }, "Slack enrollment responsibility retained");
       const [updated] = await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)).limit(1);
       const retained = (updated?.setup as InternalSetupState | undefined)?.slackCloudIntent;
-      due = retained?.nextAttemptAt ? Date.parse(retained.nextAttemptAt) : Number.POSITIVE_INFINITY;
+      due = deadline(retained);
       if (!owner) due = now.getTime() + 5_000;
     }
     next = Math.min(next, due);
   }
   if (pending.length > 0) {
     const [earliest] = await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(scheduled).orderBy(order).limit(1);
-    const due = (earliest?.setup as InternalSetupState | undefined)?.slackCloudIntent?.nextAttemptAt;
-    if (due) next = Math.min(next, Number.isFinite(Date.parse(due)) ? Date.parse(due) : now.getTime());
+    next = Math.min(next, deadline((earliest?.setup as InternalSetupState | undefined)?.slackCloudIntent));
   }
   return Number.isFinite(next) ? next : null;
 }
