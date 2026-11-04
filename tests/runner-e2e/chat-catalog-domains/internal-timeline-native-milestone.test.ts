@@ -358,3 +358,14 @@ it.each([
   const o = fixture(); o.reply = "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. " + repair + " The check passed.";
   expect(gradeWorkTimeline(o).passed).toBe(expected);
 });
+
+it.each([
+  { handoff: "Riley took over a different task.", repair: "Riley repaired the label and the check passed.", expected: false },
+  { handoff: "Riley took the same task,", repair: "added the label, but the check did not pass.", expected: false },
+  { handoff: "You reassigned the task to Riley by updating the assignee.", repair: "Riley repaired the label and the check passed.", expected: true },
+  { handoff: "You reassigned the task to Riley.", repair: "Riley fixed the label and the check passed with exit 0, unlike the earlier exit 1.", expected: true },
+])("respects reviewed object, assertion, method and result boundaries: $handoff $repair", ({ handoff, repair, expected }) => {
+  const o = fixture();
+  o.reply = `Morgan's verification failed and work paused. ${handoff} ${repair}`;
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
