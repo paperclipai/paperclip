@@ -1445,7 +1445,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     ]);
   });
 
-  it("does not let another user take over an archived personal URL connection", async () => {
+  it("creates a separate fresh personal URL connection and keeps explicit reconnect owner-bound", async () => {
     const fixture = installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -1456,18 +1456,36 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await db.insert(companyMemberships).values({
       companyId: company.id, principalType: "user", principalId: "other-user", status: "active", membershipRole: "admin",
     });
+    const archivedConnection = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    const archivedApplication = await db.select().from(toolApplications).where(eq(toolApplications.id, first.application.id));
     fixture.fetchMock.mockClear();
 
-    await expect(service.connectGalleryApp(company.id, input, {
-      actorType: "user", actorId: "other-user",
-    })).rejects.toMatchObject({ status: 403, message: "Only the existing personal identity can reconnect this connection" });
+    for (const target of [{ reconnectConnectionId: first.connectionId }, { applicationId: first.application.id }]) {
+      await expect(service.connectGalleryApp(company.id, { ...input, ...target }, {
+        actorType: "user", actorId: "other-user",
+      })).rejects.toMatchObject({ status: 403, message: "Only the existing personal identity can reconnect this connection" });
+    }
 
     expect(fixture.fetchMock).not.toHaveBeenCalled();
+    const fresh = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "other-user" });
+    expect(fresh.connectionId).not.toBe(first.connectionId);
+    expect(fresh.application.id).not.toBe(first.application.id);
+    expect(fresh.auth).toMatchObject({ kind: "oauth" });
+    await expect(service.getConnection(fresh.connectionId)).resolves.toMatchObject({
+      createdByUserId: "other-user", credentialPolicy: "per_user", credentialSecretRefs: [],
+    });
+    await expect(db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId)))
+      .resolves.toEqual(archivedConnection);
+    await expect(db.select().from(toolApplications).where(eq(toolApplications.id, first.application.id)))
+      .resolves.toEqual(archivedApplication);
+    // OAuth grants are created only after authorization; discovery is not a grant.
     await expect(db.select().from(connectionGrants)).resolves.toHaveLength(0);
     await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({
       status: "archived", createdByUserId: "board-user",
     });
-    const resumed = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "board-user" });
+    const resumed = await service.connectGalleryApp(company.id, {
+      ...input, reconnectConnectionId: first.connectionId,
+    }, { actorType: "user", actorId: "board-user" });
     expect(resumed.connectionId).toBe(first.connectionId);
     expect(resumed.auth).toMatchObject({ kind: "oauth" });
   });
@@ -1544,7 +1562,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
     });
     const failure = service.connectGalleryApp(company.id, {
-      link: MCP_URL, name: "Personal retry rollback", grantKind: "user",
+      link: MCP_URL, name: "Personal retry rollback", grantKind: "user", reconnectConnectionId: first.connectionId,
     }, actor).then(() => null, (error: unknown) => error);
     await Promise.race([catalogPending, failure.then((error) => { throw error ?? new Error("Retry finished before the catalog probe"); })]);
     try {
@@ -1587,7 +1605,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       FOR EACH ROW EXECUTE FUNCTION test_personal_profile_failure()
     `);
     try {
-      await expect(service.connectGalleryApp(company.id, input, actor)).rejects.toThrow();
+      await expect(service.connectGalleryApp(company.id, {
+        ...input, reconnectConnectionId: first.connectionId,
+      }, actor)).rejects.toThrow();
       await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, first.connectionId)))
         .resolves.toEqual(catalogBefore);
       await expect(db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).resolves.toHaveLength(0);
