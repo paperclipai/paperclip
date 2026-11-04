@@ -45,6 +45,19 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyContinuationFailure(run as never).kind).toBe("default");
   });
 
+  it("does not read the year of an ISO reset time as a clock hour", () => {
+    const now = new Date("2026-10-13T15:30:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "Session limit is spent (the session reset at 2026-10-13T04:00:00.000Z).",
+      resultJson: {},
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("uses a typed ACP quota reset without needing the provider's original message", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     expect(classifyAdapterFailureForRecovery({
