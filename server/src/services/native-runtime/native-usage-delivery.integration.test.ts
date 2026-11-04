@@ -359,6 +359,28 @@ describe("producer-owned native usage", () => {
     expect((await accountingIntegrityService(db).inspect(input.companyId)).findings.filter(finding => finding.entityId === input.runId)).toEqual([]);
   });
 
+  it("labels a rate-card late charge as an estimate when the original charge was reported", async () => {
+    const input = { ...await seed(), provider: { kind: "codex" as const, model: "gpt-6.1-sol" } };
+    const delivery = await createNativeUsageDelivery(db, input);
+    const report = (sequence: number, runDelta: Record<string, unknown>) => {
+      const reported = event(input, sequence, "usage.reported");
+      reported.payload = { runDeltaBasis: "run", runDeltaAvailable: true, runDelta };
+      return reported;
+    };
+    await delivery.capture(report(1, { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 0.5 }));
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    await delivery.capture(report(3, { inputTokens: 1000, outputTokens: 120000 }));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId));
+    const original = charges.find(charge => charge.outputTokens === 100000)!;
+    const late = charges.find(charge => charge.outputTokens === 20000)!;
+    expect(original.costStatus).not.toBe("estimated");
+    expect(late.costStatus).toBe("estimated");
+    expect(late.pricingProvenance).toMatchObject({ source: "rate_card" });
+  });
+
   it("keeps lower late usage as visible debt instead of guessing", async () => {
     const { input, source } = await finalizedSource();
     const continuation = await createNativeUsageContinuationDelivery(db, source);

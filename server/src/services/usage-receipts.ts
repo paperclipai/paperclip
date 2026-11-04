@@ -252,7 +252,7 @@ function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEn
     : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? acceptedUnits ?? 0n);
   if (units !== null && units < 0n) return null;
   const totalUnits = units === null ? acceptedUnits : (acceptedUnits ?? 0n) + units;
-  return { tokens, units, pricingProvenance: receipt.pricingProvenance, usage: {
+  return { tokens, units, pricingProvenance: receipt.pricingProvenance, costStatus: receipt.costStatus, usage: {
     inputTokens: accepted("inputTokens") + tokens.inputTokens,
     cachedInputTokens: accepted("cachedInputTokens") + tokens.cachedInputTokens,
     outputTokens: accepted("outputTokens") + tokens.outputTokens,
@@ -322,7 +322,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
       reconciled ? envelopeSchema.parse(reconciled.receiptJson).receipt : undefined) : null;
   if (growth && late) {
     const { event } = events[0];
-    const costStatus = growth.units === null && event.billingType !== "subscription_included" ? "unpriced" : event.costStatus;
+    const costStatus = growth.units === null && event.billingType !== "subscription_included" ? "unpriced" : growth.costStatus ?? event.costStatus;
     await createCostEventInTransaction(tx, run.companyId, {
       idempotencyKey: `${automaticCorrectionPrefix}${late.id}`, agentId: run.agentId, heartbeatRunId: run.id,
       issueId: event.issueId, projectId: event.projectId, goalId: event.goalId, billingCode: event.billingCode,
