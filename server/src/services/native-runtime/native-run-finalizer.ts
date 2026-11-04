@@ -26,6 +26,7 @@ import { hasPendingNativeChildCompletion } from "./native-child-completion-deliv
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -1655,12 +1656,20 @@ export async function finalizeNativeRun(input: {
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
-      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.error} end`;
-      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode} end`;
+      const nextError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.error}`;
+      const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
+      // A run projected to failed always records why, even when the provider
+      // reported a failed terminal without a classified failure.
+      const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
+      const explained = projectsFailedStatus
+        ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        : null;
+      const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+        else ${nextError} end`;
+      const projectedErrorCode = explained?.errorCode ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+        else ${nextErrorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
@@ -1685,7 +1694,7 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(clearExecutionFailure || providerFailure || projectsFailedStatus ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })

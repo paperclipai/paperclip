@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { AlertCircle } from "lucide-react";
 import { Button } from "./ui/button";
@@ -23,7 +24,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
     access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
-  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{describeError(error).body}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}

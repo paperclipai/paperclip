@@ -1134,10 +1134,11 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded`, the closed
-`codex`/`server_overloaded` diagnostic, and a committed finalization whose
-reason is `native_provider_overloaded`. The report also requires the
-`native_provider_overloaded` retry run that the same status transaction created.
+retry owns recovery. The run must carry `native_provider_overloaded` and the
+closed `codex`/`server_overloaded` diagnostic. The proof of the retry is the
+`native_provider_overloaded` successor run for the same task, which only the
+committed capacity status decision creates. The run's own finalization fields
+are not required: a late terminal write can replace them with an earlier result.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.
@@ -1637,6 +1638,20 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
 
 Native runner identity and harness failures retain their existing error prefixes.
 Their terminal messages now include a bounded guard reason, such as

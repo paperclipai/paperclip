@@ -1,3 +1,4 @@
+import { FILE_DROP_TARGET_ATTRIBUTE } from "../lib/file-drop-target";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   Component,
@@ -1384,6 +1385,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   return (
     <div
       ref={containerRef}
+      {...(canDropFile && !readOnly ? { [FILE_DROP_TARGET_ATTRIBUTE]: "" } : {})}
       className={cn(
         "relative paperclip-mdxeditor-scope",
         bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",

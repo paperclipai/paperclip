@@ -183,6 +183,12 @@ export async function readChatOutputDocument(
 export const isResetRun = (run: ChatRun) =>
   run.contextSnapshot?.conversationReset === true ||
   run.resultJson?.conversationReset === true;
+/** The source chat's automatic turn that reports one completed handoff. */
+export const isChatCompletionReply = (run: ChatRun, chatIssueId: string, taskId: string) =>
+  run.contextSnapshot?.issueId === chatIssueId &&
+  run.contextSnapshot?.wakeReason === "chat_task_completed" &&
+  Array.isArray(run.contextSnapshot?.chatCompletionUpdates) &&
+  (run.contextSnapshot.chatCompletionUpdates as Array<{ id?: unknown }>).some((update) => update?.id === taskId);
 export function chatRunFailure(
   runs: ChatRun[],
   allowCancelled = false,
@@ -944,7 +950,28 @@ export async function runChatFlow(input: ChatFlowInput) {
         accept: (state) => state.task.status === "done",
         reject: (state) => chatTaskCompletionFailure(state.task, state.runs),
       });
-      runs = await allRuns();
+      // A completed handoff returns to the source chat (#14408) as one
+      // correlated provider turn. Observe that delivery instead of racing it.
+      const completionReply = await pollUntil({
+        label: `completion of ${child.id} is reported in the chat`,
+        deadlineAt: Date.now() + 240_000,
+        intervalMs: 1000,
+        load: async () => {
+          const rows = await allRuns();
+          const reply = rows.filter((run) => isChatCompletionReply(run, issue!.id, child.id));
+          return { runs: rows, reply, comments: await comments() };
+        },
+        // A native reply comment is presented after its run succeeds, so wait
+        // for the comment too; a failed reply turn settles immediately.
+        accept: (state) => state.reply.length > 0 &&
+          state.reply.every((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) &&
+          (state.reply.some((run) => run.status !== "succeeded") ||
+            state.comments.some((c) => c.authorAgentId === f.agent.id && state.reply.some((run) => run.id === c.createdByRunId))),
+      });
+      expect(completionReply.reply.map((run) => run.status), "one completion reply turn").toEqual(["succeeded"]);
+      expect(completionReply.comments.filter((c) => c.authorAgentId === f.agent.id &&
+        c.createdByRunId === completionReply.reply[0]!.id), "completion reply posted in the chat").toHaveLength(1);
+      runs = completionReply.runs;
       input.observe(issue!, runs);
       const plan =
         caseId === "plan-handoff"

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
+import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
@@ -72,6 +73,33 @@ describe("governed retained-file recovery", () => {
     });
     expect(container.textContent).toContain("queued");
     expect(container.textContent).not.toContain("Saved files recovered");
+  });
+
+  it.each(["access", "source"])("retains loaded recovery controls through a transient %s refresh failure", async kind => {
+    await mount();
+    const key = kind === "access" ? queryKeys.access.currentBoardAccess
+      : queryKeys.issues.recoveryActions("issue-1", "action-1", "run-1");
+    await act(async () => {
+      await client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: async () => { throw new ApiError("Restarting", 503, { error: "tenant_app_unavailable" }); }, retry: false }).catch(() => {});
+    });
+    await settle();
+    expect(button("Recover saved files")).toBeDefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(api.recover).not.toHaveBeenCalled();
+  });
+
+  it.each(["access", "source"])("hides cached recovery controls after definitive %s denial", async kind => {
+    await mount();
+    const key = kind === "access" ? queryKeys.access.currentBoardAccess
+      : queryKeys.issues.recoveryActions("issue-1", "action-1", "run-1");
+    await act(async () => {
+      await client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: async () => { throw new ApiError("Forbidden", 403, null); }, retry: false }).catch(() => {});
+    });
+    await settle();
+    expect(button("Recover saved files")).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(api.recover).not.toHaveBeenCalled();
   });
 
   it("requests file preservation on plain HTTP without crypto.randomUUID", async () => {

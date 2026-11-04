@@ -190,6 +190,7 @@ import {
   gt,
   inArray,
   isNull,
+  isNotNull,
   like,
   notInArray,
   or,
@@ -280,6 +281,7 @@ import {
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  isCurrentNativeControllerProcess,
   nextNativeProviderAttempt,
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
@@ -303,6 +305,27 @@ export class NativeCancellationPendingRecoveryError extends Error {
   constructor() {
     super("native_cancellation_pending_recovery");
     this.name = "NativeCancellationPendingRecoveryError";
+  }
+}
+
+type NativePostResultFailureCategory = "io_not_found" | "io_permission_denied" | "io_failure" | "execution_failure";
+
+class NativePostResultFailureError extends Error {
+  readonly diagnostic: Readonly<{
+    stage: "post_result_execution";
+    category: NativePostResultFailureCategory;
+    resultAlreadyAccepted: true;
+  }>;
+
+  constructor(error: unknown) {
+    // Keep the existing control classification. These labels explain why its
+    // failure write was rejected; they grant no finalization or retry authority.
+    super("native_session_lease_lost");
+    const code = record(error).code;
+    const category: NativePostResultFailureCategory = code === "ENOENT" ? "io_not_found"
+      : code === "EACCES" || code === "EPERM" ? "io_permission_denied"
+      : code === "EIO" ? "io_failure" : "execution_failure";
+    this.diagnostic = Object.freeze({ stage: "post_result_execution", category, resultAlreadyAccepted: true });
   }
 }
 
@@ -5249,11 +5272,14 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   }
   // A durable controller is fenced by its released database lease; a legacy
   // controller still needs process evidence, exactly as for warm recovery.
+  const finishedHere = () => isCurrentNativeControllerProcess(prior!.owner) &&
+    !activeNativeSessions.has(identity.runId) && !nativeSessionStartups.has(identity.runId);
   const profile = record(prior.run.runnerProfileJson);
-  const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(),
-    requireStoppedController: true,
+  const stopped = finishedHere() ? { allowed: true } : await evaluateNativeControllerTakeover({ owner: prior.owner,
+    now: new Date(), requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return false;
+  const provenFinishedHere = finishedHere();
   // Earlier rejected admissions can quarantine the same projection. Each copy
   // must pass the same proof: a rebuilt root never carries the local Runner
   // evidence that held an earlier attempt, so that evidence stays decisive.
@@ -5266,7 +5292,8 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     }
   }
   // Database reads can await. Retire only the exact evidence proven above.
-  if (readSettledRunnerdProjection(input.root, identity) !== controlBytes) return false;
+  if (readSettledRunnerdProjection(input.root, identity) !== controlBytes ||
+      (provenFinishedHere && !finishedHere())) return false;
   const archivedAt = Date.now();
   const archiveRoot = resolve(input.root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
   mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
@@ -10733,7 +10760,39 @@ async function executePaperclipNativeSessionWithinScope(
           )
           .returning({ runId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId })
           .then((rows) => rows[0] ?? null);
-        if (!updated) throw new Error("native_session_lease_lost");
+        if (!updated) {
+          // Result acceptance intentionally prevents the failure transition.
+          // Diagnose that case only under the same still-current authority;
+          // stale or expired owners must retain the ordinary fencing error.
+          const [acceptedUnderCurrentAuthority] = await tx
+            .select({ runId: nativeRunFinalizations.runId })
+            .from(nativeRunFinalizations)
+            .innerJoin(nativeRunResults, and(
+              eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+              eq(nativeRunResults.runId, input.execution.binding.runId),
+              eq(nativeRunResults.companyId, input.execution.binding.companyId),
+              eq(nativeRunResults.issueId, input.execution.binding.issueId),
+              eq(nativeRunResults.schemaStatus, "accepted"),
+            ))
+            .where(and(
+              eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+              eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+              eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+              eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+              eq(nativeRunFinalizations.attempt, attempt),
+              eq(nativeRunFinalizations.controllerGeneration, controllerGeneration),
+              eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+              eq(nativeRunFinalizations.controllerPid, controller.pid),
+              eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+              gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+              isNotNull(nativeRunFinalizations.resultId),
+            ))
+            .for("update", { of: nativeRunFinalizations, noWait: true })
+            // A failed diagnostic read must retain the existing control error.
+            .catch(() => []);
+          if (acceptedUnderCurrentAuthority) throw new NativePostResultFailureError(error);
+          throw new Error("native_session_lease_lost");
+        }
         const [runBeforeWrite] = await tx
           .select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson,
             runnerInstanceId: heartbeatRuns.runnerInstanceId, nativeSessionId: heartbeatRuns.nativeSessionId,
@@ -10894,6 +10953,17 @@ async function executePaperclipNativeSessionWithinScope(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
+      }).catch(async (failure: unknown) => {
+        // Emit after rollback so the diagnostic sink cannot deadlock on the
+        // coordinator transaction. Reporting failure cannot change fencing.
+        if (failure instanceof NativePostResultFailureError) {
+          await boundedExecutionCleanup(async () => {
+            await input.onEvent?.({ eventType: "native.post_result_failure", level: "warn",
+              message: "Native execution failed after its result was accepted.",
+              payload: { ...failure.diagnostic } });
+          });
+        }
+        throw failure;
       });
       // Pass the raw error only for closed settlement labels: its text bypasses
       // the identity redactor applied to the persisted message above.
