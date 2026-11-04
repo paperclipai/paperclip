@@ -240,3 +240,15 @@ it("closed status coverage cannot replace unrelated execution or auth checks", (
   for (const reason of ["heartbeat_runs", "agent_api_keys", "issues", "external_objects"])
     expect(deadlineOwnerWorkReplacement(proof, reason)).toBeUndefined();
 });
+
+it("composes an optional normalized MCP owner snapshot without inspecting its protocol", () => {
+  const mcp = snapshot({ ownerGeneration: "mcp-owner:1" }, [now + 350_000]);
+  const proof = composeIdleDeadlineProof(hold, { ...options, mcp }, fixtures());
+  expect(proof.mcp).toBe(mcp);
+  expect(proof.scheduledWake?.nextWakeAt).toBe(new Date(now + 350_000).toISOString());
+  expect(composeIdleDeadlineProof(hold, { ...options, mcp: { ...mcp, state: { ownerGeneration: "mcp-owner:2" } } }, fixtures()).generation)
+    .not.toBe(proof.generation);
+  expect(composeIdleDeadlineProof(hold, { ...options, mcp: { ...mcp, blocked: true } }, fixtures())).toEqual({ blocked: true });
+  expect(composeIdleDeadlineProof(hold, { ...options, mcp: { ...mcp, deadlines: [now] } }, fixtures())).toEqual({ blocked: true });
+  expect(composeIdleDeadlineProof(hold, options, fixtures()).mcp).toBeUndefined();
+});

@@ -30,6 +30,8 @@ export function createIdleDeadlineInspectionBudget(now: number, expiresAt: numbe
 export type IdleDeadlineProof = {
   blocked: boolean;
   generation?: string;
+  /** Exact normalized owner snapshot accepted into this internal proof. */
+  mcp?: IdleDeadlineSnapshot;
   scheduledWake?: DomainScheduledWake;
   owners?: Readonly<Record<string, IdleDeadlineOwnerInspection>>;
   githubContinuity?: { connectionIds: string[]; generation: string };
@@ -42,6 +44,7 @@ export type IdleDeadlineProofOptions = {
   quietPluginCatalog?: readonly IdlePluginCatalogEntry[];
   scheduledWake?: ScheduledWake;
   passiveGeneration?: string;
+  mcp?: IdleDeadlineSnapshot;
   owners?: Readonly<Record<string, IdleDeadlineOwnerInspection>>;
   inspectionBudget?: ReturnType<typeof createIdleDeadlineInspectionBudget>;
 };
@@ -50,22 +53,24 @@ const generation = (state: unknown) => createHash("sha256").update(JSON.stringif
 export function composeIdleDeadlineProof(hold: { ownerId: string; expiresAt: number }, options: IdleDeadlineProofOptions,
   snapshots: { timers: IdleDeadlineSnapshot; jobs: IdleDeadlineSnapshot; traces: IdleDeadlineSnapshot;
     github: IdleDeadlineSnapshot & { connectionIds: string[] } }): IdleDeadlineProof {
+  const inspected = { ...snapshots, ...(options.mcp ? { mcp: options.mcp } : {}) };
   if (!Number.isFinite(options.now) || options.verifiedCapability?.deadlineCatalog !== IDLE_DEADLINE_CATALOG || !hold.ownerId
     || !Number.isFinite(hold.expiresAt) || hold.expiresAt <= options.now
-    || Object.values(snapshots).some(snapshot => snapshot.blocked)
+    || Object.values(inspected).some(snapshot => snapshot.blocked)
     || (options.quietPluginIds.length > 0 && !options.quietPluginGeneration)) return { blocked: true };
   const owners = options.owners ?? {};
   if (Object.values(owners).some(owner => owner.snapshot.blocked || !owner.current())) return { blocked: true };
-  const deadlines = [...Object.values(owners).flatMap(owner => owner.snapshot.deadlines), ...Object.values(snapshots).flatMap(snapshot => snapshot.deadlines)];
+  const deadlines = [...Object.values(owners).flatMap(owner => owner.snapshot.deadlines), ...Object.values(inspected).flatMap(snapshot => snapshot.deadlines)];
   if (options.scheduledWake) deadlines.push(Date.parse(options.scheduledWake.nextWakeAt));
   if (deadlines.some(at => !Number.isFinite(at) || at <= options.now)) return { blocked: true };
   const proofGeneration = generation([IDLE_DEADLINE_CATALOG, processGeneration, hold,
     options.quietPluginIds, options.quietPluginGeneration, options.quietPluginCatalog, options.scheduledWake, options.passiveGeneration,
     Object.entries(owners).map(([name, owner]) => [name, owner.snapshot.state, owner.snapshot.deadlines]),
-    Object.entries(snapshots).map(([owner, snapshot]) => [owner, snapshot.state, snapshot.deadlines])]);
+    Object.entries(inspected).map(([owner, snapshot]) => [owner, snapshot.state, snapshot.deadlines])]);
   const githubContinuity = { connectionIds: snapshots.github.connectionIds,
     generation: generation([proofGeneration, snapshots.github.connectionIds]) };
   return { blocked: false, generation: proofGeneration, githubContinuity, owners,
+    ...(options.mcp ? { mcp: options.mcp } : {}),
     ...(deadlines.length ? { scheduledWake: { version: 2, kind: "domain_deadlines", catalog: IDLE_DEADLINE_CATALOG,
       generation: proofGeneration, nextWakeAt: new Date(Math.min(...deadlines)).toISOString() } } : {}) };
 }
