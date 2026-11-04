@@ -86,7 +86,8 @@ export function gradeApprovalHistory(e: FirstTaskEvidence, marker: string): Firs
   add("no-pending-approvals", last.interactions.every(card => card.status !== "pending"), "Completion leaves no pending human request or duplicate approval");
   const finished = e.checkpoints.filter(c => c.phase === "finished");
   const output = (c: FirstTaskCheckpoint) => c.documents.filter(doc => doc.issueId === tasks[0]?.id && doc.key !== "plan")
-    .map(doc => ({ id: doc.id, key: doc.key, revisionId: doc.latestRevisionId, body: doc.body }));
+    .map(doc => ({ id: doc.id, key: doc.key, revisionId: doc.latestRevisionId, body: doc.body }))
+    .sort((a, b) => a.key.localeCompare(b.key) || a.id.localeCompare(b.id));
   add("reload-retains-completion", finished.length >= 2 && tasks.length === 1 && tasks[0].status === "done"
     && last.tasks.find(task => task.id === e.onboardingIssueId)?.status === "done"
     && finished.slice(-2).every(c => c.tasks.some(task => task.id === tasks[0].id && task.status === "done")
