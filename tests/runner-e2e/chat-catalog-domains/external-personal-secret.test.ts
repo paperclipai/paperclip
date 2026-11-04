@@ -1,8 +1,10 @@
+import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 import { expect, it } from "vitest";
 import {
   gradePersonalSecret,
   personalSecretGuidance,
   personalSecretConfirmation,
+  personalSecretQuestionHandoff,
 } from "./external-personal-secret.js";
 function valid() {
   return {
@@ -169,4 +171,32 @@ it("handles natural warnings without accepting another-person reuse or negative/
     "Your personal publishing credential is not yet configured.",
   ])
     expect(personalSecretConfirmation(reply)).toBe(false);
+});
+
+function answeredQuestionValue() {
+  const base = valid();
+  const row = { id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo",
+    addresseeUserId: "person", resolverPolicy: "human_only", continuationPolicy: "wake_assignee", kind: "ask_user_questions", status: "answered",
+    resolvedByUserId: "person", resolvedAt: "2026-11-04T13:30:00Z", result: { version: 1, commentId: "answer", answers: [{ questionId: "saved", optionIds: ["yes"] }] },
+    payload: questionSetToAskUserQuestionsPayload({ schema: "paperclip.question_set.v1", description: "Set your own personal publishing value securely in My secrets. Never paste your credential in chat.", questions: [{ id: "saved", prompt: "Have you saved your own value?", helpText: "Settings Secrets My secrets Set my value definition PERSONAL_PUBLISHING_KEY", answerMode: "single_select", required: true,
+      options: [{ id: "yes", label: "Yes", description: "My personal value is saved." }, { id: "later", label: "Not yet" }] }] }),
+  };
+  const admitted = personalSecretQuestionHandoff(row, { companyId: "company", issueId: "source", agentId: "ceo", userId: "person", runId: "initial", definitionId: "definition" }, "answered");
+  if (!admitted) throw Error("Invalid question test prerequisite");
+  return { ...base, interactions: [row], comments: [{ id: "answer", companyId: "company", issueId: "source", authorUserId: "person" }],
+    phaseReplies: base.phaseReplies.slice(1), runs: base.runs.map(run => run.id === "confirmed" ? { ...run, contextSnapshot: { interactionId: "question" } } : run),
+    state: { ...base.state, sourceIssueId: "source", definitionId: "definition", initialQuestionId: row.id, initialQuestionOptionId: "yes", initialQuestionPayloadHash: admitted.payloadHash,
+      currentSecret: { ...base.state.currentSecret, createdAt: "2026-11-04T13:29:00Z" } } };
+}
+it("accepts the same human question answered only after actual own-value save and bound worker/continuation evidence", () => {
+  expect(gradePersonalSecret(answeredQuestionValue()).passed).toBe(true);
+});
+it.each(["foreign resolver", "changed payload", "before save", "wrong continuation", "missing UI"])("rejects question completion with %s", fault => {
+  const value = answeredQuestionValue();
+  if (fault === "foreign resolver") value.interactions[0]!.resolvedByUserId = "other-person";
+  if (fault === "changed payload") value.state.initialQuestionPayloadHash = "wrong";
+  if (fault === "before save") value.interactions[0]!.resolvedAt = "2026-11-04T13:28:00Z";
+  if (fault === "wrong continuation") value.runs = value.runs.map(run => run.id === "confirmed" ? { ...run, contextSnapshot: { interactionId: "other" } } : run);
+  if (fault === "missing UI") value.state.humanSubmittedSecurely = false;
+  expect(gradePersonalSecret(value).passed).toBe(false);
 });

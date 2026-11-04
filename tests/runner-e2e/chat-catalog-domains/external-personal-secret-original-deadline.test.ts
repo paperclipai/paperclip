@@ -25,7 +25,7 @@ function fixture(fault?: Fault, budget: number | "missing" = deadline) {
       throw Error("Unexpected read");
     } } }, issue: () => source, refreshIssue: async () => {}, allRuns,
   } as unknown as ChatCatalogContext;
-  port.observation = { companyId: "company", phaseReplies: [{ runId: fault === "foreign reply" ? "foreign" : "initial", commentId: "reply", body }], links: [] };
+  port.observation = { companyId: "company", interactions: [], phaseReplies: [{ runId: fault === "foreign reply" ? "foreign" : "initial", commentId: "reply", body }], links: [] };
   const state = { sourceIssueId: "source", currentPersonId: "person", definitionId: "definition" };
   async function act(ms = 191_000) {
     const pending = personalSecretExternalCases[0]!.act!(ctx, state).then(() => undefined, (error: Error) => error);
