@@ -189,15 +189,16 @@ async function declinedTaskDocumentNotRequired(db: Db, binding: {
 }): Promise<boolean> {
   if (!/\bif I (?:decline|reject) the action\b/iu.test(binding.objective) ||
       !/\bno (?:briefing|document|doc)(?: document)? is required after a (?:decline|rejection)\b/iu.test(binding.objective)) return false;
-  const runQuery = db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+  const runQuery = db.select({ context: heartbeatRuns.contextSnapshot, description: issues.description }).from(heartbeatRuns)
+    .innerJoin(issues, and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).where(and(
     eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
   )).limit(1);
-  const [run] = await (binding.lockSources ? runQuery.for("share", { noWait: true }) : runQuery);
+  const [run] = await (binding.lockSources ? runQuery.for("share", { of: [heartbeatRuns, issues], noWait: true }) : runQuery);
   const continuation = record(run?.context?.executionContinuation);
   const trigger = record(continuation.trigger);
   const objectiveSource = record(continuation.objectiveSource);
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-  if (continuation.objective !== binding.objective || typeof trigger.interactionId !== "string" ||
+  if (run?.description?.trim() !== binding.objective.trim() || continuation.objective !== binding.objective || typeof trigger.interactionId !== "string" ||
       !uuid.test(trigger.interactionId) || typeof trigger.sourceRunId !== "string" || !uuid.test(trigger.sourceRunId) ||
       objectiveSource.kind !== "description" || objectiveSource.id !== binding.issueId ||
       objectiveSource.revision !== createHash("sha256").update(binding.objective.trim()).digest("hex")) return false;

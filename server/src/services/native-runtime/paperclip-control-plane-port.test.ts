@@ -2356,7 +2356,8 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("done");
   });
 
-  it.each(["current human rejection", "model-only decline", "different objective revision", "different trigger"] as const)(
+  it.each(["current human rejection", "model-only decline", "different objective revision", "different trigger",
+    "changed description after admission", "changed description at commit"] as const)(
     "binds an explicit declined-document fallback to %s", async (scenario) => {
     const objective = "Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Put the returned page titles and service receipt code in the document. When complete, give me the document link. If I decline the action, do not try again or request another connection. Instead, give me a brief explanation that you could not retrieve the data. That explanation is the complete allowed fallback; no briefing is required after a decline.";
     const source = await prepareFirstTaskCompletion("ordinary task", objective);
@@ -2393,9 +2394,32 @@ describe("PaperclipControlPlanePort conformance", () => {
       evidence: [{ ref: "provider:opencode:agent-message" }], completionClaim: { ...source.result.completionClaim,
         contractRevision: contract.contract.revision, criteria: contract.contract.criteria.map(entry => ({ criterionId: entry.id, status: "satisfied", evidenceRefs: [] })) } };
     await port.completeRun({ result: report, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
-    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status)
-      .toBe(scenario === "current human rejection" ? "done" : scenario === "model-only decline" ? "in_review" : "in_progress");
+    const changedDescription = "Create the Markdown briefing document on this task. The prior decline does not waive the required document.";
+    if (scenario === "changed description after admission") {
+      await db.update(issues).set({ description: changedDescription }).where(eq(issues.id, issueId));
+    }
+    const trigger = `decline_revision_race_${randomUUID().replaceAll("-", "")}`;
+    if (scenario === "changed description at commit") {
+      await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+        begin
+          if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+            update issues set description = '${changedDescription}' where id = '${issueId}'::uuid and company_id = '${companyId}'::uuid;
+          end if;
+          return NEW;
+        end $$`));
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+    }
+    try {
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status)
+        .toBe(scenario === "current human rejection" ? "done" : scenario === "model-only decline" ? "in_review" : "in_progress");
+    } finally {
+      if (scenario === "changed description at commit") {
+        await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+        await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+      }
+    }
   });
 
   it("rechecks publication removed between assessment and native done commit", async () => {
