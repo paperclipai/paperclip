@@ -5,7 +5,9 @@ import type {
 import { useCopyAction } from "@/lib/use-copy-action";
 import { IssueChatFeedbackButtons } from "@/components/AgentBubbleActionRow";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Check, Copy, X, Info } from "lucide-react";
+import { DeleteAgentCommentDialog } from "@/components/DeleteAgentCommentDialog";
+import { Check, Copy, X, Info, Trash2 } from "lucide-react";
+import { useState } from "react";
 
 /** Feedback-vote wiring for an agent bubble, resolved per comment by the host. */
 export interface TaskChatBubbleFeedback {
@@ -30,13 +32,16 @@ export function TaskChatBubbleActions({
   copyText,
   feedback,
   fastResponse,
+  onDelete,
 }: {
   copyText: string;
   fastResponse?: boolean;
+  onDelete?: () => void;
   feedback?: TaskChatBubbleFeedback | null;
 }) {
   const { copied, failed, copy } = useCopyAction(2000);
   const label = failed ? "Couldn’t copy message" : "Copy message";
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   return (
     <div className="flex items-center gap-0.5" data-testid="task-chat-bubble-actions">
@@ -65,6 +70,24 @@ export function TaskChatBubbleActions({
           termsUrl={feedback.termsUrl}
           onVote={feedback.onVote}
         />
+      ) : null}
+      {onDelete ? (
+        <>
+          <button
+            type="button"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+            title="Delete comment"
+            aria-label="Delete comment"
+            onClick={() => setDeleteDialogOpen(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+          <DeleteAgentCommentDialog
+            open={deleteDialogOpen}
+            onOpenChange={setDeleteDialogOpen}
+            onConfirm={onDelete}
+          />
+        </>
       ) : null}
     </div>
   );
