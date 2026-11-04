@@ -53,3 +53,16 @@ it("does not treat a pending or wrong-person answer as the saved-value acknowled
   const answered = { ...row, status: "answered", resolvedByUserId: "other-person", result: { version: 1, answers: [{ questionId: "saved", optionIds: ["yes"] }] } };
   expect(personalSecretQuestionHandoff(answered, binding, "answered")).toBeUndefined();
 });
+it("uses bound completion context for terse answers without treating permission or negation as completion", () => {
+  const withChoice = (label: string, prompt = "Have you saved your own value?") => {
+    const row = question(), qs = row.payload.questionSet!;
+    row.payload = questionSetToAskUserQuestionsPayload({ ...qs, questions: [{ ...qs.questions[0]!, prompt,
+      options: [{ id: "yes", label }, { id: "later", label: "Not yet" }] }] });
+    return personalSecretQuestionHandoff(row, binding);
+  };
+  expect(withChoice("Done")).toMatchObject({ optionId: "yes" });
+  expect(withChoice("Yes")).toMatchObject({ optionId: "yes" });
+  expect(withChoice("Not done")).toBeUndefined();
+  expect(withChoice("Done for Riley")).toBeUndefined();
+  expect(withChoice("Yes", "May I save the value for you?")).toBeUndefined();
+});

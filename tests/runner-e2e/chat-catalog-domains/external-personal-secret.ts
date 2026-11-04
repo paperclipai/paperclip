@@ -121,10 +121,13 @@ export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQ
   if (!text.split(/[^A-Za-z0-9_-]+/).includes(b.definitionId) || !text.split(/[^A-Za-z0-9_-]+/).includes("PERSONAL_PUBLISHING_KEY") || !personalSecretGuidance(text)
     || !/settings/i.test(text) || !/my secrets/i.test(text) || !/set my value/i.test(text)
     || solicitsChatCredential([text, ...q.options.map(o => `${o.label} ${o.description ?? ""}`)].join("\n"))) return;
+  const completedSetupQuestion = /\b(?:have you|did you)\b[^?]{0,80}\b(?:saved|set|entered|added|configured|completed)\b/i.test(q.prompt)
+    && !/\b(?:not|never|haven't|didn't|want|permission)\b|\b(?:may|can|should|could) (?:i|we)\b/i.test(q.prompt);
   const confirmations = q.options.filter(o => {
     const answer = `${o.label} ${o.description ?? ""}`;
-    return /\b(?:yes|saved|entered|added|done)\b/i.test(answer) && /\b(?:my|own|personal)\b/i.test(answer)
-      && !/\b(?:not|never|cannot|can't|yet|need|later|will|another|their)\b/i.test(answer);
+    return (!/^yes\b/i.test(o.label.trim()) || completedSetupQuestion)
+      && (/\b(?:saved|entered|added|done)\b/i.test(answer) || (completedSetupQuestion && /^yes[.!]?$/i.test(o.label.trim())))
+      && !/\b(?:no|not|never|cannot|can.t|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|other|their)\b/i.test(answer);
   });
   if (confirmations.length !== 1) return;
   const option = confirmations[0]!;
