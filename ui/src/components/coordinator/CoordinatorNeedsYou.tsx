@@ -39,6 +39,7 @@ import { NativeSelect } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
+import { timeAgo } from "@/lib/timeAgo";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 import { CoordinatorReviewPanel, attentionReviewDocumentKey } from "./CoordinatorReviewPanel";
@@ -260,7 +261,7 @@ export function CoordinatorNeedsYou() {
     const failedRun = item.sourceKind === "failed_run" && isInlineResolvable(item);
     const budget = item.sourceKind === "budget_alert" && isInlineResolvable(item);
     const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
-    const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
+    const taskLink = taskRef?.href ? <button type="button" data-attention-task-link onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex min-w-0 max-w-sm items-center gap-1 text-left hover:text-foreground"><span className="shrink-0 font-medium">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-3 shrink-0" /></button> : null;
     const id = `${item.sourceKind}:${item.subject.id}`;
     const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
@@ -268,21 +269,30 @@ export function CoordinatorNeedsYou() {
     // Focus (PAP-770): a card that asks about an artifact opens it beside the card.
     const canReview = !isMobile && !!issueId && !!attentionReviewDocumentKey(item);
     const reviewing = reviewItemId === item.id;
-    const footer = canReview ? <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-      <Button type="button" variant="outline" size="sm" aria-pressed={reviewing} data-coordinator-review-trigger onClick={() => reviewing ? closeReview() : showReview(item)}>
+    // Focus card (PAP-770): one structure for every family — a quiet context
+    // line, the ask, just enough context, Review, and the primary action on
+    // the right of the last row. The task link lives in the context line.
+    const footer = canReview ? <Button type="button" variant="outline" size="sm" aria-pressed={reviewing} data-coordinator-review-trigger onClick={() => reviewing ? closeReview() : showReview(item)}>
         <FileText className="size-4" />{reviewing ? "Reviewing plan" : "Review plan"}
-      </Button>{taskLink}</div> : taskLink;
-    const heading = <><h2 className="text-lg font-medium">{coordinatorCardTitle(item)}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p></>;
+      </Button> : null;
+    const title = coordinatorCardTitle(item);
+    const detail = attentionDetailLine(item) ?? item.whyNow;
+    const heading = <><h2 className="text-lg font-medium">{title}</h2>{detail && detail !== title ? <p className="text-sm text-muted-foreground">{detail}</p> : null}</>;
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
       onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
     {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article className={`coordinator-decision-card space-y-4 rounded-xl border bg-card p-6 ${reviewing ? "border-ring" : "border-border"}`} data-attention-card={item.id} data-reviewing={reviewing || undefined}>
       {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5 text-muted-foreground" data-attention-context>
           <AttentionHiddenChip item={item} />
           <AttentionStaleChip item={item} />
-          <AttentionAudienceLine item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
+          {taskLink}
+          {item.originAgentName ? <><span aria-hidden="true">·</span><span>{item.originAgentName}</span></> : null}
+          {taskLink || item.originAgentName ? <span aria-hidden="true">·</span> : null}
+          <time dateTime={item.activityAt}>{timeAgo(item.activityAt)}</time>
+          {userId ? <span aria-hidden="true">·</span> : null}
+          <AttentionAudienceLine quiet item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
         </div>
         <AttentionCloseMenu item={item} currentUserId={userId} userLabelMap={userLabelMap}
           busy={closeActions.closingItemId === item.id || closeActions.transferringItemId === item.id}
@@ -298,13 +308,12 @@ export function CoordinatorNeedsYou() {
         onResolved(item);
       }} />
         : decision ? <DecisionResolver companyId={selectedCompanyId!} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
-        : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId!} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={refetchAll} /></>
-        : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} onResolved={refetchAll} /></>
+        : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions issueId={item.subject.id} companyId={selectedCompanyId!} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={refetchAll} /></>
+        : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
         : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
-        : <>{heading}<Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></>}
+        : <>{heading}<div className="flex justify-end"><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></div></>}
       </AttentionForOtherGate>
       <AttentionObligationEvidence item={item} evidence={attentionObligationEvidence(obligations, item)} />
-      {!interaction && !stalledReview && !failedRun ? taskLink : null}
     </article>}
     </CoordinatorTaskMotion>
     </motion.div>;

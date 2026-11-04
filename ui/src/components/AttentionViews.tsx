@@ -92,6 +92,7 @@ export function AttentionAudienceLine({
   userLabelMap,
   onClaim,
   claiming = false,
+  quiet = false,
   className,
 }: {
   item: AttentionItem;
@@ -99,6 +100,8 @@ export function AttentionAudienceLine({
   userLabelMap?: ReadonlyMap<string, string> | null;
   onClaim?: (item: AttentionItem) => void;
   claiming?: boolean;
+  /** Drop the "Why me?" label so the reason reads as the end of a context line (PAP-770). */
+  quiet?: boolean;
   className?: string;
 }) {
   // Without the viewer there is no honest answer to "Why me?".
@@ -110,7 +113,7 @@ export function AttentionAudienceLine({
   if (description.kind === "mine") {
     return (
       <p className={base} data-attention-audience="mine">
-        <span className="font-medium text-foreground">Why me?</span>
+        {quiet ? null : <span className="font-medium text-foreground">Why me?</span>}
         <span data-attention-transferred-by={description.transferredByUserId}>
           {description.transferredByUserId
             ? `${description.text} @${userLabelMap?.get(description.transferredByUserId) ?? "someone"}`

@@ -414,7 +414,7 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
   }
   const tab = (view: string) => container.querySelector<HTMLElement>(`[data-attention-view="${view}"]`)!;
 
-  it("defaults to For you with Why me?, the banner and per-person keys, then claims from Unassigned", async () => {
+  it("defaults to For you with the why-me context line, the banner and per-person keys, then claims from Unassigned", async () => {
     fixture.byView = { mine: [mine("m1", "addressee"), mine("m2", "reviewer")], unassigned: [pool], company: [company] };
     fixture.viewCounts = { mine: 2, unassigned: 1, company: 1 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -426,7 +426,7 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(tab("mine")).toBeNull();
     expect(tab("unassigned")?.textContent).toBe("Unassigned1");
     expect([...container.querySelectorAll('[data-attention-audience="mine"]')].map((line) => line.textContent))
-      .toEqual(["Why me?Sent to you", "Why me?You are the reviewer"]);
+      .toEqual(["Sent to you", "You are the reviewer"]);
     expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "mine"], exact: false })).toBeTruthy();
 

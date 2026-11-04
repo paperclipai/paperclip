@@ -5031,6 +5031,7 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-decision-card [data-testid="interaction-status-badge"], .coordinator-decision-card [data-testid="interaction-addressee-badge"] { display: none; }
 .coordinator-decision-card :is(h2,h3) { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
 .coordinator-decision-card :is(p, label) { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 .coordinator-decision-card [data-decision-prompt] { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
 .coordinator-decision-card [id^="interaction-"]:focus { outline-color: var(--ring); }
 /* Focus review panel (PAP-770): the artifact is the context, so the pinned
