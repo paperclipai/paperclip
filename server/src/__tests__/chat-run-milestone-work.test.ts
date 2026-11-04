@@ -330,7 +330,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.transaction(async tx => {
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
         createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
-          companyId: f.companyId, activeExecutionRunId: seeded.id, mergedContextSnapshot: chatContextSnapshot(),
+          companyId: f.companyId, activeExecutionRunId: seeded.id, activeExecutionRunStatus: seeded.status, mergedContextSnapshot: chatContextSnapshot(),
           agentId: f.agentId, source: "on_demand", triggerDetail: null, payload: { issueId: f.issueId },
           requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: null,
         });

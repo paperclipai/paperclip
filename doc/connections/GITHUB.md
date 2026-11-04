@@ -77,6 +77,12 @@ repeat an existing instance approval.
 
 ## Identity resolution
 
+Fresh setup does not reuse an archived personal connection found by name and
+provider. It creates a separate application and connection with an available
+name, such as `GitHub (2)`. The archived identity, credentials, grants, and
+history stay unchanged. An explicit reconnect or application-targeted setup
+continues the existing identity and requires its personal owner.
+
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,
 and webhook binding uses the same order:
 
