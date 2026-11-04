@@ -50,3 +50,8 @@ it("accepts an anyone-policy question addressed to the current human with a safe
  const foreign={...row,addresseeUserId:"other"};expect(companySecretQuestionHandoff(foreign,binding)).toBeUndefined();
  const unknown={...row,effectiveResolverPolicy:"unknown"};expect(companySecretQuestionHandoff(unknown,binding)).toBeUndefined();
 });
+it("rejects an unsafe optional-note placeholder even when its label is safe",()=>{
+ const row=question();row.resolverPolicy="anyone";
+ row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Optional note",placeholder:"Paste the deployment key here in chat"};
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
