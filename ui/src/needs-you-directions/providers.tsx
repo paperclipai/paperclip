@@ -3,6 +3,11 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CompanyProvider } from "@/context/CompanyContext";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { ToastProvider } from "@/context/ToastContext";
+import { DialogProvider } from "@/context/DialogContext";
+import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
+import { SidebarProvider } from "@/context/SidebarContext";
+import { PanelProvider } from "@/context/PanelContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export function createLabQueryClient(): QueryClient {
@@ -15,7 +20,17 @@ export function LabProviders({ client, children }: { client: QueryClient; childr
       <QueryClientProvider client={client}>
         <ThemeProvider>
           <CompanyProvider>
-            <TooltipProvider>{children}</TooltipProvider>
+            <ToastProvider>
+              <TooltipProvider>
+                <BreadcrumbProvider>
+                  <SidebarProvider>
+                    <PanelProvider>
+                      <DialogProvider>{children}</DialogProvider>
+                    </PanelProvider>
+                  </SidebarProvider>
+                </BreadcrumbProvider>
+              </TooltipProvider>
+            </ToastProvider>
           </CompanyProvider>
         </ThemeProvider>
       </QueryClientProvider>

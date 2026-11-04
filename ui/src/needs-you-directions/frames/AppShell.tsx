@@ -10,10 +10,11 @@ import {
   LayoutDashboard,
   LifeBuoy,
   ListChecks,
+  MessageSquare,
   Package,
   Repeat,
   Search,
-  SquarePen,
+  Settings,
   Unplug,
   Users,
   type LucideIcon,
@@ -30,14 +31,14 @@ interface NavEntry {
 }
 
 const TOP: NavEntry[] = [
-  { label: "New Task", icon: SquarePen },
-  { label: "Search", icon: Search },
-  { label: "Dashboard", icon: LayoutDashboard },
-  { label: "Inbox", icon: Inbox },
-  { label: "Decisions", icon: ListChecks },
+  { label: "Chat", icon: MessageSquare },
+  { label: "Tasks", icon: CircleCheck, nav: "tasks" },
+  { label: "Needs You", icon: ListChecks },
 ];
 const WORK: NavEntry[] = [
-  { label: "Tasks", icon: CircleCheck, nav: "tasks" },
+  { label: "Search", icon: Search },
+  { label: "Inbox", icon: Inbox },
+  { label: "Dashboard", icon: LayoutDashboard },
   { label: "Projects", icon: FolderOpen },
   { label: "Routines", icon: Repeat },
   { label: "Artifacts", icon: Package, nav: "artifacts" },
@@ -48,6 +49,7 @@ const ORG: NavEntry[] = [
   { label: "Skills", icon: Boxes },
   { label: "Connectors", icon: Unplug },
   { label: "Audit", icon: History },
+  { label: "Settings", icon: Settings },
 ];
 const RECENT = TASKS.map((task) => task.title);
 
@@ -107,7 +109,7 @@ function Sidebar({ active, activeLabel }: { active: ShellNav; activeLabel?: stri
             <NavItem key={entry.label} {...entry} active={entry.label === activeLabel} />
           ))}
         </div>
-        <Section label="Work">
+        <Section label="More">
           {WORK.map((entry) => (
             <NavItem key={entry.label} {...entry} active={entry.nav === active} />
           ))}

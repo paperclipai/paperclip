@@ -265,6 +265,8 @@ export const LANDING_RECORDS: LabAttentionRecord[] = [BUDGET, PLAN, QUESTION, FA
 
 export const CARD_RECORDS: LabAttentionRecord[] = [PLAN, QUESTION, STALE_REVIEW, FOR_DOTTA, FAILED, APPROVAL, AGENT_ERROR, BLOCKER];
 
+export const FEED_RECORDS: LabAttentionRecord[] = [...LANDING_RECORDS, STALE_REVIEW];
+
 export const RECEIPTS: LabReceipt[] = [
   { id: "r1", line: "Approved by @Dotta for you", title: "Approve $820 for photoshoot props", task: "NEE-57", ageLabel: "1h" },
   { id: "r2", line: "Withdrawn by @Riley", title: "Confirm the vendor shortlist", task: "NEE-48", ageLabel: "yesterday" },

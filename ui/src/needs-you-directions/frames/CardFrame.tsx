@@ -7,9 +7,9 @@ const SURFACE = surfaceOf("card");
 
 export function CardFrame({ kit }: { kit: DirectionKit }) {
   return (
-    <AppShell active={SURFACE.nav} activeLabel="Decisions">
+    <AppShell active={SURFACE.nav} activeLabel="Needs You">
       <div className="relative flex h-(--sz-60px) shrink-0 items-center gap-2 border-b border-border px-4 md:px-6">
-        <span className="min-w-0 truncate text-sm font-medium text-foreground">Decisions</span>
+        <span className="min-w-0 truncate text-sm font-medium text-foreground">Needs You</span>
         <span className="text-muted-foreground">/</span>
         <span className="min-w-0 truncate text-sm text-muted-foreground">Card structure</span>
         <SupportButton />
