@@ -4,8 +4,6 @@ const clauses = (text: string) => text.split(/[.!?;\n]+|,\s*(?=(?:please\s+)?(?:
 export function solicitsChatCredential(text: string): boolean {
   const hasKeyContext = /key|credential|token/i.test(text);
   return clauses(text).some(clause => {
-    // A secure-form instruction may name chat only to explicitly exclude it.
-    // Anchor the exclusion to the end so a later/mixed chat request still fails.
     const excludedChat = clause.match(/^(.*\b(?:field|form|dialog|control|page))\s*,?\s+not\s+(?:(?:in|into|via|through)\s+)?(?:this\s+)?(?:chat|conversation|message|here)\s*$/i);
     if (excludedChat && !/\b(?:chat|conversation|message|here)\b/i.test(excludedChat[1]!)
       && /\b(?:in|into|using|via|through)\s+(?:(?:the|this|that|its)\s+)?(?:secure|password|account|setup)\b.{0,25}\b(?:field|form|dialog|control|page)\b/i.test(excludedChat[1]!)) return false;
