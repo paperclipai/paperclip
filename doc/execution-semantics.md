@@ -2653,6 +2653,14 @@ turn finishes during shutdown, its release checkpoints the session before
 returning instead of leaving a new idle owner behind. If checkpointing fails,
 the retained state continues to block unverified reuse.
 
+Object-backed provider backups use the same completed-run fence during warm
+retirement. A committed result can preserve its provider files after its live
+controller lease is released. The boot ID and controller generation must still
+match. A successor must pass the existing same-controller preparation or native
+ownership checks. The backup transaction checks this authority again after
+upload, and a late predecessor cannot replace a newer conversation backup.
+This grants no new lease or permission to start provider work.
+
 Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
