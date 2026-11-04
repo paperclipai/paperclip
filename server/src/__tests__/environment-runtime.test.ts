@@ -857,6 +857,23 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
 
+  it.each(["active", "released"] as const)("does not select an ephemeral allocation for warm reuse (%s)", async status => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", status,
+      releasedAt: status === "released" ? new Date() : null }).where(eq(environmentLeases.id, seeded.reusableLease.id));
+    const workerManager = createFreshPluginLeaseWorker(seeded.pluginId);
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, agentId: seeded.agentId,
+      issueId: null, adapterType: "paperclip_runner", heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+    });
+    expect(seeded.environment.config.reuseLease).toBe(true);
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(acquired.lease.providerLeaseId).not.toBe(seeded.reusableLease.providerLeaseId);
+    expect(workerManager.call).toHaveBeenCalledExactlyOnceWith(seeded.pluginId, "environmentAcquireLease", expect.any(Object), expect.any(Number));
+  });
+
   it("gives a bootstrap retry a fresh allocation even when the failed lease was reusable", async () => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
     await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
