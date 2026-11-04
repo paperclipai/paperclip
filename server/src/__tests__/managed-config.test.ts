@@ -58,6 +58,26 @@ describe("plugins.workerEnv", () => {
   });
 });
 
+describe("plugins.enabledCompanies", () => {
+  const companyId = "f0679247-e2be-5a76-adb6-6bd360e5a833";
+  const plugins = (enabledCompanies: unknown) => ({ plugins: { autoInstall: ["daytona"], enabledCompanies } });
+
+  it("accepts company ids for an auto-installed plugin", () => {
+    expect(parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [companyId] }))))?.plugins.enabledCompanies).toEqual({ daytona: [companyId] });
+  });
+
+  it.each([
+    ["a plugin that is not auto-installed", { other: [companyId] }, /not in "plugins.autoInstall"/],
+    ["a non-object section", [companyId], /must be an object/],
+    ["an empty list", { daytona: [] }, /non-empty array/],
+    ["a value that is not a UUID", { daytona: ["all"] }, /lowercase company UUIDs/],
+    ["an uppercase UUID", { daytona: [companyId.toUpperCase()] }, /lowercase company UUIDs/],
+    ["a duplicate id", { daytona: [companyId, companyId] }, /duplicate entry/],
+  ])("refuses to start with %s", (_label, enabledCompanies, message) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins(enabledCompanies))))).toThrow(message);
+  });
+});
+
 describe("managedFeatureKeySet", () => {
   it("contains exactly the boolean flags of the experimental schema", () => {
     const keys = managedFeatureKeySet();

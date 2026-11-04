@@ -453,7 +453,7 @@ const support = await getEmbeddedPostgresTestSupport();
   },
 );
 describe("project instance secret patches", () => {
-  it.skipIf(!support.supported)("requires a config row unless the plugin has a managed grant", async () => {
+  it.skipIf(!support.supported)("requires a config row unless the managed config enables the plugin for this company", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "instance-secrets-managed-"));
     const packagePath = path.join(root, "sandbox-providers/daytona");
     await mkdir(packagePath, { recursive: true });
@@ -470,7 +470,10 @@ describe("project instance secret patches", () => {
       await expect(projectInstanceSecretService(db, pluginId).prepare(event)).rejects.toThrow("require plugin configuration");
       vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
       vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
-        plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+        plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] }, enabledCompanies: { daytona: [randomUUID()] } } }));
+      await expect(projectInstanceSecretService(db, pluginId).prepare(event)).rejects.toThrow("require plugin configuration");
+      vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+        plugins: { autoInstall: ["daytona"], enabledCompanies: { daytona: [companyId] } } }));
       await expect(projectInstanceSecretService(db, pluginId).prepare(event)).resolves.toMatchObject({ instanceSecrets: expect.any(Object) });
     } finally {
       vi.unstubAllEnvs();

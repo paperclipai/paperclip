@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BUNDLED_CATALOG_ROOT_ENV_VAR } from "../services/bundled-plugins.js";
 import { distributionBundleDigest } from "../services/distribution-plugin-catalog.js";
 import { MANAGED_CONFIG_ENV_KEY } from "../services/managed-config.js";
-import { managedPluginWorkerEnvGrant } from "../services/managed-plugin-worker-env.js";
+import { managedPluginEnabledCompanies, managedPluginWorkerEnvGrant } from "../services/managed-plugin-worker-env.js";
 
 describe("managedPluginWorkerEnvGrant", () => {
   const pluginKey = "paperclip.daytona-sandbox-provider";
@@ -25,6 +25,16 @@ describe("managedPluginWorkerEnvGrant", () => {
 
   it("grants variables to the plugin at its catalog path", () => {
     expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, env())).toEqual(["PROVIDER_ORIGIN"]);
+  });
+
+  it("enables only the companies the document names, and only for the plugin at its catalog path", () => {
+    const companyId = "f0679247-e2be-5a76-adb6-6bd360e5a833";
+    const enabled = { ...env(), [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+      plugins: { autoInstall: ["daytona"], enabledCompanies: { daytona: [companyId] } } }) };
+    expect(managedPluginEnabledCompanies({ pluginKey, packagePath }, enabled)).toEqual([companyId]);
+    expect(managedPluginEnabledCompanies({ pluginKey, packagePath: null }, enabled)).toEqual([]);
+    expect(managedPluginEnabledCompanies({ pluginKey, packagePath }, env())).toEqual([]);
+    expect(managedPluginWorkerEnvGrant({ pluginKey, packagePath }, enabled)).toEqual([]);
   });
 
   it("grants nothing on a self-hosted instance or without a grant", () => {

@@ -65,10 +65,23 @@ credential, such as one with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `DATABASE` or
 `NODE_OPTIONS`. Give a granted variable a name for its own use, not a reused host
 variable. Only the plugin at the
 catalog path for that key receives the variables. Another install with the same
-plugin ID receives nothing. A plugin with a grant needs no saved configuration to
-receive resource lifecycle events or use project instance secrets. It gets events
-for every company that has not disabled it. A grant does not give access for
-background worker calls. Those still need a saved company configuration.
+plugin ID receives nothing.
+
+A grant does not give access to any company. To let a plugin serve a company with
+no saved configuration, name the company in `plugins.enabledCompanies`:
+
+```json
+{ "plugins": {
+  "autoInstall": ["example-extension"],
+  "enabledCompanies": { "example-extension": ["<company-uuid>"] }
+} }
+```
+
+The plugin then receives resource lifecycle events for that company and can use
+project instance secrets there. A company can still disable the plugin. This does
+not give access for background worker calls. Those still need a saved company
+configuration. Core reads the list from the document on each use and does not save
+it, so a database restore cannot bring back access that the document removed.
 
 The catalog alone does not auto-enable plugins on self-hosted instances.
 Operators can explicitly install catalog entries through the normal plugin

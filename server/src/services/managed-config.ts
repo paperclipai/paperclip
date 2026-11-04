@@ -11,7 +11,8 @@
  *     "features": { "<feature-key>": true | false, ... },
  *     "plugins":  {
  *       "autoInstall": ["daytona", "kubernetes"],
- *       "workerEnv": { "daytona": ["PROVIDER_ORIGIN"] }
+ *       "workerEnv": { "daytona": ["PROVIDER_ORIGIN"] },
+ *       "enabledCompanies": { "daytona": ["<company-uuid>"] }
  *     },
  *     "environments": [
  *       { "name": "Daytona", "provider": "daytona", "config": { "target": "us" } }
@@ -56,6 +57,8 @@ export interface ManagedInstanceConfig {
     readonly autoInstall: readonly string[];
     /** Process variable names granted to a plugin's worker, by catalog key. Names only, never values. */
     readonly workerEnv?: Readonly<Record<string, readonly string[]>>;
+    /** Companies a plugin serves with no saved configuration, by catalog key. */
+    readonly enabledCompanies?: Readonly<Record<string, readonly string[]>>;
   };
   /** Sandbox environments the control plane provisions at boot (empty when the section is absent). */
   environments: readonly ManagedEnvironmentSpec[];
@@ -90,6 +93,7 @@ export interface ManagedEnvironmentSpec {
 export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|password|credential)/i;
 
 const WORKER_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const COMPANY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * Names a grant can never use, by shape: host credentials, and variables that
@@ -241,8 +245,8 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     fail(`"plugins" must be an object (got ${describeJsonValue(doc.plugins)})`);
   }
   for (const key of Object.keys(doc.plugins)) {
-    if (key !== "autoInstall" && key !== "workerEnv") {
-      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall, workerEnv)`);
+    if (key !== "autoInstall" && key !== "workerEnv" && key !== "enabledCompanies") {
+      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall, workerEnv, enabledCompanies)`);
     }
   }
   const rawAutoInstall = doc.plugins.autoInstall;
@@ -293,6 +297,36 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
         granted.push(name);
       }
       workerEnv[key] = Object.freeze(granted);
+    }
+  }
+
+  // `plugins.enabledCompanies` is OPTIONAL and, like the rest of the document,
+  // never persisted. It names the companies a plugin may serve with no saved
+  // configuration. A company can still disable the plugin.
+  let enabledCompanies: Record<string, readonly string[]> | undefined;
+  if (doc.plugins.enabledCompanies !== undefined) {
+    if (!isPlainObject(doc.plugins.enabledCompanies)) {
+      fail(`"plugins.enabledCompanies" must be an object mapping plugin key → company ids (got ${describeJsonValue(doc.plugins.enabledCompanies)})`);
+    }
+    enabledCompanies = {};
+    for (const [key, ids] of Object.entries(doc.plugins.enabledCompanies)) {
+      if (!autoInstall.includes(key)) {
+        fail(`"plugins.enabledCompanies" key "${key}" is not in "plugins.autoInstall"; enabling a company requires its plugin to be provisioned`);
+      }
+      if (!Array.isArray(ids) || ids.length === 0) {
+        fail(`"plugins.enabledCompanies.${key}" must be a non-empty array of company ids (got ${describeJsonValue(ids)})`);
+      }
+      const companyIds: string[] = [];
+      for (const id of ids) {
+        if (typeof id !== "string" || !COMPANY_ID_PATTERN.test(id)) {
+          fail(`"plugins.enabledCompanies.${key}" entries must be lowercase company UUIDs (got ${describeJsonValue(id)})`);
+        }
+        if (companyIds.includes(id)) {
+          fail(`"plugins.enabledCompanies.${key}" has duplicate entry "${id}"`);
+        }
+        companyIds.push(id);
+      }
+      enabledCompanies[key] = Object.freeze(companyIds);
     }
   }
 
@@ -384,6 +418,7 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     plugins: Object.freeze({
       autoInstall: Object.freeze(autoInstall),
       ...(workerEnv ? { workerEnv: Object.freeze(workerEnv) } : {}),
+      ...(enabledCompanies ? { enabledCompanies: Object.freeze(enabledCompanies) } : {}),
     }),
     environments: Object.freeze(environmentSpecs),
   }) as ManagedInstanceConfig;

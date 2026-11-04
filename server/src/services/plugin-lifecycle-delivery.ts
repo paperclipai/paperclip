@@ -7,7 +7,7 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { isWorkspaceProvider } from "./project-workspace-provider.js";
-import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
+import { managedPluginEnabledCompanies } from "./managed-plugin-worker-env.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
@@ -27,33 +27,32 @@ export function registerPluginLifecycleDelivery(
   const retryAt = new Map<string, number>();
   const refreshedRuntimeCompanies = new Set<string>();
   const retryMs = 30_000;
-  async function managedPlugins() {
+  async function managedTargets() {
     const ready = await db.select().from(plugins).where(eq(plugins.status, "ready"));
-    return ready.filter(plugin => managedPluginWorkerEnvGrant(plugin).length > 0);
+    const targets = ready.flatMap(plugin => managedPluginEnabledCompanies(plugin).map(companyId => ({ plugin, companyId })));
+    if (!targets.length) return targets;
+    const existing = await db.select({ id: companies.id }).from(companies)
+      .where(inArray(companies.id, targets.map(target => target.companyId)));
+    const existingIds = new Set(existing.map(company => company.id));
+    return targets.filter(target => existingIds.has(target.companyId));
   }
   async function enabledManagedPlugins() {
-    const managed = await managedPlugins();
-    if (!managed.length) return managed;
-    const enabled = await db.select({ pluginId: plugins.id }).from(plugins)
-      .innerJoin(companies, sql`true`)
-      .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, companies.id)))
-      .where(and(inArray(plugins.id, managed.map(plugin => plugin.id)), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
-    const enabledIds = new Set(enabled.map(row => row.pluginId));
-    return managed.filter(plugin => enabledIds.has(plugin.id));
+    const targets = await managedTargets();
+    if (!targets.length) return [];
+    const disabled = await db.select({ pluginId: pluginCompanySettings.pluginId, companyId: pluginCompanySettings.companyId }).from(pluginCompanySettings)
+      .where(and(inArray(pluginCompanySettings.pluginId, targets.map(target => target.plugin.id)), eq(pluginCompanySettings.enabled, false)));
+    const disabledKeys = new Set(disabled.map(row => `${row.pluginId}:${row.companyId}`));
+    return targets.filter(target => !disabledKeys.has(`${target.plugin.id}:${target.companyId}`)).map(target => target.plugin);
   }
   async function deliveryTargets() {
     const configured = await db.select({ plugin: plugins, companyId: pluginConfig.companyId })
       .from(plugins).innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
       .where(eq(plugins.status, "ready"))
       .orderBy(asc(plugins.installOrder), asc(pluginConfig.companyId));
-    const managed = await managedPlugins();
+    const managed = await managedTargets();
     if (!managed.length) return configured;
-    const companyRows = await db.select({ id: companies.id }).from(companies);
     const seen = new Set(configured.map(target => `${target.plugin.id}:${target.companyId}`));
-    const unconfigured = managed.flatMap(plugin => companyRows
-      .filter(company => !seen.has(`${plugin.id}:${company.id}`))
-      .map(company => ({ plugin, companyId: company.id })));
-    return [...configured, ...unconfigured].sort((a, b) =>
+    return [...configured, ...managed.filter(target => !seen.has(`${target.plugin.id}:${target.companyId}`))].sort((a, b) =>
       (a.plugin.installOrder ?? Infinity) - (b.plugin.installOrder ?? Infinity) || a.companyId.localeCompare(b.companyId));
   }
   const delivery = coordinator.register(DELIVERY_QUEUES.pluginLifecycle, {

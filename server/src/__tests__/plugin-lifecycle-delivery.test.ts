@@ -57,22 +57,23 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
-  async function withManagedGrant(run: (packagePath: string) => Promise<void>) {
+  async function withManagedPlugin(enabledCompanies: string[], run: (packagePath: string) => Promise<void>) {
     const root = await mkdtemp(path.join(tmpdir(), "delivery-managed-"));
     const packagePath = path.join(root, "sandbox-providers/daytona");
     await mkdir(packagePath, { recursive: true });
     vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
-      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] }, enabledCompanies: { daytona: enabledCompanies } } }));
     try { await run(packagePath); }
     finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   }
-  it("delivers to a plugin with a managed grant in every enabled company without a config row", async () => {
-    await withManagedGrant(async packagePath => {
-      const managedId = randomUUID(), ungrantedId = randomUUID(), otherCompanyId = randomUUID(), disabledCompanyId = randomUUID();
+  it("delivers to a managed plugin with no config row only in the companies the document enables", async () => {
+    const unlistedCompanyId = randomUUID(), disabledCompanyId = randomUUID(), absentCompanyId = randomUUID();
+    await withManagedPlugin([companyId, disabledCompanyId, absentCompanyId], async packagePath => {
+      const managedId = randomUUID(), ungrantedId = randomUUID();
       const manifestJson = { resourceLifecycle: ["project"], capabilities: ["events.subscribe"] } as never;
       await db.insert(companies).values([
-        { id: otherCompanyId, name: "Other company", issuePrefix: `O${otherCompanyId.slice(0, 6)}` },
+        { id: unlistedCompanyId, name: "Unlisted company", issuePrefix: `O${unlistedCompanyId.slice(0, 6)}` },
         { id: disabledCompanyId, name: "Disabled company", issuePrefix: `D${disabledCompanyId.slice(0, 6)}` },
       ]);
       await db.insert(plugins).values([
@@ -81,22 +82,21 @@ describePostgres("durable plugin lifecycle delivery", () => {
       ]);
       await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: disabledCompanyId, enabled: false });
       const resourceId = await event();
-      const otherResourceId = randomUUID(), disabledResourceId = randomUUID();
       await db.transaction(async tx => {
-        await recordResourceCreationEvent(tx as unknown as Db, otherCompanyId, "project", otherResourceId);
-        await recordResourceCreationEvent(tx as unknown as Db, disabledCompanyId, "project", disabledResourceId);
+        await recordResourceCreationEvent(tx as unknown as Db, unlistedCompanyId, "project", randomUUID());
+        await recordResourceCreationEvent(tx as unknown as Db, disabledCompanyId, "project", randomUUID());
       });
       const d = delivery();
       await d.run();
       const delivered = (id: string) => d.call.mock.calls.filter(([plugin]) => plugin === id).map(([, , input]) => input.resourceId);
-      expect(delivered(managedId).sort()).toEqual([resourceId, otherResourceId].sort());
+      expect(delivered(managedId)).toEqual([resourceId]);
       expect(delivered(ungrantedId)).toEqual([]);
       expect(delivered(pluginId)).toEqual([resourceId]);
       d.worker.dispose();
     });
   });
-  it("listens for a plugin with a managed grant and no config row until the last company disables it", async () => {
-    await withManagedGrant(async packagePath => {
+  it("listens for a managed plugin with no config row until its last enabled company disables it", async () => {
+    await withManagedPlugin([companyId], async packagePath => {
       await db.delete(plugins);
       const managedId = randomUUID();
       await db.insert(plugins).values({ id: managedId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
@@ -106,17 +106,28 @@ describePostgres("durable plugin lifecycle delivery", () => {
       const d = delivery();
       await d.worker.ready;
       expect(db.$client.listen).toHaveBeenCalledWith("paperclip_plugin_lifecycle", expect.any(Function), expect.any(Function));
-      const companyRows = await db.select({ id: companies.id }).from(companies);
-      const [lastCompany, ...others] = companyRows;
-      for (const company of others) await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: company.id, enabled: false });
-      d.applied();
-      await d.run();
-      expect(subscription.unlisten).not.toHaveBeenCalled();
-      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: lastCompany.id, enabled: false });
+      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId, enabled: false });
       d.applied();
       await vi.waitFor(() => expect(subscription.unlisten).toHaveBeenCalledTimes(1));
       d.worker.dispose();
     });
+  });
+  it("does not listen for a managed plugin that the document enables for no company", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "delivery-managed-"));
+    const packagePath = path.join(root, "sandbox-providers/daytona");
+    await mkdir(packagePath, { recursive: true });
+    vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+    try {
+      await db.delete(plugins);
+      await db.insert(plugins).values({ id: randomUUID(), pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
+        manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+      const d = delivery();
+      await d.worker.ready;
+      expect(db.$client.listen).not.toHaveBeenCalled();
+      d.worker.dispose();
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
   it("delivers project events to a storage provider only for projects attached to it", async () => {
     await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "workspaces.manage"], workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } } as never }).where(eq(plugins.id, pluginId));
