@@ -335,6 +335,30 @@ describe("producer-owned native usage", () => {
     expect((await accountingIntegrityService(db).inspect(input.companyId)).findings.filter(finding => finding.entityId === input.runId)).toEqual([]);
   });
 
+  it("prices a same-run late report from the rate card instead of posting free tokens", async () => {
+    const input = { ...await seed(), provider: { kind: "codex" as const, model: "gpt-6.1-sol" } };
+    const delivery = await createNativeUsageDelivery(db, input);
+    const report = (sequence: number, outputTokens: number) => {
+      const reported = event(input, sequence, "usage.reported");
+      reported.payload = { runDeltaBasis: "run", runDeltaAvailable: true, runDelta: { inputTokens: 1000, outputTokens } };
+      return reported;
+    };
+    await delivery.capture(report(1, 100000));
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    await delivery.capture(report(3, 120000));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId));
+    expect(charges).toHaveLength(2);
+    expect(charges.every(charge => charge.costStatus !== "unpriced")).toBe(true);
+    const late = charges.find(charge => charge.outputTokens === 20000)!;
+    expect(late.costCents).toBeGreaterThan(0);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    expect(run.usageJson).toMatchObject({ outputTokens: 120000, accountingLateReceiptPending: false });
+    expect((await accountingIntegrityService(db).inspect(input.companyId)).findings.filter(finding => finding.entityId === input.runId)).toEqual([]);
+  });
+
   it("keeps lower late usage as visible debt instead of guessing", async () => {
     const { input, source } = await finalizedSource();
     const continuation = await createNativeUsageContinuationDelivery(db, source);

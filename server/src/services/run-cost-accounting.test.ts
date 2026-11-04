@@ -217,6 +217,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await persistUsageReceipt(db, receipt(owner, sourceId, 4, 1.5, 140));
     expect(await accountRunCost(db, owner.runId)).toBe(true);
     expect(await total()).toBeCloseTo(150);
+    // Run totals follow provider-reported amounts, and corrections stay separate.
+    expect((await accountingIntegrityService(db).inspect(owner.companyId)).findings.filter(finding => finding.entityId === owner.runId)).toEqual([]);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(false);
   });
 

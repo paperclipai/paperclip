@@ -228,7 +228,9 @@ function formatUsdUnits(units: bigint) {
  * Lower or conflicting evidence stays visible debt for an operator to review. */
 function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEnvelope,
   event: typeof costEvents.$inferSelect, newer: boolean, reconciled?: UsageReceiptEnvelope["receipt"]) {
-  const receipt = late.receipt;
+  // A non-terminal report is never rate-card priced when it arrives, but its run
+  // totals are all this growth posts. Price them now, or the tokens stay free.
+  const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...late.receipt, complete: true } as AdapterUsageCheckpoint)) as UsageReceiptEnvelope["receipt"];
   const accepted = (key: string) => typeof previous[key] === "number" ? previous[key] as number : 0;
   const billingType = receipt.billingType === "api" ? "metered_api"
     : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
@@ -250,7 +252,7 @@ function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEn
     : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? acceptedUnits ?? 0n);
   if (units !== null && units < 0n) return null;
   const totalUnits = units === null ? acceptedUnits : (acceptedUnits ?? 0n) + units;
-  return { tokens, units, usage: {
+  return { tokens, units, pricingProvenance: receipt.pricingProvenance, usage: {
     inputTokens: accepted("inputTokens") + tokens.inputTokens,
     cachedInputTokens: accepted("cachedInputTokens") + tokens.cachedInputTokens,
     outputTokens: accepted("outputTokens") + tokens.outputTokens,
@@ -325,7 +327,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
       idempotencyKey: `${automaticCorrectionPrefix}${late.id}`, agentId: run.agentId, heartbeatRunId: run.id,
       issueId: event.issueId, projectId: event.projectId, goalId: event.goalId, billingCode: event.billingCode,
       provider: event.provider, biller: event.biller, providerRequestId: receipt?.providerRequestId ?? null,
-      pricingProvenance: receipt?.pricingProvenance ?? event.pricingProvenance, model: event.model, billingType: event.billingType,
+      pricingProvenance: growth.pricingProvenance ?? event.pricingProvenance, model: event.model, billingType: event.billingType,
       costStatus, inputTokens: growth.tokens.inputTokens, cachedInputTokens: growth.tokens.cachedInputTokens,
       outputTokens: growth.tokens.outputTokens, costCents: growth.units === null ? "0" : unitsToCents(growth.units),
       occurredAt: new Date(late.receivedAt),
