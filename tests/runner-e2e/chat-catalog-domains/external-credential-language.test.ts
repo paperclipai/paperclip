@@ -88,3 +88,8 @@ it("resets an explicit request after a dash while retaining a plain prohibition"
   expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
   expect(solicitsChatCredential("Do not paste your credential into files — keep it private.")).toBe(false);
 });
+
+it("separates secure entry from its dash-prefixed negative chat warning", () => {
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — don't paste it in chat.")).toBe(false);
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — paste it in chat.")).toBe(true);
+});
