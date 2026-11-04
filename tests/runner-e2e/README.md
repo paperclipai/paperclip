@@ -636,8 +636,11 @@ inputs, or a tracked env file.
 
 ## Private framework evidence
 
-An approved private-cell preflight uses Playwright's official JSON and JUnit
-reporters. Other runs keep the existing HTML and blob reporters. The immutable
+The protected TestOps reporter (`PAPERCLIP_CHAT_COMPLETION_TESTOPS=v1`) uses
+Playwright's official JSON and JUnit reporters only with an approved private-cell
+preflight. Other runs, including generic private full-stack runs, keep the existing
+HTML and blob reporters. A setup failure can retain its SDK audit without a
+framework report; a malformed present framework report still fails closed. The immutable
 JSON source is retained in `snapshots/playwright-framework-original.txt` and is
 parsed and deeply inspected as registered Playwright JSON, including decoded
 inline text/JSON attachment bodies. The text suffix preserves source bytes; it

@@ -81,7 +81,7 @@ export default defineConfig({
     stderr: "pipe",
   },
   outputDir: path.join(privateDir, "playwright-output"),
-  reporter: process.env.PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT ? [
+  reporter: process.env.PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT && process.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS === "v1" ? [
     ["list"],
     ["json", { outputFile: path.join(privateDir, "framework-report.json") }],
     ["junit", { outputFile: path.join(privateDir, "junit.xml") }],
