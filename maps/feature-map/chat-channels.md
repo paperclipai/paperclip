@@ -51,6 +51,14 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
+Slack async Cloud acceptance: [paired SQL/SDK fixture](../../server/src/services/chat-channels/slack/cloud-enrollment.postgres.test.ts)
+uses explicit app/Cloud test databases and a compiled companion broker checkout.
+It checks signed enrollment, sealed durable delivery, reconstruction, ACK,
+generation replacement and removal with synthetic provider transport and an
+off-host network guard. It does not prove full configuration UI, task admission,
+deployed wake or synchronous command/action/modal coverage. No endpoint sleep
+exemption follows from this fixture.
+
 Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
 verify the exact originating conversation, rejected forged/mismatched receipts,
 one working publication, no completion for a yielded run, and saved-response

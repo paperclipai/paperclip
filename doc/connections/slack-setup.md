@@ -179,3 +179,35 @@ An explicit managed reconnect reinstalls the saved app and verifies the replacem
 bot credentials. Its request ID is saved before dispatch, so a duplicate completed
 request does not reinstall again. Credential-configuration recovery still resumes
 the saved token after a downstream failure. No reconnect creates another Slack app.
+
+## Durable Cloud Events API delivery
+
+A broker that advertises `slackEvents.version=1` can accept a signed Events API
+registration after ordinary configuration settles. The producer uses the saved
+child app ID, current workspace, signing key, endpoint/connection and runtime
+generation. It retains the existing public callback URL. Missing verified app
+identity or broker support leaves the existing setup in place; it does not guess
+an identity or substitute the Slack manager's signing key.
+
+Cloud stores the child signing key through its existing encrypted stack vault.
+Registration metadata and receipts contain no plaintext credentials. An unchanged
+credential/endpoint identity reuses its immutable vault ref across generations;
+rotation and current registration authority remain separately fenced. Removal
+retires exact queue membership and prevents an old generation from reenrolling.
+The app saves only the confirmed nonsecret binding descriptor and signals the
+existing connection-events owner in that same transaction.
+
+Only authenticated `event_callback` messages use this durable lane. The sealed
+queue retains original bytes, signature, timestamp and acceptance time. The app
+checks current endpoint/generation authority before SDK handling. It verifies
+original freshness at Cloud acceptance; ordinary external requests still use
+current time. The credential snapshot lease releases before normal lifecycle
+callbacks reacquire their own leases.
+
+This does not qualify a complete Slack endpoint for sleep. Slash commands,
+interactive actions, modal validation and challenges still need their full
+synchronous response semantics. The endpoint blocker remains. The paired
+PostgreSQL producer/SDK test proves synthetic-provider signed enrollment,
+sealed draining, acknowledgment and generation/removal behavior. It does not
+prove live Slack, complete configuration UI, domain task admission or a deployed
+stop/restart/wake journey.
