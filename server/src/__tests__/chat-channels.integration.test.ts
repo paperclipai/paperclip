@@ -8800,6 +8800,96 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     });
 
+    it.each(["owned", "slow-renewal", "lost-token", "foreign-token", "foreign-token-before-renewal", "paused", "removed", "replacement", "credential-change", "foreign-company", "shutdown"] as const)("fences receiver construction across renewal: %s", async fault => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: fault === "slow-renewal" || fault === "foreign-token-before-renewal" ? 5000 : 50 });
+      const listenerStarted = vi.fn(async () => {});
+      f.runtime.initializeHook = listenerStarted;
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const constructing = new Promise<void>(resolve => { entered = resolve; });
+      const replace = f.runtime.replaceEndpoint.bind(f.runtime);
+      const replacement = vi.spyOn(f.runtime, "replaceEndpoint").mockImplementation(async options => {
+        entered(); await gate; return replace(options);
+      });
+      const configured = f.configure().then(value => ({ value }), error => ({ error }));
+      const foreignToken = randomUUID();
+      let shutdown: Promise<void> | undefined;
+      try {
+        await constructing;
+        if (fault === "lost-token") await db.delete(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, f.endpoint.id), eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime")));
+        if (fault === "foreign-token" || fault === "foreign-token-before-renewal") await db.update(chatEndpointLeases).set({ token: foreignToken }).where(and(eq(chatEndpointLeases.endpointId, f.endpoint.id), eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime")));
+        if (fault === "paused") await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.endpoint.id));
+        if (fault === "removed") await db.delete(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+        if (fault === "replacement") await db.update(chatEndpoints).set({ setup: sql`${chatEndpoints.setup} || jsonb_build_object('runtimeGeneration', (${chatEndpoints.setup}->>'runtimeGeneration')::integer + 1)` }).where(eq(chatEndpoints.id, f.endpoint.id));
+        if (fault === "foreign-company") {
+          const foreign = await seedCompany();
+          await expect(db.update(chatEndpoints).set({ companyId: foreign.companyId }).where(eq(chatEndpoints.id, f.endpoint.id)))
+            .rejects.toMatchObject({ cause: { code: "23503" } });
+        }
+        if (fault === "credential-change") await db.update(toolConnections).set({ credentialSecretRefs: [] }).where(eq(toolConnections.id, f.endpoint.connectionId));
+        if (fault === "shutdown") shutdown = f.service.shutdown();
+        await new Promise(resolve => setTimeout(resolve, 200));
+        release();
+        const result = await configured;
+        const [lease] = await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, f.endpoint.id), eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime")));
+        if (fault === "owned" || fault === "slow-renewal" || fault === "foreign-company") {
+          expect(result).not.toHaveProperty("error");
+          expect(listenerStarted).toHaveBeenCalledOnce();
+          expect(f.runtime.get(f.endpoint.id)).not.toBeNull();
+          expect(lease).toBeDefined();
+        } else {
+          expect(result).toHaveProperty("error");
+          expect(listenerStarted).not.toHaveBeenCalled();
+          expect(f.runtime.get(f.endpoint.id)).toBeNull();
+          if (fault === "foreign-token" || fault === "foreign-token-before-renewal") expect(lease?.token).toBe(foreignToken);
+          else expect(lease).toBeUndefined();
+        }
+      } finally {
+        release(); await configured; await shutdown; replacement.mockRestore();
+        if (fault === "removed") await f.service.shutdown();
+        else await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("rechecks durable ownership after an earlier renewal finishes before listener start", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: 50 });
+      const listenerStarted = vi.fn(async () => {}); f.runtime.initializeHook = listenerStarted;
+      let releaseConstruction!: () => void, constructionEntered!: () => void, releaseRenewal!: () => void, renewalEntered!: () => void;
+      const construction = new Promise<void>(resolve => { releaseConstruction = resolve; });
+      const enteredConstruction = new Promise<void>(resolve => { constructionEntered = resolve; });
+      const renewal = new Promise<void>(resolve => { releaseRenewal = resolve; });
+      const enteredRenewal = new Promise<void>(resolve => { renewalEntered = resolve; });
+      let constructionPending = false;
+      const replace = f.runtime.replaceEndpoint.bind(f.runtime);
+      const replacement = vi.spyOn(f.runtime, "replaceEndpoint").mockImplementation(async options => {
+        constructionPending = true; constructionEntered(); await construction; return replace(options);
+      });
+      let gated = false;
+      const transact = db.transaction.bind(db);
+      const transaction = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof db.transaction>) => {
+        const result = await transact(...args);
+        if (result === true && constructionPending && !gated) { gated = true; renewalEntered(); await renewal; }
+        return result;
+      }) as typeof db.transaction);
+      const configured = f.configure().then(value => ({ value }), error => ({ error }));
+      const foreignToken = randomUUID();
+      try {
+        await enteredConstruction; await enteredRenewal;
+        await db.update(chatEndpointLeases).set({ token: foreignToken }).where(and(eq(chatEndpointLeases.endpointId, f.endpoint.id), eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime")));
+        releaseConstruction();
+        await vi.waitFor(() => expect(f.runtime.get(f.endpoint.id)).not.toBeNull());
+        releaseRenewal();
+        expect(await configured).toHaveProperty("error");
+        expect(listenerStarted).not.toHaveBeenCalled();
+        const [lease] = await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, f.endpoint.id), eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime")));
+        expect(lease?.token).toBe(foreignToken);
+      } finally {
+        releaseConstruction(); releaseRenewal(); await configured; transaction.mockRestore(); replacement.mockRestore();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
     it("restarts a receiver after token loss only after the old listener has stopped", async () => {
       const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: 50 });
       const onError = vi.fn();
