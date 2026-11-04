@@ -78,6 +78,20 @@ describe("Codex driver terminal-turn history replay", () => {
       turnId: "turn-1",
       item: { id: "msg-1", type: "agentMessage", text: "Working on it." },
     });
+    const command = { id: "cmd-1", type: "commandExecution", command: "ls", status: "completed" };
+    second.push("item/started", { threadId: "thread-1", turnId: "turn-1", item: command });
+    second.push("item/commandExecution/outputDelta", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "cmd-1",
+      delta: "file.txt",
+    });
+    second.push("item/completed", { threadId: "thread-1", turnId: "turn-1", item: command });
+    second.push("turn/plan/updated", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      plan: [{ step: "Inspect", status: "completed" }],
+    });
     second.push("turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-1", status: "completed", items: [] },
@@ -104,6 +118,9 @@ describe("Codex driver terminal-turn history replay", () => {
     await consume;
     expect(events.some((event) => event.eventType === "session.failed")).toBe(false);
     expect(events.filter((event) => event.turnId === "turn-1")).toEqual([]);
+    expect(
+      events.filter((event) => event.eventType.startsWith("tool.execution.") || event.eventType === "plan.updated"),
+    ).toEqual([]);
     expect(
       events.filter((event) =>
         event.eventType === "harness.diagnostic"

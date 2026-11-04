@@ -37,6 +37,28 @@ import {
   text,
 } from "./codex-driver-values.js";
 
+const DELTA_KINDS: Record<string, string> = {
+  "item/agentMessage/delta": "agentMessage",
+  "item/plan/delta": "plan",
+  "item/reasoning/summaryTextDelta": "reasoning",
+  "item/reasoning/textDelta": "reasoning",
+  "item/commandExecution/outputDelta": "commandExecution",
+  "item/fileChange/outputDelta": "fileChange",
+  "item/fileChange/patchUpdated": "fileChange",
+  "turn/diff/updated": "diff",
+  "turn/plan/updated": "plan",
+};
+
+// Turn-scoped activity a resumed runner can replay from committed history.
+// turn/completed is excluded: its replay still passes the fingerprint check.
+const REPLAYABLE_TURN_METHODS = new Set([
+  "turn/started",
+  "item/started",
+  "item/completed",
+  "item/mcpToolCall/progress",
+  ...Object.keys(DELTA_KINDS),
+]);
+
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
       for await (const notification of state.transport.notifications()) {
@@ -159,6 +181,13 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    // Check before canonical mapping, which would otherwise emit tool and plan
+    // events for the replayed turn while no turn is active.
+    if (
+      threadId === state.opened.threadId
+      && REPLAYABLE_TURN_METHODS.has(notification.method)
+      && ignoreRestoredTerminalReplay(state, notification.method, turnId)
+    ) return;
     if (notification.method === "paperclip/runtimeRequestExpired") {
       const payload = record(params.payload);
       const requestId = text(payload.requestId);
@@ -424,7 +453,6 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
-      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       const autonomousGoalTurn = state.currentGoal?.status === "active"
         && state.activeTurnId === null
         && !state.turnStartPending
@@ -478,7 +506,6 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "item/started") {
-      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item start")) return;
       const channel = channelForStartedItem(state, item);
       if (itemId) state.itemChannels.set(itemId, channel);
@@ -496,7 +523,6 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "item/completed") {
-      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item completion")) return;
       if (!captureResultFromItem(state, item, turnId)) return;
       const channel = itemId
@@ -533,20 +559,8 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         recordWorkspaceChanges(state, turnId, item.changes, true);
       return;
     }
-    const deltaKinds: Record<string, string> = {
-      "item/agentMessage/delta": "agentMessage",
-      "item/plan/delta": "plan",
-      "item/reasoning/summaryTextDelta": "reasoning",
-      "item/reasoning/textDelta": "reasoning",
-      "item/commandExecution/outputDelta": "commandExecution",
-      "item/fileChange/outputDelta": "fileChange",
-      "item/fileChange/patchUpdated": "fileChange",
-      "turn/diff/updated": "diff",
-      "turn/plan/updated": "plan",
-    };
-    const deltaKind = deltaKinds[notification.method];
+    const deltaKind = DELTA_KINDS[notification.method];
     if (deltaKind !== undefined) {
-      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
       const methodChannel = channelForDelta(state, notification.method);
       const channel =
