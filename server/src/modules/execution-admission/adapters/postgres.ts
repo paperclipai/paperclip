@@ -6,9 +6,10 @@ import {
   projects,
   type Db,
 } from "@paperclipai/db";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TaskExecutionPolicyStore } from "../application/policy.js";
-import { decideSettlement, sameAdmissionRecord, type AdmissionRecord, type AdmittedProjectSet } from "../domain/admission.js";
+import { decideSettlement, retainedSessionProjects, sameAdmissionRecord, type AdmissionRecord, type AdmittedProjectSet,
+  type RetainedSessionProjects } from "../domain/admission.js";
 import { ABSENT_TASK_EXECUTION_POLICY, type TaskExecutionPolicy } from "../domain/policy.js";
 
 function assertTransaction(tx: Db) {
@@ -144,6 +145,19 @@ export async function readAdmittedProjects(db: Db, scope: { companyId: string; a
   return { kind: "found", runId: row.runId, attempt: row.attempt, primaryProjectId: row.primaryProjectId,
     contextRevision: row.contextRevision, settled: row.settledAt !== null,
     projects: row.admittedProjectIds ? { kind: "known", projectIds: row.admittedProjectIds } : { kind: "unknown" } };
+}
+
+/**
+ * The set a retained provider session still carries: the latest admission of
+ * the session's last run, union the current references. No admission for that
+ * run, or a set settled before sets were kept, requires a fresh context.
+ */
+export async function readRetainedSessionProjects(db: Db, scope: { companyId: string; runId: string },
+  currentProjectIds: readonly string[]): Promise<RetainedSessionProjects> {
+  const [row] = await db.select({ projectIds: admissions.admittedProjectIds }).from(admissions)
+    .where(and(eq(admissions.companyId, scope.companyId), eq(admissions.runId, scope.runId)))
+    .orderBy(desc(admissions.attempt)).limit(1);
+  return retainedSessionProjects(row?.projectIds ? { kind: "known", projectIds: row.projectIds } : { kind: "unknown" }, currentProjectIds);
 }
 
 /** Active charge counts per project. Every stored charge is unsettled. */

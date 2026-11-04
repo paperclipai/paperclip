@@ -1,5 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 import type { PgInsertValue } from "drizzle-orm/pg-core";
 import { issueComments, type Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -12,6 +13,7 @@ export function insertIssueComment(db: WriteDb, input: PgInsertValue<typeof issu
     await notifyIssueRecovery(tx, { companyId: input.companyId,
       issueId: typeof input.issueId === "string" ? input.issueId : undefined });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `company:${input.companyId}`);
+    await notifyTaskProjectReferences(tx, { companyId: input.companyId, issueId: typeof input.issueId === "string" ? input.issueId : null });
     return tx.insert(issueComments).values(input).returning();
   });
 }

@@ -46,6 +46,8 @@ export const issues = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    /** Advanced by triggers in the statement of every project-reference source write. See issue_project_references. */
+    contextReferenceRevision: bigint("context_reference_revision", { mode: "number" }).notNull().default(0),
     lastStatusDecisionId: uuid("last_status_decision_id"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),

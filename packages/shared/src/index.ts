@@ -2616,6 +2616,7 @@ export {
   parseRoutineMentionHref,
   parseSkillMentionHref,
   parseUserMentionHref,
+  scanProjectMentions,
   type ParsedAgentMention,
   type ParsedProjectMention,
   type ParsedRoutineMention,

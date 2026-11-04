@@ -7,6 +7,7 @@ import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-re
 import { finishedIdleWake } from "./idle-work-proof.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
@@ -5283,6 +5284,7 @@ const issueListSelect = {
   status: issues.status,
   displayStatus: issueDisplayStatusSql(),
   statusVersion: issues.statusVersion,
+  contextReferenceRevision: issues.contextReferenceRevision,
   lastStatusDecisionId: issues.lastStatusDecisionId,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
@@ -11160,6 +11162,7 @@ export function issueService(db: Db) {
         await notifyStatusCardIssueChange(tx, companyId);
         await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
+        await notifyTaskProjectReferences(tx, { companyId, issueId: values.id });
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -12220,6 +12223,9 @@ export function issueService(db: Db) {
         }
         if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
           await notifyApprovalWork(tx, receiptExisting.companyId);
+        }
+        if (patch.title !== undefined || patch.description !== undefined || patch.projectId !== undefined) {
+          await notifyTaskProjectReferences(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId)
@@ -13499,6 +13505,7 @@ export function issueService(db: Db) {
         await assertAgentInteraction(tx as unknown as Db, { ...source, actorAgentId, operation: "comment", lock: true });
         await notifyExternalConversationSettlement(tx, source);
         await notifyStatusCardIssueChange(tx, source.companyId);
+        await notifyTaskProjectReferences(tx, source);
         const [comment] = await tx
           .delete(issueComments)
           .where(eq(issueComments.id, commentId))
@@ -13542,6 +13549,7 @@ export function issueService(db: Db) {
         });
         await notifyExternalConversationSettlement(tx, source);
         await notifyStatusCardIssueChange(tx, source.companyId);
+        await notifyTaskProjectReferences(tx, source);
         await notifyChatInboundWakeNotices(tx, source);
         const now = new Date();
         const [comment] = await tx
