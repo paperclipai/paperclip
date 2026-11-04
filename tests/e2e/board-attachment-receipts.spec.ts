@@ -592,6 +592,7 @@ test("announcement dismissal handler tolerates an already-removed announcement",
   });
   await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 1000 });
   await expect(page.locator("#continue")).toHaveAttribute("data-clicked", "yes");
+  await expect(dismiss).toHaveCount(0);
 });
 
 test("announcement dismissal handler preserves errors while the target remains", async ({ page }) => {
@@ -601,4 +602,15 @@ test("announcement dismissal handler preserves errors while the target remains",
   await expect(dismissAnnouncement(page, dismiss)).rejects.toThrow(/Timeout|timeout/);
   await expect(dismiss).toBeVisible();
   await expect(dismiss).toBeDisabled();
+});
+
+test("announcement dismissal handler tolerates detachment after its element snapshot", async ({ page }) => {
+  await page.setContent('<aside aria-label="Paperclip announcements"><button aria-label="Dismiss announcement">Dismiss</button></aside>');
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  const snapshot = await dismiss.elementHandles();
+  expect(snapshot).toHaveLength(1);
+  await snapshot[0]!.evaluate(element => element.remove());
+  dismiss.elementHandles = async () => snapshot;
+  await dismissAnnouncement(page, dismiss);
+  await expect(dismiss).toHaveCount(0);
 });
