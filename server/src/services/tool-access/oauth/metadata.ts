@@ -384,7 +384,10 @@ function trustedCustomEntraResource(params: {
     const identityScopes = new Set(["openid", "profile", "email", "offline_access"]);
     return bindings.some((value: unknown) => {
       const binding = asRecord(value);
-      if (binding.serverUrl !== server.href || binding.resource !== params.resource || !Array.isArray(binding.scopes)) return false;
+      if (typeof binding.serverUrl !== "string" || binding.resource !== params.resource || !Array.isArray(binding.scopes)) return false;
+      let trustedServer: URL;
+      try { trustedServer = new URL(binding.serverUrl); } catch { return false; }
+      if (trustedServer.protocol !== "https:" || trustedServer.username || trustedServer.password || trustedServer.hash || trustedServer.href !== server.href) return false;
       const allowed = binding.scopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0 && !identityScopes.has(scope));
       return allowed.length > 0 && params.scopes!.some((scope) => allowed.includes(scope)) &&
         params.scopes!.every((scope) => identityScopes.has(scope) || allowed.includes(scope));
@@ -395,6 +398,14 @@ function trustedCustomEntraResource(params: {
 export function connectionServerUrl(config: Record<string, unknown>): string | null {
   const value = config.url ?? config.endpoint ?? config.remoteUrl;
   return typeof value === "string" ? value : null;
+}
+
+export function oauthRefreshRequestedScopes(grant: Record<string, unknown>, oauth: Record<string, unknown>): string[] {
+  for (const value of [grant.requestedScopes, grant.scopes, oauth.scopes, oauth.scope]) {
+    const scopes = normalizeOauthScopes(value);
+    if (scopes.length > 0) return scopes;
+  }
+  return [];
 }
 
 /** Omit the indicator only for a Microsoft destination or an operator-approved binding. */

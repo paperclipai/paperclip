@@ -1,7 +1,7 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
-import { connectionServerUrl, oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
+import { connectionServerUrl, oauthConfig, normalizeOauthScopes, oauthRefreshRequestedScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -320,12 +320,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               client.clientSecret,
             ),
             grantType: "refresh_token",
-            scopes:
-              normalizeOauthScopes(grantOauth.scopes).length > 0
-                ? normalizeOauthScopes(grantOauth.scopes)
-                : normalizeOauthScopes(oauth.scopes).length > 0
-                  ? normalizeOauthScopes(oauth.scopes)
-                  : normalizeOauthScopes(oauth.scope),
+            scopes: oauthRefreshRequestedScopes(grantOauth, oauth),
             refreshToken: refreshSecret.value,
             resource:
               typeof oauth.resource === "string" && oauth.resource

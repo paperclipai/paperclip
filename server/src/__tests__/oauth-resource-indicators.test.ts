@@ -4,6 +4,7 @@ import {
   isMicrosoftOAuthUrl,
   isMicrosoftResourceUrl,
   isMicrosoftV2OAuthUrl,
+  oauthRefreshRequestedScopes,
   shouldOmitMicrosoftResourceIndicator,
 } from "../services/tool-access/oauth/metadata.js";
 import {
@@ -88,6 +89,21 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
         vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", "not-json");
         expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: resource })).toBe(false);
       } finally { vi.unstubAllEnvs(); }
+    });
+
+    it("normalizes root URLs while preserving the query", () => {
+      vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", JSON.stringify([{ serverUrl: "https://mcp.example.com", resource, scopes: [scopes[0]] }]));
+      try {
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: "https://mcp.example.com/" })).toBe(true);
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: "https://mcp.example.com/?other=1" })).toBe(false);
+      } finally { vi.unstubAllEnvs(); }
+    });
+
+    it("checks the originally requested scopes when a refresh grant has expanded permissions", () => {
+      expect(oauthRefreshRequestedScopes(
+        { requestedScopes: ["api://custom-api/.default"], scopes: ["api://custom-api/read"] },
+        {},
+      )).toEqual(["api://custom-api/.default"]);
     });
   });
 
