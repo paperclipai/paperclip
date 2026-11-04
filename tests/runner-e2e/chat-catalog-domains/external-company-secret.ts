@@ -49,8 +49,10 @@ export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBindi
   const prompt=q.prompt.replace(/\(Do not include the key value\.\)/gi,"").trim();
   const guidance=[qs.title,qs.description,q.header,q.helpText,qs.submitLabel].filter(Boolean).join("\n");
   const instructions=guidance.replace(/\b(?:(?:do|should|must|can|could|will|would)\s+not|don.t|never)\s+(?:paste|send|share|provide|enter|include)[^.!?\n]*/gi,"");
-  const unsafeInstructions=instructions.split(/[.!;\n]+/).some(clause=>/\b(?:paste|send|share|provide|enter|include|supply|type)\b.{0,70}\b(?:key|credential|token)\b/i.test(clause)
-   &&!/\b(?:in|into|on|via|through)\b.{0,45}\b(?:settings|secrets|secure (?:form|page|field))\b/i.test(clause));
+  const unsafeInstructions=instructions.split(/[.!;\n]+/).some(clause=>{
+   const request=clause.match(/\b(?:paste|send|share|provide|enter|include|supply|type)\b.{0,70}?\b(?:key|credential|token)\b(.*)/i);
+   return !!request&&!/^\s+(?:value\s+)?(?:only\s+)?(?:in|into|on|via|through)\s+(?:(?:the|your|a)\s+)?(?:(?:secure\s+)?Settings(?:\s*(?:→|>|\/)\s*|\s+)Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field))\b/i.test(request[1]!);
+  });
   if(/\b(?:what|which)\b[^.!?;\n]{0,80}\b(?:key|credential|token)\s+value\b/i.test(guidance)||unsafeInstructions||!/^(?:After saving [^?]+,\s*)?(?:what|which) environment variable name should Morgan (?:receive|use)\?$/i.test(prompt)
    || /\b(?:CEO|Riley|Jordan|another agent|all agents|every agent)\b/i.test(text))return;
   const answer=row.result?.answers[0];

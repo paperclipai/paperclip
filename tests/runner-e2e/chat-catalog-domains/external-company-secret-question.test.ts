@@ -86,3 +86,7 @@ it.each(["Enter the deployment key in the secure Settings Secrets form.","You sh
  const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=helpText;
  expect(companySecretQuestionHandoff(row,binding)).toMatchObject({environmentName:"DEPLOYMENT_API_KEY"});
 });
+it("rejects a plaintext destination even when later guidance mentions Settings Secrets",()=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText="Enter the deployment key in a plaintext file before opening Settings Secrets.";
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
