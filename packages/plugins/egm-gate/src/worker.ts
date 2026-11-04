@@ -65,12 +65,24 @@ async function writeRecord(ctx: PluginContext, companyId: string, issueId: strin
  * No pide una card, no pide decisión y no pide un documento: pide el cambio.
  */
 async function enforceGate(ctx: PluginContext, issueId: string, companyId: string): Promise<void> {
-  const snapshot = await snapshotIssue(ctx, issueId, companyId);
+  const config = await readConfig(ctx, companyId);
+  let snapshot = await snapshotIssue(ctx, issueId, companyId);
   if (!snapshot) return;
   if (snapshot.status !== "done") return;
 
-  const config = await readConfig(ctx, companyId);
-  const evaluation = evaluateIssue(snapshot, config);
+  let evaluation = evaluateIssue(snapshot, config);
+
+  // Gracia: el cierre y la revisión del `plan` pueden llegar con milisegundos de
+  // diferencia. Antes de rebotar, se relee el documento una vez más.
+  if (!evaluation.ok) {
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    const again = await snapshotIssue(ctx, issueId, companyId);
+    if (again && again.status === "done") {
+      snapshot = again;
+      evaluation = evaluateIssue(snapshot, config);
+    }
+  }
+
   if (evaluation.ok) {
     await ctx.activity.log({
       companyId,
