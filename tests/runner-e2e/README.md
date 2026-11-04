@@ -63,8 +63,11 @@ chat. Other YAML entries remain planning inventory; registration is not live
 qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
-`recover-controller` journey with the recorded Codex and Claude staging models
-on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+`recover-controller` journey with the recorded Codex staging model
+on a fresh reusable warm Daytona fixture. Warm controller-replacement and legacy
+migration suites use the production managed warm-session capability to select
+profiles and set both the agent and environment policy to warm. Claude, OpenCode
+and Grok remain covered by the per-turn rolling and migration lanes. The sandbox, Runner and provider history
 must survive both controller replacements. After a completed task tool in an active revision
 turn, it keeps the owned development controller offline for 300 seconds. This
 exceeds the 60-second ownership lease and remains within the Runner's 420-second
@@ -83,7 +86,7 @@ ownership/reconnect limits, archive/delete backstops and owned cleanup remain un
 The retained continuation accepts whitespace between its exact marker and the
 exact `queue_r` output token; readiness and final grading use the same matcher.
 
-Definition version 7 uses the existing warm reusable environment with a dedicated
+Definition version 8 uses an explicitly warm agent and the warm reusable environment with a dedicated
 configuration key. Only the post-completion replacement follow-up uses the normal
 board-authenticated task-comment API, with one persisted user comment and the
 unchanged follow-up request. Initial creation, active outage and queued continuation
@@ -129,7 +132,7 @@ The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
 
 The explicit-only `remote-workspace-storage` suite reuses that controller-restart
-journey for one native Codex Daytona cell. It verifies the default-enabled remote
+journey for one explicitly warm native Codex Daytona cell. It verifies the default-enabled remote
 workspace setting through the ordinary instance API and creates a projectless task.
 It enables the existing experimental Files viewer through that API. The agent
 creates only synthetic source, an unpushed Git commit, and an untracked random
@@ -144,7 +147,8 @@ after completion, a second replacement must admit a useful fourth native turn
 through the ordinary task-comment API with the same native and provider session.
 That request specifies one plain-text line containing its marker, one space, and
 the command's actual output; the expected output stays private to the evaluator.
-The browser then reads the saved reference through Files again. This is same-task
+The browser then reads the saved reference through Files again, with the sandbox
+location still retained. This is same-task
 continuation, not a separate-task sharing test. The ordinary original-process/lease,
 receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
 
@@ -3525,7 +3529,9 @@ change credentials, or change evaluation and evidence limits.
 # Legacy workspace migration
 
 `legacy-workspace-migration` and `legacy-workspace-migration-warm` are explicit,
-paid, two-turn Daytona workflows for registered native production profiles. They
+paid, two-turn Daytona workflows. The per-turn lane covers every registered native
+production profile; the warm lane selects supported managed warm providers and
+sets the agent policy explicitly to warm. They
 create a private reference file and ask a question on a local-disk controller.
 The supervisor stops that controller, runs the packaged offline migration with
 owned PostgreSQL and S3, verifies the export, starts an empty-home controller,

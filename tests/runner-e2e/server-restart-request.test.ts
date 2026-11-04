@@ -30,13 +30,16 @@ it.each(["rolling-web-deployment", "rolling-web-deployment-warm"])("accepts the 
   expect(request).not.toHaveProperty("controllerOutage");
 });
 
-const cells = ["everyday-workflows", "daytona-restart-continuity"].flatMap(suite =>
-  ["codex", "acpx"].map(provider => {
-    const execution = runnerMatrix.find(row => row.suite.id === suite && row.task.id === "recover-controller"
-      && row.environment.id === "daytona" && row.profile.generation === "native" && row.profile.provider === provider);
-    if (!execution) throw new Error(`Missing real ${suite}/${provider} continuity cell`);
-    return execution;
-  }));
+const cells = [
+  { suite: "everyday-workflows", provider: "codex" },
+  { suite: "everyday-workflows", provider: "acpx" },
+  { suite: "daytona-restart-continuity", provider: "codex" },
+].map(({ suite, provider }) => {
+  const execution = runnerMatrix.find(row => row.suite.id === suite && row.task.id === "recover-controller"
+    && row.environment.id === "daytona" && row.profile.generation === "native" && row.profile.provider === provider);
+  if (!execution) throw new Error(`Missing real ${suite}/${provider} continuity cell`);
+  return execution;
+});
 
 it.each(cells)("accepts the real supervisor request file for $id", async execution => {
   const outage = controllerOutageForExecution(execution, {})!;

@@ -189,7 +189,7 @@ export async function runEverydayFlow(input: Input) {
   if (remoteWorkspaceStorage) {
     const perTurn = execution.suite.definitionMetadata?.lifecycleCoverage === "per-turn-disposable";
     ev.remoteWorkspaceStorage = { browserReadPhases: [],
-      expectedFileSource: perTurn || isRollingWebDeployment(execution) ? "saved" : "live",
+      expectedFileSource: perTurn || execution.suite.definitionMetadata?.lifecycleCoverage === "warm-reusable" ? "saved" : "live",
       expectedLocation: perTurn ? "released" : "retained" };
   }
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";

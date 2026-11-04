@@ -167,7 +167,7 @@ describe("remote workspace Product E2E qualification", () => {
     expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
     expect(() => controllerOutageForExecution(cells[0]!, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" })).toThrow("shorter");
     expect(cells[0]!.task.expectedRunCount).toBe(4);
-    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 5, savedRunReadback: "public-runId-summary-then-bound-native-detail",
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 6, lifecycleCoverage: "warm-reusable", workspaceFileSource: "saved-exact-snapshot-with-retained-location", savedRunReadback: "public-runId-summary-then-bound-native-detail",
       fileViewerSetup: "ordinary-setting-enabled-with-storage-default-preserved", retainedControllerContinuation: true,
       postControllerReplyFormat: "one-plain-text-line-marker-space-actual-command-output",
       retainedControllerFollowupTransport: "task_comment_api", autoStopIntervalMinutes: 15 });
@@ -179,6 +179,7 @@ describe("remote workspace Product E2E qualification", () => {
     const agent = cells[0]!.profile.buildAgent({ environmentId: id("9"), environmentFixtureId: "daytona", workspacePath: "/unavailable-host-folder",
       secretRefs: { OPENAI_API_KEY: { type: "secret_ref", secretId: id("8"), version: "latest" } }, executionId: "synthetic" });
     expect((agent.adapterConfig as Record<string, unknown>).cwd).toBeUndefined();
+    expect(agent.adapterConfig).toMatchObject({ lifecycleMode: "warm" });
     expect(cells[0]!.task.buildPrompt("synthetic")).toContain("fresh random 32-character lowercase hexadecimal reference");
   });
 
