@@ -964,7 +964,9 @@ export async function claimNativeRestartRecoveries(input: {
         !row.coordinator.controllerPid &&
         !row.coordinator.controllerProcessStartedAt &&
         !row.coordinator.leaseOwner &&
-        !row.coordinator.leaseExpiresAt &&
+        // A graceful shutdown stamps an expiry on every coordinator it
+        // suspends. Without an owner, an elapsed expiry grants no authority.
+        (!row.coordinator.leaseExpiresAt || row.coordinator.leaseExpiresAt <= now) &&
         !row.coordinator.failureDetail?.successorRunId &&
         !row.run.processPid &&
         !row.run.processGroupId &&
