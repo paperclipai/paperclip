@@ -16,7 +16,7 @@ import { getStorageService } from "../../storage/index.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
-import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
@@ -121,7 +121,8 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
           || task.executionRunId === owner.runId) fail("offline_owner_unsettled");
         const leases = await tx.select().from(environmentLeases).where(and(
           eq(environmentLeases.companyId, owner.companyId), eq(environmentLeases.heartbeatRunId, owner.runId))).for("share");
-        if (!leases.length || leases.some(lease => {
+        const stopped = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(tx as unknown as Db, lease)));
+        if (!stopped.length || stopped.some(lease => {
           const receipt = lease.metadata?.remoteExecutionTermination as { confirmedAt?: unknown } | undefined;
           const confirmedAt = Date.parse(String(receipt?.confirmedAt));
           return lease.issueId !== owner.issueId || !hasRemoteTerminationReceipt(lease)

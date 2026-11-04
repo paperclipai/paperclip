@@ -156,3 +156,17 @@ Compare retained turn completion to the follow-up execution start, not its queue
 creation time. A queued follow-up can predate the prior turn completion. A remote
 stop can also predate a later logical failure caused by recovery timeout. These
 proofs use the recorded execution start and never rewrite lifecycle timestamps.
+
+### Existing typed checkpoint authority
+
+When a retained source already has a valid typed database checkpoint, derive its
+small recovery metadata from that authority and the current admitted input. Do
+not consult a stale or absent local warm supervisor. Validate the same company,
+agent, task, normalized session and Runner bindings and retain the checkpoint,
+snapshot, owner and session pointer unchanged. Offline warm import without a
+supervisor still requires this existing typed authority; normal runtime import
+keeps its supervisor and ownership requirements.
+
+For a retired reusable sandbox lease, the existing remote-termination resolver
+may prove destruction through its exact successor handoff chain. A stopped
+successor, broken chain or competing tip does not grant archival authority.

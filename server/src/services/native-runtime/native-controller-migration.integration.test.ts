@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, environmentLeases, environments, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { captureLegacyDurablePrpCheckpoint, DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
@@ -13,6 +13,7 @@ import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from
 import { createNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import { createReusableLeaseHandoff } from "../environment-lease-handoff.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { nativeSha256 } from "./canonical.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
@@ -22,10 +23,12 @@ import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
-  "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable",
+  "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
+  "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
   "controller_observed_stopped", "controller_observed_stop_before_finish", "controller_observed_missing", "controller_observed_foreign",
-  "controller_observed_live", "controller_observed_result", "controller_observed_retry", "controller_observed_task", "controller_observed_old_receipt", "controller_observed_revoked"])("offline native controller migration (%s)", scenario => {
+  "controller_observed_live", "controller_observed_result", "controller_observed_retry", "controller_observed_task", "controller_observed_old_receipt", "controller_observed_revoked",
+  "controller_observed_handoff", "controller_observed_handoff_stopped", "controller_observed_handoff_broken", "controller_observed_handoff_fork"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
   async function fixture(commandCount = 1, warm = false) {
@@ -269,17 +272,47 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     if (scenario === "stale_success") await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
     if (scenario === "stale_busy") await f.db.update(nativeRunFinalizations).set({ leaseOwner: "live-owner",
       leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
-    if (scenario === "stale_durable") {
-      const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, { runId: f.runId,
-        runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId },
+    if (scenario.startsWith("stale_durable")) {
+      const state = JSON.parse(f.source);
+      if (scenario === "stale_durable_runner") state.identity.runnerInstanceId = randomUUID();
+      if (scenario === "stale_durable_session") state.identity.normalizedSessionId = randomUUID();
+      const checkpoint = captureLegacyDurablePrpCheckpoint(JSON.stringify(state), { runId: f.runId,
+        runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId },
       { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
       await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx,
         { companyId: f.companyId, issueId: f.issueId, runId: f.runId }, checkpoint));
+      if (scenario === "stale_durable_absent") await rm(f.paths.supervisorPath);
+      if (scenario === "stale_durable_snapshot") await f.db.update(heartbeatRuns).set({ runnerProfileJson: {
+        ...f.profile, sessionCheckpoint: { ...f.snapshot, identity: { ...f.snapshot.identity, agentId: randomUUID() } },
+      } }).where(eq(heartbeatRuns.id, f.runId));
     }
     const [originalRun] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [originalOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
     const options = { storage, writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
+    if (scenario === "stale_durable" || scenario === "stale_durable_absent") {
+      const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
+      const before = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      expect(await migrateNativeControllers(f.db, options)).toMatchObject({ imported: 1, archivedFailed: 0 });
+      expect(await migrateNativeControllers(f.db, options)).toMatchObject({ unchanged: 1, archivedFailed: 0 });
+      expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(false);
+      expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(before);
+      expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
+      const [afterRun] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(afterRun.runnerProfileJson?.sessionCheckpoint).toEqual(originalRun.runnerProfileJson?.sessionCheckpoint);
+      expect(afterRun).toEqual({ ...originalRun, runnerProfileJson: afterRun.runnerProfileJson, updatedAt: afterRun.updatedAt });
+      expect(afterRun.runnerProfileJson).toEqual({ ...originalRun.runnerProfileJson,
+        nativeControllerRecovery: expect.objectContaining({ snapshotSha256: nativeSha256(f.snapshot),
+          checkpoint: { runId: f.runId, runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId } }) });
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(originalOwner);
+      await rm(f.paperclipHome, { recursive: true, force: true });
+      expect((await loadNativeRunnerCheckpoint(f.db, binding))?.records.size).toBe(before.length);
+      await f.db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId,
+        status: "running", runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.queuedId));
+      expect((await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
+        issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId })).kind).toBe("recoverable");
+      return;
+    }
     if (!["stale_confirmed", "stale_queued"].includes(scenario)) {
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
       expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
@@ -360,6 +393,27 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
         if (scenario === "controller_observed_foreign") receipt.runId = randomUUID();
         if (scenario === "controller_observed_old_receipt") receipt.confirmedAt = new Date(0).toISOString();
         await f.db.insert(environmentLeases).values({ ...lease, metadata: { remoteExecutionTermination: receipt } });
+        if (scenario.startsWith("controller_observed_handoff")) {
+          const environmentId = randomUUID(), successorRunId = randomUUID(), handoffAt = new Date(Date.now() - 1000);
+          await f.db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+          await f.db.insert(heartbeatRuns).values({ id: successorRunId, companyId: f.companyId, agentId: f.agentId,
+            nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId, runtimeMode: "native", status: "succeeded", finishedAt: new Date() });
+          const [previous] = await f.db.update(environmentLeases).set({ environmentId, leasePolicy: "reuse_by_environment",
+            status: "expired", acquiredAt: new Date(handoffAt.getTime() - 1000), releasedAt: handoffAt,
+            metadata: { agentId: f.agentId } }).where(eq(environmentLeases.id, lease.id)).returning();
+          const successor = { ...previous, id: randomUUID(), heartbeatRunId: successorRunId, acquiredAt: handoffAt,
+            status: "released", releasedAt: new Date(), metadata: { agentId: f.agentId } };
+          const handoff = createReusableLeaseHandoff(previous, successor);
+          const termination = remoteTerminationReceipt(successor, { providerLeaseId: successor.providerLeaseId,
+            state: scenario === "controller_observed_handoff_stopped" ? "stopped" : "destroyed" });
+          await f.db.update(environmentLeases).set({ metadata: { agentId: f.agentId, reusableLeaseSuccessor: handoff } })
+            .where(eq(environmentLeases.id, previous.id));
+          await f.db.insert(environmentLeases).values({ ...successor, metadata: { agentId: f.agentId,
+            reusableLeasePredecessor: scenario === "controller_observed_handoff_broken" ? { ...handoff, handoffId: randomUUID() } : handoff,
+            remoteExecutionTermination: termination } });
+          if (scenario === "controller_observed_handoff_fork") await f.db.insert(environmentLeases).values({ ...previous,
+            id: randomUUID(), heartbeatRunId: f.queuedId, status: "active", releasedAt: null, metadata: { agentId: f.agentId } });
+        }
       }
     }
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -376,7 +430,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     }
     if (scenario === "controller_durable") {
       expect(await migrateNativeControllers(f.db, options)).toMatchObject({ unchanged: 1, archivedFailed: 0 });
-    } else if (!["controller_confirmed", "controller_observed_stopped", "controller_observed_stop_before_finish"].includes(scenario)) {
+    } else if (!["controller_confirmed", "controller_observed_stopped", "controller_observed_stop_before_finish", "controller_observed_handoff"].includes(scenario)) {
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
       const archives = await f.db.select().from(nativeHarnessBackups);
       if (scenario === "controller_observed_revoked") {

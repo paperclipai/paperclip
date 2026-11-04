@@ -201,7 +201,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
           providerDigest: nativeSha256(execution.provider) },
         current: unavailable, runnerArtifact: unavailable }).runnerArtifact;
     }
-    const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
+    const supervisor = !checkpoint && paths.execution.session.lifecyclePolicy.mode === "warm"
       ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
     input.signal.throwIfAborted();
     let result: Awaited<ReturnType<typeof importNativeControllerRecovery>>;
