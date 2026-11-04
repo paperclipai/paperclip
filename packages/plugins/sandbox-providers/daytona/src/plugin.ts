@@ -3530,7 +3530,7 @@ const plugin = definePlugin(trackDaytonaHooks({
           () => sandbox.refreshData(),
         ));
         const preview = await acquireRunnerIngress("private_preview", () => sandbox.getPreviewLink(params.port));
-        if (typeof preview.url !== "string" || typeof preview.token !== "string") {
+        if (!isRecord(preview) || typeof preview.url !== "string" || typeof preview.token !== "string") {
           throw new Error("Daytona returned an incomplete private preview endpoint.");
         }
         const url = new URL(preview.url);
