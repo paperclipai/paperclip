@@ -9,6 +9,7 @@ describe("runner ingress failure contract", () => {
     const data = environmentRunnerIngressErrorData(error);
     expect(readEnvironmentRunnerIngressFailure({ data })).toEqual(failure);
     expect(JSON.stringify(data)).not.toContain("private-");
+    expect(JSON.stringify(error)).not.toContain("private-");
     expect(error.message).toBe("Runner connection endpoint could not be acquired (HTTP 502).");
     expect(error.cause).toBeUndefined();
     expect(environmentRunnerIngressErrorData(Object.assign(new Error("forged"), { failure, data }))).toBeUndefined();

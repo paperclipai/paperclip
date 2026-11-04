@@ -20,10 +20,13 @@ function validate(value: unknown): PluginEnvironmentRunnerIngressFailure | null 
 }
 
 export class PluginEnvironmentRunnerIngressError extends Error {
-  constructor(public readonly failure: PluginEnvironmentRunnerIngressFailure) {
+  readonly failure: PluginEnvironmentRunnerIngressFailure | null;
+
+  constructor(failure: PluginEnvironmentRunnerIngressFailure) {
     const safe = validate(failure);
     super(`Runner connection endpoint could not be acquired${safe ? ` (HTTP ${safe.httpStatus})` : ""}.`);
     this.name = "PluginEnvironmentRunnerIngressError";
+    this.failure = safe;
   }
 }
 
