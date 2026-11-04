@@ -1,4 +1,4 @@
-import { ROLLING_WEB_DEPLOYMENT_SUITE } from "./controller-rolling-deployment.js";
+import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -1233,15 +1233,45 @@ const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
       source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
   };
 
+export const kimiRunnerProfile = nativeProfile({
+  id: "runner-acpx-kimi", label: "Runner Kimi Code",
+  provider: "acpx", acpxAgent: "kimi", qualificationCandidate: "kimi",
+  credential: "KIMI_API_KEY", model: "kimi-for-coding",
+  modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
+});
+
+const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
+  .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
+    && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
+  .map(original => {
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
+    return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
+      delete adapterConfig.cwd;
+      return { ...agent, adapterConfig };
+    } };
+  });
+const rollingDeploymentSuites: RunnerSuiteFixture[] = [
+  { id: ROLLING_WEB_DEPLOYMENT_SUITE, environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
+  { id: ROLLING_WEB_DEPLOYMENT_WARM_SUITE, environment: daytonaControllerOutageEnvironment },
+].map(({ id, environment }) => ({
+  ...remoteWorkspaceStorageSuite, id, label: `Rolling control-plane web deployment (${environment.configurationKey ? "warm" : "per-turn"})`,
+  description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
+  profiles: rollingDeploymentProfiles, environments: [environment],
+  expectedMatrixSize: rollingDeploymentProfiles.length * remoteWorkspaceStorageSuite.tasks.length,
+  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 4, controllerDowntimeMs: 0,
+    activeWorkBoundary: "foreground-180-second-cli-reliability-soak-and-live-owner-recheck",
+    workspaceFileSource: environment.configurationKey ? "live" : "saved-exact-snapshot-after-per-turn-retirement",
+    lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable", providerCoverage: "registered-native-daytona-profiles",
+    replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
+    upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
+    grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
+}));
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   remoteWorkspaceStorageSuite,
-  { ...remoteWorkspaceStorageSuite, id: ROLLING_WEB_DEPLOYMENT_SUITE, label: "Rolling control-plane web deployment",
-    description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
-    definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 1, controllerDowntimeMs: 0,
-      replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
-      upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
-      grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
-  },
+  ...rollingDeploymentSuites,
   {
     id: CURSOR_CLOUD_SUITE, label: "Native Cursor Cloud", manualOnly: true, groups: [],
     description: "Local Paperclip controller with hosted Cursor work: verified artifact, same-agent follow-up, real active-run Stop and semantic plan revision/approval.",
@@ -1537,12 +1567,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "kimi-qualification", label: "Kimi Code Qualification", manualOnly: true,
     description: "Kimi Code replies, semantic planning and questions, verified file delivery, Stop and controller continuation through local and Daytona user journeys.",
     groups: ["native"],
-    profiles: [nativeProfile({
-      id: "runner-acpx-kimi", label: "Runner Kimi Code",
-      provider: "acpx", acpxAgent: "kimi", qualificationCandidate: "kimi",
-      credential: "KIMI_API_KEY", model: "kimi-for-coding",
-      modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
-    })],
+    profiles: [kimiRunnerProfile],
     environments: [localEnvironment, daytonaWarmEnvironment],
     environmentOverrides: Object.fromEntries(kimiLifecycleTasks.map(task => [task.id, {
       daytona: runnerEnvironments.find(environment => environment.id === "daytona")!,

@@ -1265,6 +1265,12 @@ checks coordinator ownership in its terminal update, so a result recorded after
 the process check is also protected. Terminal task status remains authoritative;
 exhausted finalization retries do not keep an otherwise orphaned run alive.
 
+Only one open task of a routine can hold an execution lock. A failed run that
+waits for a scheduled resume keeps its task's lock, so the routine can queue a
+newer task meanwhile. When that task's run is claimed while the slot is held,
+the claim is rejected with a conflict, rolls back, and the run stays queued
+until the slot is released.
+
 A native failure that schedules a same-run resume marks the run `failed` but
 keeps the task's execution and checkout locks for that resume. The sweep leaves
 those locks in place and clears them only when the task is done or cancelled.
@@ -1275,7 +1281,12 @@ Another task can hold the same routine execution slot even when this task's
 lock is free. If that unique claim fails, restart recovery rolls back the whole
 candidate claim and waits through the existing recovery deadline. It preserves
 the current routine owner, checkpoint, and provider attempt, and continues the
-startup batch. Other database failures still fail the recovery pass.
+startup batch. Any other failure while claiming one run is handled the same
+way with reason `restart_recovery_failed`: the run's claim rolls back, the
+error is logged, a warning transition is recorded on the run, and the run waits
+for the next deadline. A failed transition write is logged and does not stop
+the claims that already committed. Only a failure of the candidate scan itself
+fails the recovery pass.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
@@ -3362,3 +3373,29 @@ checkpoints publish the metadata without a separate migration write. Disk-free
 rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
+
+### Stop a failed native retry
+
+A failed native run can still own a scheduled same-run bootstrap retry. The
+ordinary run detail offers Stop when the server's batched execution projection
+sets `canStop`: the native run is failed, its matching coordinator is retryable,
+and no result has been accepted. Unknown, legacy and accepted-result states
+remain ineligible. Grok failed retries keep their existing external Stop contract
+and do not gain this action; a pre-assignment failed retry is not supported by
+that endpoint. Existing Grok running/queued Stop and assignment fences stay in
+place. A false or absent hint does not remove the existing queued
+or running Cancel action. This presentation hint grants no permission; the existing
+company, actor and locked cancellation checks remain authoritative. A changed
+retry can reject Stop, which the run detail displays without claiming cleanup.
+Failed-native Stop keeps its request identity by company, run and current board
+actor through navigation or reload. It uses the shared HTTP-compatible UUID
+helper. A fresh run read can recover that same actor's canonical saved claim;
+another actor's claim cannot be borrowed. Browser storage and in-memory fallback
+retain unresolved request identities. This never retries Stop automatically.
+The server locks and checks the current retry before it
+accepts that identity. A stale request returns a conflict before cancellation
+activity is recorded. The client also rejects an unchanged successful HTTP
+response with no matching cancellation intent. A matching durable pending intent
+can be accepted without a terminal acknowledgement. The selected run and its
+history refresh after either outcome. Stop does not resume the provider or change
+a manual task hold.

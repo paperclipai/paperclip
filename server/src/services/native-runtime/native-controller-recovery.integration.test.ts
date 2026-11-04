@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
@@ -90,6 +90,18 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await db.update(nativeRunFinalizations).set({ leaseOwner: "other-controller", leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     expect(await importNativeControllerRecovery(db, input)).toEqual({ kind: "waiting_for_owner", deadline });
     expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId })).toEqual({ kind: "waiting_for_owner", deadline });
+  });
+
+  it("uses the database clock when an import finds an expired owner", async () => {
+    const fixture = await seed();
+    const now = Date.now();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: "expired-owner", leaseExpiresAt: new Date(now - 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now - 3_600_000);
+    try {
+      expect(await importNativeControllerRecovery(db, { ...fixture.scope, expectedConfigDigest: compatibility.configDigest,
+        supervisor: fixture.supervisor })).toEqual({ kind: "missing_evidence", reason: "normal_ownership_recovery_required" });
+    } finally { vi.useRealTimers(); }
   });
 
   it("holds mismatched snapshots and runner bindings instead of falling back to fresh execution", async () => {
