@@ -41,7 +41,7 @@ it.each(["failed", "cancelled", "timed_out"])("does not turn a %s native run int
 });
 it.each([undefined, NaN, Infinity, 200_000, 199_999])("rejects missing or exhausted original deadline %s before observing", async deadline => {
   vi.useFakeTimers(); vi.setSystemTime(200_000);
-  const { ctx, read } = fixture(0); ctx.observationDeadlineAt = deadline;
+  const { ctx, read } = fixture(0); Object.assign(ctx, { observationDeadlineAt: deadline });
   await expect(definition.act!(ctx, {})).rejects.toThrow("Original native observation budget exhausted or missing");
   expect(read).not.toHaveBeenCalled();
 });
