@@ -13,6 +13,7 @@ import {
 } from "./external-provider.js";
 import { probeReviewApproval } from "./external-app-review-probe.js";
 import { reviewOutcomeReply } from "./external-app-review-outcomes.js";
+import { observeReviewAdmission, reviewAdmissionSummary } from "./external-app-review-diagnostic.js";
 import { openStandingChat } from "./identity-support.js";
 import {
   definition,
@@ -356,6 +357,7 @@ export const appReviewExternalCases = [
         "chat-catalog-domains/external-app-review.ts",
         "chat-catalog-domains/external-app-review-outcomes.ts",
         "chat-catalog-domains/external-app-review-probe.ts",
+        "chat-catalog-domains/external-app-review-diagnostic.ts",
         "../../packages/shared/src/validators/issue.ts",
         "chat-catalog-domains/external-provider.ts",
         "chat-catalog-domains/identity-support.ts",
@@ -544,8 +546,21 @@ export const appReviewExternalCases = [
               );
             await option.click();
           }
-          const runs = await settled(ctx, index * 2 + 2),
-            reply = runs.find(
+          let runs: Awaited<ReturnType<typeof settled>>;
+          try { runs = await settled(ctx, index * 2 + 2); }
+          catch (error) {
+            // Observe only the exact failed review phase. This cannot resume,
+            // settle or regrade it; the original wait failure remains authoritative.
+            try {
+              const snapshot = await observeReviewAdmission({ companyId: String(state.companyId), issueId: String(state.sourceId),
+                agentId: String(state.leadId), actionRequestId: phase.actionRequestId, invocationId: phase.invocationId,
+                interactionId: phase.interactionId, sourceRunId: phase.requestRunId });
+              await ctx.input.evidence(`chat-catalog-app-review-admission-${index + 1}.json`, snapshot).catch(() => {});
+              console.log("App review admission diagnostic", JSON.stringify(reviewAdmissionSummary(snapshot)));
+            } catch { /* Diagnostic failure cannot replace the original failure. */ }
+            throw error;
+          }
+          const reply = runs.find(
               (row) =>
                 row.contextSnapshot?.source === "tool_action_review" &&
                 Array.isArray(row.contextSnapshot.toolActionRequestIds) &&

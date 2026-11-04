@@ -808,6 +808,7 @@
       "chat-catalog-domains/external-app-review.ts",
       "chat-catalog-domains/external-app-review-outcomes.ts",
       "chat-catalog-domains/external-app-review-probe.ts",
+      "chat-catalog-domains/external-app-review-diagnostic.ts",
       "../../packages/shared/src/validators/issue.ts",
       "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/identity-support.ts",
