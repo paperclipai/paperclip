@@ -144,3 +144,10 @@ parser validates that older authority and scoped history confirms the same
 Runner, session, provider thread and an earlier successful finish. Keep current
 snapshots, ownership and typed checkpoints unchanged. The archive cannot become
 executable recovery authority. Foreign, invalid and active sources remain blocked.
+
+For a finished failed source with a stale observed coordinator, evidence archival
+also requires an expired controller lease, no accepted result or retry deadline,
+and no current task ownership. Every remote lease must carry the exact host-owned
+termination receipt, confirmed after the failed finish. Recheck those receipts
+before publication. Preserve the coordinator as recorded; this proof permits
+evidence storage, not execution or a claim that the coordinator has settled.

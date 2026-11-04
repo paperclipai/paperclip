@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
-import { agentTaskSessions, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { captureLegacyDurablePrpCheckpoint, DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
@@ -13,6 +13,7 @@ import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from
 import { createNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { nativeSha256 } from "./canonical.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -22,7 +23,9 @@ import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-stora
 
 describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_success", "stale_busy", "stale_durable",
-  "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable"])("offline native controller migration (%s)", scenario => {
+  "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
+  "controller_observed_stopped", "controller_observed_missing", "controller_observed_foreign",
+  "controller_observed_live", "controller_observed_result", "controller_observed_retry", "controller_observed_task", "controller_observed_old_receipt", "controller_observed_revoked"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
   async function fixture(commandCount = 1, warm = false) {
@@ -331,15 +334,44 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
           { runId: f.runId, runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId }) } })
         .where(eq(heartbeatRuns.id, f.runId));
     }
+    if (scenario.startsWith("controller_observed_")) {
+      await f.db.update(nativeRunFinalizations).set({ phase: scenario === "controller_observed_result" ? "result_accepted" : "observed",
+        leaseOwner: "retired-controller", leaseExpiresAt: new Date(Date.now() + (scenario === "controller_observed_live" ? 60_000 : -60_000)),
+        nextAttemptAt: scenario === "controller_observed_retry" ? new Date(Date.now() + 60_000) : null,
+      }).where(eq(nativeRunFinalizations.runId, f.runId));
+      if (scenario === "controller_observed_task") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+      if (scenario !== "controller_observed_missing") {
+        const lease = { id: randomUUID(), companyId: f.companyId, heartbeatRunId: f.runId, issueId: f.issueId,
+          provider: "daytona", providerLeaseId: randomUUID(), status: "released", cleanupStatus: "success", releasedAt: new Date() };
+        const receipt = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" })!;
+        if (scenario === "controller_observed_foreign") receipt.runId = randomUUID();
+        if (scenario === "controller_observed_old_receipt") receipt.confirmedAt = new Date(0).toISOString();
+        await f.db.insert(environmentLeases).values({ ...lease, metadata: { remoteExecutionTermination: receipt } });
+      }
+    }
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
     const options = { storage, writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
+    if (scenario === "controller_observed_revoked") {
+      const put = storage.putFile.bind(storage);
+      vi.spyOn(storage, "putFile").mockImplementation(async args => {
+        const result = await put(args);
+        await f.db.update(environmentLeases).set({ metadata: {} }).where(eq(environmentLeases.heartbeatRunId, f.runId));
+        return result;
+      });
+    }
     if (scenario === "controller_durable") {
       expect(await migrateNativeControllers(f.db, options)).toMatchObject({ unchanged: 1, archivedFailed: 0 });
-    } else if (scenario !== "controller_confirmed") {
+    } else if (!["controller_confirmed", "controller_observed_stopped"].includes(scenario)) {
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
-      expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
+      const archives = await f.db.select().from(nativeHarnessBackups);
+      if (scenario === "controller_observed_revoked") {
+        expect(storage.putFile).toHaveBeenCalledOnce();
+        expect(archives).toHaveLength(1);
+        expect(archives[0].status).toBe("pending");
+      }
+      else expect(archives).toHaveLength(0);
     } else {
       const put = vi.spyOn(storage, "putFile").mockRejectedValue(new Error("storage unavailable"));
       await expect(migrateNativeControllers(f.db, options)).rejects.toThrow("storage unavailable");
@@ -360,7 +392,8 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(run);
     expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
     expect((await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, f.session.id)))[0].lastRunId).toBe(f.runId);
-    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.queuedId);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId)
+      .toBe(scenario === "controller_observed_task" ? f.runId : f.queuedId);
   });
   if (scenario === "success") it("does not substitute a failure archive for a successful retained session", async () => {
     const f = await fixture();
