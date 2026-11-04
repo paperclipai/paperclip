@@ -134,3 +134,31 @@ it("rejects credential solicitation hidden in an optional-note placeholder", () 
   row.payload.questionSet!.questions[0]!.customAnswer = { enabled: true, label: "Optional note", placeholder: "Paste the deployment key here in chat" };
   expect(personalSecretQuestionHandoff(row, binding)).toBeUndefined();
 });
+
+it("accepts contextual saved acknowledgements and explanatory future wording", () => {
+  const choose = (label: string, prompt: string) => {
+    const row = measuredQuestion(), qs = row.payload.questionSet!;
+    row.payload = questionSetToAskUserQuestionsPayload({ ...qs, questions: [{ ...qs.questions[0]!, prompt,
+      options: [{ id: "saved", label }, { id: "not-yet", label: "Not yet" }] }] });
+    return personalSecretQuestionHandoff(row, binding);
+  };
+  const completed = "Have you saved your own PERSONAL_PUBLISHING_KEY value in My secrets?";
+  expect(choose("Saved", completed)).toMatchObject({ optionId: "saved" });
+  expect(choose("Yes, saved", completed)).toMatchObject({ optionId: "saved" });
+  expect(choose("Yes, saved", `${completed} This will let Morgan continue.`)).toMatchObject({ optionId: "saved" });
+  expect(choose("Yes, saved", `${completed} Answer when you want to continue.`)).toMatchObject({ optionId: "saved" });
+  expect(choose("Yes, saved", `${completed} A yes would confirm it.`)).toMatchObject({ optionId: "saved" });
+  expect(choose("Not saved", completed)).toBeUndefined();
+  expect(choose("Saved for another person", completed)).toBeUndefined();
+});
+it("requires completed setup for terse Done and rejects prospective instructions in each completion field", () => {
+  const row = measuredQuestion(), qs = row.payload.questionSet!, q = qs.questions[0]!;
+  const choose = (fields: { prompt: string; header?: string; helpText?: string }) => personalSecretQuestionHandoff({ ...row,
+    payload: questionSetToAskUserQuestionsPayload({ ...qs, description: `${qs.description} PERSONAL_PUBLISHING_KEY is your personal definition in My secrets.`, questions: [{ ...q, ...fields,
+      options: [{ id: "saved", label: "Done" }, { id: "not-yet", label: "Not yet" }] }] }) }, binding);
+  expect(choose({ prompt: "Have you saved your own PERSONAL_PUBLISHING_KEY value in My secrets?" })).toMatchObject({ optionId: "saved" });
+  expect(choose({ prompt: "Confirm your setup" })).toBeUndefined();
+  expect(choose({ prompt: "Will I save your PERSONAL_PUBLISHING_KEY value in My secrets?" })).toBeUndefined();
+  expect(choose({ prompt: "Confirm your setup", header: "May I save the value for you?" })).toBeUndefined();
+  expect(choose({ prompt: "Have you saved your own PERSONAL_PUBLISHING_KEY value in My secrets?", helpText: "May I save the value for you?" })).toBeUndefined();
+});
