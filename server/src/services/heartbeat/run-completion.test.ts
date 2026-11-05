@@ -986,6 +986,24 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
   });
 
+  it("keeps an active recovery action that another writer created for the task", async () => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: "blocked",
+      assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const [existing] = await db.insert(issueRecoveryActions).values({ companyId: f.run.companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "other_failure", fingerprint: "other",
+      evidence: { runId: "other-run" }, nextAction: "Handle the other failure.", attemptCount: 1 }).returning();
+    const error = new RemoteWorkspaceRestoreError("sandbox_restore", false, new RemoteWorkspaceOperationError(
+      "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root"));
+    await f.completion.failRunSetup(f.setup(error));
+    expect((await read(f.run.id)).errorCode).toBe("remote_workspace_restore_failed");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: existing.id, cause: "other_failure", fingerprint: "other", nextAction: "Handle the other failure.",
+      attemptCount: 1, evidence: { runId: "other-run" } });
+  });
+
   it("records a lease lost before dispatch as a retryable host stop, not an opaque setup failure", async () => {
     const f = await fixture();
     f.controller.abort(new LegacyControllerLeaseLostError("renewal_rejected"));

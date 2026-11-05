@@ -416,8 +416,11 @@ export async function prepareRemoteWorkspace(input: {
             allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
         } finally { await rm(scratch, { recursive: true, force: true }); }
       } catch (error) {
-        // Authority refusals and cancellation keep their own handling.
-        if (error instanceof HttpError || (error instanceof Error && error.name === "AbortError")) throw error;
+        // Cancellation keeps its own handling, as do lookup refusals.
+        if ((error instanceof Error && error.name === "AbortError") || (error instanceof HttpError && step === "snapshot_lookup")) throw error;
+        // Storage reports a missing saved object as 404. Retrying cannot restore it.
+        const objectMissing = error instanceof HttpError && step === "snapshot_download" && error.status === 404;
+        if (objectMissing) throw new RemoteWorkspaceRestoreError(step, false, new Error("remote_workspace_snapshot_object_missing"));
         // A missing saved version cannot be fixed by retrying. Otherwise a retry
         // is offered only while this run still owns the same unchanged, clean
         // saved version; a failed restore never publishes over existing files.
