@@ -262,6 +262,10 @@ export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown
     .every(policy => policy === "anyone" || policy === "human_only");
 }
 
+export function chatCatalogHasExactDefinitionId(text: string, definitionId: string): boolean {
+  return !!definitionId && new RegExp(`(?<![A-Za-z0-9_-])${definitionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`).test(text);
+}
+
 export function chatCatalogSavedSecretNameIntent(text:string):boolean {
  const prompt=text.replace(/\bnot (?:the )?value\b/gi,"");
  const recipients=[...prompt.replace(/Deployment API key/g,"credential").matchAll(/\b(?:[Ff]or|[Tt]o)\s+(?:[Aa]gent\s+)?([A-Z][A-Za-z0-9_-]*)\b/g)];
@@ -297,7 +301,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
       || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || row.continuationPolicy !== "wake_assignee"
       || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted" || row.result.resumeFailure || row.dismissedAt
       || !row.payload || row.payload.target || row.payload.toolAction || row.payload.secretProposal || row.payload.connectionAuthorization || row.payload.qualityReview
-      || !row.payload.prompt.includes(binding.definitionId) || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== binding.payloadHash
+      || !chatCatalogHasExactDefinitionId([row.payload.prompt, row.payload.detailsMarkdown].filter(Boolean).join("\n"), binding.definitionId) || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== binding.payloadHash
       || entries?.length !== 1 || !secret || secret.id !== binding.secretId || secret.companyId !== input.companyId || secret.scope !== "user" || secret.status !== "active"
       || secret.ownerUserId !== b.userId || secret.userSecretDefinitionId !== binding.definitionId || !Number.isFinite(Date.parse(secret.createdAt)) || !Number.isFinite(resolvedAt) || Date.parse(secret.createdAt) > resolvedAt || Date.parse(secret.createdAt) < Date.parse(source?.startedAt ?? "")
       || audits.length !== 1 || audit?.companyId !== input.companyId || audit.entityId !== input.issueId || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "request_confirmation" || audit.details.interactionStatus !== "accepted"

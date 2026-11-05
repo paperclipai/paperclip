@@ -3,15 +3,15 @@ import { createHash } from "node:crypto";
 import { personalSecretConfirmationHandoff, confirmThenStartPersonalConsumer } from "./external-personal-secret-confirmation.js";
 import { personalSecretGuidance } from "./external-personal-secret.js";
 import { verifyChatCatalogHumanQuestionAnswer, chatCatalogHumanHistoryMatches } from "../chat-catalog-contract.js";
-const binding = { companyId: "company", issueId: "source", agentId: "ceo", userId: "person", runId: "initial", definitionId: "definition", canonicalCommentId: "human" };
-function card() { return { id: "confirmation", kind: "request_confirmation", status: "pending", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], resolverPolicy: "anyone", continuationPolicy: "wake_assignee", payload: { version: 1, prompt: "Never paste personal publishing credentials in chat. Open Settings Secrets, My secrets, Set my value for PERSONAL_PUBLISHING_KEY definition definition. When you have saved it, confirm this card so the requirement is recorded.", acceptLabel: "Confirm" } }; }
+const binding = { companyId: "company", issueId: "source", agentId: "ceo", userId: "person", runId: "initial", definitionId: "current-definition", canonicalCommentId: "human" };
+function card() { return { id: "confirmation", kind: "request_confirmation", status: "pending", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], resolverPolicy: "anyone", continuationPolicy: "wake_assignee", payload: { version: 1, prompt: "Never paste personal publishing credentials in chat. Open Settings Secrets, My secrets, Set my value for PERSONAL_PUBLISHING_KEY definition current-definition. When you have saved it, confirm this card so the requirement is recorded.", acceptLabel: "Confirm" } }; }
 it("admits the native secure-save confirmation shape without manufacturing a chat reply", () => {
  expect(personalSecretConfirmationHandoff(card(), binding, personalSecretGuidance)).toMatchObject({ interactionId: "confirmation", acceptLabel: "Confirm" });
 });
 it.each(["company", "issue", "run", "creator", "origin", "definition", "approval", "unsafe", "payload action"])("rejects unbound or non-save %s cards", fault => {
  const row = card();
  if(fault==="company")row.companyId="foreign";if(fault==="issue")row.issueId="foreign";if(fault==="run")row.sourceRunId="foreign";if(fault==="creator")row.createdByAgentId="foreign";if(fault==="origin")row.originCommentIds=[];
- if(fault==="definition")row.payload.prompt=row.payload.prompt.replace("definition definition","definition foreign");
+ if(fault==="definition")row.payload.prompt=row.payload.prompt.replace("current-definition","foreign-definition");
  if(fault==="approval")row.payload.prompt+=" Approve deployment execution.";if(fault==="unsafe")row.payload.prompt+=" Paste the credential here in chat.";
  if(fault==="payload action")Object.assign(row.payload,{toolAction:{toolName:"deploy"}});
  expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeUndefined();
@@ -19,7 +19,7 @@ it.each(["company", "issue", "run", "creator", "origin", "definition", "approval
 function accounting(){
  const row={...card(),status:"accepted",resolvedByUserId:"person",resolvedAt:"2026-11-05T12:01:00Z",result:{version:1,outcome:"accepted"}};
  const payloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
- return {expected:{interactionId:"confirmation",sourceRunId:"initial",userId:"person",personalSecretConfirmation:{definitionId:"definition",secretId:"secret",payloadHash}},companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],personalSecrets:[{definition:{id:"definition"},secret:{id:"secret",companyId:"company",scope:"user",ownerUserId:"person",userSecretDefinitionId:"definition",status:"active",createdAt:"2026-11-05T12:00:50Z"}}],activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_accepted",actorType:"user",actorId:"person",details:{interactionId:"confirmation",interactionKind:"request_confirmation",interactionStatus:"accepted"}}],runs:[{id:"initial",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:00:00Z",contextSnapshot:{issueId:"source",commentId:"human"}},{id:"continuation",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:01:01Z",contextSnapshot:{issueId:"source",interactionId:"confirmation"}}]};
+ return {expected:{interactionId:"confirmation",sourceRunId:"initial",userId:"person",personalSecretConfirmation:{definitionId:"current-definition",secretId:"secret",payloadHash}},companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],personalSecrets:[{definition:{id:"current-definition"},secret:{id:"secret",companyId:"company",scope:"user",ownerUserId:"person",userSecretDefinitionId:"current-definition",status:"active",createdAt:"2026-11-05T12:00:50Z"}}],activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_accepted",actorType:"user",actorId:"person",details:{interactionId:"confirmation",interactionKind:"request_confirmation",interactionStatus:"accepted"}}],runs:[{id:"initial",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:00:00Z",contextSnapshot:{issueId:"source",commentId:"human"}},{id:"continuation",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-05T12:01:01Z",contextSnapshot:{issueId:"source",interactionId:"confirmation"}}]};
 }
 it("counts initial chat plus one bound actual human confirmation exactly once",()=>{
  const input=accounting(),answer=verifyChatCatalogHumanQuestionAnswer(input as never);expect(answer).toMatchObject({continuationRunId:"continuation"});
@@ -33,4 +33,20 @@ it("starts the authorized consumer only after ordinary confirmation completes, w
  let resolve!:()=>void;const accepted=new Promise<void>(r=>resolve=r),confirm=vi.fn(()=>accepted),start=vi.fn(async()=>{});
  const pending=confirmThenStartPersonalConsumer(confirm,start);expect(confirm).toHaveBeenCalledTimes(1);expect(start).not.toHaveBeenCalled();resolve();await pending;expect(start).toHaveBeenCalledTimes(1);
  const rejected=vi.fn(async()=>{throw Error("rejected");});await expect(confirmThenStartPersonalConsumer(rejected,start)).rejects.toThrow("rejected");expect(start).toHaveBeenCalledTimes(1);
+});
+
+it("accepts a secure-save acknowledgement with the ordinary default Approve label", () => {
+ const row=card();Object.assign(row.payload,{acceptLabel:"Approve"});
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toMatchObject({acceptLabel:"Approve"});
+});
+it("binds an exact definition URI in visible details through admission and independent response verification", () => {
+ const row=card();row.payload.prompt=row.payload.prompt.replace(" definition current-definition","");
+ Object.assign(row.payload,{detailsMarkdown:"Open /RUN/company/settings/secrets?definition=current-definition"});
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeDefined();
+ const input=accounting();Object.assign(input.interactions[0]!.payload,row.payload);input.expected.personalSecretConfirmation.payloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
+ expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeDefined();
+ Object.assign(row.payload,{detailsMarkdown:"Open /RUN/company/settings/secrets?definition=foreign-definition"});
+ expect(personalSecretConfirmationHandoff(row,binding,personalSecretGuidance)).toBeUndefined();
+ Object.assign(input.interactions[0]!.payload,row.payload);input.expected.personalSecretConfirmation.payloadHash=createHash("sha256").update(JSON.stringify(row.payload)).digest("hex");
+ expect(verifyChatCatalogHumanQuestionAnswer(input as never)).toBeUndefined();
 });

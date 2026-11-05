@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { expect, type Page } from "@playwright/test";
 import type { RequestConfirmationInteraction } from "../../../packages/shared/src/types/issue.js";
 import { requestConfirmationPayloadSchema } from "../../../packages/shared/src/validators/issue.js";
-import { chatCatalogHumanQuestionPolicies } from "../chat-catalog-contract.js";
+import { chatCatalogHumanQuestionPolicies, chatCatalogHasExactDefinitionId } from "../chat-catalog-contract.js";
 export interface PersonalConfirmationBinding { companyId: string; issueId: string; agentId: string; userId: string; runId: string; definitionId: string; canonicalCommentId: string }
 export function personalSecretConfirmationHandoff(value: unknown, b: PersonalConfirmationBinding, guidance: (text: string) => boolean, status: "pending" | "accepted" = "pending") {
   const row = value as Partial<RequestConfirmationInteraction> | undefined, p = row?.payload;
@@ -13,10 +13,11 @@ export function personalSecretConfirmationHandoff(value: unknown, b: PersonalCon
     || p.target || p.toolAction || p.secretProposal || p.connectionAuthorization || p.qualityReview
     || !requestConfirmationPayloadSchema.safeParse(p).success || row.dismissedAt
     || (status === "pending" ? row.resolvedByUserId || row.resolvedByAgentId : row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted")) return;
-  const text = [p.prompt, p.detailsMarkdown, p.acceptLabel].filter(Boolean).join("\n");
-  if (!guidance(text) || !new RegExp(`\\bdefinition\\s+${b.definitionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text) || !/\bPERSONAL_PUBLISHING_KEY\b/.test(text) || !/my secrets/i.test(text)
+  const actionText = [p.prompt, p.detailsMarkdown].filter(Boolean).join("\n");
+  const text = [actionText, p.acceptLabel].filter(Boolean).join("\n");
+  if (!guidance(text) || !chatCatalogHasExactDefinitionId(actionText, b.definitionId) || !/\bPERSONAL_PUBLISHING_KEY\b/.test(text) || !/my secrets/i.test(text)
     || !/\b(?:when|once|after)\b[^.!?]*\b(?:saved|set|entered)\b[^.!?]*\bconfirm\b|\bconfirm\b[^.!?]*\b(?:saved|set|entered)\b/i.test(text)
-    || /\b(?:approve|authorize|permission|deploy|delete|execute|purchase)\b/i.test(text)) return;
+    || /\b(?:deploy(?:ment)?|delet(?:e|ion)|execut(?:e|ion)|purchas(?:e|ing))\b/i.test(actionText)) return;
   return { interactionId: row.id, payloadHash: createHash("sha256").update(JSON.stringify(p)).digest("hex"), acceptLabel: p.acceptLabel ?? "Approve", prompt: p.prompt };
 }
 export async function acceptPersonalSecretConfirmation(page: Page, issueId: string, interactionId: string, label: string, prompt: string, remaining: () => number) {
