@@ -17305,7 +17305,7 @@ describe("runnerd provider runtime wiring", () => {
     ["the source stamp names another backup", "destroyed", "foreign", false, false],
     ["provider work followed the backup", "destroyed", "matching", true, false],
   ] as const)("restores a warm backup into a created lease only when %s", async (_label, terminationState, stampKind, laterProviderWork, restores) => {
-    // S36: a legacy follow-up retired the warm sandbox as an obsolete lease, so the
+    // Regression: a legacy follow-up retired the warm sandbox as an obsolete lease, so the
     // next reply got a created lease. The backup was the newest checkpoint, yet
     // every reply failed backup_without_reusable_lease and asked for another reply.
     const remoteCwd = join(isolatedStateDirectory, "remote");

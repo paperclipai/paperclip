@@ -2958,7 +2958,7 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it("hands an exhausted system export repair to the board instead of leaving it system-owned", async () => {
-    // S36: the bounded export budget ran out, but the action stayed active and
+    // Regression: the bounded export budget ran out, but the action stayed active and
     // system-owned for hours. The board saw no owner, and replies started nothing.
     const f = await seed();
     await adoptSystemRecovery(db, f);
