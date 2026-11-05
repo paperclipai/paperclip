@@ -1497,9 +1497,19 @@ fn codex_command_target(item: &Value) -> Value {
     {
         return Value::Null;
     }
-    let path = string(actions[0].get("path")).trim();
+    codex_workspace_relative_path(item, string(actions[0].get("path")))
+        .map_or(Value::Null, Value::String)
+}
+
+/// A Codex action path relative to the command's cwd, or None when it is
+/// empty, absolute outside the cwd, or escapes it. Host paths never reach a
+/// persisted event.
+fn codex_workspace_relative_path(item: &Value, path: &str) -> Option<String> {
+    let path = path.trim();
     let cwd = string(item.get("cwd")).trim_end_matches('/');
-    let relative = if !cwd.is_empty() && path.starts_with(&format!("{cwd}/")) {
+    let relative = if !cwd.is_empty() && path == cwd {
+        "."
+    } else if !cwd.is_empty() && path.starts_with(&format!("{cwd}/")) {
         &path[cwd.len() + 1..]
     } else {
         path
@@ -1509,9 +1519,9 @@ fn codex_command_target(item: &Value) -> Value {
         || relative.contains('\0')
         || relative.split('/').any(|segment| segment == "..")
     {
-        return Value::Null;
+        return None;
     }
-    Value::String(bounded_text(relative, 4_000))
+    Some(bounded_text(relative, 4_000))
 }
 
 /// Non-flag operands after the program name, ignoring `sed` line ranges.
@@ -1538,11 +1548,9 @@ fn codex_command_subject(item: &Value) -> Option<String> {
     if let [action] = actions {
         let query = string(action.get("query")).trim();
         if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
-            let path = string(action.get("path")).trim();
-            let scope = if path.is_empty() || path == "." {
-                String::new()
-            } else {
-                format!(" in {path}")
+            let scope = match codex_workspace_relative_path(item, string(action.get("path"))) {
+                Some(path) if path != "." => format!(" in {path}"),
+                _ => String::new(),
             };
             return Some(bounded_text(&format!("\"{query}\"{scope}"), MAX_TEXT_CHARS));
         }
@@ -2042,6 +2050,23 @@ mod tests {
         );
         assert_eq!(search[0].payload["operation"], "search");
         assert_eq!(search[0].payload["subject"], "\"TODO\" in src");
+
+        for (path, expected) in [
+            ("/work/repo/src", "\"TODO\" in src"),
+            ("/work/repo", "\"TODO\""),
+            ("/etc", "\"TODO\""),
+            ("../outside", "\"TODO\""),
+        ] {
+            let scoped = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {
+                    "id": "exec-search-abs", "type": "commandExecution", "status": "completed",
+                    "command": "rg TODO", "cwd": "/work/repo",
+                    "commandActions": [{"type": "search", "command": "rg TODO", "query": "TODO", "path": path}],
+                }}),
+            );
+            assert_eq!(scoped[0].payload["subject"], expected, "path {path}");
+        }
     }
 
     #[test]
