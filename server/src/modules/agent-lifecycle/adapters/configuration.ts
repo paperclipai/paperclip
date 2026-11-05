@@ -25,6 +25,11 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   assertConfigurationFields(patch);
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
+  if (current.lifecycleState === "ready" && Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
+    && patch.defaultEnvironmentId !== current.defaultEnvironmentId
+    && await effects.environmentRequiresNewPlugin(tx, patch.defaultEnvironmentId, current.lifecycleRequiredPluginIds)) {
+    throw new AgentLifecycleConflict("This environment needs setup for the agent. Pause the agent, change its environment, and then resume it.");
+  }
   const prepareSetup = changed && current.lifecycleHolds.length === 1 && current.lifecycleHolds[0] === "setup"
     && ["paused", "preparing", "verifying"].includes(current.lifecycleState)
     && await effects.setupRequiresPreparation(tx, current.companyId,
