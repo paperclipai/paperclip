@@ -29,6 +29,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { workspaceProviderCallFailure } from "./workspace-provider-failure.js";
+import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -43,6 +44,8 @@ async function provider(
   workers: WorkspaceWorkers | undefined,
   companyId: string,
   pluginId: string,
+  /** Before a call, a ready provider whose worker is not running is a retryable refusal: no request is sent. */
+  beforeCall = false,
 ) {
   const [plugin] = await db
     .select()
@@ -57,15 +60,22 @@ async function provider(
         eq(pluginCompanySettings.companyId, companyId),
       ),
     );
+  const worker = workers?.getWorker(pluginId);
+  if (beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
+    isWorkspaceProvider(plugin.manifestJson) && !worker?.supportedMethods?.includes("workspaceOperation") &&
+    (!worker || worker.status !== "running")) {
+    // A restart removes or replaces the worker while the plugin stays ready, and its methods are unknown until it
+    // runs. A running worker without the method is an unsupported provider and keeps the conflict below.
+    throw workspaceProviderCallFailure(new PluginWorkerUnavailableError({ pluginId, workerStatus: worker?.status ?? null,
+      message: `Cannot call "workspaceOperation" — worker for "${pluginId}" is ${worker?.status ?? "not registered"}` }));
+  }
   if (
     !workers ||
     !plugin ||
     plugin.status !== "ready" ||
     settings?.enabled === false ||
     !isWorkspaceProvider(plugin.manifestJson) ||
-    !workers
-      .getWorker(pluginId)
-      ?.supportedMethods?.includes("workspaceOperation")
+    !worker?.supportedMethods?.includes("workspaceOperation")
   ) {
     throw conflict("The workspace storage plugin is unavailable");
   }
@@ -98,7 +108,7 @@ export async function callWorkspaceProvider(
   const pluginId = binding?.pluginId ?? input.pluginId;
   if (!pluginId || !workspace.projectId)
     throw conflict("Workspace storage ownership is missing");
-  const selectedProvider = await provider(db, workers, workspace.companyId, pluginId);
+  const selectedProvider = await provider(db, workers, workspace.companyId, pluginId, true);
   if (input.operation.kind === "prepare" && input.operation.fresh && selectedProvider.manifestJson.workspaceProvider?.freshWorkspaceVersion !== 1)
     throw conflict("Fresh workspace preparation is unavailable");
   if (input.operation.kind === "finalize" &&
@@ -275,6 +285,7 @@ export async function preparePluginWorkspace(
     workers,
     input.companyId,
     pluginId,
+    true,
   );
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
