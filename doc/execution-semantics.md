@@ -2063,6 +2063,21 @@ ordinary Retry can continue. Finalized workspaces, mismatched sources and
 accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
 
+When the task was reassigned, that file-preservation hold binds the new owner
+only until automatic recovery records a completed receipt for that hold. Every
+saved operation in the receipt must be a copyback into the task workspace. The
+receipt is durable, so later reuse of the workspace by the new owner cannot
+apply the hold again. A new owner's turn is a fresh assignment, not a replay of
+the stopped run. After the receipt, admission, the final dispatch gate and
+stranded-work recovery no longer apply the hold to that owner. Wakes that the
+gate cancelled during the copy-back therefore get one bounded continuation.
+
+The hold row and its no-replay evidence stay unchanged. The hold still applies
+when the task returns to the stopped run's agent. It also applies when that agent
+is the current review participant. Before the receipt, the hold prevents a second
+executor on the workspace. A snapshot-only save does not release the hold,
+because the task workspace does not contain the saved files.
+
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
 the controller stops renewal and releases only that exact claim. Ordinary
