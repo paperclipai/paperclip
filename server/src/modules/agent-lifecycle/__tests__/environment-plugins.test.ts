@@ -6,6 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { configureAgentLifecycle, createAgentLifecycle, createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
+import { assertAgentsReadyForEnvironmentChange } from "../../../services/plugin-environment-driver.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -59,6 +60,41 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await selection(await agent(boundEnvironmentId))).toEqual(expect.arrayContaining([boundPluginId, genericPluginId]));
     expect(await selection(await agent(otherEnvironmentId))).toEqual([genericPluginId]);
     expect(await selection(await agent(null))).toEqual([genericPluginId]);
+  });
+
+  it("matches a sandbox provider that requires an agent through its provider key", async () => {
+    const providerId = randomUUID(), sandboxId = randomUUID(), providerKey = `provider-${providerId.slice(0, 8)}`;
+    await db.insert(plugins).values({ id: providerId, pluginKey: providerId, packageName: "provider", version: "1.0.0", status: "ready",
+      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: providerKey, kind: "sandbox_provider", requiresAgent: true }] } as never });
+    await db.insert(environments).values({ id: sandboxId, name: `Sandbox ${sandboxId}`, driver: "sandbox", status: "active", config: { provider: providerKey } });
+    expect(await selection(await agent(sandboxId))).toEqual([providerId]);
+    expect(await selection(await agent(otherEnvironmentId))).toEqual([]);
+    const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
+    await expect(agentConfiguration(db).update(id, { defaultEnvironmentId: sandboxId })).rejects.toThrow("Pause the agent");
+  });
+
+  it("refuses an environment change that gives active agents an unprepared plugin", async () => {
+    const other = { driver: "sandbox", config: { provider: "fixture" } };
+    const bound = { driver: "plugin", config: { pluginKey: boundPluginId, driverKey: "tasks" } };
+    const users = { environmentId: otherEnvironmentId, inheritsDefault: false };
+    const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
+    await expect(assertAgentsReadyForEnvironmentChange(db, other, bound, users)).rejects.toThrow("need setup first");
+    await db.update(agents).set({ lifecycleState: "paused", status: "paused" }).where(eq(agents.id, id));
+    await expect(assertAgentsReadyForEnvironmentChange(db, other, bound, users)).resolves.toBeUndefined();
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle", lifecycleRequiredPluginIds: [boundPluginId] }).where(eq(agents.id, id));
+    await expect(assertAgentsReadyForEnvironmentChange(db, other, bound, users)).resolves.toBeUndefined();
+    await db.update(agents).set({ lifecycleRequiredPluginIds: [] }).where(eq(agents.id, id));
+    await expect(assertAgentsReadyForEnvironmentChange(db, bound, bound, users)).resolves.toBeUndefined();
+    await expect(assertAgentsReadyForEnvironmentChange(db, bound, other, users)).resolves.toBeUndefined();
+  });
+
+  it("refuses an instance default that gives inheriting agents an unprepared plugin", async () => {
+    const other = { driver: "sandbox", config: { provider: "fixture" } };
+    const bound = { driver: "plugin", config: { pluginKey: boundPluginId, driverKey: "tasks" } };
+    await agent(null, { lifecycleRequiredPluginIds: [] });
+    await expect(assertAgentsReadyForEnvironmentChange(db, other, bound, { inheritsDefault: true })).rejects.toThrow("need setup first");
+    await expect(assertAgentsReadyForEnvironmentChange(db, other, bound, { environmentId: boundEnvironmentId, inheritsDefault: false })).resolves.toBeUndefined();
   });
 
   it("uses the instance default for an agent with no environment", async () => {

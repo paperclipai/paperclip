@@ -1,5 +1,6 @@
-import { plugins, type Db } from "@paperclipai/db";
-import { sql } from "drizzle-orm";
+import { agents, plugins, type Db } from "@paperclipai/db";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { conflict } from "../errors.js";
 import type {
   EnvironmentProbeResult,
   PluginEnvironmentConfig,
@@ -32,23 +33,52 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 type AgentEnvironmentRef = { driver: string; config: Record<string, unknown> | null };
-type AgentEnvironmentPlugin = { pluginKey: string; manifestJson: { environmentDrivers?: Array<{ driverKey: string; requiresAgent?: boolean }> } };
+type AgentEnvironmentPlugin = {
+  pluginKey: string;
+  manifestJson: { environmentDrivers?: Array<{ driverKey: string; kind?: string; requiresAgent?: boolean }> };
+};
 
 export function pluginHasAgentEnvironments(plugin: AgentEnvironmentPlugin) {
   return plugin.manifestJson.environmentDrivers?.some(driver => driver.requiresAgent === true) ?? false;
 }
 
 export function pluginServesAgentEnvironment(plugin: AgentEnvironmentPlugin, environment: AgentEnvironmentRef | null | undefined) {
-  if (environment?.driver !== "plugin" || environment.config?.pluginKey !== plugin.pluginKey) return false;
-  return plugin.manifestJson.environmentDrivers?.some(driver => driver.driverKey === environment.config?.driverKey && driver.requiresAgent === true) ?? false;
+  const config = environment?.config;
+  return plugin.manifestJson.environmentDrivers?.some(driver => {
+    if (driver.requiresAgent !== true) return false;
+    if (driver.kind === "sandbox_provider") return environment?.driver === "sandbox" && config?.provider === driver.driverKey;
+    return environment?.driver === "plugin" && config?.pluginKey === plugin.pluginKey && config?.driverKey === driver.driverKey;
+  }) ?? false;
 }
 
 export async function pluginForAgentEnvironment(db: Db, environment: AgentEnvironmentRef) {
-  if (environment.driver !== "plugin") return null;
   const config = environment.config;
-  if (typeof config?.pluginKey !== "string" || typeof config.driverKey !== "string") return null;
-  const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
+  if (environment.driver === "plugin" && typeof config?.pluginKey === "string") {
+    const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
+    return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
+  }
+  if (environment.driver !== "sandbox" || typeof config?.provider !== "string") return null;
+  const [plugin] = await db.select().from(plugins)
+    .where(sql`${plugins.manifestJson} @> ${JSON.stringify({ environmentDrivers: [{ driverKey: config.provider, kind: "sandbox_provider" }] })}::jsonb`)
+    .orderBy(asc(plugins.installOrder)).limit(1);
   return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
+}
+
+/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
+export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  const plugin = after ? await pluginForAgentEnvironment(db, after) : null;
+  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return;
+  const usesEnvironment = or(users.environmentId ? eq(agents.defaultEnvironmentId, users.environmentId) : undefined,
+    users.inheritsDefault ? isNull(agents.defaultEnvironmentId) : undefined);
+  if (!usesEnvironment) return;
+  const [waiting] = await db.select({ id: agents.id }).from(agents).where(and(usesEnvironment,
+    inArray(agents.lifecycleState, ["ready", "verifying"]),
+    sql`not coalesce(${agents.lifecycleRequiredPluginIds}, '[]'::jsonb) @> ${JSON.stringify([plugin.id])}::jsonb`)).limit(1);
+  if (waiting) {
+    throw conflict("Agents that use this environment need setup first. Pause those agents, save this change, and then resume them.",
+      { code: "environment_requires_agent_setup" });
+  }
 }
 
 export async function pluginEnvironmentRequiresAgent(db: Db, environment: AgentEnvironmentRef) {
