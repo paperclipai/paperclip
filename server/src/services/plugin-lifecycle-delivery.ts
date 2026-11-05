@@ -67,6 +67,13 @@ export function registerPluginLifecycleDelivery(
     return [...configured, ...managed.filter(target => !seen.has(`${target.plugin.id}:${target.companyId}`))].sort((a, b) =>
       (a.plugin.installOrder ?? Infinity) - (b.plugin.installOrder ?? Infinity) || a.companyId.localeCompare(b.companyId));
   }
+  async function deliverableLifecycleTypes({ plugin, companyId }: Awaited<ReturnType<typeof deliveryTargets>>[number]) {
+    const types = plugin.manifestJson.resourceLifecycle;
+    if (!types?.length || !plugin.manifestJson.capabilities.includes("events.subscribe")) return;
+    const [disabled] = await db.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings)
+      .where(and(eq(pluginCompanySettings.pluginId, plugin.id), eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.enabled, false)));
+    return disabled ? undefined : types;
+  }
   const delivery = coordinator.register(DELIVERY_QUEUES.pluginLifecycle, {
     retryMs,
     hasPending: async () => pending,
@@ -86,12 +93,10 @@ export function registerPluginLifecycleDelivery(
       try {
         await ensureListening();
         for (const [key, at] of retryAt) if (at <= Date.now()) retryAt.delete(key);
-        for (const { plugin, companyId } of await deliveryTargets()) {
-          const types = plugin.manifestJson.resourceLifecycle;
-          if (!types?.length || !plugin.manifestJson.capabilities.includes("events.subscribe")) continue;
-          const [disabled] = await db.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings)
-            .where(and(eq(pluginCompanySettings.pluginId, plugin.id), eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.enabled, false)));
-          if (disabled) continue;
+        for (const target of await deliveryTargets()) {
+          const types = await deliverableLifecycleTypes(target);
+          if (!types) continue;
+          const { plugin, companyId } = target;
           if (types.includes("agent_runtime") && !refreshedRuntimeCompanies.has(companyId)) {
             await db.execute(sql`SELECT paperclip_invalidate_company_agent_runtimes(${companyId}::uuid)`);
             refreshedRuntimeCompanies.add(companyId);
@@ -225,13 +230,12 @@ export function registerPluginLifecycleDelivery(
     if (!current()) return "unknown";
     const targets = await deliveryTargets();
     if (!current()) return "unknown";
-    for (const { plugin, companyId } of targets) {
-      const types = plugin.manifestJson.resourceLifecycle;
-      if (!types?.length || !plugin.manifestJson.capabilities.includes("events.subscribe")) continue;
-      const [disabled] = await db.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings)
-        .where(and(eq(pluginCompanySettings.pluginId, plugin.id), eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.enabled, false)));
+    for (const target of targets) {
       if (!current()) return "unknown";
-      if (disabled) continue;
+      const types = await deliverableLifecycleTypes(target);
+      if (!current()) return "unknown";
+      if (!types) continue;
+      const { plugin, companyId } = target;
       const events = await pluginLifecycleInbox(db, plugin.id).list(companyId, 1, undefined, types);
       if (!current()) return "unknown";
       if (events.length) { wake(); inspectionFailure = false; return "present"; }
