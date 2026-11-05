@@ -6505,7 +6505,7 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind)
     conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix)
-    conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    conditions.push(like(issues.originKind, `${escapeLikePattern(`${filters.originKindPrefix}`)}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
@@ -8375,7 +8375,7 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
         conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
+          like(issues.originKind, `${escapeLikePattern(`${filters.originKindPrefix}`)}%`),
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
@@ -8655,7 +8655,7 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
         conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
+          like(issues.originKind, `${escapeLikePattern(`${filters.originKindPrefix}`)}%`),
         );
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
