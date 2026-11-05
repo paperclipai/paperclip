@@ -1981,6 +1981,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         or(eq(issues.assigneeAgentId, agentWakeupRequests.agentId),
+          like(agentWakeupRequests.idempotencyKey, "stale-addressee-requeue:%"),
           sql`${agentWakeupRequests.payload} #>> '{_paperclipWakeContext,wakeReason}' = 'issue_comment_mentioned'`)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
       .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
@@ -2024,22 +2025,35 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'interaction_pending'`,
         )).limit(1);
         if (source) {
-          await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
-            eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          ));
-          await enqueueWakeup(wake.agentId, {
+          const receipt = await db.transaction(async tx => {
+            const [issue] = await tx.select({ assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId })
+              .from(issues).where(and(eq(issues.companyId, wake.companyId),
+                eq(issues.id, String(wake.payload?.issueId)))).for("update");
+            if (!issue?.assigneeAgentId || issue.assigneeUserId) return null;
+            if (issue.assigneeAgentId !== wake.agentId) {
+              await notifyDeferredExecutionWork(tx, { companyId: wake.companyId });
+            }
+            return tx.update(agentWakeupRequests).set({ agentId: issue.assigneeAgentId, updatedAt: new Date() })
+              .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+                eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+                eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${requeuedFromRunId}`),
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${String(wake.payload?.issueId)}`))
+              .returning().then(rows => rows[0] ?? null);
+          });
+          if (!receipt) continue;
+          await enqueueWakeup(receipt.agentId, {
             source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
-            payload: parseObject(wake.payload),
+            payload: parseObject(receipt.payload),
             contextSnapshot: withQueuedCommentIdsInRunContext({
-              issueId: String(wake.payload?.issueId),
+              issueId: String(receipt.payload?.issueId),
               source: "stale_addressee_redelivery",
               requeuedFromRunId,
-            }, queuedCommentIdsFromWakePayload(wake.payload)),
-            requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
-            queuedCommentRequestId: wake.id,
-            issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
-            idempotencyKey: `stale-addressee-delivery:${wake.id}`,
-          }, wake.id).catch(err => {
+            }, queuedCommentIdsFromWakePayload(receipt.payload)),
+            requestedByActorType: "user", requestedByActorId: receipt.requestedByActorId,
+            queuedCommentRequestId: receipt.id,
+            issueStateGuard: { assigneeAgentId: receipt.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+            idempotencyKey: `stale-addressee-delivery:${receipt.id}`,
+          }, receipt.id).catch(err => {
             logger.warn({ err, queueId: wake.id }, "failed to redeliver stale addressee comments");
           });
           continue;

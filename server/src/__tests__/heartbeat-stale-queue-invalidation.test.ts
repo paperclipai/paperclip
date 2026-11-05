@@ -40,6 +40,7 @@ import {
 import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import {
+  queuedCommentIdsFromRunContext,
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.ts";
@@ -914,7 +915,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
   describe("named-addressee interaction_pending wakes", () => {
     async function seedAddressedInteractionFixture(input: {
-      interactionStatus?: string;
+      interactionStatus?: "pending" | "accepted";
       wakeInteractionId?: string;
       withQueuedComments?: boolean;
       invocationSource?: "assignment" | "automation";
@@ -975,7 +976,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         payload: { version: 1, prompt: "Approve the plan?" },
         ...(interactionStatus === "pending"
           ? {}
-          : { resolvedAt: new Date(), result: { version: 1, outcome: interactionStatus } }),
+          : { resolvedAt: new Date(), result: { version: 1 as const, outcome: interactionStatus } }),
       });
       // With adopted deferred comments the wake carries `wakeCommentIds` and
       // claims through the separate queued-comment claim path. The wake
@@ -1176,16 +1177,57 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       await heartbeat.resumeQueuedRuns();
       const delivered = await waitForCondition(async () => mockAdapterExecute.mock.calls.some(([context]) =>
         context?.agent.id === assigneeAgentId &&
-        context.context.wakeCommentIds?.includes(queuedCommentId),
+        queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
       ));
       expect(delivered).toBe(true);
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       await heartbeat.resumeQueuedRuns();
       const deliveries = mockAdapterExecute.mock.calls.filter(([context]) =>
         context?.agent.id === assigneeAgentId &&
-        context.context.wakeCommentIds?.includes(queuedCommentId),
+        queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
       );
       expect(deliveries).toHaveLength(1);
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    });
+
+    it.each([false, true])("transfers saved stale-addressee comments to a new assignee without an interrupted owner run (queued=%s)", async (withQueuedRun) => {
+      const { companyId, runId, issueId, assigneeAgentId, queuedCommentId } =
+        await seedAddressedInteractionFixture({ withQueuedComments: true, interactionStatus: "accepted" });
+      await heartbeat.resumeQueuedRuns();
+      const [saved] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `stale-addressee-requeue:${runId}`));
+      expect(saved).toMatchObject({ agentId: assigneeAgentId, status: "deferred_issue_execution" });
+      const nextAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: nextAgentId, companyId, name: "New assignee", role: "engineer", status: "active",
+        adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+      });
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+      await heartbeat.resumeQueuedRuns();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved!.id)))[0])
+        .toMatchObject({ agentId: assigneeAgentId, status: "deferred_issue_execution" });
+      expect(mockAdapterExecute.mock.calls.filter(([context]) =>
+        queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
+      )).toHaveLength(0);
+      await db.update(issues).set({ assigneeAgentId: nextAgentId }).where(eq(issues.id, issueId));
+      const queued = withQueuedRun
+        ? await seedQueuedRun({ companyId, agentId: nextAgentId, issueId, wakeReason: "issue_assigned" })
+        : null;
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.resumeQueuedRuns();
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.some(([context]) =>
+        context.agent.id === nextAgentId && queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
+      ))).toBe(true);
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      await heartbeat.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(mockAdapterExecute.mock.calls.filter(([context]) =>
+        queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
+      )).toHaveLength(1);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, saved!.id));
+      expect(receipt).toMatchObject({ agentId: nextAgentId, status: "coalesced" });
+      if (queued) expect(receipt?.runId).toBe(queued.runId);
       expect(countExecuteCallsForRun(runId)).toBe(0);
     });
 
@@ -1211,7 +1253,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       await heartbeat.resumeQueuedRuns();
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       const deliveries = mockAdapterExecute.mock.calls.filter(([context]) =>
-        context?.agent.id === assigneeAgentId && context.context.wakeCommentIds?.includes(queuedCommentId),
+        context?.agent.id === assigneeAgentId && queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId!),
       );
       expect(deliveries).toHaveLength(1);
       const [receipt] = await db.select().from(agentWakeupRequests)
@@ -1275,7 +1317,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(countExecuteCallsForRun(runId)).toBe(1);
       if (queuedCommentId) {
         expect(mockAdapterExecute.mock.calls.filter(([context]) =>
-          context?.context.wakeCommentIds?.includes(queuedCommentId),
+          queuedCommentIdsFromRunContext(context.context).includes(queuedCommentId),
         )).toHaveLength(1);
       }
     });
@@ -1336,7 +1378,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     it.each([
       { label: "an interaction that no longer exists", missing: true, interactionStatus: "pending" },
       { label: "an already-resolved interaction", missing: false, interactionStatus: "accepted" },
-    ])("still cancels a non-assignee interaction_pending wake naming $label", async ({ missing, interactionStatus }) => {
+    ] as const)("still cancels a non-assignee interaction_pending wake naming $label", async ({ missing, interactionStatus }) => {
       const { runId, wakeupRequestId } = await seedAddressedInteractionFixture({
         ...(missing ? { wakeInteractionId: randomUUID() } : {}),
         interactionStatus,
