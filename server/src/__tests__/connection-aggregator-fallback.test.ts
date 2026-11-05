@@ -438,9 +438,12 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       it("keeps Slack's aggregator routes in capability-only discovery", async () => {
         await resetQuestions();
-        const services = (await connectionIntentService(db).search(claims, "hosted MCP server")).results.map((item) => item.service);
+        const result = await connectionIntentService(db).search(claims, "start and continue Paperclip work");
+        const services = result.results.map((item) => item.service);
         expect(services).toContain("via:composio:slack");
         expect(services).not.toContain("slack");
+        // A route needs the provider-choice flow before connection_request.
+        expect(result.instruction).toContain("search its aggregator.targetService");
       });
       it("keeps native connectors that declare a Paperclip Cloud managed method", async () => {
         await resetQuestions();

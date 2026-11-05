@@ -574,6 +574,11 @@ export function connectionIntentService(db: Db) {
       && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
     const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
+    // Aggregator routes need a recorded provider choice before connection_request.
+    const rankedResult = (suggestions = false) => {
+      const results = ranked();
+      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, suggestions);
+    };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
     const targetName = publicService?.name ?? targetService.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
@@ -587,7 +592,7 @@ export function connectionIntentService(db: Db) {
           aggregatorAlternatives(service.slug, service.name, service)))).flat();
         if (otherRoutes.length) return discoverySuggestions([...ranked(), ...otherRoutes]);
       }
-      return directSearchResult(query, ranked());
+      return rankedResult();
     }
     async function aggregatorAlternatives(targetService: string, targetName: string, publicService?: AggregatorServiceDefinition) {
       const alternatives: ConnectionSearchResultItem[] = [];
@@ -653,7 +658,7 @@ export function connectionIntentService(db: Db) {
         aggregatorAlternatives(service.slug, service.name, service)))).flat();
       if (matches.length) return discoverySuggestions([...ranked(), ...matches]);
     }
-    if (!alternatives.length) return directSearchResult(query, ranked(), true);
+    if (!alternatives.length) return rankedResult(true);
     const question = aggregatorProviderQuestion(targetService, targetName, alternatives);
     const latest = previous[0];
     if (latest && (latest.status === "pending" || !options.retryProviderChoice)) {
