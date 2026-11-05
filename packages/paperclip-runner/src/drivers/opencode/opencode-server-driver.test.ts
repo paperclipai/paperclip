@@ -157,7 +157,7 @@ describe("OpenCodeServerDriver", () => {
   it("forwards configured bindings to the provider shell and redacts their values", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-configured-env-"));
     roots.push(root);
-    const bindings = { PROBE_PLAIN: "fixture-plain-binding", PROBE_SECRET: "fixture-resolved-binding" };
+    const bindings = { PROBE_PLAIN: "fixture-plain-binding", PROBE_SECRET: 'fixture-"quoted"\\path\nmultiline-binding' };
     const command = join(root, "probe-opencode.mjs");
     await writeFile(command, [
       "#!/usr/bin/env node",
@@ -165,7 +165,7 @@ describe("OpenCodeServerDriver", () => {
       'import { writeFile } from "node:fs/promises";',
       'import { join } from "node:path";',
       'const lengths = execFileSync("/bin/sh", ["-c", \'printf "%s,%s" "${#PROBE_PLAIN}" "${#PROBE_SECRET}"\'], { encoding: "utf8" });',
-      'await writeFile(join(process.env.XDG_DATA_HOME, "shell-probe.txt"), lengths);',
+      'await writeFile(join(process.env.XDG_DATA_HOME, "shell-probe.json"), JSON.stringify({ lengths, keys: JSON.parse(process.env.PAPERCLIP_CONFIGURED_ENV_KEYS ?? "[]") }));',
       'process.stderr.write(`plain binding: ${process.env.PROBE_PLAIN}\\nresolved binding: ${process.env.PROBE_SECRET}\\n`);',
       `await import(${JSON.stringify(fixture)});`,
     ].join("\n"), { mode: 0o755 });
@@ -175,7 +175,18 @@ describe("OpenCodeServerDriver", () => {
       model: "openrouter/test-model", command, runtimeDirectory: root,
       environment: {
         PATH: process.env.PATH,
-        ...configuredEnvironmentProjection(bindings),
+        ...configuredEnvironmentProjection({
+          ...bindings,
+          OPENCODE_CONFIG: "/untrusted/opencode.json",
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"*":"allow"}}',
+          OPENCODE_CONFIG_DIR: "/untrusted/opencode",
+          OPENCODE_PERMISSION: '{"*":"allow"}',
+          OPENCODE_DISABLE_PROJECT_CONFIG: "false",
+          XDG_CONFIG_HOME: "/untrusted/config",
+          XDG_DATA_HOME: "/untrusted/data",
+          XDG_CACHE_HOME: "/untrusted/cache",
+          XDG_STATE_HOME: "/untrusted/state",
+        }),
         DATABASE_URL: "unbound-host-database",
         PAPERCLIP_API_KEY: "controller-key",
         NODE_OPTIONS: "--require=/untrusted/bootstrap.js",
@@ -186,22 +197,35 @@ describe("OpenCodeServerDriver", () => {
     const session = await driver.openSession({ runId: "bindings", normalizedSessionId: "bindings", workingDirectory: root });
     let persisted = "";
     try {
-      expect(await readFile(join(root, "bindings", "data", "shell-probe.txt"), "utf8"))
-        .toBe(`${bindings.PROBE_PLAIN.length},${bindings.PROBE_SECRET.length}`);
+      const probe = JSON.parse(await readFile(join(root, "bindings", "data", "shell-probe.json"), "utf8"));
+      expect(probe).toEqual({ lengths: `${bindings.PROBE_PLAIN.length},${bindings.PROBE_SECRET.length}`, keys: Object.keys(bindings).sort() });
       const child = JSON.parse(await readFile(join(root, "bindings", "data", "fake-environment.json"), "utf8"));
       expect(child.keys).toEqual(expect.arrayContaining(Object.keys(bindings)));
-      for (const key of ["DATABASE_URL", "PAPERCLIP_API_KEY", "NODE_OPTIONS"]) expect(child.keys).not.toContain(key);
+      for (const key of ["DATABASE_URL", "PAPERCLIP_API_KEY", "NODE_OPTIONS", "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION", "XDG_STATE_HOME"]) {
+        expect(child.keys).not.toContain(key);
+      }
+      expect(child.projectConfigDisabled).toBe("true");
+      await session.startTurn({ message: { role: "user", text: "configured-environment-output" } });
+      const events = await collectTurnEvents(session.events());
+      expect(events.at(-1)?.eventType).toBe("turn.completed");
       persisted = JSON.stringify(await session.snapshot())
         + await readFile(join(root, "bindings", "config", "opencode", "opencode.json"), "utf8");
     } finally {
       await session.close({ reason: "test" });
     }
-    persisted += await readFile(tracePath, "utf8");
+    const trace = await readFile(tracePath, "utf8");
+    const frames = trace.trim().split("\n").map(line => JSON.parse(line))
+      .filter(entry => entry.kind === "frame")
+      .map(entry => Buffer.from(entry.rawBase64, "base64").toString("utf8"));
+    expect(frames.find(frame => frame.includes("part-configured-binding-output"))).toContain('"output":"[REDACTED]"');
+    persisted += trace + frames.join("\n");
     expect(diagnostics.join("\n")).toContain("plain binding: [REDACTED]");
     expect(diagnostics.join("\n")).toContain("resolved binding: [REDACTED]");
     for (const value of Object.values(bindings)) {
       expect(diagnostics.join("\n")).not.toContain(value);
       expect(persisted).not.toContain(value);
+      expect(persisted).not.toContain(JSON.stringify(value).slice(1, -1));
     }
   });
 

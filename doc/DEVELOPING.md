@@ -2088,7 +2088,8 @@ Native OpenCode applies that projection when starting `opencode serve`, so its
 shell tools receive both plain bindings and resolved company secrets from
 `adapterConfig.env`. Forwarded values participate in diagnostic and provider-trace
 redaction. The isolated HOME, provider credential proxy, and GitHub broker retain
-their existing launch rules.
+their existing launch rules. OpenCode owns the `OPENCODE_*` and `XDG_*`
+configuration variables; task bindings cannot override them.
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
