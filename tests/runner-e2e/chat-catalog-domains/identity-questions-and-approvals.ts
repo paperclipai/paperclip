@@ -52,7 +52,8 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
     state.visibleContinuationDescriptions = [];
     for (const card of multipartContinuationCards(observed)) {
       const description = card.payload.questionSet!.description!;
-      const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${card.id}`)}]`);
+      const row = ctx.input.page.getByTestId("task-chat-unanswered-question")
+        .and(ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${card.id}`)}]`));
       await expect(row).toBeVisible({ timeout: remainingIdentityObservationBudget(ctx) });
       await row.click({ timeout: remainingIdentityObservationBudget(ctx) });
       const context = ctx.input.page.getByTestId("task-chat-composer-takeover").getByRole("region", { name: "Question context", exact: true });
