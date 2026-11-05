@@ -23,6 +23,7 @@ use crate::durable::{
     validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
     CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig, DurableRunnerError,
     EventPriority, OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
+    PROVIDER_STATE_INCOMPATIBLE,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -2272,14 +2273,16 @@ impl CodexCommandExecutor {
         if state.opencode_launch_profile_digest != expected_launch_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "OpenCode runner launch profile changed across durable recovery",
-            ));
+            )
+            .with_classification(PROVIDER_STATE_INCOMPATIBLE));
         }
         let expected_cursor_cloud_profile_digest =
             self.bind_cursor_cloud_launch_profile(&state.config)?;
         if state.cursor_cloud_launch_profile_digest != expected_cursor_cloud_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "Cursor Cloud runner launch profile changed across durable recovery",
-            ));
+            )
+            .with_classification(PROVIDER_STATE_INCOMPATIBLE));
         }
         self.state = Some(state);
         Ok(())
