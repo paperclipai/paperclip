@@ -38,7 +38,10 @@ export async function downloadStoryArtifact(input: {
   page: Page; attachmentId: string; directory: string; phase: string;
   mode: "base" | "separator" | "max-length"; deadlineAt: number;
 }) {
-  const link = input.page.locator(`a[href*="/api/attachments/${input.attachmentId}/content"]`).filter({ hasText: /Download/i }).first();
+  // Older attachment cards label the link "Download"; Artifacts V1 rows use an icon link named by aria-label.
+  const content = `a[href*="/api/attachments/${input.attachmentId}/content"]`;
+  const link = input.page.locator(content).filter({ hasText: /Download/i })
+    .or(input.page.locator(`${content}[aria-label^="Download" i]`)).first();
   await expect(link).toBeVisible({ timeout: 30_000 });
   const [download] = await Promise.all([input.page.waitForEvent("download", { timeout: 30_000 }), link.click()]);
   await mkdir(input.directory, { recursive: true, mode: 0o700 });
