@@ -40,6 +40,18 @@
 //     and request isolation need it) and turns the breadcrumb off with the
 //     integration's own `breadcrumbs` option.
 //
+// A failed secret-sensitive request (chat setup, provider webhooks, MCP,
+// company observability settings, and similar routes) reports only the
+// generic `Secret-sensitive request failed` error, with its own stack and
+// default grouping. `SecretSensitiveRequestError` adds `secret_route_family`,
+// `http_method`, `http_status` and `error_kind` tags, optional `errno_code`
+// and `db_error_code` tags (a Node errno name or a SQLSTATE), and a
+// `secret_sensitive_request` context. The context holds the matched Express
+// route definition and up to eight complete V8 frames from the original
+// stack. Every value is a closed label, a bounded number, or a code-shaped
+// string; anything else is dropped. The event never carries the request
+// URL, query, body, headers, or the original error name or message.
+//
 // `onUnhandledRejectionIntegration` defaults to `mode: "warn"`, which
 // registers a `process.on("unhandledRejection")` listener. Node cancels its
 // own crash-on-unhandled-rejection behavior when any listener is registered.
@@ -62,6 +74,7 @@ import os from "node:os";
 import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
@@ -137,6 +150,23 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       sentryHandle.captureException(exception, {
         tags: { ...tags, error_code: "cloud_portfolio_failure" },
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (error instanceof SecretSensitiveRequestError) {
+      // The sanitized error keeps its generic message, stack and default
+      // grouping. Only its fixed-shape diagnostics are added.
+      const diagnostics = error.diagnostics;
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          secret_route_family: diagnostics.routeFamily,
+          http_method: diagnostics.method,
+          http_status: String(diagnostics.status),
+          error_kind: diagnostics.errorKind,
+          ...(diagnostics.errnoCode ? { errno_code: diagnostics.errnoCode } : {}),
+          ...(diagnostics.databaseErrorCode ? { db_error_code: diagnostics.databaseErrorCode } : {}),
+        },
+        contexts: { secret_sensitive_request: { ...diagnostics, originFrames: [...diagnostics.originFrames] } },
         fingerprint: ["{{ default }}"],
       });
     } else if (storageFailure) {

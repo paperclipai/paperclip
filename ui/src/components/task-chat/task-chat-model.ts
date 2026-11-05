@@ -237,6 +237,16 @@ export interface TaskChatToolItem {
   decision?: "allowed" | "rejected";
   /** Automatic approval review that let this call run. */
   autoReview?: TaskChatAutoReview;
+  /** Canonical operation (read, search, list, execute, edit) when known. */
+  operation?: string;
+  /** Provider's short description of the call, such as Claude's Bash description. */
+  description?: string;
+  /** Process exit code, when the harness reported one. */
+  exitCode?: number | null;
+  /** Wall-clock tool duration in milliseconds, when known. */
+  durationMs?: number | null;
+  /** Why the harness or a policy refused to run the tool. */
+  blockedReason?: string;
   /** Execution id of the delegation (subagent) that made this call. */
   parentToolUseId?: string;
 }

@@ -781,6 +781,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    observed_completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
@@ -1201,6 +1202,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            observed_completed_turn_authority: None,
             active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             goal_allows_autonomous_turns: false,
@@ -1518,7 +1520,10 @@ impl CodexProvider {
                         }
                         if matches!(
                             method.as_str(),
-                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                            "thread/tokenUsage/updated"
+                                | "paperclip/resumeUsageSnapshot"
+                                | "thread/goal/updated"
+                                | "thread/goal/cleared"
                         ) {
                             accounting.push((method, params));
                             continue;
@@ -1702,6 +1707,21 @@ impl CodexProvider {
         })
     }
 
+    pub(crate) fn observed_completed_turn_authority(&self) -> Option<(u64, &str)> {
+        self.observed_completed_turn_authority
+            .as_ref()
+            .map(|authority| {
+                (
+                    authority.process_generation,
+                    authority.provider_turn_id.as_str(),
+                )
+            })
+    }
+
+    pub(crate) fn has_known_descendants(&self) -> bool {
+        !self.descendant_thread_ids.is_empty()
+    }
+
     pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
@@ -1817,6 +1837,10 @@ impl CodexProvider {
             return Ok(());
         }
         self.restart_idle_identity_epoch()
+    }
+
+    pub(crate) fn has_active_goal(&self) -> bool {
+        self.goal_allows_autonomous_turns
     }
 
     pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
@@ -3214,6 +3238,8 @@ impl CodexProvider {
                 self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
+                // Restored result authority cannot prove this process saw a terminal.
+                self.observed_completed_turn_authority = self.completed_turn_authority.clone();
                 self.completion_reconciliation_pending =
                     terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
