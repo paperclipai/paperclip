@@ -27,6 +27,8 @@ import {
   verificationTone,
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
+import { latestReasoningHeadline } from "./reasoning-summary";
 import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
@@ -88,10 +90,12 @@ function presentation(item: Activity, active: boolean): ActivityRowPresentation 
     return {
       icon: Brain,
       label: running ? "Thinking" : "Thought",
-      target: item.lines
-        .filter((line) => line.trim())
-        .at(-1)
-        ?.trim(),
+      target:
+        latestReasoningHeadline(item.lines.join("\n")) ??
+        item.lines
+          .filter((line) => line.trim())
+          .at(-1)
+          ?.trim(),
       mono: false,
       running,
     };
@@ -272,7 +276,7 @@ function ActivityDetails({ item }: { item: Activity }) {
 
 function ActivityDetailsBody({ item }: { item: Activity }) {
   if (item.kind === "thinking")
-    return <div data-conversation-text="progress"><MarkdownBody softBreaks>{item.lines.join("\n")}</MarkdownBody></div>;
+    return <TaskChatReasoningSummary text={item.lines.join("\n")} streaming={Boolean(item.streaming)} />;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
   if (item.kind === "protocol")
     return <TaskChatProtocolActivityDetails item={item} neutral />;
