@@ -2158,7 +2158,7 @@ A Stop or reassignment can reach a native run while its provider session is
 still opening. The startup owner then fences the late handle before any prompt,
 and the Stop acknowledgement records `nativeCancellation.beforeProviderTurn`.
 A reattached provider from restart recovery never gets this proof. When the run
-also has no runner event outside the startup lifecycle (harness, session, workspace,
+also has no runner event outside the exact startup lifecycle events (harness, session, workspace ready,
 runtime phase, credential refresh), no turn or provider event, and
 no native result, no provider outcome
 is unknown. The completed copyback receipt then releases the hold for the stopped
@@ -2170,6 +2170,14 @@ automatic recovery. The hold gates its dispatch until the recovery receipt is
 complete, so recovery and that turn cannot both wait for each other. Running
 turns, and queued turns for other tasks that share the workspace, still block
 recovery.
+
+After recovery saves the files of a run whose sandbox is destroyed after each
+turn (an ephemeral lease), it re-stops the sandbox and then queues the destroy.
+The lease carries the verified stop forward as
+`workspaceRecoveryCleanup.stopReceipt`. The saved message, Retry and the next
+remote workspace writer wait for that stop, not for the destroy. So they continue
+right after recovery, instead of after the cleanup retry. A lease without a
+matching stop receipt still blocks them.
 
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
