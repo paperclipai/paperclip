@@ -874,6 +874,12 @@ Warm sandbox reuse must match the current host Git tip and branch as well as the
 file snapshot and saved stamp, including managed nested repositories. A history
 or branch mismatch restages the host before the next run begins.
 
+Portable workspace archives exclude Unix domain socket endpoints and record their
+paths in the exclusion manifest. Capture leaves the source endpoints in place;
+restore does not recreate runtime IPC. Named pipes and device entries remain
+unsupported, while regular files, directories and confined symlinks retain their
+existing validation.
+
 Disk-backed native sandbox workspace snapshots run in at most two worker threads per
 controller process. Each capture retains the same file hashes, modes, symlinks,
 exclusions and ignored-path manifest as an inline capture. A worker seals its
