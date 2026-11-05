@@ -7,6 +7,7 @@ import {
   agentWakeupRequests,
   authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueComments,
@@ -350,6 +351,13 @@ describeEmbeddedPostgres("heartbeat provider login hold", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: "board-user",
+        status: "active",
+        membershipRole: "member",
+      });
       await db.insert(issues).values({
         id: issueId,
         companyId,
