@@ -1,4 +1,5 @@
 import { budgetServiceInTransaction } from "../budgets.js";
+import { resolveTaskWatchdogMutationScope } from "../task-watchdog-scope.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
@@ -1787,6 +1788,11 @@ export class PaperclipRunnerToolAuthority {
         assigneeUserId,
         blockedByIssueIds,
         blockParentUntilDone: false,
+        // Watchdog runs are authorized for the watched subtree; keep their tasks
+        // under the requested parent instead of the agent depth placement.
+        parentDepthPolicy: (await resolveTaskWatchdogMutationScope(tx as unknown as Db, {
+          type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
+        })).kind === "none" ? "flatten" as const : "allow_nested" as const,
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,

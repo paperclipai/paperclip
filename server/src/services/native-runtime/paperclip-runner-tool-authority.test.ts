@@ -19,6 +19,7 @@ import {
   issueApprovals,
   issueComments,
   issueThreadInteractions,
+  issueWatchdogs,
   issues,
 } from "@paperclipai/db";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
@@ -1377,6 +1378,39 @@ describe("PaperclipRunnerToolAuthority", () => {
         markdown: credentialDocumentBody,
       },
     });
+  });
+
+  it("places create_task beside a child task, except for watchdog-scoped runs", async () => {
+    const rootId = randomUUID();
+    await db.insert(issues).values({ id: rootId, companyId, title: "Depth root", status: "todo", workMode: "standard" });
+    async function childRun(watchdog: boolean) {
+      const childId = randomUUID();
+      const childRunId = randomUUID();
+      await db.insert(issues).values({
+        id: childId, companyId, parentId: rootId, title: `Depth child ${watchdog ? "watchdog" : "ordinary"}`,
+        status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: childId,
+        invocationSource: "assignment", triggerDetail: "system",
+        contextSnapshot: watchdog ? { issueId: childId, taskWatchdog: { watchedIssueId: childId } } : { issueId: childId },
+      });
+      await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, childId));
+      if (watchdog) await db.insert(issueWatchdogs).values({ companyId, issueId: childId, watchdogAgentId: agentId, status: "active" });
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: childId, runId: childRunId, workMode: "standard" });
+      const created = await authority.execute({
+        tool: "create_task",
+        callId: `depth-${watchdog ? "watchdog" : "ordinary"}`,
+        arguments: { idempotencyKey: `depth-${childId}`, title: "Follow-up from the child", status: "backlog" },
+      }) as { task: { id: string; parentId: string | null } };
+      const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
+      return { childId, parentId: created.task.parentId, originIssueId: row?.originIssueId };
+    }
+
+    const ordinary = await childRun(false);
+    expect(ordinary).toMatchObject({ parentId: rootId, originIssueId: ordinary.childId });
+    const watchdog = await childRun(true);
+    expect(watchdog).toMatchObject({ parentId: watchdog.childId, originIssueId: watchdog.childId });
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
