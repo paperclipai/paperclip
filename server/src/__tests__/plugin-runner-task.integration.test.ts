@@ -7,12 +7,12 @@ import { eq } from "drizzle-orm";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, heartbeatRuns, plugins, projects } from "@paperclipai/db";
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
-import { createRequest, parseMessage, serializeMessage, isJsonRpcResponse, isJsonRpcSuccessResponse } from "../../../packages/plugins/sdk/src/protocol.js";
-import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
+import { createRequest, parseMessage, serializeMessage, isJsonRpcResponse, isJsonRpcSuccessResponse, JsonRpcCallError } from "../../../packages/plugins/sdk/src/protocol.js";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, readEnvironmentTaskErrorDiagnostic, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { remoteExecutionHasStopped } from "../services/remote-execution-termination.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
@@ -41,7 +41,7 @@ function workerHarness(plugin: ReturnType<typeof definePlugin>, manifest: Paperc
       const waiter = pending.get(Number(message.id));
       pending.delete(Number(message.id));
       if (isJsonRpcSuccessResponse(message)) waiter?.resolve(message.result);
-      else waiter?.reject(new Error(message.error.message));
+      else waiter?.reject(new JsonRpcCallError(message.error));
     }
   });
   const call = (method: string, params: unknown) => new Promise<any>((resolve, reject) => {
@@ -62,6 +62,64 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
     stopDb = started.cleanup; db = createDb(started.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await stopDb?.(); });
+
+  it.each(["unresolved_operation", "source_state_unverified", "malformed_rpc", "extra_rpc_fields"] as const)("relays only the closed source refusal through Core (%s)", async mode => {
+    const reason = mode === "source_state_unverified" ? mode : "unresolved_operation";
+    const companyId = randomUUID(), agentId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID();
+    const sourceRunId = randomUUID(), runId = randomUUID(), sourceLeaseId = randomUUID(), leaseId = randomUUID();
+    const manifest: PaperclipPluginManifestV1 = { id: pluginId, apiVersion: 1, version: "1.0.0", displayName: "Task diagnostics",
+      description: "Synthetic task provider", author: "Paperclip", categories: ["automation"],
+      capabilities: ["environment.drivers.register"], entrypoints: { worker: "fixture" },
+      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] };
+    await db.insert(companies).values({ id: companyId, name: "Diagnostic fixture", issuePrefix: `D${companyId.slice(0, 7).replace(/-/g, "").toUpperCase()}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
+    await db.insert(environments).values({ id: environmentId, name: `Diagnostic ${environmentId}`, driver: "plugin", config: {} });
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture", version: "1.0.0", status: "ready", manifestJson: manifest });
+    await db.insert(heartbeatRuns).values([
+      { id: sourceRunId, companyId, agentId, invocationSource: "manual", status: "succeeded", resultJson: { outcome: "preserved" } },
+      { id: runId, companyId, agentId, invocationSource: "manual", status: "running" },
+    ]);
+    const pin = { driver: "plugin", pluginId, driverKey: "tasks", runnerTaskLease: true,
+      runnerTaskProjectAuthValidation: { configurationId: "fixture", provider: "openai", projectIds: [] } };
+    const source = { id: sourceLeaseId, companyId, environmentId, heartbeatRunId: sourceRunId, provider: "plugin:fixture:tasks", providerLeaseId: "source-task" };
+    await db.insert(environmentLeases).values([
+      { ...source, status: "released", leasePolicy: "ephemeral", cleanupStatus: "success", releasedAt: new Date(), metadata: { ...pin,
+        runnerTaskSessionRetained: true, runnerTaskIdentity: { runnerId: "runner", leaseId: sourceLeaseId, runId: sourceRunId, sessionId: "session", turnId: "old-turn", itemId: "old-item" },
+        remoteExecutionTermination: remoteTerminationReceipt(source, { providerLeaseId: "source-task", state: "stopped" }) } },
+      { id: leaseId, companyId, environmentId, heartbeatRunId: runId, provider: source.provider, providerLeaseId: "current-task", status: "active", metadata: pin },
+    ]);
+    const dispatched: string[] = [];
+    const rpc = workerHarness(definePlugin({ async setup() {}, async onEnvironmentTask(params) {
+      dispatched.push(params.operation.kind);
+      throw Object.assign(new Error("synthetic-private-provider-text"), { status: 409, code: "SESSION_STATE_UNAVAILABLE", reason,
+        operationId: "forged-operation", callId: "forged-call", taskId: "foreign-task" });
+    } }), manifest);
+    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }),
+      call: (_id: string, method: string, params: unknown) => {
+        if (mode === "malformed_rpc" || mode === "extra_rpc_fields") throw new JsonRpcCallError({ code: -32000,
+          message: "synthetic-private-provider-text", data: { schema: "paperclip/environment-task-error/v1", diagnostic: {
+            httpStatus: 409, errorCode: "SESSION_STATE_UNAVAILABLE", reason: mode === "malformed_rpc" ? "provider text" : reason,
+            operationId: "forged-operation", callId: "forged-call", taskId: "foreign-task",
+          } } });
+        return rpc.call(method, params);
+      } } as unknown as PluginWorkerManager;
+    try {
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
+      const error = await runtime.task({ companyId, leaseId, operation: { kind: "submit", resumeFrom: "source-task", preparedLaunchId: "fixture",
+        projectIds: [], bootstrapTicket: "fixture-ticket", runner: { runnerId: "runner", leaseId: sourceLeaseId, runId, sessionId: "session",
+          turnId: "turn", itemId: "item", harness: "codex", protocolMin: 1, protocolMax: 3 } } }).catch(error => error);
+      expect(readEnvironmentTaskErrorDiagnostic(error)).toEqual(mode === "malformed_rpc" ? null : { httpStatus: 409, errorCode: "SESSION_STATE_UNAVAILABLE", reason });
+      expect(error.message).toBe(mode === "malformed_rpc"
+        ? "Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying" : "Plugin Runner source state unavailable");
+      expect(JSON.stringify(error)).not.toMatch(/synthetic-private|forged|foreign-task/);
+      expect(dispatched).toEqual(mode === "malformed_rpc" || mode === "extra_rpc_fields" ? [] : ["submit"]);
+      const [savedSource] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId));
+      expect(savedSource).toMatchObject({ status: "succeeded", resultJson: { outcome: "preserved" } });
+      const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(current.metadata).toMatchObject({ runnerTaskDispatched: true, runnerTaskExecutionStopped: false });
+      expect(JSON.stringify(current.metadata)).not.toMatch(/synthetic-private|forged|unresolved_operation|source_state_unverified/);
+    } finally { rpc.stop(); }
+  });
 
   it("does not allocate agent-dependent setup leases before the agent is prepared", async () => {
     const companyId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID(), agentId = randomUUID();

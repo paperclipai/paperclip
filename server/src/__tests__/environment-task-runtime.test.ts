@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
-import { environmentTaskOperationSchema, parseEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, parseEnvironmentTaskResult, JsonRpcCallError, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 
@@ -502,6 +502,15 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database().db, worker({ kind: "accepted", taskId: "other" }) as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow("reconcile the same task");
     const workers = worker(); workers.call.mockRejectedValue(new Error("private-credential"));
     await expect(executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow(/^Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying$/);
+  });
+  it.each([submit, { kind: "status" } as const])("redacts even a valid source envelope outside a source submit (%j)", async operation => {
+    const workers = worker();
+    workers.call.mockRejectedValue(new JsonRpcCallError({ code: -32000, message: "synthetic-private-text", data: {
+      schema: "paperclip/environment-task-error/v1", diagnostic: { httpStatus: 409, errorCode: "SESSION_STATE_UNAVAILABLE", reason: "unresolved_operation" },
+    } }));
+    const error = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation }).catch(error => error);
+    expect(error.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
+    expect(readEnvironmentTaskErrorDiagnostic(error)).toBeNull();
   });
   it("accepts PRP identity characters and length limits", () => {
     for (const field of ["runnerId", "leaseId", "runId", "sessionId", "turnId", "itemId"]) {
