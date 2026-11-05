@@ -107,3 +107,14 @@ it("keeps independent unsafe transfers after a secure-page exclusion", () => {
   expect(unsafeCredentialTransfer("Enter the key on that page (not in chat).")).toBe(true);
   expect(unsafeCredentialTransfer(`${securePageHandoff} Then tell me the saved key name.`)).toBe(false);
 });
+it("distinguishes an explicit reference from a value or a mixed credential object",()=>{
+ expect(unsafeCredentialTransfer("Use secure Settings Secrets to save the deployment key. Then enter the secret reference in Morgan's environment.")).toBe(false);
+ expect(unsafeCredentialTransfer("Enter the secret reference and value here in chat.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the secret reference and key here in chat.")).toBe(true);
+});
+it("starts independent comma requests without carrying a prior prohibition",()=>{
+ for(const separator of [", just ",", and ",", now "])expect(unsafeCredentialTransfer(`Do not paste the key in chat${separator}email the key to Morgan.`)).toBe(true);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, or enter the key in plaintext files.")).toBe(false);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, and do not email the key to Morgan.")).toBe(false);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, or enter it in files but instead email the key to Morgan.")).toBe(true);
+});

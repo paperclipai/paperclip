@@ -54,9 +54,10 @@ export function companyRequestedEnvironmentName(text:string):string|false|undefi
  }
  const unique=[...new Set(names)];return unique.length>1?false:unique[0];
 }
-export function companyOperatorBindingRequested(text:string){
- const question=text.match(/\b(?:have you|did you)\b[^?\n]*/i)?.[0];
- if(question&&(/\bbound\b/i.test(question)||/\bconfigured\b[^?\n]*\b(?:reference|binding|environment)\b/i.test(question)))return true;
+export function companyOperatorBindingRequested(text:string,questionText?:string){
+ const scope=questionText??text.match(/\b(?:have you|did you)\b[^?]*\?/i)?.[0]??text.match(/\b(?:have you|did you)\b[^?\n]*/i)?.[0];
+ const question=scope?.replace(/\s+/g," ").match(/\b(?:have you|did you)\b[^?]*/i)?.[0];
+ if(question&&(/\bbound\b/i.test(question)||/\bconfigured\b[^?]*\b(?:reference|binding|environment)\b/i.test(question)||/\bconfigured\b[^?]*\bMorgan\b/i.test(question)&&/\b(?:secret|credential|key)\b/i.test(question)))return true;
  return text.split(/[.!;\n]+|\b(?:then|and)\b/i).some(clause=>/^\s*(?:please\s+)?(?:bind|configure|add|assign)\b[^.!;\n]*\b(?:reference|secret)\b[^.!;\n]*\bMorgan\b/i.test(clause));
 }
 export function companySecretFollowup(body:string,savedKey:string){
@@ -72,7 +73,7 @@ export async function companySecretSetupURL(page:Page,reply:{body:string;comment
 export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBinding,status:"pending"|"answered"="pending",savedKey?:string){
  const bound=boundSecretQuestion(value,b,status)??boundSecretQuestion(value,b,status,"company-environment-name")??boundSecretQuestion(value,b,status,"company-saved-secret-name");if(!bound)return;
  const {row,question:q,questionSet:qs,text,payloadHash}=bound;
- const operatorBinding=companyOperatorBindingRequested(text),requestedEnvironment=companyRequestedEnvironmentName(text);if(requestedEnvironment===false)return;
+ const operatorBinding=companyOperatorBindingRequested(text,q.prompt),requestedEnvironment=companyRequestedEnvironmentName(text);if(requestedEnvironment===false)return;
  const savedName=q.answerMode==="text"&&chatCatalogSavedSecretNameIntent(q.prompt);
  if(q.answerMode==="text"&&!savedName&&!boundSecretQuestion(value,b,status,"company-environment-name"))return;
  if(!deploymentSecretGuidance(text)||!/settings/i.test(text)||!/secrets/i.test(text)
@@ -109,7 +110,7 @@ export function companySavedNameBinding(config:Record<string,unknown>,before:unk
  if(added.length!==1||!/^[_A-Za-z][_A-Za-z0-9]*$/.test(added[0]!))return;
  const key=added[0]!;if(expectedEnvironmentName&&key!==expectedEnvironmentName)return;
  const ref=env[key] as {type?:string;secretId?:string;version?:string}|undefined,binding=bindings[0];
- if(ref?.type!=="secret_ref"||ref.secretId!==secretId||ref.version!=="latest"||!isDeepStrictEqual(ref,{type:"secret_ref",secretId,version:"latest"})
+ if(ref?.type!=="secret_ref"||ref.secretId!==secretId||ref.version!=="latest"||!isDeepStrictEqual({projectionClass:"unclassified",projectionAllowlistKey:null,...ref},{type:"secret_ref",secretId,version:"latest",projectionClass:"unclassified",projectionAllowlistKey:null})
   ||Object.entries(prior).some(([key,value])=>!isDeepStrictEqual(env[key],value))
   ||!isDeepStrictEqual({...config,env:undefined},{...baseline,env:undefined})
   ||binding?.targetType!=="agent"||binding.targetId!==morganId||binding.configPath!==`env.${key}`||binding.versionSelector!=="latest")return;

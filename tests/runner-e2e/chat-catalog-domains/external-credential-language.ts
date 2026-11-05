@@ -55,7 +55,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
  const secureDestination=/^\s+(?:only\s+)?(?:in|into|on|via|through|using)\s+(?:(?:the|this|your)\s+)?(?:(?:secure\s+)?Settings\s*(?:→|>|\/|\s)\s*Secrets(?:\s+(?:form|page|field))?|(?:secure\s+)?Secrets\s+(?:form|page|field)|secure\s+(?:form|page|field|dialog))\s*$/i;
  if(/\bafter\s+(?:saving|storing|writing|entering)\b[^.!?;\n]{0,100}\b(?:key|credential|token|secret)\b[^.!?;\n]{0,60}\b(?:plaintext|files?|email|chat)\b/i.test(normalized))return true;
  if(/\b(?:what|which)\b[^.!?;\n]{0,80}\b(?:key|credential|token|secret)\s+value\b/i.test(normalized))return true;
- for(const sentence of normalized.split(new RegExp("[.!?;\\n]+|\\b(?:but|however|then)\\b|,\\s*(?=(?:please\\s+)?(?:"+verbs+")\\b)","i"))){
+ for(const sentence of normalized.split(new RegExp("[.!?;\\n]+|\\b(?:but|however|then)\\b|,(?!\\s*or\\b)","i"))){
   const parts=sentence.split(new RegExp("\\s+(and|or)\\s+(?=(?:please\\s+)?(?:"+verbs+")\\b)","i"));
   let negative=false,negativeAlternative=false;
   for(let index=0;index<parts.length;index+=2){
@@ -71,6 +71,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    if(!object)continue;
    const destination=object[1]!;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
+   if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureContext&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;
    return true;
   }
