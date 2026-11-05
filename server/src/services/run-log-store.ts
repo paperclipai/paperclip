@@ -7,6 +7,7 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import type { ObjectJournalIOPriority } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
@@ -32,6 +33,8 @@ export interface RunLogReadOptions {
   /** Include the start of the first NDJSON record when reading a log tail. */
   alignStartToRecord?: boolean;
   signal?: AbortSignal;
+  /** Object storage only: "interactive" reads may be shed under load so a client retries. */
+  priority?: ObjectJournalIOPriority;
 }
 
 export interface RunLogReadResult {
