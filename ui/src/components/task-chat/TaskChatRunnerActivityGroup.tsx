@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { completedActivitySummary } from "./completed-activity-summary";
 import {
   Brain,
@@ -20,11 +20,17 @@ import {
   protocolActivityPresentation,
 } from "./task-chat-activity-presentation";
 import {
+  ResearchSourceStrip,
   TaskChatProtocolActivityDetails,
+  WaitCountdown,
   hasTaskChatProtocolActivityDetails,
+  verificationOutcome,
+  verificationTone,
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
-import { toolActivityPresentation } from "./tool-taxonomy";
+import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
+import { latestReasoningHeadline } from "./reasoning-summary";
+import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
@@ -63,7 +69,39 @@ function isReadTool(item: Activity): item is ToolActivity {
     && FILE_READ_TOOLS.has((item.rawName ?? item.name).trim().toLowerCase());
 }
 
-function presentation(item: Activity, active: boolean) {
+interface ActivityRowPresentation {
+  icon: ToolIcon;
+  label: string;
+  target?: string;
+  mono: boolean;
+  running: boolean;
+  /** Colors the leading icon, e.g. green or red for a verification check. */
+  iconClassName?: string;
+  /** Short plain-text outcome after the target, e.g. "6 tests passed". */
+  trailing?: ReactNode;
+  /** Process exit code shown as a chip; null hides it. */
+  exitCode?: number | null;
+  /** Tool duration shown after the chip; null hides it. */
+  durationMs?: number | null;
+  /** Why a policy or rule refused the tool. */
+  blocked?: string;
+}
+
+function providerTrailing(item: Extract<Activity, { kind: "protocol" }>): Pick<ActivityRowPresentation, "iconClassName" | "trailing"> {
+  if (item.surface !== "provider_activity") return {};
+  if (item.family === "verification") {
+    return {
+      iconClassName: verificationTone(item),
+      trailing: verificationOutcome(item),
+    };
+  }
+  if (item.family === "wait" && item.status === "running") {
+    return { trailing: <WaitCountdown item={item} /> };
+  }
+  return {};
+}
+
+function presentation(item: Activity, active: boolean): ActivityRowPresentation | null {
   if (item.kind === "tool") {
     const tool = toolPresentation(item);
     const running =
@@ -117,10 +155,12 @@ function presentation(item: Activity, active: boolean) {
     return {
       icon: Brain,
       label: running ? "Thinking" : "Thought",
-      target: item.lines
-        .filter((line) => line.trim())
-        .at(-1)
-        ?.trim(),
+      target:
+        latestReasoningHeadline(item.lines.join("\n")) ??
+        item.lines
+          .filter((line) => line.trim())
+          .at(-1)
+          ?.trim(),
       mono: false,
       running,
     };
@@ -134,6 +174,7 @@ function presentation(item: Activity, active: boolean) {
       target: protocol.detail,
       mono: true,
       running: active && protocolActivityIsRunning(item),
+      ...providerTrailing(item),
     };
   }
   if (item.kind === "marker")
@@ -195,7 +236,7 @@ function ActivityContent({
         className="flex size-5 shrink-0 items-center justify-center"
         data-activity-icon
       >
-        <Icon className={cn("size-3.5", blocked && "text-destructive")} aria-hidden="true" />
+        <Icon className={cn("size-3.5", row.iconClassName, blocked && "text-destructive")} aria-hidden="true" />
       </span>
       <span data-conversation-tool-running={row.running && shimmer && (item.kind === "tool" || (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution")) ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
         {row.label ? <span
@@ -221,6 +262,11 @@ function ActivityContent({
         {blocked ? (
           <span title={blocked} className="min-w-0 truncate text-xs text-destructive" data-tool-blocked-reason>
             {blocked}
+          </span>
+        ) : null}
+        {row.trailing ? (
+          <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="task-chat-activity-trailing">
+            {row.trailing}
           </span>
         ) : null}
       </span>
@@ -300,7 +346,7 @@ function RollingActivity({
 
 function ActivityDetails({ item }: { item: Activity }) {
   if (item.kind === "thinking")
-    return <div data-conversation-text="progress"><MarkdownBody softBreaks>{item.lines.join("\n")}</MarkdownBody></div>;
+    return <TaskChatReasoningSummary text={item.lines.join("\n")} streaming={Boolean(item.streaming)} />;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
   if (item.kind === "protocol")
     return <TaskChatProtocolActivityDetails item={item} neutral />;
@@ -384,6 +430,9 @@ function ExpandedActivity({
           {content}
         </div>
       )}
+      {!open && item.kind === "protocol" && item.surface === "provider_activity" && item.family === "research" && item.status !== "running" ? (
+        <ResearchSourceStrip item={item} />
+      ) : null}
       {expandable && open ? (
         <div
           id={detailId}

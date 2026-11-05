@@ -2018,6 +2018,12 @@ impl CodexProvider {
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none", so reasoning items carry no text. Request the
+        // provider's own reasoning summaries for every Codex turn.
+        if self.config.provider == "codex" {
+            turn_params_object.insert("summary".to_owned(), json!("auto"));
+        }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
         }
@@ -2237,6 +2243,28 @@ impl CodexProvider {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn read_thread_after_recovery_goal(
+        &mut self,
+        goal_is_dormant: fn(&Value) -> bool,
+    ) -> Result<Value, LocalRunnerError> {
+        // The preceding goal reply supersedes earlier notifications. Inspect only
+        // frames received by this read, and leave them queued for normal delivery.
+        let first = self.pending_messages.len();
+        let snapshot = self.read_thread()?;
+        for message in self.pending_messages.iter().skip(first) {
+            if message.value["method"] == "thread/goal/updated" {
+                let params = &message.value["params"];
+                validate_notification_binding(&self.thread_id, None, params)?;
+                if !params["goal"].is_object() || !goal_is_dormant(params) {
+                    return Err(LocalRunnerError::invalid(
+                        "saved dormant Codex session resumed an active or unknown goal",
+                    ));
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     pub fn read_thread(&mut self) -> Result<Value, LocalRunnerError> {

@@ -506,6 +506,92 @@ function providerActivityPresentation(
   };
 }
 
+/**
+ * Activity families that render as dedicated task-chat cards. They keep the
+ * full canonical payload (sources, models, durations) instead of collapsing
+ * into a one-line tool row. Families owned by other surfaces stay on the
+ * generic path until they get their own presentation.
+ */
+const CARD_PROVIDER_ACTIVITY_FAMILIES: Partial<Record<ProviderActivityEventType, {
+  family: Extract<TranscriptEntry, { kind: "provider_activity" }>["family"];
+  title: string;
+}>> = {
+  "research.started": { family: "research", title: "Research" },
+  "research.progressed": { family: "research", title: "Research" },
+  "research.completed": { family: "research", title: "Research" },
+  "model.route.changed": { family: "model_identity", title: "Model" },
+  "model.verification.updated": { family: "model_identity", title: "Model" },
+  "artifact.viewed": { family: "artifact", title: "Artifact" },
+  "artifact.generated": { family: "artifact", title: "Artifact" },
+  "review.mode.changed": { family: "review", title: "Review mode" },
+  "wait.started": { family: "wait", title: "Intentional wait" },
+  "wait.completed": { family: "wait", title: "Intentional wait" },
+};
+
+function cardProviderActivityEntry(
+  event: HeartbeatRunEvent,
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "provider_activity" }> | null {
+  const card = CARD_PROVIDER_ACTIVITY_FAMILIES[event.eventType as ProviderActivityEventType];
+  if (!card) return null;
+  const presentation = providerActivityPresentation(event, payload);
+  if (!presentation) return null;
+  const rawStatus = text(payload.status);
+  const status: Extract<TranscriptEntry, { kind: "provider_activity" }>["status"] = presentation.failed
+    ? "failed"
+    : rawStatus === "interrupted" || rawStatus === "cancelled"
+      ? "interrupted"
+      : !presentation.terminal
+        ? "running"
+        : "completed";
+  return {
+    kind: "provider_activity",
+    ts,
+    family: card.family,
+    eventType: event.eventType,
+    status,
+    title: card.title,
+    // No query, URL or reason: leave the row's label to speak for itself
+    // rather than echoing a generic family title as if it were a subject.
+    summary: presentation.summary === event.eventType ? "" : presentation.summary,
+    payload,
+  };
+}
+
+/**
+ * The runner's own verification checks (one item per check in the proposed
+ * run result) become check rows, so a failed check is visible where it ran.
+ */
+function verificationActivityEntry(
+  payload: Record<string, unknown>,
+  itemId: string | null,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "provider_activity" }> | null {
+  const check = record(payload.verification);
+  const commandOrCheck = text(check?.commandOrCheck)?.trim();
+  if (!check || !commandOrCheck) return null;
+  const status = verificationStatus(check.status);
+  const detail = text(check.detail)?.trim() || null;
+  const reasonCode = status === "not_run" ? text(check.reasonCode)?.trim() || null : null;
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "verification",
+    eventType: "verification.recorded",
+    status: status === "passed" ? "completed" : status === "failed" ? "failed" : "informational",
+    title: "Verification",
+    summary: commandOrCheck,
+    payload: {
+      verificationId: itemId ?? `${commandOrCheck}:${ts}`,
+      commandOrCheck,
+      status,
+      detail,
+      reasonCode,
+    },
+  };
+}
+
 function timestamp(event: HeartbeatRunEvent, envelope: Record<string, unknown>): string {
   const emittedAt = text(envelope.emittedAt);
   if (emittedAt) return emittedAt;
@@ -803,6 +889,12 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    if (event.eventType === "item.completed" && payload.kind === "verification") {
+      const entry = verificationActivityEntry(payload, itemId, ts);
+      if (entry) entries.push(entry);
+      continue;
+    }
+
     // Some provider transports expose their complete dynamic-tool lifecycle
     // directly as item.started/item.completed events and do not emit the
     // parallel tool.execution.* activity stream. Project those canonical
@@ -884,6 +976,12 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         summary: text(payload.explanation)?.trim() || "Plan",
         payload,
       });
+      continue;
+    }
+
+    const cardActivity = cardProviderActivityEntry(event, payload, ts);
+    if (cardActivity) {
+      entries.push(cardActivity);
       continue;
     }
 

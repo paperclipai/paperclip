@@ -174,3 +174,47 @@ describe("task project-access interruption", () => {
       .toMatchObject({ state: "resolved" });
   });
 });
+
+describe("saved-work recovery step", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  const failed = { ...run, errorCode: "setup_failed", resultJson: null };
+  const system = (phase: string, state: string, nextAttemptAt: number | null) => ({
+    schema: "paperclip.system-recovery.v1", policyVersion: 1, sourceRunId: "33333333-3333-4333-8333-333333333333", revision: 3,
+    generationId: "44444444-4444-4444-8444-444444444444", intentId: null, phase, state, attemptId: null, attempts: 2,
+    retriesUsed: 1, firstFailureAt: now - 60_000, nextAttemptAt, deadlineAt: now + 600_000, providerCooldownAt: null,
+    failure: null, preservationOperationIds: [], freshAttemptRunId: null });
+  const action = (evidence: Record<string, unknown>) => ({ evidence }) as never;
+
+  it("names the step a scheduled recovery will retry", () => {
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+      action: action({ systemRecovery: system("verify_execution", "scheduled", now + 30_000) }) }, now))
+      .toMatchObject({ state: "retry_scheduled", recoveryStep: "checking_previous_run" });
+  });
+
+  it("names the step a running recovery is on", () => {
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+      action: action({ systemRecovery: system("preserve_files", "running", null), systemRecoveryActiveAt: now - 1_000 }) }, now))
+      .toMatchObject({ state: "working", recoveryStep: "saving_previous_files" });
+  });
+
+  it("names recovery over a pending chat preparation and keeps failed preparation authoritative", () => {
+    const wait = { id: "retry", requestedAt: new Date(now), sourceRunId: failed.id, preparationStatus: "issued", preparationRetryAt: now + 250 };
+    const running = action({ systemRecovery: system("preserve_files", "running", null), systemRecoveryActiveAt: now - 1_000 });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false, action: running }, now))
+      .toMatchObject({ state: "working", recoveryStep: "saving_previous_files" });
+    const scheduled = action({ systemRecovery: system("verify_execution", "scheduled", now + 30_000) });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false, action: scheduled }, now))
+      .toMatchObject({ state: "retry_scheduled", recoveryStep: "checking_previous_run", canRetry: false });
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, action: scheduled }, now))
+      .toMatchObject({ state: "retry_scheduled", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, preparationStatus: "failed" },
+      paused: false, approval: false, action: running }, now)).toMatchObject({ state: "failed" });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false }, now))
+      .toMatchObject({ state: "retry_scheduled", nextRetryAt: new Date(now + 250).toISOString() });
+  });
+
+  it("does not name a step for an ordinary scheduled retry", () => {
+    expect(projectTaskInterruption(issue, { run: { ...failed, scheduledRetryAt: new Date(now + 30_000) }, agent,
+      paused: false, approval: false }, now)).not.toHaveProperty("recoveryStep");
+  });
+});

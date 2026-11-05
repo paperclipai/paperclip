@@ -415,6 +415,14 @@ start timestamp, or process identity. A later eligible instruction can adopt the
 saved messages through normal admission. This rule does not prove a dispatched
 provider has stopped or change native cancellation acknowledgement.
 
+A system-cancelled workspace retry can also accept a later eligible instruction
+when it never acquired execution authority. Admission requires its exact parent
+to record a same-company, same-task, same-agent workspace wait before provider
+work. Both runs must have no conflicting provider, process, resource or output
+evidence. The cancelled retry must have no owner, runtime selection or start
+timestamp. Admission preserves the old run and any unknown action outcomes. It
+does not replay the cancelled turn or reset recovery limits.
+
 ### Known execution waits at admission
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
