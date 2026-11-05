@@ -29,6 +29,7 @@ import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLeg
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
+import { assertFixedProcessUnresolvedEnvironment, captureFixedProcessEnvironment } from "../adapters/process/fixed-command.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
@@ -2714,9 +2715,9 @@ export function heartbeatService(
       const {
         mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, useHostGitHub,
         resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest,
-        runtimeSkillEntries, nativeRunnerPreparationSpans, agentIdentity, observability,
+        runtimeSkillEntries, nativeRunnerPreparationSpans, agentIdentity, observability, fixedProcessConfig,
       } = executionConfiguration;
-      let { runtimeConfig } = executionConfiguration;
+      let { runtimeConfig, approveFixedProcessEnvironment } = executionConfiguration;
       const resolvedFailureSecrets = readFailureReportSecrets();
       readFailureReportSecrets = () => [
         ...resolvedFailureSecrets,
@@ -2936,6 +2937,7 @@ export function heartbeatService(
           }
         }
       };
+      approveFixedProcessEnvironment(runtimeConfig);
       if (!executionTarget || executionTarget.kind === "local") {
         try {
           runScratch = await prepareHeartbeatRunScratch({
@@ -2983,6 +2985,9 @@ export function heartbeatService(
       if (issueId && (!executionTarget || executionTarget.kind === "local")) {
         await recordLegacyCaseHandoffCleanupIntent(db, { runId: run.id, issueId, controllerBootId: legacyControllerBootId, scratch: runScratch });
       }
+      // Only controller-created scratch variables changed the checked environment.
+      approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, runtimeConfig);
+      approveFixedProcessEnvironment(runtimeConfig);
       const gitExecutionEnv = await timePreparation("github_environment", () => prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
@@ -3023,6 +3028,9 @@ export function heartbeatService(
         runtimeConfig = { ...runtimeConfig, env: githubLaunchers.env };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+      // Git credential transport is also controller-owned; no request override
+      // may change the result between this snapshot and process dispatch.
+      approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, runtimeConfig);
       context.paperclipEnvironment = selectedEnvironment && activeEnvironmentLease ? {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -3527,6 +3535,7 @@ export function heartbeatService(
                 adapterType: adapter.type, executionTargetKind: executionTarget?.kind,
               });
             },
+            approveFixedProcessEnvironment: (config) => approveFixedProcessEnvironment(config),
             onNativeWorkspaceFinalizeScheduled: () => { nativeWorkspaceFinalizeScheduled = true; },
             onNativeSessionResumeScheduled: () => { nativeSessionResumeScheduled = true; },
             onNativeOwnershipHeld: () => { nativeOwnershipHeld = true; },
