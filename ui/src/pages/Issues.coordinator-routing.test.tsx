@@ -47,6 +47,6 @@ it.each(["mine", "blocked", "recent", "everything"])("keeps shared %s label link
   try {
     await vi.waitFor(() => expect(host.textContent).toContain("Coordinator tasks"));
     expect(host.textContent).not.toContain("Inbox owner");
-    expect(host.querySelector("output")?.textContent).toBe(url);
+    expect(host.querySelector("output")?.textContent).toBe(url.replace(`view=${view}`, "view=all"));
   } finally { cleanup(); }
 });

@@ -29,7 +29,7 @@ import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
-import { useLocation, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { loadTaskListView, saveTaskListView, taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, ORGANIZATION_SCOPED_PARAMS, taskView } from "@/lib/task-views";
 import type { Issue } from "@paperclipai/shared";
@@ -46,6 +46,7 @@ export function CoordinatorTasks() {
   const client = useQueryClient();
   const listRef = useRef<HTMLElement>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [layout, setLayout] = useState<"list" | "board">("list");
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
@@ -213,37 +214,33 @@ export function CoordinatorTasks() {
   const updateFilters = (patch: Partial<IssueFilterState>) => {
     collection.updateFilters(patch);
     if (patch.assignees === undefined && patch.statuses === undefined && patch.labels === undefined && patch.routineTasksOnly === undefined) return;
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      if (patch.routineTasksOnly !== undefined) {
-        if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
-        else next.delete("originKind");
-      }
-      if (patch.labels !== undefined) {
-        next.delete("label");
-        for (const id of patch.labels) next.append("label", id);
-      }
-      if (patch.assignees !== undefined) {
-        next.delete("assignee");
-        for (const id of patch.assignees) next.append("assignee", id);
-      }
-      if (patch.statuses !== undefined) {
-        next.delete("status");
-        for (const status of patch.statuses) next.append("status", status);
-        const preset = normalizeTaskViewKey(next.get("view"));
-        if (preset && taskView(preset).surface === "issues") next.set("view", "all");
-      }
-      return next;
-    }, { replace: true });
+    const next = new URLSearchParams(params);
+    if (patch.routineTasksOnly !== undefined) {
+      if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
+      else next.delete("originKind");
+    }
+    if (patch.labels !== undefined) {
+      next.delete("label");
+      for (const id of patch.labels) next.append("label", id);
+    }
+    if (patch.assignees !== undefined) {
+      next.delete("assignee");
+      for (const id of patch.assignees) next.append("assignee", id);
+    }
+    if (patch.statuses !== undefined) {
+      next.delete("status");
+      for (const status of patch.statuses) next.append("status", status);
+      const preset = normalizeTaskViewKey(next.get("view"));
+      if (preset && taskView(preset).surface === "issues") next.set("view", "all");
+    }
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const clearFilters = () => {
     collection.updateFilters(defaultIssueFilterState);
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      for (const key of ["q", "assignee", "status", "label", "originKind"]) next.delete(key);
-      if (next.get("view") !== "needs_attention") next.set("view", "all");
-      return next;
-    }, { replace: true });
+    const next = new URLSearchParams(params);
+    for (const key of ["q", "assignee", "status", "label", "originKind"]) next.delete(key);
+    if (next.get("view") !== "needs_attention") next.set("view", "all");
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },

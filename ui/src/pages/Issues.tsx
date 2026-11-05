@@ -106,6 +106,11 @@ export function Issues() {
   const location = useLocation();
   const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
   const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "label"].some(param => params.getAll(param).some(Boolean));
+  if (!designSandbox && coordinatorEnabled && params.getAll("label").some(Boolean) && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
+    const next = new URLSearchParams(params);
+    next.set(TASK_VIEW_PARAM, "all");
+    return <Navigate to={`/issues?${next.toString()}${location.hash}`} replace />;
+  }
   if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
     const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
     const search = next.toString();

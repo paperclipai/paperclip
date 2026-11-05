@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
 import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
+import { Issues } from "./Issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssueFilterPanel } from "@/components/IssueFilterPanel";
 import type { ComponentProps } from "react";
@@ -22,7 +23,9 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => mocks.identity }));
-vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: mocks.identity.userId ?? (mocks.localTrusted ? "local-board" : null), loaded: mocks.identity.settled }) }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: mocks.identity.userId ?? (mocks.localTrusted ? "local-board" : null), loaded: mocks.identity.settled }) }));
+vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({ useStreamlinedUiEnabled: () => ({ enabled: true }) }));
+vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
@@ -366,6 +369,51 @@ describe("Coordinator tasks using the proposed table", () => {
     const params = new URLSearchParams(host.querySelector("output")!.textContent!);
     expect(params.getAll("label")).toEqual([]);
     expect(Object.fromEntries(params)).toMatchObject({ view: "all", keep: "value", sortField: "taskId", sortDir: "asc" });
+  });
+  it.each(["mine", "blocked", "recent", "everything"])("keeps Coordinator and local filters/layout when the last label is removed from a legacy %s link", async view => {
+    mocks.realFilters = true;
+    mocks.labels = [{ id: "qa", name: "qa-task", color: "var(--accent)" }];
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "qa-high", companyId: "company", parentId: null, labelIds: ["qa"], priority: "high" }),
+      createIssue({ id: "qa-low", companyId: "company", parentId: null, labelIds: ["qa"], priority: "low" }),
+      createIssue({ id: "unlabeled-high", companyId: "company", parentId: null, labelIds: [], priority: "high" }),
+    ]);
+    function CurrentRoute() {
+      const location = useLocation(); const navigate = useNavigate();
+      return <><output data-route>{location.pathname}{location.search}{location.hash}</output>
+        <button onClick={() => navigate("/issues?view=all&label=qa&keep=value#saved")}>Restore label link</button>
+        <button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button></>;
+    }
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/issues?view=${view}&label=qa&keep=value#saved`]}><CurrentRoute /><Routes>
+      <Route path="/issues" element={<Issues />} /><Route path="/inbox/:tab" element={<p>Inbox owner</p>} />
+    </Routes></MemoryRouter></QueryClientProvider>));
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "qa-low"]));
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "High priority")!.click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Board view")!.click());
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value#saved"));
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "unlabeled-high"]));
+    expect(host.textContent).not.toContain("Inbox owner");
+    await vi.waitFor(() => expect(new URLSearchParams(host.querySelector(".design-task-list-panel output")!.textContent!).getAll("label")).toEqual([]));
+    expect(Object.fromEntries(new URLSearchParams(host.querySelector(".design-task-list-panel output")!.textContent!))).toMatchObject({ view: "all", keep: "value" });
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value&label=qa#saved"));
+    expect(taskIds()).toEqual(["qa-high"]);
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="qa-task"]')!.click());
+    await vi.waitFor(() => expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&keep=value#saved"));
+    const click = (label: string) => flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    click("Restore label link");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    click("Back");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high", "unlabeled-high"]));
+    click("Forward");
+    await vi.waitFor(() => expect(taskIds()).toEqual(["qa-high"]));
+    expect(host.querySelector<HTMLDivElement>(".design-task-list-panel")?.hidden).toBe(true);
+    expect(host.querySelector("[data-route]")?.textContent).toBe("/issues?view=all&label=qa&keep=value#saved");
   });
   it("still applies assignee filters to server search matches", async () => {
     mocks.list.mockResolvedValue([
