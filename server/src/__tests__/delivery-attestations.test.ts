@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { issueService } from "../services/issues.js";
 import { recordDeliveryAttestation } from "../services/delivery-attestations.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -31,7 +32,7 @@ const support = await getEmbeddedPostgresTestSupport();
       completionRequirement: "workspace_delivery",
     });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId }).returning();
-    return { companyId, issueId, workspaceId: workspace.id, runId: run.id, agentId: agent.id };
+    return { companyId, issueId, projectId: project.id, workspaceId: workspace.id, runId: run.id, agentId: agent.id };
   }
 
   it("blocks done without any attestation", async () => {
@@ -59,6 +60,34 @@ const support = await getEmbeddedPostgresTestSupport();
     const service = issueService(db);
     const updated = await service.update(issueId, { status: "done", companyGuard: companyId });
     expect(updated?.status).toBe("done");
+  });
+
+  it("gates on the workspace the update saves, not the one it replaces", async () => {
+    const { issueId, companyId, runId, projectId } = await fixture("https://example.com/org/repo.git");
+    // The run delivered the issue's current workspace, so that attestation is valid there.
+    await recordDeliveryAttestation(db, { companyId, runId, outcome: "succeeded" });
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      const [otherSource] = await db.insert(projectWorkspaces).values({
+        companyId, projectId, name: "other", repoUrl: "https://example.com/org/other-repo.git",
+      }).returning();
+      const [otherExecution] = await db.insert(executionWorkspaces).values({
+        companyId, projectId, projectWorkspaceId: otherSource.id,
+        mode: "shared_workspace", strategyType: "project_primary", name: "other",
+      }).returning();
+      const service = issueService(db);
+      await expect(service.update(issueId, {
+        status: "done",
+        executionWorkspaceId: otherExecution.id,
+        companyGuard: companyId,
+      })).rejects.toThrow(/delivery attestation is required/i);
+      const stored = await db.select({ projectWorkspaceId: issues.projectWorkspaceId }).from(issues).where(eq(issues.id, issueId));
+      expect(stored[0]?.projectWorkspaceId).not.toBe(otherSource.id);
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
   });
 
   it("does not let a stale attestation satisfy a reconfigured workspace", async () => {
