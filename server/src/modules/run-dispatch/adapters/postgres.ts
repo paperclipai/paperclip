@@ -960,6 +960,8 @@ export function createPostgresRunDispatchAdapter(
    */
   async function unstartedUserTurnOrigin(tx: Db, run: HeartbeatRun, issueId: string) {
     let current = run;
+    // Comments can coalesce into any retry in the chain while it waits.
+    const chainRunIds: string[] = [], chainWakeIds: string[] = [];
     for (let hop = 0; hop < 8 && current.retryOfRunId; hop++) {
       const [parent] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
@@ -967,8 +969,9 @@ export function createPostgresRunDispatchAdapter(
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
       )).for("update");
       if (!parent?.wakeupRequestId) return null;
+      const recovery = parseObject(parent.resultJson?.executionRecovery);
       const unstarted = parent.errorCode === WORKSPACE_BUSY_RETRY_REASON
-        ? parseObject(parent.resultJson?.executionRecovery).providerWorkStarted === false
+        ? recovery.kind === "workspace_wait" && recovery.providerWorkStarted === false
         : parent.errorCode === "execution_reconciliation_required" && await isPreDispatchExecutionWaitVerified(tx, parent);
       if (!unstarted) return null;
       const [wake] = await tx.select().from(agentWakeupRequests).where(and(
@@ -976,8 +979,9 @@ export function createPostgresRunDispatchAdapter(
         eq(agentWakeupRequests.id, parent.wakeupRequestId), eq(agentWakeupRequests.runId, parent.id),
       )).for("update");
       if (!wake) return null;
+      chainRunIds.push(parent.id); chainWakeIds.push(wake.id);
       if (wake.requestedByActorType === "user")
-        return ["cancelled", "skipped"].includes(wake.status) ? { run: parent, wake } : null;
+        return ["cancelled", "skipped"].includes(wake.status) ? { run: parent, wake, chainRunIds, chainWakeIds } : null;
       current = parent;
     }
     return null;
@@ -1014,7 +1018,7 @@ export function createPostgresRunDispatchAdapter(
     if (ownWake.requestedByActorType !== "user" && !origin) return null;
     const wake = origin?.wake ?? ownWake;
     const receiptRunId = origin?.run.id ?? run.id;
-    const runIds = origin ? [run.id, origin.run.id] : [run.id];
+    const runIds = [run.id, ...(origin?.chainRunIds ?? [])];
     // A retry's context names the retry reason. Save the user's original wake
     // context together with every message the retry carried.
     const context = origin ? withQueuedCommentIdsInRunContext(parseObject(origin.run.contextSnapshot), commentIds) : runContext;
@@ -1044,7 +1048,7 @@ export function createPostgresRunDispatchAdapter(
       sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
     )).for("update") : [];
     if (adopted.length !== sourceWakeIds.length) return null;
-    const mergeTargets = [...new Set([wake.id, ownWake.id, ...adopted.map(receipt => receipt.id)])];
+    const mergeTargets = [...new Set([wake.id, ownWake.id, ...(origin?.chainWakeIds ?? []), ...adopted.map(receipt => receipt.id)])];
     const coalesced = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.requestedByActorType, "user"),

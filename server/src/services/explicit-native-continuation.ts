@@ -104,6 +104,11 @@ export async function undeliveredLegacyUserCommentIds(
     // native identity/process metadata is not proof that its prompt was sent.
     // Admission separately verifies process termination before a new turn.
     sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null)`,
+    // A claimed turn parked for a busy workspace stopped before provider
+    // dispatch; the host records that it sent no prompt.
+    sql`not coalesce(${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.errorCode} = 'workspace_busy'
+      and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'workspace_wait'
+      and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb, false)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,

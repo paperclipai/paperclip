@@ -4828,25 +4828,42 @@ describe("automatic retained workspace recovery", () => {
       .where(eq(heartbeatRuns.id, f.runId));
     let pending = queued;
     let systemWakeId: string | null = null;
+    let expectedIds = [message.id];
     if (retried) {
-      // The first follow-up met the stopped run's unsettled workspace save and
-      // was parked as a system-owned workspace-busy retry carrying the message.
-      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "workspace_busy",
+      // The first follow-up was claimed, met the stopped run's unsettled
+      // workspace save, and was parked as a system-owned workspace-busy retry
+      // carrying the message. While that retry waited, the user added a second
+      // message, which coalesced into it; a further retry carried both.
+      const busy = () => ({ status: "cancelled" as const, startedAt: new Date(), finishedAt: new Date(), errorCode: "workspace_busy",
         resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
-          cancellation: { source: "control_plane", expected: true, initiator: { type: "system" }, reason: "Waiting for the shared execution workspace", recordedAt: new Date().toISOString() } },
-      }).where(eq(heartbeatRuns.id, queued.id));
+          cancellation: { source: "control_plane", expected: true, initiator: { type: "system" }, reason: "Waiting for the shared execution workspace", recordedAt: new Date().toISOString() } } });
+      await db.update(heartbeatRuns).set(busy()).where(eq(heartbeatRuns.id, queued.id));
       await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, wake.id));
-      const retryContext = { ...queued.contextSnapshot, wakeReason: "workspace_busy_retry", retryOfRunId: queued.id, retryReason: "workspace_busy" };
-      const [systemWake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
-        source: "automation", triggerDetail: "system", reason: "workspace_busy_retry", status: "claimed", claimedAt: new Date(),
-        requestedByActorType: "system", payload: { issueId: f.issueId, retryOfRunId: queued.id } }).returning();
-      [pending] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: original.agentId,
-        invocationSource: "automation", triggerDetail: "system", status: "queued", runtimeMode: "legacy", responsibleUserId: "operator",
-        wakeupRequestId: systemWake.id, retryOfRunId: queued.id, scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 1,
-        contextSnapshot: retryContext }).returning();
-      await db.update(agentWakeupRequests).set({ runId: pending.id }).where(eq(agentWakeupRequests.id, systemWake.id));
+      const retry = async (parentId: string, context: Record<string, unknown>, status: "queued" | "cancelled") => {
+        const [systemWake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
+          source: "automation", triggerDetail: "system", reason: "workspace_busy_retry", status: status === "queued" ? "claimed" : "cancelled",
+          claimedAt: new Date(), requestedByActorType: "system", payload: { issueId: f.issueId, retryOfRunId: parentId } }).returning();
+        const [retryRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: original.agentId,
+          invocationSource: "automation", triggerDetail: "system", status: "queued", runtimeMode: "legacy", responsibleUserId: "operator",
+          wakeupRequestId: systemWake.id, retryOfRunId: parentId, scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 1,
+          contextSnapshot: { ...context, wakeReason: "workspace_busy_retry", retryOfRunId: parentId, retryReason: "workspace_busy" } }).returning();
+        await db.update(agentWakeupRequests).set({ runId: retryRun.id }).where(eq(agentWakeupRequests.id, systemWake.id));
+        return { retryRun, systemWake };
+      };
+      const first = await retry(queued.id, queued.contextSnapshot ?? {}, "cancelled");
+      const [second] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "operator", body: "Also keep it under 100 words." }).returning();
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
+        source: "on_demand", triggerDetail: "manual", reason: "issue_commented", status: "coalesced", runId: first.retryRun.id,
+        requestedByActorType: "user", requestedByActorId: "operator",
+        payload: { issueId: f.issueId, commentId: second.id, mutation: "comment", coalescedIntoWakeupRequestId: first.systemWake.id } });
+      await db.update(heartbeatRuns).set(busy()).where(eq(heartbeatRuns.id, first.retryRun.id));
+      expectedIds = [message.id, second.id];
+      const carried = { ...queued.contextSnapshot, wakeCommentId: second.id, wakeCommentIds: expectedIds };
+      const last = await retry(first.retryRun.id, carried, "queued");
+      pending = last.retryRun;
       await db.update(issues).set({ executionRunId: pending.id }).where(eq(issues.id, f.issueId));
-      systemWakeId = systemWake.id;
+      systemWakeId = last.systemWake.id;
     }
     try {
       expect(await queue.claimQueuedRun(pending)).toBeNull();
@@ -4872,7 +4889,7 @@ describe("automatic retained workspace recovery", () => {
       const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
       expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null,
         payload: { executionWait: { reason: "execution_recovery", recoveryActionId: hold.id } } });
-      expect(saved.payload?._paperclipWakeContext).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: [message.id] });
+      expect(saved.payload?._paperclipWakeContext).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: expectedIds });
       if (systemWakeId) {
         const [systemWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, systemWakeId));
         expect(systemWake.status).toBe("skipped");
@@ -4885,7 +4902,7 @@ describe("automatic retained workspace recovery", () => {
       const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, eq(heartbeatRuns.status, "queued")));
       expect(successors).toHaveLength(1);
-      expect(successors[0].contextSnapshot?.wakeCommentIds).toEqual([message.id]);
+      expect(successors[0].contextSnapshot?.wakeCommentIds).toEqual(expectedIds);
       expect(deps.enqueueWakeup).toHaveBeenCalledWith(original.agentId,
         expect.objectContaining({ requestedByActorType: "user", requestedByActorId: "operator" }), wake.id);
       expect(queueDeps.executeRun).not.toHaveBeenCalled();
