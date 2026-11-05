@@ -6,6 +6,8 @@ import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata,
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "./remote-workspace-transport.js";
+import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "./reusable-sandbox-resume-error.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
@@ -19,6 +21,8 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
+import { isInterruptedNativePreparation, isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
+import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -72,7 +76,9 @@ export function legacyExecutionNeedsReconciliation(
   // Setup owns the bounded retry budget for temporary workspace scans. Its
   // exhaustion needs workspace repair, not reconciliation of provider actions
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
-  if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
+  if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated"
+      || run.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || run.errorCode === REUSABLE_SANDBOX_RESUME_FAILED_CODE
+      || run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
@@ -83,6 +89,7 @@ export function legacyExecutionNeedsReconciliation(
 /** Admission-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
+  if (run.status === "interrupted" && await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
@@ -135,7 +142,7 @@ export async function terminalizeLegacyExecution(input: {
     };
     if (issueId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: current.companyId, issueId });
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: current.companyId });
     let [updated] = await tx
       .update(heartbeatRuns)
       .set({
@@ -270,6 +277,12 @@ export async function terminalizeLegacyExecution(input: {
                 sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`),
               sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
             ),
+            and(
+              eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
+              eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+              sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+            ),
           ),
         )).limit(1);
       if (reconciled) return updated;
@@ -304,9 +317,6 @@ export async function terminalizeLegacyExecution(input: {
   });
 }
 
-/** Called only by the exact executor's finally block after preparation/cleanup
- * settles. A shutdown can win the terminal-status race before the setup catch
- * records that no provider started. Retire only that mistaken recovery hold. */
 export async function settleInterruptedNativeBootstrap(
   db: Db, input: { run: Run; providerDispatchStarted: boolean },
 ): Promise<Run | null> {
@@ -316,11 +326,10 @@ export async function settleInterruptedNativeBootstrap(
   return db.transaction(async tx => {
     const [task] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
-    if (!task || !run || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt ||
+    if (!task || !run || !isInterruptedNativePreparationCandidate(run) ||
         run.contextSnapshot?.issueId !== task.id ||
-        run.status !== "interrupted" || run.errorCode !== "server_shutdown_interrupted" ||
-        claimedAdapterType(run) !== "paperclip_runner" || run.processPid || run.processGroupId ||
-        hasWorkspaceRestoreFailure(run.resultJson) || executionFailureRetryCount(run) >= 2) return null;
+        executionFailureRetryCount(run) >= 2) return null;
+    if (hasWorkspaceRestoreFailure(run.resultJson) && !await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -355,7 +364,7 @@ export async function settleInterruptedNativeBootstrap(
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     if (holds.length) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
-      resolutionNote: "The interrupted executor finished preparation and cleanup without starting a provider.",
+      resolutionNote: "The interrupted preparation has no provider execution and its cleanup is complete.",
       resolvedAt: now, updatedAt: now,
       // An automatic disposition may already have resolved the incident but
       // left replay blocked. Preserve its history while correcting that verdict.

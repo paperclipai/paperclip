@@ -162,7 +162,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     const commentId = randomUUID();
     await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
       authorType: "user", authorUserId: "context-user", body: "deleted wake canary", deletedAt: new Date(),
-      presentation: { fixture: "deleted" }, metadata: { fixture: "deleted" } });
+      presentation: { kind: "system_notice", tone: "info", detailsDefaultOpen: false }, metadata: { version: 1, sections: [] } });
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
       status: "running", issueId: f.issueId }).returning();
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));

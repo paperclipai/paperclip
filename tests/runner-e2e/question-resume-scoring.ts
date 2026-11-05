@@ -67,6 +67,15 @@ export function validResumeQuestionForm(checkpoint: ContinuationCheckpoint, i: R
     (fields.length === 1 || (path === "provider" && isSingleClaudeQuestion(fields)));
 }
 
+export function validResumeReferenceForm(checkpoint: ContinuationCheckpoint, i: Row): boolean {
+  if (validResumeQuestionForm(checkpoint, i, false)) return true;
+  const fields = resumeQuestionFields(i), field = fields[0], options: Row[] = Array.isArray(field?.options) ? field.options : [];
+  return questionPath(checkpoint, i) === "provider" && fields.length === 1 && nonempty(field.id)
+    && field.answerMode === "single_select" && field.customAnswer?.enabled === true
+    && options.length > 0 && options.every(option => nonempty(option.id) && nonempty(option.label))
+    && new Set(options.map(option => option.id)).size === options.length;
+}
+
 export function sameQuestion(a: Row, b?: Row) {
   return !!b && ["id", "kind", "sourceRunId", "issueId", "companyId", "createdByAgentId", "idempotencyKey", "continuationPolicy"]
     .every(k => a[k] === b[k]) && isDeepStrictEqual(a.payload, b.payload);
@@ -110,8 +119,8 @@ export function gradeQuestionResume(checkpoints: ContinuationCheckpoint[], marke
       options.every(o => nonempty(o.id)) && new Set(options.map(o => o.id)).size === options.length &&
       options.some(o => /^morning\b/i.test(String(o.label).trim())) && !!afternoon &&
       questions(middle).length === 2 && questions(middle).filter(i => i.status === "pending").length === 1 &&
-      nonempty(second?.id) && second?.id !== first?.id && validResumeQuestionForm(middle, second, false),
-    detail: "One choice plus only a verified provider Other companion, then a distinct text-only question.",
+      nonempty(second?.id) && second?.id !== first?.id && validResumeReferenceForm(middle, second),
+    detail: "One choice plus only a verified provider Other companion, then a distinct typed reference with an explicit provider written-answer control or a text field.",
   }];
   for (const [before, after, i, field, answer] of [
     [initial, middle, first, choice, "choice"], [middle, final, second, text, "text"],

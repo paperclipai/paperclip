@@ -1,9 +1,11 @@
+import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { readPreservedNativeResultFinalization, type PreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
@@ -13,6 +15,7 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
@@ -478,6 +481,7 @@ async function enqueueWake(input: {
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (existing) return existing.id;
+  await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
   const inserted = await input.tx
     .insert(agentWakeupRequests)
     .values({
@@ -1537,13 +1541,17 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "release_checkout") {
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
+    // Release only this run's own locks. A successor can claim execution
+    // without changing statusVersion, so a preserve decision committed after
+    // that claim must not clear it. Each SET reads the pre-update row.
+    const ownsExecution = sql`${issues.executionRunId} = ${input.runId}::uuid`;
     const [released] = await input.tx
       .update(issues)
       .set({
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
+        checkoutRunId: sql`case when ${issues.checkoutRunId} = ${input.runId}::uuid then null else ${issues.checkoutRunId} end`,
+        executionRunId: sql`case when ${ownsExecution} then null else ${issues.executionRunId} end`,
+        executionAgentNameKey: sql`case when ${ownsExecution} then null else ${issues.executionAgentNameKey} end`,
+        executionLockedAt: sql`case when ${ownsExecution} then null else ${issues.executionLockedAt} end`,
         updatedAt: new Date(),
       })
       .where(
@@ -1552,13 +1560,20 @@ async function materializeDecisionEffect(input: {
           eq(issues.companyId, input.companyId),
         ),
       )
-      .returning({ id: issues.id });
+      .returning({
+        id: issues.id,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      });
     if (!released) throw new Error("native_checkout_not_released");
     return {
       effectKind: effect.kind,
       targetType: "issue_checkout",
       targetId: released.id,
-      payload: { checkoutRunId: null, executionRunId: null },
+      payload: {
+        checkoutRunId: released.checkoutRunId,
+        executionRunId: released.executionRunId,
+      },
     };
   }
   if (effect.kind === "record_recovery") {
@@ -1607,6 +1622,7 @@ export async function commitNativeStatusDecision(input: {
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
   requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
+  requirePreservedResultFinalization?: PreservedNativeResultFinalization;
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
@@ -1776,6 +1792,29 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
+    if (input.decision.statusAction === "done") {
+      try {
+        const [saved] = await tx.select({ context: heartbeatRuns.contextSnapshot, receipts: heartbeatRuns.resultJson,
+          envelope: nativeRunResults.resultJson }).from(heartbeatRuns)
+          .innerJoin(nativeRunResults, and(eq(nativeRunResults.runId, heartbeatRuns.id),
+            eq(nativeRunResults.id, coordinator.resultId!), eq(nativeRunResults.companyId, input.companyId),
+            eq(nativeRunResults.issueId, input.issueId), eq(nativeRunResults.schemaStatus, "accepted")))
+          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.runtimeMode, "native")))
+          .limit(1).for("share", { of: [heartbeatRuns, nativeRunResults], noWait: true });
+        if (!saved) throw new NativeStatusRaceError();
+        const continuation = record(saved.context?.executionContinuation);
+        const objective = typeof continuation.objective === "string" ? continuation.objective
+          : [issue.title, issue.description].filter(Boolean).join("\n");
+        await validateNativeDeliverableEvidence(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
+          runId: input.runId, objective, semanticToolReceipts: saved.receipts?.semanticToolReceipts, lockSources: true,
+          authoritativeDone: true }, record(saved.envelope).result);
+      } catch (error) {
+        if (error instanceof NativeDeliverableEvidenceError || record(error).code === "55P03" ||
+            record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
     if (reasonCode === "scheduled_monitor_waiting") {
       const expected = input.requireMonitorWait;
       const inReview = input.decision.statusAction === "in_review" && input.decision.toStatus === "in_review";
@@ -1841,6 +1880,16 @@ export async function commitNativeStatusDecision(input: {
       } else if (issue.assigneeAgentId !== owner.agentId || issue.assigneeUserId) {
         throw new NativeStatusRaceError();
       }
+    }
+    if (input.requirePreservedResultFinalization) {
+      let current;
+      try {
+        current = await readPreservedNativeResultFinalization(tx as unknown as Db, input.requirePreservedResultFinalization, true);
+      } catch (error) {
+        if (isExternalChatWaitAuthorizationContention(error)) throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!current || current.fingerprint !== input.requirePreservedResultFinalization.fingerprint) throw new NativeStatusRaceError();
     }
     if (input.requireExternalChatResponseWaitAuthorization) {
       let authorization;

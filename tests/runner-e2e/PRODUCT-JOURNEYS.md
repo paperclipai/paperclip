@@ -23,24 +23,67 @@ never start a server or depend on a tenant filesystem.
 
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
+| `repository-continuation` | Native agent; two work runs; a pinned public read-only repository | Verify independent Git bundle history and workspace bytes across two turns, preserve the original random file, and reopen registered outputs after reload. See [repository-continuation.md](product-journeys/repository-continuation.md) |
+| `routine-scheduled-run` | Native agent; one work run; an owned project and routine | Browser-create a routine, enable its minute schedule, verify one scheduled invocation and run-attributed saved output, then pause and observe the next schedule boundary with no new work |
+| `company-access-isolation` | Two registered QA Cloud workspaces; disposable company-bound agent credentials; zero model runs | Switch through the real tenant Cloud menu and return. Require allowed task reads and task creation, foreign read/create denial in both directions, exact canonical creator evidence, and key revocation. See [COMPANY-ACCESS.md](product-journeys/COMPANY-ACCESS.md) |
+| `saved-skill-use` | Native agent with skill-write capability; one work run; one synthetic company skill assigned by key using Latest | Load the assigned saved skill, use inputs available only in its source, and verify a same-run-authored task document after reload. Bind the immutable created version to the run's admitted skill-version map. Require a complete bound native source read/load and preserve the exact source and version. Works with Beta skills off. See [saved-skill-use.md](product-journeys/saved-skill-use.md) |
+| `file-input-answer` | Native agent; one work run; synthetic CSV uploaded through the composer | Verify original uploaded bytes, independently calculated accepted-row count and units, a run-attributed task document after reload, and preservation of the input attachment. The task prompt contains neither the random file reference nor the answers |
+| `inbox-triage` | Signed-in board user; a separately authenticated QA human author; a fresh self-assigned task; zero model runs | Mark an unread task read, archive it through Mine, reload both views, verify unchanged work status, then observe a real Blocked transition resurface it through the normal archive policy |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
+| `task-dependency-resume` | Native agent; one automatic work run; two browser-created tasks | Keep an assigned dependent blocked for a measured ten seconds; complete its human-owned blocker through the UI; require one automatic native wake, run-authored saved document, and reloaded result. See [contract](product-journeys/task-dependency-resume.md). |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
+| `chat-continuity` | Fresh owned native agent with no prior work runs; Agent Chat enabled; fresh owned user chat; three provider turns and one synthetic reset | Recall prompt-hidden context after reopening, then use `/new` to advance the same saved conversation to a fresh native session, preserve history and verify the final reply after reload. See [CHAT-CONTINUITY.md](product-journeys/CHAT-CONTINUITY.md) |
 | `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-edit-lifecycle` | Company, signed-in board user, task-write capability; target support for run-owned labels and exact predeclared `taskEdit.revisedTitle` cleanup; zero model runs | Create a self-assigned task, edit its inline header title and label, reload, complete and reopen it; independently verify exact saved state, unchanged context and zero runs. Open a closed Properties panel through its shipped toggle |
 | `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
 | `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
 | `build-revise` | Native agent; two work runs; qualified Docker artifact oracle | Browser-download both ZIP versions, independently exercise source/CLI behavior, verify different hashes and preserve the original download |
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
 | `create-skill-studio` | Native agent with skill-write permission; one work run | Create a uniquely named company skill, open its activity card, edit in Studio, reload and verify task-card readback |
-| `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, Stop an active revision, require native cancellation acknowledgement, submit a new direction once and verify completion without original-run activity |
+| `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, observe an active native command with current-turn usage, Stop it, verify cancellation and settled accounting, then send one new direction and complete without original-run activity |
 | `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
+| `hire-delegate-reuse` | Native lead with a fresh user chat and scoped hiring permission; Agent Chat enabled; direct hiring policy; seven work runs | Hire one teammate, delegate a saved checklist, reuse the same teammate for a saved review, verify native run and revision authorship, preserve the original, and follow the lead's saved result link after reload |
+| `agent-settings-persistence` | Fresh dedicated native agent with the campaign ID in its name; `agent-settings-write`; no previous runs/proof block; sole paid journey; one work run | Save and reload an instruction edit through the browser, verify a task uses the instruction-only reference, reopen its run-authored document, then restore the original bytes. See [AGENT-SETTINGS.md](product-journeys/AGENT-SETTINGS.md) |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
+
+The deployment-targeted Stop journey asks the revision to finish one harmless
+`printf` readiness command, then run `sleep 90` once in a separate shell call
+before changing files. The readiness call lets a provider report its first
+current-turn usage before the long hold starts. Running the hold first can leave
+no complete usage until that command has already ended. Startup alone cannot trigger Stop. An independent observer
+requires both a still-running bound native command and a complete, nonzero usage
+report for its current turn. After Stop, native cancellation and exact lease
+cleanup remain required. Before the redirect, the original run must have a
+complete accounting receipt, no pending accounting and a saved accounting
+timestamp. Receipt sources and sequences remain recorded, but controller changes
+and clock order cannot substitute for the run's actual settlement state. A receipt
+that was already ready before Stop is accepted only when the exact cancelled run
+is actually accounted and no longer pending. Canonical usage receipts, including
+raw, partial and complete forms, do not count as continued work when their API row
+and envelope match the observed run, company and agent, with consistent source
+event IDs, sequence numbers and instance IDs. An accounting source can change
+after Stop; its receipt does not need the pre-Stop Runner instance or accounting
+source and sequence. Pre-Stop work still requires the current Runner and turn.
+Missing context or mismatched source event IDs, sequence numbers, instances or
+envelope versions keep the usage row in the strict work evidence. Tools, messages
+and other item events still count, including work that arrives between
+cancellation and accounting settlement.
+These waits share the original journey deadline.
+The three-run limit, budget and original download checks remain unchanged.
+Missing or partial accounting never counts as free work. Local evidence controls
+do not establish a deployed pass.
 
 The question-resumption journey uses the same natural-language scenario, browser
 answer helper and behavioral grader as the classic `question-resume` suite. Native
-provider questions can stay in one run; durable native questions create one exactly bound
+reference cards may expose a text field or an explicit canonical written-answer
+control on one single-select question. The browser must type the complete reference
+and submit no predefined option. An absent or disabled custom-answer capability is
+not an equivalent form. The user still answers exactly two distinct native questions;
+the document must retain the actual choice and typed reference after reload.
+Provider questions can stay in one run; durable native questions create one exactly bound
 continuation each. Creation must have an applied semantic receipt or a completed native
 API mutation receipt with the original card, exact scope, form and idempotency key.
 An API receipt must retain its creation identity unchanged after the answer. A form or
@@ -54,6 +97,67 @@ and cleanup. Local calibration is not deployed-target qualification.
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
 draft can otherwise lose the original content when the file arrives.
+
+The hiring journey uses the existing Agent Chat prompts and native hiring oracle.
+It gives each disposable project, agent, and task a campaign name. The first
+turn only hires. The target provider can then verify the native creation audit
+and prepare that exact teammate's budget before the next turn delegates work.
+Both handoffs ask for the task to be created already assigned to that teammate.
+They use the normal composer agent and project mention formats, with the exact
+IDs from the independently verified hire and owned project. Missing, foreign or
+mismatched context fails before constructing the handoff. The mentions provide
+the intended resources without prescribing a tool call or bypassing normal delegation.
+The handoff selects these references through the normal rich-editor mention menu
+and verifies each chip target before sending once. Typing Markdown link syntax
+as plain rich-editor text escapes it and is not a mention. The saved user body
+must still match the requested body exactly.
+Creating work for the lead and later reassigning it starts additional native work
+and fails the existing assignee and run checks.
+When the lead uses a delegated personal connection, normal hiring selects the
+responsible user's default rather than copying the manager's identity. Before
+registering any chat or child-creation intent or sending the first turn, the
+journey reads the actual signed-in workflow user's provider default and requires
+the exact approved connection and grant, connected and owned by that user.
+After hiring it independently checks the exact child installation. The underlying
+connection's creator is not the owner of the user's default selection. Missing,
+different or ambiguous authority fails closed; no credential, default or grant is
+changed. A responsible-user hire stores the canonical `api_key` placeholder even
+when the approved default uses a subscription. The resolved native method must
+still match that independently approved default. Every successful native run must also retain the approved connection,
+grant and responsible-user attribution in its canonical execution metadata.
+Those references are compared privately and omitted from observation evidence.
+The first independently approved child binding becomes an immutable expected
+snapshot for the final shared hiring oracle; later binding changes fail. Only
+typed transient observation GET failures may poll again within the original
+deadline. Approval, authentication and ownership failures are never replayed.
+The checklist and review each require one successful child run and a current
+document revision authored by that run. The lead uses three requested turns and
+two separate server completion callbacks,
+for seven work runs in total. Each callback must identify exactly one of the two
+completed child tasks with a distinct server delivery receipt; arbitrary extra
+lead turns fail. The journey waits for each callback and its exact run-authored
+saved reply before the next user turn. A terminal run can precede its final
+comment; missing materialization polls within the existing deadline, while a
+wrong author or binding fails immediately.
+The lead has a maximum of five work runs and the teammate has two.
+A 500-cent case allowance is split into 300 cents for the lead and 200 for the
+teammate; the allocation must not duplicate the declared case allowance.
+Setup probes and unpriced usage remain separate accounting
+uncertainties. The journey does not change company hiring policy or instance
+features. The provider must own and clean up the hired agent, both child tasks,
+the chat, and the project. Before the first send, a fresh-chat intent records the
+company, user and owned lead after a normal GET confirms no existing chat.
+Recovery can attach only that exact fresh conversation. Saved replies and links
+are allowed to render after reload within the journey deadline. Cleanup includes
+unexpected campaign-owned children after
+failure. A new deployment must qualify the journey before scheduled admission.
+Child discovery reads the exact native creation audit after the run snapshot,
+then fetches each audited agent/task ID directly. It never depends on the first
+page of a shared company list. Each proven child is recorded before the next
+lookup can fail. Observation retries are limited to typed transient GET transport failures within
+the existing deadline. Ownership callbacks and grading failures are never
+retried. Audited same-company children are recorded before manager/project
+checks fail; foreign or malformed rows remain unowned and fail the journey.
 
 The task-document journey uses the normal default-chat Artifacts pane and the
 shared document editor. Classic mode retains its editor in the task body. The
@@ -376,3 +480,51 @@ A candidate's presence in this source catalog is not qualification. It enters th
 saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
+
+The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
+time after both pause acknowledgement and work completion. Its enable receipt
+uses the server's timestamp; client and server wall clocks are never compared.
+The journey retries only transient read transport failures within the existing
+phase and journey deadlines. Private read-failure receipts retain those
+observations. Mutations, user messages and agent work are never replayed.
+
+Repository JSON metadata observations retry only transient transport failures
+within the original journey deadline. Binary attachment and browser downloads
+remain single attempts; transport failures and digest mismatches fail visibly. Git inspection consumes the exact digest-verified download
+buffer; browser downloads remain an independent result-access check. The
+repository journey shares the observation reader and browser helpers above.
+
+
+## Task editing and lifecycle
+
+`task-edit-lifecycle` creates a self-assigned task through the browser with an
+explicit title. It edits the title inline in the task header and adds one
+run-owned label through the Properties panel. If the panel starts closed, the
+journey opens it through the ordinary Toggle side panel or Show properties
+control. It changes the status to In Progress, reloads, marks
+the task Done, reloads, reopens it to Todo and reloads again. Independent API
+reads bind every observed state to the same company, task and human owner.
+The exact description, assignee, project and priority remain unchanged.
+Priority editing is not part of this journey because the production UI hides
+that control. No agent or model work is allowed.
+
+Labels use `Journey QA label ${campaignId}`, retaining the complete campaign
+identity within the production 48-character limit for ordinary generated
+campaigns. The production schema rejects an overlong name before any browser
+mutation or ownership intent; names are never truncated or hashed.
+The target must journal `label` resources by campaign name before browser label
+creation and by exact ID after its 201 response. Before title editing, the owned
+issue receipt retains its original name and ID and declares
+`taskEdit: { revisedTitle }` for this case. Cleanup may match only that one
+predeclared title or the original title on the same company and issue ID.
+The private target must reconcile a lost label-creation response, remove only
+its proven run-owned label, and verify absence. Targets without these ownership
+and cleanup semantics must not select this journey.
+
+The case uses no private fixture writes. Its limits require zero model calls and
+zero task runs. `private-stories/task-edit-lifecycle/task-lifecycle-observations.json`
+retains the five allowlisted task observations. The adjacent
+`observation-read-failures.json` retains bounded read-transport failures.
+Valid, wrong and missing evidence
+controls calibrate the independent oracle. Registration and local checks do not
+claim a Cloud staging pass or admission to a daily plan.

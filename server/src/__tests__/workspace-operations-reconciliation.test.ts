@@ -12,6 +12,8 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { getWorkspaceOperationLogStore } from "../services/workspace-operation-log-store.js";
 import {
   RUNTIME_CONTROL_STALE_AFTER_MS,
@@ -103,6 +105,61 @@ describeEmbeddedPostgres("workspace operation reconciliation", () => {
     await fs.rm(logRoot, { recursive: true, force: true });
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
+  });
+
+  async function seedFinalizationWorkspace() {
+    const companyId = randomUUID(), projectId = randomUUID(), executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Delivery receipt wake",
+      issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 7).toUpperCase()}` });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Delivery", status: "in_progress" });
+    await db.insert(executionWorkspaces).values({ id: executionWorkspaceId, companyId, projectId,
+      mode: "isolated_workspace", strategyType: "git_worktree", name: "Finalization", status: "active" });
+    return { companyId, executionWorkspaceId };
+  }
+
+  it.each(["succeeded", "failed"] as const)("wakes cleanup after %s finalization commits, never at a nested savepoint", async status => {
+    const scope = await seedFinalizationWorkspace();
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
+    try {
+      await db.transaction(async tx => {
+        const recorder = workspaceOperationService(tx as unknown as typeof db).createRecorder(scope);
+        const operation = await recorder.recordOperation({ phase: "workspace_finalize", run: async () => ({ status }) });
+        expect(operation.status).toBe(status);
+        expect(settled).toEqual([]);
+      });
+      expect(settled).toEqual([[`workspace:${scope.executionWorkspaceId}`]]);
+      const rows = await db.select().from(workspaceOperations);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe(status);
+    } finally { unsubscribe(); }
+  });
+
+  it("wakes the attached workspace when an already settled finalization gains its identity", async () => {
+    const scope = await seedFinalizationWorkspace();
+    const recorder = workspaceOperationService(db).createRecorder({ companyId: scope.companyId });
+    const operation = await recorder.recordOperation({ phase: "workspace_finalize", run: async () => ({}) });
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
+    try {
+      await recorder.attachExecutionWorkspaceId(scope.executionWorkspaceId);
+      expect(settled).toEqual([[`workspace:${scope.executionWorkspaceId}`]]);
+      expect((await workspaceOperationService(db).getById(operation.id))?.executionWorkspaceId).toBe(scope.executionWorkspaceId);
+    } finally { unsubscribe(); }
+  });
+
+  it("does not publish a finalization receipt rolled back by the outer transaction", async () => {
+    const scope = await seedFinalizationWorkspace();
+    await expect(db.transaction(async tx => {
+      await workspaceOperationService(tx as unknown as typeof db).createRecorder(scope)
+        .recordOperation({ phase: "workspace_finalize", run: async () => ({}) });
+      throw new Error("rollback receipt");
+    })).rejects.toThrow("rollback receipt");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
   });
 
   it("terminalizes an orphaned runtime start with an inspectable reconciliation log", async () => {

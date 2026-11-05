@@ -135,7 +135,9 @@ export const githubReviewAssessmentSchema = z
             line: z.number().int().positive(),
             side: z.enum(["LEFT", "RIGHT"]),
             severity: z.enum(["info", "warning", "error"]),
-            category: z.string().min(1).max(80),
+            category: z.string().min(1).max(80).describe(
+              "Use an exact value from begin_review.findingCategories for this assessment. Categories are configured per repository; do not invent values. If none apply, put the finding in summary. read_pull_request metadata also includes reviewPolicy.findingCategories.",
+            ),
             body: z.string().trim().min(1).max(12000),
           })
           .strict(),

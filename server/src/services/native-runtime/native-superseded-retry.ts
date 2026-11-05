@@ -39,7 +39,7 @@ export async function retireSupersededNativeRetry(db: Db, input: {
   )).limit(1);
   if (!source) return false;
 
-  await notifyExecutionRunWork(db);
+  await notifyExecutionRunWork(db, { companyId: run.companyId });
   await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", nextAttemptAt: null,
     leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: "blocked",
     failureCode: "native_retry_superseded", failureDetail: { ...coordinator.failureDetail,

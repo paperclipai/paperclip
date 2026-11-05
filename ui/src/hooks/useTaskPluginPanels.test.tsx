@@ -143,9 +143,17 @@ it("discovers a panel started after the task is already open, then hides it on s
   get.mockRejectedValue(new Error("Access denied")); await refresh(); expect(current).toEqual([]);
 });
 it("clears automatic activation when the run ends even if its view is still ready", async () => {
-  await render(); expect(current).not.toEqual([]);
+  await render();
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(current).not.toEqual([]);
+  });
   await act(async () => { client.setQueryData(queryKeys.issues.liveRuns("task"), []); });
-  await render(); expect(current).toEqual([]);
+  await render();
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(current).toEqual([]);
+  });
 });
 it("does not carry an old task's ready panel to a new task or disabled plugin", async () => {
   await render(); expect(current).not.toEqual([]);

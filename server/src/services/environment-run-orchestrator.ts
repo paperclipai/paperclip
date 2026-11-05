@@ -1,4 +1,5 @@
 import { freshWorkspaceSchema } from "@paperclipai/plugin-sdk";
+import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRepositoryPath } from "./remote-workspaces.js";
 /**
  * Centralized environment run orchestrator.
  *
@@ -28,7 +29,7 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
+import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -216,6 +217,7 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
+    warmRunnerIdleTimeoutMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -312,6 +314,9 @@ export function environmentRunOrchestrator(
     }
 
     // Step 2: Acquire lease
+    const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
     const acquisitionInput = {
       companyId: input.companyId,
       environment,
@@ -323,12 +328,12 @@ export function environmentRunOrchestrator(
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
+      warmRunnerIdleTimeoutMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
-      // Reattachment is inspection of an already running sandbox, never a new
-      // acquisition or a lifecycle resume. Those paths can create a replacement
-      // when the admitted per-turn policy deliberately disables reusable leases.
+      // Reattachment keeps the original lease, including ephemeral leases.
+      // Never reacquire: acquisition can replace a non-reusable sandbox.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
       if (!lease ||
@@ -345,6 +350,22 @@ export function environmentRunOrchestrator(
             : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
               || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
         throw new Error("native_remote_recovery_lease_mismatch");
+      }
+      if (expected.kind !== "plugin_task") {
+        // The provider may have archived this retained sandbox while its
+        // controller was offline. Ready the exact lease under its lifecycle
+        // budget before short preparation commands (such as project-auth
+        // checks) can run. This API cannot acquire a replacement.
+        const resumed = await environmentRuntime.resumeRunLease({
+          environment, lease, requestedCwd: expected.remoteCwd,
+          ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+        });
+        if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
+            resumed.metadata?.expired === true) {
+          throw new Error("native_remote_recovery_lease_mismatch");
+        }
+        // Resume confirms allocation readiness. Its optional metadata may
+        // describe the allocation root; keep the validated lease's workspace.
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
     } else {
@@ -412,6 +433,7 @@ export function environmentRunOrchestrator(
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
     runnerTaskProjectIds?: readonly string[];
+    assertOwned?: () => Promise<void>;
     /**
      * The host duplex observability recorder for this run. The orchestrator threads
      * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
@@ -429,6 +451,51 @@ export function environmentRunOrchestrator(
       effectiveExecutionWorkspaceMode,
     } = input;
     let { lease, persistedExecutionWorkspace } = input;
+    const remoteAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
+    if (remoteAuthority && persistedExecutionWorkspace) {
+      if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") {
+        throw new EnvironmentRunError("unsupported_adapter_environment", "Remote workspace storage requires a qualified native sandbox");
+      }
+      const target = await resolveEnvironmentExecutionTarget({
+        db, companyId, adapterType, environment, leaseId: lease.id, leaseMetadata: lease.metadata,
+        lease, environmentRuntime, duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
+      });
+      if (!target || target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+        throw new EnvironmentRunError("transport_resolution_failed", "Remote workspace storage requires a sandbox file transport");
+      }
+      const prepared = await prepareRemoteWorkspace({
+        db, workspace: persistedExecutionWorkspace, runId: heartbeatRunId, lease, target,
+        source: remoteAuthority.source,
+        assertOwned: input.assertOwned,
+        provisionCommand: persistedExecutionWorkspace.config?.provisionCommand,
+        runtimeProvisionCommand: persistedExecutionWorkspace.config?.runtimeProvisionCommand,
+      });
+      lease = prepared.lease;
+      const workspaceRealization = {
+        version: 1, mode: "in_place", authoritativeRoot: prepared.remoteRoot,
+        pathAliases: [], outboundRestorePaths: [], provider: lease.provider,
+        environmentId: environment.id, leaseId: lease.id, providerLeaseId: lease.providerLeaseId,
+        additional: (remoteAuthority.source.repositories ?? []).filter(repository => repository.readOnly)
+          .map(repository => ({ path: remoteWorkspaceRepositoryPath(prepared.remoteRoot, repository),
+            projectId: repository.projectId ?? null, projectWorkspaceId: repository.projectWorkspaceId ?? null,
+            repoUrl: repository.repoUrl, repoRef: repository.ref })),
+      };
+      const updatedLease = await environmentsSvc.updateLeaseMetadata(lease.id, {
+        ...lease.metadata, remoteCwd: prepared.remoteRoot, workspaceRealization,
+      });
+      if (!updatedLease) throw new Error("Remote workspace lease disappeared during preparation");
+      lease = updatedLease;
+      persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(companyId, prepared.workspace.id);
+      if (!persistedExecutionWorkspace) throw new Error("Remote workspace disappeared during preparation");
+      input.executionWorkspace.cwd = prepared.remoteRoot;
+      const executionTarget: AdapterExecutionTarget = {
+        ...target, remoteCwd: prepared.remoteRoot,
+        workspaceRealization: { mode: "in_place", authoritativeRoot: prepared.remoteRoot,
+          pathAliases: [], outboundRestorePaths: [] },
+      };
+      return { lease, workspaceRealization, executionTarget,
+        remoteExecution: adapterExecutionTargetToRemoteSpec(executionTarget), persistedExecutionWorkspace };
+    }
 
     if (executionWorkspace.providerBinding) {
       const binding = executionWorkspace.providerBinding;

@@ -1,5 +1,14 @@
+import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
+import { readNativePostResultFailureDiagnostic } from "../native-runtime/native-post-result-failure.js";
+import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
+import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
+
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
+import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -108,7 +117,7 @@ export interface HeartbeatRuntimeExecutionInput {
   run: typeof heartbeatRuns.$inferSelect;
   agent: typeof agents.$inferSelect;
   options: {
-    nativeSessionBackendFactory?: (execution: NativeExecutionInput) => NativeSessionBackend;
+    nativeSessionBackendFactory?: (execution: NativeExecutionInput, context?: { recoveryPurpose: "execution" | "stop_cleanup" }) => NativeSessionBackend;
     pluginWorkerManager?: PluginWorkerManager;
   };
   task: Pick<Selection["task"], "issueContext" | "context" | "executionContinuation"> & {
@@ -129,7 +138,7 @@ export interface HeartbeatRuntimeExecutionInput {
     executionTarget: Selection["workspace"]["executionTarget"];
     workspaceOperationRecorder: ReturnType<ReturnType<typeof workspaceOperationService>["createRecorder"]>;
     nativeWorkspaceSync: Selected["nativeWorkspaceSync"];
-    workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3];
+    workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3] | null;
     remoteExecution: unknown;
   };
   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
@@ -233,6 +242,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
+  const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
   const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
@@ -288,7 +298,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     pluginWorkspaceFinalization = workspaceRecord
       ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
       : null;
-    if (pluginWorkspaceFinalization || workspaceRecord?.strategyType !== "git_worktree") return null;
+    if (pluginWorkspaceFinalization || readRemoteWorkspaceAuthority(workspaceRecord?.metadata)
+      || workspaceRecord?.strategyType !== "git_worktree") return null;
 
     const worktreePath =
       readNonEmptyString(workspaceRecord.providerRef) ??
@@ -559,6 +570,20 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           sessionGoalControl.requestId,
         ));
       if (completedGoalControl) sessionGoalControl = null;
+      // Goal checkpoints already publish their task session. Goal-less turns
+      // need the same durable pointer before cleanup can delay host completion.
+      const taskSessionPublication = taskKey && !sessionGoalControl &&
+        context.resumeSessionGoalHeartbeat !== true && !completedGoalControl
+        ? {
+            taskKey,
+            adapterType: agent.adapterType,
+            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              { ...runtimeSessionParamsForAdapter, cwd: executionWorkspace.cwd },
+              configuredModel,
+              sessionConfigMetadata,
+            ),
+          }
+        : undefined;
       const nativeDispatchAtMs = Date.now();
       const runCreatedAtMs = run.createdAt.getTime();
       const runStartedAtMs = (run.startedAt ?? run.createdAt).getTime();
@@ -584,6 +609,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
+      const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+        && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
@@ -601,13 +628,16 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               restartRecovery: runOptions.nativeRestartRecovery,
               onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
-                options.nativeSessionBackendFactory?.(nativeExecution),
+                stopCleanup
+                  ? options.nativeSessionBackendFactory?.(nativeExecution, { recoveryPurpose: "stop_cleanup" })
+                  : options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,
               resumeSessionGoalHeartbeat:
                 context.resumeSessionGoalHeartbeat === true ||
                 completedGoalControl,
+              taskSessionPublication,
               onGoalCheckpoint: async (snapshot) => {
                 if (!taskKey) return;
                 const params =
@@ -910,6 +940,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       input.effects.onWorkspaceRestoreFailure(requiredWorkspaceRestoreEvidence);
       // Retention is the fallback even if recording this receipt fails.
       input.effects.onProviderResourceDisposition("stop_and_retain");
+      if (workspaceRestoreSource === null) throw new Error("legacy_workspace_restore_source_unavailable");
       await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence, workspaceRestoreSource);
     }
     for (const stream of ["stdout", "stderr"] as const) {
@@ -943,6 +974,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // finalize row.
     const completeWorkspace = async (ownership?: NativeWorkspaceFinalizationOwnership) => {
       try {
+        if (remoteWorkspaceAuthority && persistedExecutionWorkspace) {
+          if (!ownership || !executionTarget) throw new Error("remote_workspace_ownership_required");
+          const current = await executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id);
+          const authority = readRemoteWorkspaceAuthority(current?.metadata);
+          const lease = authority?.location
+            ? await environmentService(db).getLeaseById(authority.location.leaseId) : null;
+          if (!current || !lease || lease.companyId !== run.companyId || lease.heartbeatRunId !== run.id) {
+            throw new Error("workspace_sync_out_unrecoverable");
+          }
+          await recordWorkspaceFinalize("succeeded", { owningService: "native_workspace_finalizer", storage: "remote" },
+            async () => { await saveRemoteWorkspace({ db, workspace: current, runId: run.id, lease,
+              target: executionTarget, assertOwned: ownership.assertHeld }); });
+        }
         if (nativeWorkspaceSync) {
           const exported = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
             eq(workspaceOperations.companyId, run.companyId),
@@ -966,7 +1010,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          ));
+          ), { companyId: run.companyId });
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -977,7 +1021,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               db,
               runId: run.id,
               workspaceFinalizeStatus,
-              preserveProviderAttempt: Boolean(nativeWorkspaceSync),
+              preserveProviderAttempt: Boolean(nativeWorkspaceSync || remoteWorkspaceAuthority),
             }));
             await dispatchPendingNativeStatusWakeups({
               companyId: run.companyId,
@@ -1000,7 +1044,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         throw error;
       }
     };
-    if (nativeWorkspaceSync) {
+    if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
         db, companyId: run.companyId, runId: run.id,
       }, completeWorkspace));
@@ -1026,23 +1070,33 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       preserveRunGatewayTokens = true;
       throw adapterErr;
     }
+    if (adapterErr instanceof NativeControllerRecoveryWaitingError) {
+      input.effects.onNativeSessionResumeScheduled();
+      throw new NativeSessionResumeScheduledError(adapterErr);
+    }
     if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
       input.effects.onNativeOwnershipHeld();
       throw adapterErr;
     }
-    if (nativeRuntimeResolution.kind === "native" && nativeWorkspaceSync?.reference.state === "prepared"
+    if (nativeRuntimeResolution.kind === "native" && (nativeWorkspaceSync?.reference.state === "prepared" || remoteWorkspaceAuthority?.dirty)
       && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
       input.effects.onProviderResourceDisposition("stop_and_retain");
     }
-    await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
-      .update(heartbeatRuns)
-      .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.status, "running"),
-        ),
-      ));
+    try {
+      await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
+        .update(heartbeatRuns)
+        .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        ), { companyId: run.companyId });
+    } catch (writeError) {
+      if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
+      throw writeError;
+    }
+    if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&
@@ -1092,6 +1146,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         : false;
     if (nativeResumeScheduled) {
       input.effects.onNativeSessionResumeScheduled();
+      const failedAttachment = describeFailedAttachment(adapterErr instanceof Error ? adapterErr.message : null);
+      if (failedAttachment) await Promise.resolve(onLog("stderr", `[paperclip] ${failedAttachment}\n`)).catch(() => undefined);
       throw new NativeSessionResumeScheduledError(adapterErr);
     }
     // Adapter (or its restore finally) threw — or the finalize record
@@ -1099,12 +1155,16 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // state. Best-effort record finalize=failed so the dependent readiness
     // check keeps the gate closed instead of waking on stale local state,
     // and surface the original error to the caller.
+    // The control code can be a fencing label; the closed diagnostic says
+    // what actually failed after an accepted result (no provider text).
+    const postResultFailure = readNativePostResultFailureDiagnostic(adapterErr);
     try {
       await recordWorkspaceFinalize("failed", {
         errorMessage:
           adapterErr instanceof Error
             ? adapterErr.message
             : String(adapterErr),
+        ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
       });
     } catch (recordErr) {
       logger.warn(
@@ -1123,7 +1183,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         .where(eq(nativeRunFinalizations.runId, run.id))
         .limit(1)
         .then((rows) => rows[0]?.resultId ?? null);
-      if (proposedResult && nativeWorkspaceSync) {
+      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority)) {
         const workspaceFailureMessage =
           adapterErr instanceof Error ? adapterErr.message : "";
         const unrecoverable =
@@ -1141,6 +1201,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           projectRunStatus: true,
           failureScope: "workspace",
           permanent: unrecoverable,
+          failureCause: postResultFailure
+            ? `native_post_result_failure: category=${postResultFailure.category}`
+            : remoteWorkspaceFailureCause(adapterErr),
         });
         input.effects.onNativeWorkspaceFinalizeScheduled();
         throw new NativeWorkspaceFinalizeScheduledError(

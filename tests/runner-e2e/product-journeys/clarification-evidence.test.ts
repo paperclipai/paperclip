@@ -28,7 +28,7 @@ import type { JourneyContext } from "./types.js";
 type Row = Record<string, any>;
 const context = { company: { id: "company" }, user: { id: "board" }, environmentId: "daytona",
   agent: { id: "agent", provider: "opencode", model: "model", runtimeMode: "native" } } as JourneyContext;
-function recording(paths: Array<"provider" | "semantic" | "api">) {
+function recording(paths: Array<"provider" | "semantic" | "api">, writtenReference = false) {
   const runs: Row[] = [], cards: Row[] = [], checkpoints: any[] = [];
   const createRun = (previous?: Row) => ({ id: `run-${runs.length}`, status: "running", runtimeMode: "native", companyId: "company", issueId: "task", agentId: "agent",
     contextSnapshot: { paperclipEnvironment: { id: "daytona" }, ...(previous ? { issueId: "task", sourceRunId: previous.sourceRunId,
@@ -41,7 +41,9 @@ function recording(paths: Array<"provider" | "semantic" | "api">) {
   runs.push(createRun());
   for (const [index, path] of paths.entries()) {
     const run = runs.at(-1)!;
-    const field = index === 0 ? { id: "choice", answerMode: "single_select", options: [{ id: "am", label: "Morning" }, { id: "pm", label: "Afternoon" }] } : { id: "reference", answerMode: "text" };
+    const field = index === 0 ? { id: "choice", answerMode: "single_select", options: [{ id: "am", label: "Morning" }, { id: "pm", label: "Afternoon" }] }
+      : writtenReference ? { id: "reference", answerMode: "single_select", options: [{ id: "none", label: "No reference" }], customAnswer: { enabled: true } }
+      : { id: "reference", answerMode: "text" };
     const request = `request-${index}`, semantic = path !== "provider";
     const card: Row = { id: `question-${index}`, kind: "ask_user_questions", status: "pending", companyId: "company", issueId: "task", createdByAgentId: "agent", sourceRunId: run.id,
       idempotencyKey: semantic ? `semantic-${index}` : `paperclip-runner-question:${run.id}:${request}`, continuationPolicy: semantic ? "wake_assignee" : "none", createdByUserId: null,
@@ -65,6 +67,11 @@ function recording(paths: Array<"provider" | "semantic" | "api">) {
 const failures = (f: ReturnType<typeof recording>) => gradeClarificationEvidence(context, "task", "AMBERnonce", f.checkpoints, f.readback).filter(c => !c.passed);
 
 describe("attached clarification evidence", () => {
+  it("accepts an explicit provider written reference with both exact board answers and saved native work", () => {
+    const f = recording(["provider", "provider"], true), point = f.checkpoints[1];
+    expect(clarificationQuestionFailure(point, point.interactions[1], false)).toBeUndefined();
+    expect(failures(f)).toEqual([]);
+  });
   it.each([true, false])("rejects an incomplete API receipt instead of inferring native question evidence (choice=%s)", choice => {
     const f = recording(["semantic", "semantic"]), point = f.checkpoints[choice ? 0 : 1];
     const question = point.interactions.find((i: Row) => i.status === "pending"), source = point.runs.at(-1);
@@ -87,8 +94,8 @@ describe("attached clarification evidence", () => {
     expect(failures(recording([...paths]))).toEqual([]);
   });
   it.each(["foreign-user", "foreign-agent-document", "foreign-task-document", "lost-revision", "wrong-visible-answer", "changed-readback-body", "premature-document", "extra-child", "foreign-model", "foreign-environment", "missing-native-input", "duplicate-question", "wrong-answer"])("rejects a plausible false pass: %s", kind => {
-    for (const path of ["semantic", "api"] as const) {
-      const f = recording([path, path]), first = f.checkpoints[0], final = f.checkpoints[2];
+    for (const path of ["semantic", "api", "provider"] as const) {
+      const f = recording([path, path], path === "provider"), first = f.checkpoints[0], final = f.checkpoints[2];
       if (kind === "foreign-user") final.interactions[1].resolvedByUserId = "other-board";
       if (kind === "foreign-agent-document") final.documents[0].updatedByAgentId = "other-agent";
       if (kind === "foreign-task-document") final.documents[0].issueId = "other-task";

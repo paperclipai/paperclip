@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, toolCatalogEntries, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolCatalogEntry, ToolConnection, ToolProfileEffectiveSummary, ToolProfileWithDetails } from "@paperclipai/shared";
 import { effectiveToolProfileBindings, profileIdsInBindingOrder } from "../../tool-profile-binding-precedence.js";
-import { buildProfileDetails, profileCatalogColumns, profileEntryMatchesCatalog, toProfileBinding, toProfileEntry, type ProfileCatalogEntry, type ProfileEntryMatch, type ProfileCatalogMatch } from "./projection.js";
+import { buildProfileDetails, profileCatalogColumns, profileCatalogMatcher, toProfileBinding, toProfileEntry, type ProfileCatalogEntry, type ProfileEntryMatch, type ProfileCatalogMatch } from "./projection.js";
 type ProfileAssignmentDependencies = {
   assertOptionalAgent(companyId: string, agentId: string | null | undefined, label: string): Promise<void>;
   resolveInstalledConnectionsForAgent(companyId: string, agentId: string): Promise<ToolConnection[]>;
@@ -37,18 +37,13 @@ function resolveCatalogAccess(
     const excludes = profileEntries.filter(
       (entry) => entry.effect === "exclude",
     );
+    const included = profileCatalogMatcher(includes);
+    const excluded = profileCatalogMatcher(excludes);
     for (const catalogEntry of catalog) {
-      if (
-        excludes.some((entry) =>
-          profileEntryMatchesCatalog(entry, catalogEntry),
-        )
-      )
-        continue;
+      if (excluded(catalogEntry)) continue;
       if (
         profile.defaultAction === "allow" ||
-        includes.some((entry) =>
-          profileEntryMatchesCatalog(entry, catalogEntry),
-        )
+        included(catalogEntry)
       ) {
         allowedCatalogIds.add(catalogEntry.id);
         allowedToolNames.add(catalogEntry.toolName);

@@ -67,6 +67,8 @@ export const EXECUTION_PREPARATION_SPAN_ATTRS = {
  * command, a path, an argument, or an environment value can never ride a span.
  */
 export const SANDBOX_STARTUP_SPAN_ATTRS = {
+  /** Provider state before a lease start or recovery; the host clamps values. */
+  state: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}state`,
   /** The low-cardinality provider family (through `normalizeProviderFamily`). */
   provider: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider`,
   /** The step or execution outcome: `ok`, `skipped`, or `failed`. */

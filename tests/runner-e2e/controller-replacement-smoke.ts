@@ -1,3 +1,5 @@
+import { validControllerRollingDeploymentReceipt } from "./controller-rolling-deployment.js";
+import { createRequire } from "node:module";
 import { readUpgradeArtifacts, upgradeArtifactKey } from "./upgrade-artifacts.js";
 /** Credential-free main-server replacement. This proves the wrapper/startup/DB
  * boundary; only the hosted workflow can qualify an active Daytona agent.
@@ -20,6 +22,12 @@ import { createRunnerE2EServerStopper } from "./server-stop.js";
 import { cleanupControllerSmokeDatabase } from "./controller-smoke-cleanup.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 
+const rolling = Boolean(process.env.PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG);
+const { S3Client, CreateBucketCommand, ListObjectsV2Command, DeleteObjectsCommand, DeleteBucketCommand } = createRequire(new URL("../../server/package.json", import.meta.url))("@aws-sdk/client-s3");
+let storageClient: InstanceType<typeof S3Client> | undefined;
+const storageBucket = `rolling-supervisor-${randomUUID()}`;
+let storageCreated = false;
+let storageEnvironment: NodeJS.ProcessEnv = {};
 let outage: ControllerOutage;
 let upgrades: Awaited<ReturnType<typeof readUpgradeArtifacts>> = null;
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -37,7 +45,7 @@ const report: Record<string, unknown> = { schema: "paperclip.e2e.controller-repl
 let database: { connectionString: string; cleanup(): Promise<void> } | undefined;
 let db: ReturnType<typeof createDb> | undefined;
 const log = createWriteStream(path.join(temporaryRoot, "wrapper.log"), { mode: 0o600 });
-const stopper = createRunnerE2EServerStopper({ gracefulTimeoutMs: 35_000, forcedTimeoutMs: 5_000,
+const stopper = createRunnerE2EServerStopper({ gracefulTimeoutMs: rolling ? 100_000 : 35_000, forcedTimeoutMs: 5_000,
   hasSpawnError: () => false, markExpectedStop: () => {}, log: message => log.write(message) });
 let wrapper: ReturnType<typeof spawn> | undefined;
 let failure: unknown;
@@ -84,14 +92,27 @@ try {
   const config = paperclipConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
   config.database = { ...config.database, mode: "postgres", connectionString: database.connectionString };
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
-  const source = { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR,
+  if (rolling) {
+    if (upgrades) throw new Error("Rolling supervisor smoke does not qualify upgrade artifacts");
+    const storage = JSON.parse(await readFile(process.env.PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG!, "utf8"));
+    const endpoint = new URL(storage.endpoint);
+    if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)
+      || endpoint.username || endpoint.password) throw new Error("Supervisor smoke requires disposable loopback S3");
+    storageClient = new S3Client({ region: "us-east-1", endpoint: storage.endpoint, forcePathStyle: true,
+      credentials: { accessKeyId: storage.accessKeyId, secretAccessKey: storage.secretAccessKey } });
+    await storageClient.send(new CreateBucketCommand({ Bucket: storageBucket })); storageCreated = true;
+    storageEnvironment = { PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET: storageBucket,
+      PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT: storage.endpoint, PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE: "true",
+      AWS_ACCESS_KEY_ID: storage.accessKeyId, AWS_SECRET_ACCESS_KEY: storage.secretAccessKey, AWS_EC2_METADATA_DISABLED: "true" };
+  }
+  const source = { ...storageEnvironment, PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR,
     ...(upgrades ? { ...upgrades.artifacts.A.pins, [upgradeArtifactKey]: process.env[upgradeArtifactKey] } : {}),
     NODE_ENV: "test", PAPERCLIP_HOME: home, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "default",
     PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
     PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(temporaryRoot, "server.log"),
     PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot, PAPERCLIP_RUNNER_E2E_PORT: String(port),
-    PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify(["everyday-workflows.runner-codex.daytona.recover-controller"]) };
+    PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify([`${rolling ? "rolling-web-deployment" : "everyday-workflows"}.runner-codex.daytona.recover-controller`]) };
   wrapper = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(repositoryRoot, path.join(import.meta.dirname, "server.ts")),
     { cwd: repositoryRoot, env: source, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
   wrapper.once("spawn", () => { report.wrapperStarted = true; });
@@ -121,12 +142,12 @@ try {
   const company = await api("/companies", { name: `Restart smoke ${randomUUID()}` });
   const [before] = await db.$client<{ started: string }[]>`select pg_postmaster_start_time()::text as started`;
   const receipts: unknown[] = [];
-  for (let index = 1; index < (upgrades?.sequence.length ?? 2); index += 1) {
+  for (let index = 1; index < (upgrades?.sequence.length ?? (rolling ? 3 : 2)); index += 1) {
     // Empty fixture cache exercises retirement without pretending a runner exists.
     const cache = path.join(home, "instances", "default", "runtime", "paperclip-runner");
     await mkdir(cache, { recursive: true });
     const requestId = `smoke-${index}-${randomUUID()}`;
-    await writeFile(`${control.restartRequestPath}.tmp`, JSON.stringify({ requestId, discardControllerCache: true, controllerOutage: outage }), { mode: 0o600 });
+    await writeFile(`${control.restartRequestPath}.tmp`, JSON.stringify({ requestId, discardControllerCache: true, ...(rolling ? { rollingDeployment: true } : { controllerOutage: outage }) }), { mode: 0o600 });
     await rename(`${control.restartRequestPath}.tmp`, control.restartRequestPath);
     const ack = await poll(async () => {
       const value = await readFile(control.restartAcknowledgementPath, "utf8").then(text => JSON.parse(text) as Record<string, unknown>)
@@ -134,11 +155,11 @@ try {
       if (value?.requestId === requestId && value.status === "failed") throw new Error(String(value.message));
       return value;
     }, value => value?.requestId === requestId && value.status === "ready", outage.holdMs + 180_000);
-    assert(validControllerOutageReceipt(ack!.controllerOutage, outage, requestId, upgrades ? {
+    assert(rolling ? validControllerRollingDeploymentReceipt(ack!.rollingDeployment, requestId) : validControllerOutageReceipt(ack!.controllerOutage, outage, requestId, upgrades ? {
       previous: upgrades.artifacts[upgrades.sequence[index - 1]!],
       replacement: upgrades.artifacts[upgrades.sequence[index]!],
     } : undefined), "Invalid replacement fault or requested artifact receipt");
-    receipts.push(ack!.controllerOutage);
+    receipts.push(rolling ? ack!.rollingDeployment : ack!.controllerOutage);
     report.replacements = receipts;
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
     assert.equal((await api(`/companies/${company.id}`)).id, company.id);
@@ -158,6 +179,16 @@ try {
   if (wrapper) cleanups.push(() => stopper.stopAll());
   if (db) { const client = db.$client; cleanups.push(() => client.end()); }
   if (database) { const owned = database; cleanups.push(() => cleanupControllerSmokeDatabase(owned, ownedPostgresProcessId)); }
+  if (storageClient && storageCreated) cleanups.push(async () => {
+    let continuationToken: string | undefined;
+    do {
+      const listed = await storageClient!.send(new ListObjectsV2Command({ Bucket: storageBucket, ContinuationToken: continuationToken }));
+      if (listed.Contents?.length) await storageClient!.send(new DeleteObjectsCommand({ Bucket: storageBucket,
+        Delete: { Objects: listed.Contents.map((object: { Key: string }) => ({ Key: object.Key })) } }));
+      continuationToken = listed.NextContinuationToken;
+    } while (continuationToken);
+    await storageClient!.send(new DeleteBucketCommand({ Bucket: storageBucket })); storageClient!.destroy();
+  });
   for (const cleanup of cleanups) {
     try { await cleanup(); }
     catch (error) { failure ??= error; cleanupErrors.push(error instanceof Error ? error.message : String(error)); }

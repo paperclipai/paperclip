@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
+import { PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
@@ -323,6 +324,36 @@ describe("HarnessDriverBackend", () => {
     expect(recoveredDispositionAllowance).toBe(true);
   });
 
+  it("keeps the runner's closed class of a failed recovery", async () => {
+    const commandFailure = Object.defineProperty(new Error("PRP command run.attach failed"), "runnerCommandResult", {
+      value: { status: "failed", commandType: "run.attach",
+        result: { code: "command_execution_failed", message: "saved launch profile changed",
+          classification: PROVIDER_STATE_INCOMPATIBLE } },
+      enumerable: false,
+    });
+    expect(runnerRecoveryFailureClass(commandFailure)).toBe(PROVIDER_STATE_INCOMPATIBLE);
+    expect(runnerRecoveryFailureClass(new Error("wrapped", { cause: commandFailure }))).toBe(PROVIDER_STATE_INCOMPATIBLE);
+    expect(runnerRecoveryFailureClass(new Error(`text only: ${PROVIDER_STATE_INCOMPATIBLE}`))).toBeUndefined();
+    const unclassified = Object.defineProperty(new Error("PRP command run.attach failed"), "runnerCommandResult", {
+      value: { status: "failed", result: { code: "command_execution_failed", classification: "other" } },
+      enumerable: false,
+    });
+    expect(runnerRecoveryFailureClass(unclassified)).toBeUndefined();
+
+    const backend = new HarnessDriverBackend({
+      ...driver,
+      recoverSession: async () => ({ recovered: false, reason: String(commandFailure),
+        failureClass: runnerRecoveryFailureClass(commandFailure) }),
+    });
+    await expect(backend.recoverSession({
+      backendKind: "runner", driverKind: "fake", sessionId: "driver-1", providerSessionId: "provider-1",
+      providerIdentity,
+      identity: { runId: "run-2", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+    }, { signal: new AbortController().signal })).resolves.toEqual({
+      recovered: false, reason: "Error: PRP command run.attach failed", failureClass: PROVIDER_STATE_INCOMPATIBLE,
+    });
+  });
+
   it("preserves a consumed disposition allowance in native snapshots", async () => {
     class ConsumedRecoverySession extends FakeHarnessSession {
       override async snapshot(): Promise<PersistedHarnessSession> {
@@ -540,6 +571,21 @@ describe("HarnessDriverBackend", () => {
     expect(attachedRunIds).toEqual(["run-2"]);
     expect(grants).toEqual([{ runtimeContext: null, instructions: "Current registered instructions." }]);
     expect(session.identity()).toEqual({ ...originalIdentity, runId: "run-2" });
+  });
+
+  it.each([undefined, 30_000])("preserves the cancellation terminal bound through open and recovery (%s)", async bound => {
+    const harness = new FakeHarnessSession();
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return harness; }, async recoverSession() { return { recovered: true, session: harness }; } }, undefined, bound);
+    const identity = { companyId: "company-1", agentId: "agent-1", issueId: "issue-1", runId: "run-1", sessionId: "session-1" };
+    const opened = await backend.openSession({ identity });
+    const snapshot = await opened.snapshot({ signal: new AbortController().signal });
+    const recovered = await backend.recoverSession(snapshot, { signal: new AbortController().signal });
+    expect(recovered.recovered).toBe(true);
+    for (const session of [opened, recovered.session!]) {
+      const cancellation = session.cancel!({ reason: "durable wait", signal: new AbortController().signal });
+      expect(cancellation.terminalDrainTimeoutMs).toBe(bound);
+      await cancellation.cleanup;
+    }
   });
 
   it("restores a persisted terminal before the recovered stream is consumed", async () => {

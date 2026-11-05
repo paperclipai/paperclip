@@ -17,6 +17,7 @@ const installedCodexCells = new Set([
   "everyday-workflows.runner-codex.local.build-revise",
   "agent-chat.runner-codex.local.continuity-restart",
   "everyday-workflows.runner-codex.daytona.recover-controller",
+  "daytona-restart-continuity.runner-codex.daytona.recover-controller",
 ]);
 const installedCopilotCells = new Set([
   "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",

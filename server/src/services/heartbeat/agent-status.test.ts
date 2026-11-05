@@ -6,23 +6,29 @@ import {
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createHeartbeatAgentStatus, settledAgentWorkCondition } from "./agent-status.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_STATUS_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping agent status database tests: ${support.reason}`);
 
 describePostgres("heartbeat agent status", () => {
   let db: Db;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let service: ReturnType<typeof createHeartbeatAgentStatus>;
   const live = new Set<string>();
   const old = () => new Date(Date.now() - 60 * 60_000);
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-agent-status-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-agent-status-");
+    db = createDb(external ?? database!.connectionString, { maxConnections: 6 });
+    if (external) {
+      db.$client.options.onnotice = () => {};
+      await db.execute(sql`truncate companies cascade`);
+    }
     service = createHeartbeatAgentStatus(db);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   beforeEach(async () => {
@@ -38,7 +44,7 @@ describePostgres("heartbeat agent status", () => {
     await db.delete(agents);
     await db.delete(companies);
   });
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   async function seed(status = "interrupted") {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();

@@ -42,6 +42,8 @@ Work in this order.
 
    The tool's root fields are `idempotencyKey`, `interactionKind`, `title`, `prompt`, `continuationPolicy`, and `payload`, with optional `targetRevisionId` and `resolverPolicy` as advertised. Put `version` and `supersedeOnUserComment` inside `payload`; neither is a root argument. If validation rejects a proposal, correct its argument placement and keep the confirmation or checkbox approval kind. Switching it to a question form cannot authorize the proposed work. Wait for a successful saved card receipt before claiming you requested approval.
 
+   For ordinary first-task proposals that accept a reply in this conversation, omit the optional `resolverPolicy` and inherit the server/company default. Do not add `human_only` merely because you are asking the user to decide: `resolve-from-comment` records your interpretation as the responding agent and cannot resolve a human-only card. Preserve explicit user requirements for human-only approval, company restrictions, and governed-action requirements; omission does not override them. Never lower a saved card's policy or recreate it to bypass a denial. Restricted cards must keep their required human response controls.
+
    ```json
    {
      "idempotencyKey": "first-task-proposal-confirmation",

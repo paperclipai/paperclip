@@ -79,7 +79,7 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
     expect(reads).not.toHaveBeenCalled(); expect(selects).not.toHaveBeenCalled(); expect(deletes).not.toHaveBeenCalled();
     reads.mockRestore(); selects.mockRestore(); deletes.mockRestore();
   }
-  const token = (expiresAt?: Date) => gateway.createNamedGatewayToken({ companyId, gatewayId: namedId, body: { name: "Expiry", expiresAt } });
+  const token = (expiresAt?: Date) => gateway.createNamedGatewayToken({ companyId, gatewayId: namedId, body: { name: "Expiry", clientLabel: "Expiry client", ownerNote: "", expiresAt } });
   const session = (service = gateway) => service.createSession({ companyId, agentId, runId, ttlMs: 5 * 60_000 });
 
   it("stays quiet with configuration and a nonexpiring token, then expires real tokens and sessions by deadline", async () => {
@@ -116,7 +116,7 @@ describe.skipIf(!supported)("gateway credential expiry", () => {
       const scoped = createToolGatewayService(tx as unknown as typeof db, { toolActionSigningSecret: "expiry-test-only" });
       if (kind === "session") await session(scoped);
       else await scoped.createNamedGatewayToken({ companyId, gatewayId: namedId,
-        body: { name: "Outer transaction", expiresAt: new Date(Date.now() + 5 * 60_000) } });
+        body: { name: "Outer transaction", clientLabel: "Outer transaction client", ownerNote: "", expiresAt: new Date(Date.now() + 5 * 60_000) } });
       written(); await gate; if (rollback) throw rollbackError;
     }).catch(error => { if (error !== rollbackError) throw error; });
     await Promise.race([staged, writing]);
