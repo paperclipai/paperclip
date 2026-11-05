@@ -1978,6 +1978,21 @@ not grant retry authority or change the budget. When the budget is exhausted,
 the task is blocked and its recovery action states that provider startup failed
 before any provider work began.
 
+The same limit evidence also holds new work for the agent. Before any workspace
+or provider work, a queued run for an agent with an active provider limit is
+cancelled as `provider_limit_wait`, records the expected reset and the run that
+reported the limit, and schedules one retry of the same wake at that reset.
+The retry is a resource wait: it does not consume the failure retry budget, and
+a wake that is still limited at its retry waits again until the evidence
+expires within a day. Manual runs, recovering runs, conversation turns and
+pool-routed connections are not held, so an operator can test a repaired
+account at once. ACP harnesses report an exhausted allowance as a generic
+terminal limit failure; Runner adds the provider's typed session-failure title,
+and only a rate-limit or quota title becomes `rate_limit` or `quota_exhausted`.
+Context, turn and configured budget limits stay ordinary terminal failures. A
+reset clock in the provider's wording, such as "resets 2am (UTC)", is used as
+the reset time.
+
 An ingress endpoint failure can use that same bounded retry only when the
 environment provider returns a structured HTTP 429 or 5xx failure and the
 complete, encrypted controller checkpoint proves that this exact run never
