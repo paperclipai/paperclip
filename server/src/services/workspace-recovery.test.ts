@@ -3142,8 +3142,8 @@ describe("automatic retained workspace recovery", () => {
     expect((await pendingTurns(f)).map(item => item.id)).toEqual([handoff.id]);
   }, 30_000);
 
-  it.each(["no-proof", "turn-event", "provider-event", "running-writer", "other-task-writer", "unscoped-queued-writer",
-    "non-gating-hold"] as const)
+  it.each(["no-proof", "turn-event", "provider-event", "unlisted-provider-event", "running-writer", "other-task-writer",
+    "unscoped-queued-writer", "non-gating-hold"] as const)
   ("keeps the stopped agent held when provider work cannot be excluded (%s)", async kind => {
     const f = await seed();
     const agentId = (await run(f.runId)).agentId;
@@ -3152,6 +3152,10 @@ describe("automatic retained workspace recovery", () => {
       eventType: "turn.started", stream: "system", level: "info", message: "turn started" });
     if (kind === "provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId, agentId,
       seq: 9_999, eventType: "item.completed", stream: "system", level: "info", message: "provider item", sourceEventId: randomUUID() });
+    // A runner family outside the startup lifecycle counts as work even when unlisted.
+    if (kind === "unlisted-provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId,
+      agentId, seq: 9_999, eventType: "delegation.completed", stream: "system", level: "info", message: "delegated",
+      sourceEventId: randomUUID() });
     if (kind === "running-writer" || kind === "other-task-writer" || kind === "unscoped-queued-writer") {
       // A started turn, or a queued one that this task's dispatch gate does not cover, is a real writer.
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, runtimeMode: "legacy",

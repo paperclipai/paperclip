@@ -126,19 +126,27 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
-// Runner protocol families that exist only once a turn was submitted: the turn
-// itself, its items, tools, apps, questions, results, usage and status
-// decisions. Startup lifecycle (harness, session, workspace, runtime phase)
-// opens no turn, so new startup events cannot hide a pre-turn Stop.
-export const PROVIDER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "mcp_app.tool_",
-  "mcp_app.action.", "runtime_request.", "interaction.", "attention.", "run.result.", "work.assessment.",
-  "issue.status.decision.", "usage."] as const;
-export const PROVIDER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
+// Runner startup lifecycle families: they open no turn. Every other event the
+// runner sourced counts as provider work, so a new or unlisted family keeps
+// the hold (fail closed). Server-side records without a source event (spans,
+// process identity, lifecycle) count only when they name turn or provider work.
+export const PROVIDER_STARTUP_EVENT_PREFIXES = ["harness.", "session.", "workspace.", "runtime.phase.",
+  "runtime.activity.", "provider.notice.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
+  "mcp_app.resource.", "mcp_app.host_context.", "mcp_app.teardown", "mcp_app.failed"] as const;
+export const PROVIDER_STARTUP_EVENT_TYPES = ["run.attached", "run.detached"] as const;
+const SERVER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "run.result."] as const;
+const SERVER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
 
-/** SQL truth for an event type (column or alias) that proves provider turn work. */
-export function providerTurnWorkEventCondition(eventType: SQL) {
-  return sql`(${eventType} in (${sql.join(PROVIDER_TURN_WORK_EVENT_TYPES.map(type => sql`${type}`), sql`, `)})
-    or ${sql.join(PROVIDER_TURN_WORK_EVENT_PREFIXES.map(prefix => sql`starts_with(${eventType}, ${prefix})`), sql` or `)})`;
+const anyPrefix = (eventType: SQL, prefixes: readonly string[]) =>
+  sql.join(prefixes.map(prefix => sql`starts_with(${eventType}, ${prefix})`), sql` or `);
+const anyType = (eventType: SQL, types: readonly string[]) =>
+  sql`${eventType} in (${sql.join(types.map(type => sql`${type}`), sql`, `)})`;
+
+/** SQL truth for an event row (alias columns) that may prove provider turn work. */
+export function providerTurnWorkEventCondition(eventType: SQL, sourceEventId: SQL) {
+  return sql`((${sourceEventId} is not null and not (${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)}
+      or ${anyPrefix(eventType, PROVIDER_STARTUP_EVENT_PREFIXES)}))
+    or ${anyType(eventType, SERVER_TURN_WORK_EVENT_TYPES)} or ${anyPrefix(eventType, SERVER_TURN_WORK_EVENT_PREFIXES)})`;
 }
 
 /**
@@ -156,7 +164,7 @@ export function stoppedBeforeProviderTurnCondition() {
     and stopped.result_json->'nativeCancellation'->'beforeProviderTurn' = 'true'::jsonb
     and not exists (select 1 from ${heartbeatRunEvents} work
       where work.company_id = stopped.company_id and work.run_id = stopped.id
-        and ${providerTurnWorkEventCondition(sql`work.event_type`)})
+        and ${providerTurnWorkEventCondition(sql`work.event_type`, sql`work.source_event_id`)})
     and not exists (select 1 from ${nativeRunResults} result
       where result.company_id = stopped.company_id and result.run_id = stopped.id))`;
 }
