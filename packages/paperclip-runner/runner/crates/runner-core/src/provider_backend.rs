@@ -30,8 +30,8 @@ use crate::provider_bridge::{
     TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
-    normalize_codex_notification, normalized_codex_terminal_event_type, with_terminal_outcome,
-    NormalizedProviderEvent,
+    normalize_codex_notification, normalize_codex_notification_in,
+    normalized_codex_terminal_event_type, with_terminal_outcome, NormalizedProviderEvent,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -723,10 +723,12 @@ fn normalize_provider_notification(
         return Ok(events);
     }
     if method != "paperclip/runResult" {
-        return Ok(normalize_codex_notification(method, params)
-            .into_iter()
-            .map(|event| relabel_provider_event(event, &state.config.provider))
-            .collect());
+        return Ok(
+            normalize_codex_notification_in(method, params, Some(&state.config.cwd))
+                .into_iter()
+                .map(|event| relabel_provider_event(event, &state.config.provider))
+                .collect(),
+        );
     }
     let (result, fingerprint, disposition) = validate_proxy_run_result(state, params)?;
     match (

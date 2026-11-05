@@ -90,7 +90,15 @@ export interface TaskChatDiff {
   added: number;
   removed: number;
   /** Optional unified-diff-ish lines for display only. */
-  lines?: Array<{ kind: "add" | "remove" | "context"; text: string }>;
+  lines?: TaskChatDiffLine[];
+  /** True when the producer bounded the patch and lines were omitted. */
+  truncated?: boolean;
+}
+
+export interface TaskChatDiffLine {
+  /** `file` starts the next file when one edit call changed several files. */
+  kind: "add" | "remove" | "context" | "hunk" | "file";
+  text: string;
 }
 
 export interface TaskChatTokenUsage {

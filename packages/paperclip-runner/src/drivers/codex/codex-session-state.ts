@@ -1,4 +1,5 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import type {
   HarnessRuntimeRequest,
   HarnessSessionRecoveryOptions,
@@ -145,6 +146,12 @@ export class CodexSessionState {
   readonly restoredTerminalTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
+  #workspaceRoots: string[] | null = null;
+  /** Working directory and its realpath, for making provider file paths relative. */
+  get workspaceRoots(): string[] {
+    this.#workspaceRoots ??= workspaceRootsFor(this.opened.context.workingDirectory);
+    return this.#workspaceRoots;
+  }
   readonly itemChannels = new Map<
     string,
     "progress" | "final" | "summary" | "detail" | "unknown"

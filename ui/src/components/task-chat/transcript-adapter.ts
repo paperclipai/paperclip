@@ -6,6 +6,7 @@
  * only showing a response after the turn settles.
  */
 import type { TranscriptEntry } from "@/adapters";
+import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
   TaskChatDiff,
   TaskChatActivityPhaseItem,
@@ -128,9 +129,10 @@ export function flattenSelfTalk(text: string): string {
     .trim();
 }
 
-function diffKind(changeType: string): "add" | "remove" | "context" {
+function diffKind(changeType: string): "add" | "remove" | "context" | "hunk" {
   if (changeType === "add") return "add";
   if (changeType === "remove") return "remove";
+  if (changeType === "hunk") return "hunk";
   return "context";
 }
 
@@ -827,17 +829,28 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "diff": {
+        // Diff lines addressed to a tool call attach to that row; legacy
+        // unaddressed lines attach to the most recent tool.
+        const addressedIndex = entry.toolUseId ? toolIndexById.get(entry.toolUseId) : undefined;
+        const targetIndex = addressedIndex ?? lastToolIndex;
+        const target =
+          targetIndex >= 0 && items[targetIndex]?.kind === "tool"
+            ? (items[targetIndex] as TaskChatToolItem)
+            : null;
         if (entry.changeType === "file_header") {
-          if (lastToolIndex >= 0 && items[lastToolIndex].kind === "tool") {
-            const tool = items[lastToolIndex] as TaskChatToolItem;
-            tool.diff = tool.diff ?? {
-              path: entry.text,
-              added: 0,
-              removed: 0,
-              lines: [],
-            };
-            tool.diff.path = entry.text;
+          if (target) {
+            if (target.diff?.lines?.length) {
+              target.diff.lines.push({ kind: "file", text: entry.text });
+            } else {
+              target.diff = target.diff ?? { added: 0, removed: 0, lines: [] };
+              target.diff.path = entry.text;
+            }
           }
+          resetInline();
+          break;
+        }
+        if (entry.changeType === "truncation") {
+          if (target?.diff) target.diff.truncated = true;
           resetInline();
           break;
         }
@@ -845,9 +858,8 @@ export function transcriptToTaskChatItems(
           kind: diffKind(entry.changeType),
           text: entry.text ?? "",
         };
-        if (lastToolIndex >= 0 && items[lastToolIndex].kind === "tool") {
-          const tool = items[lastToolIndex] as TaskChatToolItem;
-          const diff: TaskChatDiff = tool.diff ?? {
+        if (target) {
+          const diff: TaskChatDiff = target.diff ?? {
             added: 0,
             removed: 0,
             lines: [],
@@ -856,7 +868,7 @@ export function transcriptToTaskChatItems(
           diff.lines.push(line);
           if (line.kind === "add") diff.added += 1;
           if (line.kind === "remove") diff.removed += 1;
-          tool.diff = diff;
+          target.diff = diff;
         } else {
           items.push({
             id: `${runId}:diff:${i}`,
@@ -1102,8 +1114,24 @@ export function transcriptToTaskChatItems(
         item.status === "pending"
       ) {
         item.status = "cancelled";
+      } else if (item.kind === "protocol" && item.surface === "workspace_change") {
+        // A harness-reported change set is final once its run has ended.
+        item.complete = true;
       }
     }
+  }
+
+  // Every turn that edited files ends with its changed files, just before its
+  // final answer. A harness that reports only per-edit patches gets the card
+  // assembled from its edit rows.
+  const changeIndex = items.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
+  const changes = changeIndex >= 0
+    ? items.splice(changeIndex, 1)[0]
+    : turnChangesFromEditRows(items, runId ?? "run", !running);
+  if (changes) {
+    const last = items.at(-1);
+    const beforeFinal = last?.kind === "message" && last.channel === "final";
+    items.splice(beforeFinal ? items.length - 1 : items.length, 0, changes);
   }
 
   return items;

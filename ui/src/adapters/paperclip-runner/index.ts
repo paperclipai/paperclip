@@ -343,7 +343,7 @@ function nullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function workspaceChangeEntry(payload: JsonRecord, ts: string): TranscriptEntry {
+export function workspaceChangeEntry(payload: JsonRecord, ts: string): TranscriptEntry {
   const totals = record(payload.totals);
   const files = (Array.isArray(payload.files) ? payload.files : [])
     .map(record)

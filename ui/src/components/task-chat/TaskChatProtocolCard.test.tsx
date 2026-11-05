@@ -422,7 +422,7 @@ describe("TaskChatProtocolCard", () => {
     }
   });
 
-  it("opens a workspace diff review dialog", async () => {
+  it("lists the turn's changed files and opens each diff in place", async () => {
     renderCard(root, {
       id: "workspace",
       kind: "protocol",
@@ -439,24 +439,22 @@ describe("TaskChatProtocolCard", () => {
           additions: 1,
           deletions: 1,
           binary: false,
-          diff: "-old\n+new",
+          diff: "@@ -1 +1 @@\n-old\n+new\n",
         },
       ],
       totals: { files: 1, additions: 1, deletions: 1 },
       patchArtifactRef: null,
     });
-    const button = Array.from(container.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Review diff",
-    );
-    expect(button).not.toBeUndefined();
-    expect(container.textContent).toContain("1 file changed · +1 −1");
-    await act(async () => button?.click());
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "ui/src/App.tsx",
-    );
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "old",
-    );
+    expect(container.textContent).toContain("Changed in this turn");
+    expect(container.textContent).toContain("1 file changed");
+    expect(container.querySelector('[data-testid="task-chat-diff-view"]')).toBeNull();
+    const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-workspace-change-file"] button');
+    expect(row?.textContent).toContain("ui/src/App.tsx");
+    await act(async () => row?.click());
+    const diff = container.querySelector('[data-testid="task-chat-diff-view"]');
+    expect(diff?.textContent).toContain("Line 1");
+    expect(diff?.textContent).toContain("old");
+    expect(diff?.textContent).toContain("new");
   });
 
   it("opens a bounded file preview", async () => {

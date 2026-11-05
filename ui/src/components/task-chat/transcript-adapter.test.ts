@@ -720,13 +720,14 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       opts,
     );
     expect(items).toHaveLength(2);
-    expect(items[0]).toMatchObject({
+    // The turn's changed files close the turn, after its other activity.
+    expect(items[1]).toMatchObject({
       kind: "protocol",
       surface: "workspace_change",
       revision: 2,
       complete: true,
     });
-    expect(items[1]).toMatchObject({
+    expect(items[0]).toMatchObject({
       kind: "protocol",
       surface: "runtime_request",
       runId: "run-protocol",
@@ -2863,5 +2864,47 @@ describe("prependIssueBrief (PAP-375)", () => {
     expect(prependIssueBrief([], true).map((i) => i.kind)).toEqual(["brief"]);
     const items = [entry("u1", 1_000).item];
     expect(prependIssueBrief(items, false)).toBe(items);
+  });
+});
+
+describe("turn changes assembled from edit rows", () => {
+  it("lists each edited file when the harness reports only per-edit patches", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        { kind: "tool_call", ts: TS, name: "Write", toolUseId: "w1", input: { path: "price.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "price.js", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -0,0 +1,2 @@", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "a", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "b", toolUseId: "w1" },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "e1", input: { path: "price.js" } },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "e2", input: { path: "other.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "other.js", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -4,2 +4,2 @@", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "context", text: "keep", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "old", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "add", text: "new", toolUseId: "e2" },
+        // An addressed line reaches its own row even after another call started.
+        { kind: "diff", ts: TS, changeType: "file_header", text: "price.js", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -1,2 +1,2 @@", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "b", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "c", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "truncation", text: "Diff shortened for display.", toolUseId: "e1" },
+      ],
+      { runId: "run-edits", running: false },
+    );
+    const edit = items.find((item) => item.kind === "tool" && item.id.endsWith("e1"));
+    expect(edit).toMatchObject({ diff: { path: "price.js", added: 1, removed: 1, truncated: true } });
+    const changes = items.at(-1);
+    expect(changes).toMatchObject({
+      kind: "protocol",
+      surface: "workspace_change",
+      complete: true,
+      totals: { files: 2, additions: 3, deletions: 1 },
+    });
+    if (changes?.kind !== "protocol" || changes.surface !== "workspace_change") throw new Error("expected changes");
+    // A file created this turn reports its net size.
+    expect(changes.files[0]).toMatchObject({ path: "price.js", operation: "create", additions: 2, deletions: 0 });
+    expect(changes.files[1]).toMatchObject({ path: "other.js", operation: "modify", additions: 1, deletions: 1 });
+    expect(changes.files[1].diff).toBe("@@ -4,2 +4,2 @@\n keep\n-old\n+new\n");
   });
 });
