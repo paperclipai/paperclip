@@ -78,7 +78,9 @@ describe("residual recovery production matrix", () => {
     vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
   });
   afterAll(async () => {
-    await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    if (db) {
+      await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    }
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
   });
   async function fixture() {
