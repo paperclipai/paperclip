@@ -53,7 +53,7 @@ async function workspaceArchive(input: {
     if (stdin !== undefined) command.stdin?.end(stdin);
   });
   const portableRemoteUrl = (value: string) => {
-    if (!value || /[\u0000-\u0020\u007f\\]/u.test(value)) return false;
+    if (!value || /[\u0000- \u007f\\]/u.test(value)) return false;
     if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
       let url: URL; try { url = new URL(value); } catch { return false; }
       if (!["http:", "https:", "ssh:", "git:"].includes(url.protocol)) return false;
@@ -77,7 +77,7 @@ async function workspaceArchive(input: {
       : /^(false|no|off|0)$/iu.test(value) ? "false" : fail("unsupported_git_setting");
     const rows = raw.split("\0").filter(Boolean).map(row => {
       const split = row.indexOf("\n"), key = row.slice(0, split), value = row.slice(split + 1);
-      if (split < 1 || /[\u0000-\u0020\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
+      if (split < 1 || /[\u0000- \u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
       return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch|promisor|partialclonefilter)$/.exec(key),
         branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key), identity: /^user\.(name|email)$/.test(key),
         sparse: /^(core\.(sparsecheckout|sparsecheckoutcone)|index\.sparse)$/.test(key) };
@@ -125,7 +125,17 @@ async function workspaceArchive(input: {
     }
     return retained;
   };
+  const assertRepositoryRoot = async (repo: string) => {
+    // A damaged `.git` entry, such as a partly removed worktree, is not this
+    // directory's repository. Git would fail with a raw command error that
+    // names local paths, or discover an enclosing repository and save that
+    // repository's settings, refs and index as this directory's state.
+    const top = await git(repo, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
+      .catch(() => { check(); return fail("invalid_git_repository"); });
+    if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
+  };
   const assertGitOperationComplete = async (repo: string) => {
+    await assertRepositoryRoot(repo);
     const gitDir = (await git(repo, ["rev-parse", "--absolute-git-dir"])).trim();
     // A mirror plus the selected index is not a portable continuation of an
     // unfinished Git operation. Never acknowledge a copy that drops its todo,
@@ -267,6 +277,7 @@ async function workspaceArchive(input: {
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
+        await assertRepositoryRoot(repo);
         const settings = await portableGitSettings(repo);
         gitSignatures.set(relative, await signature(repo, settings));
         const offline = await gitStateHash(repo, "shallow") !== null
@@ -436,7 +447,8 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
   const validation = [
     "remote_workspace_archive_changed", "remote_workspace_archive_unsupported_filename",
-    "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_unsafe_symlink",
+    "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_invalid_git_repository",
+    "remote_workspace_archive_unsafe_symlink",
     "remote_workspace_archive_unsupported_entry", "remote_workspace_archive_source_missing",
     "remote_workspace_archive_source_invalid", "remote_workspace_archive_credential_in_git_remote",
     "remote_workspace_archive_unsupported_git_setting", "remote_workspace_archive_manifest_too_large",
