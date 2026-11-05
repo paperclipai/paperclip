@@ -1189,9 +1189,7 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
         ...(boundedTool.paperclipBoundedTool === true
           ? boundedTool.paperclipOutput
           : safeOutput(event.rawOutput)),
-        ...(record(record(event).paperclipToolDetail) && Object.keys(record(record(event).paperclipToolDetail)).length > 0
-          ? { toolDetail: record(record(event).paperclipToolDetail) }
-          : {}),
+        ...sidecarToolDetail(record(event).paperclipToolDetail),
         ...(boundedTool.paperclipBoundedTool === true && boundedTool.paperclipFileChanges
           ? { fileChanges: boundedTool.paperclipFileChanges }
           : {}),
@@ -1638,6 +1636,20 @@ function safeText(value: unknown, maxBytes = 8_192): string {
   return bytes.length <= maxBytes
     ? message
     : bytes.subarray(0, maxBytes).toString("utf8");
+}
+
+/**
+ * Tool facts cross the boundary under the same secret filter as tool output:
+ * a command or refusal message can carry a token (curl ...?token=...).
+ */
+function sidecarToolDetail(value: unknown): { toolDetail?: Record<string, unknown> } {
+  const detail = record(value);
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(detail)) {
+    if (typeof item === "string") output[key] = redactSecrets(item);
+    else if (typeof item === "number" && Number.isSafeInteger(item)) output[key] = item;
+  }
+  return Object.keys(output).length > 0 ? { toolDetail: output } : {};
 }
 
 function redactSecrets(value: string): string {

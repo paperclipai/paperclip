@@ -2556,6 +2556,30 @@ mod tests {
         assert_eq!(blocked[0].payload["namespace"], "paperclip");
         assert_eq!(blocked[0].payload["transport"], "mcp");
         assert_eq!(blocked[0].payload["blockedReason"], "Denied by rule");
+
+        let secret = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_4", "status": "failed", "title": "curl",
+            "toolDetail": {
+                "toolName": "Bash",
+                "subject": "curl -H 'Authorization: Bearer top-secret-value' https://example.test?token=top-secret-value",
+                "description": "Call with password=top-secret-value",
+                "blockedReason": "Denied: api_key=top-secret-value",
+            }}),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert!(!secret[0].payload.to_string().contains("top-secret-value"));
+        let codex = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-secret", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'curl https://example.test?token=top-secret-value'", "cwd": "/work/repo",
+            }}),
+        );
+        assert!(!codex[0].payload.to_string().contains("top-secret-value"));
     }
 
     #[test]
