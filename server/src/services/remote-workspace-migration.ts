@@ -49,6 +49,7 @@ function fingerprint(workspace: Workspace) {
 }
 const gitSourceProof = (source: ArchivedGitMigrationSource | null) => source ? {
   commit: source.commit, sourcePath: source.sourcePath, cleanupOperationId: source.cleanupOperationId,
+  ...(source.retainedBranch ? { retainedBranch: source.retainedBranch } : {}),
 } : null;
 
 async function inspect(db: ReadDb, input: { companyId: string; workspaceId: string; operationId?: string; writersStopped?: boolean }) {
@@ -85,8 +86,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
         }
       }
     }
-    if (!entry && workspace.status === "archived" && !retainedDirectory) {
-      try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace); }
+    if (!entry && !retainedDirectory && (workspace.status === "archived" || input.writersStopped)) {
+      try { archivedGitSource = await inspectArchivedGitMigrationSource(db, workspace, { allowActiveRetainedBranch: input.writersStopped, operationId: allowedOperation }); }
       catch (error) { reasons.push(error instanceof Error && error.message === "remote_workspace_migration_restore_point_expired"
         ? "restore_point_expired" : "archived_git_source_unavailable"); }
     }
