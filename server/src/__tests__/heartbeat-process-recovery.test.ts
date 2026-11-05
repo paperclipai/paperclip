@@ -9889,7 +9889,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       continuationPolicy: "wake_assignee",
       createdByAgentId: agentId,
       resolvedByUserId: "local-board",
-      resolvedAt: new Date(),
+      // Older than the accepted-interaction grace window: the answer-time
+      // wake has had time to appear, so a missing run is a lost continuation.
+      resolvedAt: new Date(Date.now() - 3 * 60_000),
       payload: {
         version: 1,
         questions: [
@@ -11209,6 +11211,71 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
+  });
+
+  // BUG-03 (onboarding staging, ONB-1): the sweep read the plan approval
+  // ~500ms after it resolved, before its accept-time run existed, and queued
+  // a second continuation for the same approval. That redundant wake waited
+  // behind later runs for ~37 minutes and showed as an immutable
+  // "Accepted: <plan>" item in the composer queue.
+  async function seedJustAcceptedPlanApproval(title: string) {
+    const fixture = await seedResolvedInteractionRecoveryFixture({ title });
+    const resolvedAt = new Date(Date.now() - 500);
+    await db.update(issueThreadInteractions)
+      .set({ continuationPolicy: "wake_assignee", resolvedAt, updatedAt: resolvedAt })
+      .where(eq(issueThreadInteractions.id, fixture.interactionId));
+    return { ...fixture, resolvedAt };
+  }
+
+  async function interactionRecoveryRuns(agentId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' = 'issue.interaction_continuation_recovery'`,
+      ));
+  }
+
+  it("does not race a just-accepted plan approval before its accept-time wake is visible", async () => {
+    const { agentId, interactionId, resolvedAt } = await seedJustAcceptedPlanApproval("Plan approved moments ago");
+    const deadlines: number[] = [];
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues({
+      onDeferredDeadline: (at) => deadlines.push(at),
+    });
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(await interactionRecoveryRuns(agentId)).toEqual([]);
+    // The skip registers a re-check, so a lost accept-time wake still recovers.
+    expect(deadlines).toContain(resolvedAt.getTime() + 2 * 60_000);
+
+    // After the grace window, with no other write, the next sweep requeues it.
+    const expiredAt = new Date(Date.now() - 2 * 60_000 - 1_000);
+    await db.update(issueThreadInteractions)
+      .set({ resolvedAt: expiredAt, updatedAt: expiredAt })
+      .where(eq(issueThreadInteractions.id, interactionId));
+    const later = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(later.continuationRequeued).toBe(1);
+    expect(await interactionRecoveryRuns(agentId)).toHaveLength(1);
+  });
+
+  it("does not requeue an accepted plan approval whose accept-time wake is deferred behind another run", async () => {
+    const { companyId, agentId, issueId, interactionId } =
+      await seedResolvedInteractionRecoveryFixture({ title: "Plan approval waiting for the active run" });
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, mutation: "interaction", interactionId, interactionStatus: "accepted" },
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(await interactionRecoveryRuns(agentId)).toEqual([]);
+    const wakes = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakes).toEqual([{ status: "deferred_issue_execution" }]);
   });
 
   it("requeues accepted interaction continuations even when a later successful run is unrelated", async () => {
