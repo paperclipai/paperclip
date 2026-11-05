@@ -3433,9 +3433,9 @@ export function toolAccessService(
       }
 
       const profileBindings: ToolProfileBinding[] = [];
-      // These connectors expose one agent-access choice. Commit installation
-      // reach and permission bindings together, including an empty selection.
-      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      // Agent access is also the credential admission boundary. Save its
+      // installation and permission targets together for every tool connector.
+      if (connection.connectionPurpose === "tool") {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
         const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));

@@ -1384,6 +1384,12 @@ function StandardConnectionSetupFlow({
     // not identity: an organization Notion connection must stay organization-
     // scoped, while a personal one must put its token back on that user grant.
     mutationFn: async (connection: ToolConnection) => {
+      if (connectionIntentId && !aiConnection) {
+        await connectionIntentsApi.setPhase(connectionIntentId, "authorizing", {
+          connectionId: connection.id,
+          access: installChoice === "all" ? "all_agents" : { agentIds: [...installAgentIds] },
+        });
+      }
       // Persist before navigation, including retries that reuse an existing OAuth draft.
       if (instructionValue && JSON.stringify(instructionValue) !== JSON.stringify(connection.agentInstructions)) {
         await toolsApi.updateConnection(connection.id, { agentInstructions: instructionValue });
@@ -1439,7 +1445,7 @@ function StandardConnectionSetupFlow({
    */
   const applyAccessInstalls = async (connectionId: string) => {
     // The task completion endpoint adds the requester atomically with resolution.
-    if (requestedAgentId) return;
+    if (connectionIntentId) return;
     const dedicatedIdentity = (fixedGrantKind ?? grantKind) === "agent";
     const installState = !dedicatedIdentity && installChoice === "all"
       ? { onAll: true, agentIds: new Set<string>() }

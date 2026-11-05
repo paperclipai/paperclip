@@ -343,7 +343,7 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 
     expect(
       document.querySelector('[data-testid="requested-agent"]')?.textContent,
-    ).toBe("agent-requesting");
+    ).toBe("");
     expect(
       document.querySelector('[data-testid="existing-count"]')?.textContent,
     ).toBe("2");

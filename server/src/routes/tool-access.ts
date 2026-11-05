@@ -287,6 +287,7 @@ export function toolAccessRoutes(
     if (loaded.interaction.status !== "pending") return loaded.interaction;
     const interaction = input.outcome === "connected" && input.connectionId
       ? await connectionIntents.complete(input.interactionId, input.connectionId, input.userId, {
+          oauthCompletion: true,
           canManageOrganizationGrant: input.canManageOrganizationGrant,
           bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
         })

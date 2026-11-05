@@ -16,7 +16,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "board-user", settled: true, failed: false }), resolveAccountUserId: async () => "board-user" }));
 
 const intentSetupMock = vi.hoisted(() => vi.fn());
-vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: { setupOptions: intentSetupMock } }));
+const intentPhaseMock = vi.hoisted(() => vi.fn().mockResolvedValue({}));
+vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: { setupOptions: intentSetupMock, setPhase: intentPhaseMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
@@ -588,6 +589,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp"));
     await act(async () => buttonByText(connectLabel)!.click());
     await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(connection.id, { asCurrentUser: true, interactionId: "intent-inline" }));
+    expect(intentPhaseMock).toHaveBeenCalledWith("intent-inline", "authorizing", {
+      connectionId: connection.id, access: { agentIds: ["agent-1"] },
+    });
+    expect(intentPhaseMock.mock.invocationCallOrder[0]).toBeLessThan(startOAuthMock.mock.invocationCallOrder[0]);
     expect(popup.location.assign).toHaveBeenCalled();
     expect(popup.opener).toBe(window);
     popup.closed = true;

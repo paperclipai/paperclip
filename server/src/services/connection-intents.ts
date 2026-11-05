@@ -812,7 +812,6 @@ export function connectionIntentService(db: Db) {
         const installed = effective.installedConnections.some(item => item.id === connection.id);
         const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
         if (missing && tools.length && tools.every(tool => Boolean(tool))) {
-          if (tools.length > 20) throw unprocessable("Specify the tools needed for this task (up to 20)");
           accessRequest = {
             connectionId: connection.id, connectionName: connection.name,
             tools: tools.map(tool => ({ catalogEntryId: tool!.id, toolName: tool!.toolName, versionHash: tool!.versionHash,
@@ -1059,6 +1058,8 @@ export function connectionIntentService(db: Db) {
       canManageOrganizationGrant?: boolean;
       bypassCurrentMembershipCheck?: boolean;
       validatedAdoption?: { agentUpdatedAt: Date; binding: AiConnectionBinding };
+      /** Only the verified OAuth callback applies a saved draft audience. */
+      oauthCompletion?: boolean;
     } = {},
   ) {
     const loaded = await loadIntent(interactionId);
@@ -1093,6 +1094,14 @@ export function connectionIntentService(db: Db) {
       if (current.status !== "pending") {
         if (current.status === "accepted" && current.result?.connectionId === connectionId) return current;
         throw conflict("Connection intent is already resolved");
+      }
+      const selectedSetup = connectionIntentPayloadSchema.parse(current.payload).setupAccess;
+      const setupAccess = options.oauthCompletion && selectedSetup?.connectionId === connectionId ? selectedSetup.access : undefined;
+      if (setupAccess && !options.canManageOrganizationGrant && (
+        setupAccess === "all_agents" || setupAccess.agentIds.some(id => id !== payload.requestingAgentId)
+      )) throw forbidden("Sharing a connection with other agents requires connection-management authority");
+      if (setupAccess && setupAccess !== "all_agents" && !setupAccess.agentIds.includes(payload.requestingAgentId)) {
+        throw conflict("Select the requesting agent or all agents to continue this task");
       }
       if (payload.accessRequest && (payload.accessRequest.connectionId !== connectionId || !options.canManageOrganizationGrant)) {
         if (payload.accessRequest.connectionId !== connectionId) throw conflict("Use the connection named in this access request");
@@ -1180,16 +1189,18 @@ export function connectionIntentService(db: Db) {
       const pendingPersonalGrant = grants.find((grant) =>
         grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
       );
-      if (!payload.accessRequest && selectedConnection.authKind === "oauth" && pendingPersonalGrant) {
+      const sharedSetup = Boolean(setupAccess && selectedConnection.credentialPolicy === "shared");
+      if (!payload.accessRequest && selectedConnection.authKind === "oauth" && (pendingPersonalGrant || sharedSetup)) {
         // txAccess is bound to the outer transaction. Its internal transactions
         // become savepoints, so activation, credential bindings, and the
         // requesting agent's access roll back with any later failure.
         await txAccess.finalizeOAuthAccess(
           loaded.issue.companyId,
           selectedConnection.id,
-          { grantKind: "user" },
+          { grantKind: sharedSetup ? "organization" : "user" },
           { actorType: "user", actorId: userId },
           payload.requestingAgentId,
+          setupAccess,
         );
         selectedConnection = await txAccess.getConnection(
           selectedConnection.id,
@@ -1229,7 +1240,7 @@ export function connectionIntentService(db: Db) {
       );
       const requestedInstall = { targetType: "agent" as const, targetId: payload.requestingAgentId };
       const additiveInstalls = installs.some((install) =>
-        install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId
+        install.targetType === "company" || (install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId)
       ) ? installs : [...installs, requestedInstall];
       await txAccess.putConnectionInstalls(selectedConnection.id, { installs: additiveInstalls }, {
         actorType: "user",
@@ -1327,7 +1338,11 @@ export function connectionIntentService(db: Db) {
       interactionId: string,
       phase: "requested" | "authorizing" | "needs_retry",
       userId: string,
-      options: { bypassCurrentMembershipCheck?: boolean } = {},
+      options: {
+        bypassCurrentMembershipCheck?: boolean;
+        canManageOrganizationGrant?: boolean;
+        setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"];
+      } = {},
     ) => {
       const loaded = await loadIntent(interactionId);
       if (loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can update this request");
@@ -1336,7 +1351,18 @@ export function connectionIntentService(db: Db) {
         userId,
         options.bypassCurrentMembershipCheck,
       );
-      return interactions.updateConnectionIntentPhase(loaded.issue, interactionId, phase, { userId });
+      const setupAccess = connectionIntentPayloadSchema.shape.setupAccess.parse(options.setupAccess);
+      if (setupAccess) {
+        if (loaded.interaction.payload.purpose || loaded.interaction.payload.accessRequest) {
+          throw unprocessable("Only tool connection setup can select a new audience");
+        }
+        await access.getConnection(setupAccess.connectionId, loaded.issue.companyId);
+        if (!options.canManageOrganizationGrant && (setupAccess.access === "all_agents"
+          || setupAccess.access.agentIds.some(id => id !== loaded.interaction.payload.requestingAgentId))) {
+          throw forbidden("Sharing a connection with other agents requires connection-management authority");
+        }
+      }
+      return interactions.updateConnectionIntentPhase(loaded.issue, interactionId, phase, { userId }, setupAccess);
     },
   };
 }

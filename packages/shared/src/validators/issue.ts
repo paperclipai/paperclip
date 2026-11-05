@@ -1197,6 +1197,10 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    setupAccess: z.object({
+      connectionId: z.string().guid(),
+      access: z.union([z.literal("all_agents"), z.object({ agentIds: z.array(z.string().guid()).max(250) }).strict()]),
+    }).strict().optional(),
     savedSetup: z.object({ endpointId: z.string().guid(), connectionId: z.string().guid(), action: z.enum(["enter_credentials", "rotate_credentials", "confirm_identity"]).optional(), credentialRotation: z.object({ previousId: z.string().guid().nullable() }).strict().optional(), credentialEntry: z.object({
       previousGenerations: z.record(z.string().refine(field => ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"].includes(field)), z.string().uuid().nullable()).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 5),
       requireAll: z.boolean(),
@@ -1210,7 +1214,7 @@ export const connectionIntentPayloadSchema = z
         toolName: z.string().trim().min(1).max(160),
         versionHash: z.string().min(1).max(256),
         permission: z.enum(["allowed", "ask_first"]),
-      }).strict()).min(1).max(20).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
+      }).strict()).min(1).max(500).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
     }).strict().optional(),
     upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
     purpose: z.enum(["ai", "channel"]).optional(),

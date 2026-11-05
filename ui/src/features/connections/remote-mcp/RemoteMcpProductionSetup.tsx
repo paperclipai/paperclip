@@ -227,13 +227,17 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         try { sessionStorage.setItem(intentDraftKey, result.connectionId); } catch { /* Storage may be disabled. */ }
       }
       // Persist the Access step before leaving for OAuth. Reconnect retains its existing installs.
-      if (!requestedAgentId && (!prior || prior.status === "draft")) {
+      if (!interactionId && !requestedAgentId && (!prior || prior.status === "draft")) {
         await toolsApi.putConnectionInstalls(result.connectionId, state.allAgents
           ? [{ targetType: "company", targetId: selectedCompanyId }]
           : state.agentIds.map((targetId) => ({ targetType: "agent", targetId })));
       }
       if (saveDraft) { if (onCancel) onCancel(); else navigate("/apps"); return; }
       if (result.auth?.kind === "oauth") {
+        if (interactionId) await connectionIntentsApi.setPhase(interactionId, "authorizing", {
+          connectionId: result.connectionId,
+          access: state.allAgents ? "all_agents" : { agentIds: state.agentIds },
+        });
         onPhaseChange?.("authorizing");
         const oauth = await toolsApi.startOAuth(result.connectionId, { asCurrentUser: result.connection.credentialPolicy === "per_user", ...(interactionId ? { interactionId } : {}) });
         const target = resolveAuthorizationTarget(oauth.authorizationUrl);
