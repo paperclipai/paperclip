@@ -12705,7 +12705,7 @@ export function issueRoutes(
       // tasks keep the requested parent, as on the /children route.
       const parentDepthPolicy: IssueParentDepthPolicy =
         req.actor.type === "board" ||
-        (Boolean(effectiveParentId) && (await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none")
+        (Boolean(effectiveParentId) && (await resolveTaskWatchdogMutationScope(db, req.actor)).kind === "watchdog")
           ? "allow_nested"
           : "flatten";
       const parentPlacement = await resolveRouteParentPlacement(
@@ -13242,7 +13242,7 @@ export function issueRoutes(
       const childParentDepthPolicy: IssueParentDepthPolicy =
         req.actor.type === "board" ||
         childSerializationContext ||
-        (await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none"
+        (await resolveTaskWatchdogMutationScope(db, req.actor)).kind === "watchdog"
           ? "allow_nested"
           : "flatten";
       const childPlacement = await resolveRouteParentPlacement(

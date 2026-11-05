@@ -1383,7 +1383,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("places create_task beside a child task, except for watchdog-scoped runs", async () => {
     const rootId = randomUUID();
     await db.insert(issues).values({ id: rootId, companyId, title: "Depth root", status: "todo", workMode: "standard" });
-    async function childRun(watchdog: boolean) {
+    async function childRun(watchdog: boolean, watchdogStatus = "active") {
       const childId = randomUUID();
       const childRunId = randomUUID();
       await db.insert(issues).values({
@@ -1396,11 +1396,11 @@ describe("PaperclipRunnerToolAuthority", () => {
         contextSnapshot: watchdog ? { issueId: childId, taskWatchdog: { watchedIssueId: childId } } : { issueId: childId },
       });
       await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, childId));
-      if (watchdog) await db.insert(issueWatchdogs).values({ companyId, issueId: childId, watchdogAgentId: agentId, status: "active" });
+      if (watchdog) await db.insert(issueWatchdogs).values({ companyId, issueId: childId, watchdogAgentId: agentId, status: watchdogStatus });
       const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: childId, runId: childRunId, workMode: "standard" });
       const created = await authority.execute({
         tool: "create_task",
-        callId: `depth-${watchdog ? "watchdog" : "ordinary"}`,
+        callId: `depth-${childId}`,
         arguments: { idempotencyKey: `depth-${childId}`, title: "Follow-up from the child", status: "backlog" },
       }) as { task: { id: string; parentId: string | null } };
       const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
@@ -1411,6 +1411,9 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(ordinary).toMatchObject({ parentId: rootId, originIssueId: ordinary.childId });
     const watchdog = await childRun(true);
     expect(watchdog).toMatchObject({ parentId: watchdog.childId, originIssueId: watchdog.childId });
+    // A disabled watchdog no longer earns the exception.
+    const disabled = await childRun(true, "disabled");
+    expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {

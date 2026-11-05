@@ -1788,11 +1788,12 @@ export class PaperclipRunnerToolAuthority {
         assigneeUserId,
         blockedByIssueIds,
         blockParentUntilDone: false,
-        // Watchdog runs are authorized for the watched subtree; keep their tasks
-        // under the requested parent instead of the agent depth placement.
+        // Active watchdog runs are authorized for the watched subtree; keep their
+        // tasks under the requested parent. A disabled (invalid) watchdog scope
+        // gets the ordinary agent depth limit.
         parentDepthPolicy: (await resolveTaskWatchdogMutationScope(tx as unknown as Db, {
           type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
-        })).kind === "none" ? "flatten" as const : "allow_nested" as const,
+        })).kind === "watchdog" ? "allow_nested" as const : "flatten" as const,
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,
