@@ -22,11 +22,11 @@ it.skipIf(!prewireRequested)('the actual Vitest worker is preloaded with its own
   expect(observed.unexpectedAttempts).toEqual([]);
   console.info(JSON.stringify({ actualVitestWorkerGuard: observed }));
 });
-function child(code: string, extra: Record<string, string> = {}) {
+function child(code: string, extra: Record<string, string> = {}, nodeArgs: string[] = []) {
   const root = mkdtempSync(path.join(tmpdir(), 'skill-prewire-'));
   const log = path.join(root, 'guard.jsonl');
   try {
-    const result = spawnSync(process.execPath, ['--require', guard, '-e', code], { timeout: 5_000, encoding: 'utf8',
+    const result = spawnSync(process.execPath, ['--require', guard, ...nodeArgs, '-e', code], { timeout: 5_000, encoding: 'utf8',
       env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: root, NODE_OPTIONS: '', PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG: log, ...extra } });
     const events = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     return { result, events };
@@ -100,4 +100,90 @@ it.each([{},
   const result = spawnSync(process.execPath, [launcher], { timeout: 5_000, encoding: 'utf8', env: { PATH: process.env.PATH, NODE_OPTIONS: '', ...settings } });
   expect(result.error).toBeUndefined(); expect(result.status).toBe(1);
   expect(result.stderr).toMatch(/test database|loopback|distinct/); expect(result.stdout).not.toContain('RUN');
+});
+
+it('permits approved HTTP options with a request path and default port through an owned agent', () => {
+  const { result } = child(`const http=require('node:http'),net=require('node:net');
+    const state=globalThis[Symbol.for('paperclip.skill.default-cadence.prewire')];let agentCalls=0;
+    const server=http.createServer((req,res)=>res.end('approved options response'));
+    server.listen(0,'127.0.0.1',()=>{
+      state.allowOrigin('http://127.0.0.1');
+      const agent=new http.Agent();agent.createConnection=()=>{agentCalls++;return net.connect(server.address().port,'127.0.0.1');};
+      http.get({host:'127.0.0.1',path:'/useful',agent},res=>{let body='';res.on('data',chunk=>body+=chunk);
+        res.on('end',()=>{agent.destroy();server.close(()=>console.log(JSON.stringify({...state.stats(),body,agentCalls})));});});
+    });`);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout.trim())).toMatchObject({ body: 'approved options response', agentCalls: 1, unexpectedAttempts: [] });
+});
+it.each([
+  ['unknown.example.invalid', 'offhost unknown.example.invalid'],
+  ['127.0.0.1', 'unowned loopback 127.0.0.1:80'],
+])('rejects an unknown HTTP options origin before agent work: %s', (host, reason) => {
+  const { result } = child(`const http=require('node:http');let agentCalls=0;const agent=new http.Agent();
+    agent.createConnection=()=>{agentCalls++;throw Error('Agent must not run');};
+    try{http.get({host:${JSON.stringify(host)},path:'/',agent});}catch{}
+    console.log(JSON.stringify({...${stats},agentCalls}));`);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(98);
+  expect(JSON.parse(result.stdout.trim())).toMatchObject({ agentCalls: 0, unexpectedAttempts: [reason] });
+});
+it('joins an admitted deferred wake and closes its real child listener before bridge close returns', () => {
+  const bridgeSource = process.env.PAPERCLIP_SKILL_BRIDGE_CONTROL_SOURCE
+    ?? fileURLToPath(new URL('./helpers/maintenance/default-cadence-bridge.ts', import.meta.url));
+  const networkSource = fileURLToPath(new URL('./helpers/maintenance/default-cadence-network.ts', import.meta.url));
+  const loader = fileURLToPath(new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url));
+  const { result, events } = child(String.raw`(async()=>{
+    const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+    const {fork}=require('node:child_process'),{pathToFileURL}=require('node:url');
+    const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-close-')),app=path.join(root,'app');
+    const helpers=path.join(app,'server/src/__tests__/helpers/maintenance');fs.mkdirSync(helpers,{recursive:true});
+    fs.writeFileSync(path.join(app,'package.json'),JSON.stringify({type:'module'}));
+    const source=path.join(helpers,'default-cadence-bridge.ts');fs.copyFileSync(process.env.BRIDGE_SOURCE,source);
+    fs.copyFileSync(process.env.NETWORK_SOURCE,path.join(helpers,'default-cadence-network.ts'));
+    const preload=path.join(app,'scripts/fixtures/skill-default-cadence-network-guard.cjs');fs.mkdirSync(path.dirname(preload),{recursive:true});fs.copyFileSync(process.env.GUARD_SOURCE,preload);
+    const checkout=path.join(root,'cloud'),entry=path.join(checkout,'dist/sleep/fixtures/default-cadence-bridge.js');fs.mkdirSync(path.dirname(entry),{recursive:true});
+    fs.writeFileSync(entry,[
+      "process.on('message',message=>{if(message.method==='trigger'){process.send({callbackId:'wake',physical:'wake'},()=>process.exit(0));}else if(message.method==='close'){process.send({id:message.id,result:true});}});",
+      "process.send({ready:true,pid:process.pid,defaultCadenceGuard:globalThis[Symbol.for('paperclip.skill.default-cadence.prewire')].stats()});"
+    ].join('\n'));
+    const physicalFile=path.join(root,'physical-app.cjs');fs.writeFileSync(physicalFile,[
+      "const http=require('node:http');const server=http.createServer((req,res)=>res.end('late real child'));",
+      "server.listen(0,'127.0.0.1',()=>process.send({origin:'http://127.0.0.1:'+server.address().port}));",
+      "process.on('message',message=>{if(message.stop)server.close(()=>process.disconnect());});"
+    ].join('\n'));
+    let release,start,finish,physical,physicalExit,origin,body,stops=0;
+    const released=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{start=resolve;}),finished=new Promise(resolve=>{finish=resolve;});
+    const state=globalThis[Symbol.for('paperclip.skill.default-cadence.prewire')];
+    const stop=async()=>{stops++;if(physical&&physical.exitCode===null){
+      if(physical.connected)physical.send({stop:true});else physical.kill('SIGTERM');
+      await Promise.race([physicalExit,delay(1000).then(async()=>{if(physical.exitCode===null)physical.kill('SIGKILL');await physicalExit;})]);
+    }};
+    const {startDefaultCadenceBridge}=await import(pathToFileURL(source).href);let bridge;
+    try{
+      bridge=await startDefaultCadenceBridge({checkout,node:process.execPath,physicalStop:stop,physicalWake:async()=>{
+        start();await released;
+        physical=fork(physicalFile,[],{execArgv:['--require',preload],env:process.env,stdio:['ignore','ignore','pipe','ipc']});
+        physicalExit=new Promise(resolve=>physical.once('exit',resolve));
+        origin=await new Promise((resolve,reject)=>{physical.once('message',message=>resolve(message.origin));physical.once('error',reject);});
+        state.allowOrigin(origin);body=await(await fetch(origin)).text();finish();return{origin};
+      }});
+      const trigger=bridge.rpc('trigger').then(()=>null,error=>String(error));await started;await trigger;
+      const closing=bridge.close().then(()=>({ok:true}),error=>({ok:false,error:String(error)}));
+      const closedEarly=await Promise.race([closing.then(()=>true),delay(40).then(()=>false)]);
+      release();await finished;const closed=await closing;
+      let reachable=false;try{reachable=(await fetch(origin)).ok;}catch{}
+      console.log(JSON.stringify({...state.stats(),body,closedEarly,closed,reachable,stops,physicalPid:physical.pid,physicalExitCode:physical.exitCode}));
+      assert.equal(body,'late real child');assert.equal(reachable,false,'Late child listener remained reachable after bridge.close');
+      assert.equal(physical.exitCode,0);assert.equal(stops,1);assert.equal(closedEarly,false);assert.equal(closed.ok,true);
+    }finally{
+      release();if(physical&&physical.exitCode===null)await stop();fs.rmSync(root,{recursive:true,force:true});
+    }
+  })().catch(error=>{console.error(error.stack);process.exitCode=1;});`, {
+    BRIDGE_SOURCE: bridgeSource, NETWORK_SOURCE: networkSource, GUARD_SOURCE: guard,
+  }, ['--import', loader]);
+  const diagnostics = JSON.stringify({ stdout: result.stdout, stderr: result.stderr, events });
+  expect(result.error, diagnostics).toBeUndefined(); expect(result.status, diagnostics).toBe(0);
+  expect(JSON.parse(result.stdout.trim().split('\n').at(-1)!)).toMatchObject({
+    body: 'late real child', closedEarly: false, closed: { ok: true }, reachable: false, stops: 1, physicalExitCode: 0, unexpectedAttempts: [],
+  });
 });

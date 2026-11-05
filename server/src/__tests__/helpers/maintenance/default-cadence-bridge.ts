@@ -17,6 +17,9 @@ export async function startDefaultCadenceBridge(options: {
   child.stdout?.on('data', bytes => { output += String(bytes); });
   child.stderr?.on('data', bytes => { output += String(bytes); });
   const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+  const physicalWork = new Set<Promise<void>>();
+  const physicalCleanupFailures: unknown[] = [];
+  let closing = false;
   let readyResolve!: () => void, readyReject!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   child.on('message', (message: any) => {
@@ -28,9 +31,21 @@ export async function startDefaultCadenceBridge(options: {
       readyResolve(); return;
     }
     if (message.callbackId) {
+      if (closing) {
+        if (child.connected) child.send({ callbackId: message.callbackId, error: 'Default cadence bridge is closing' });
+        return;
+      }
       const operation = message.physical === 'stop' ? options.physicalStop() : options.physicalWake();
-      void operation.then(result => child.send({ callbackId: message.callbackId, result }), error =>
-        child.send({ callbackId: message.callbackId, error: error instanceof Error ? error.stack : String(error) }));
+      const handled = operation.then(async result => {
+        if (closing && message.physical === 'wake') await options.physicalStop();
+        if (child.connected) child.send({ callbackId: message.callbackId, result });
+      }, error => {
+        if (child.connected) child.send({ callbackId: message.callbackId, error: error instanceof Error ? error.stack : String(error) });
+      });
+      physicalWork.add(handled);
+      void handled.then(() => physicalWork.delete(handled), error => {
+        physicalWork.delete(handled); physicalCleanupFailures.push(error);
+      });
       return;
     }
     const request = pending.get(message.id); pending.delete(message.id);
@@ -51,14 +66,24 @@ export async function startDefaultCadenceBridge(options: {
     finally { abort.abort(); }
   }
   try { await bounded(ready, 15_000); } catch (error) { child.kill("SIGKILL"); await exited; throw error; }
-  async function rpc<T = any>(method: string, input?: unknown): Promise<T> {
+  async function rpc<T = any>(method: string, input?: unknown, budgetMs = 210_000): Promise<T> {
     const requestId = ++id;
     const response = new Promise<T>((resolve, reject) => pending.set(requestId, { resolve, reject }));
     child.send({ id: requestId, method, input });
-    try { return await bounded(response, 210_000); } finally { pending.delete(requestId); }
+    try { return await bounded(response, budgetMs); } finally { pending.delete(requestId); }
   }
-  return { rpc, pid: child.pid, get output() { return output; }, async close() {
-    try { if (child.exitCode === null && child.connected) { await rpc('close'); console.info(`[default-cadence-bridge] close acknowledged pid=${child.pid}`); } }
-    finally { console.info(`[default-cadence-bridge] disconnect pid=${child.pid} exit=${child.exitCode} signal=${child.signalCode}`); child.disconnect(); await bounded(exited, 10_000).catch(async error => { child.kill('SIGKILL'); await exited; throw error; }); }
+  return { rpc: <T = any>(method: string, input?: unknown) => rpc<T>(method, input), pid: child.pid, get output() { return output; }, async close() {
+    closing = true;
+    const deadline = performance.now() + 210_000;
+    const remaining = () => Math.max(0, deadline - performance.now());
+    try {
+      await bounded(Promise.all([...physicalWork]), remaining());
+      if (physicalCleanupFailures.length) throw new AggregateError(physicalCleanupFailures, 'Physical callback cleanup failed');
+      if (child.exitCode === null && child.connected) { await rpc('close', undefined, remaining()); console.info(`[default-cadence-bridge] close acknowledged pid=${child.pid}`); }
+    } finally {
+      console.info(`[default-cadence-bridge] disconnect pid=${child.pid} exit=${child.exitCode} signal=${child.signalCode}`);
+      if (child.connected) child.disconnect();
+      await bounded(exited, 10_000).catch(async error => { child.kill('SIGKILL'); await exited; throw error; });
+    }
   } };
 }

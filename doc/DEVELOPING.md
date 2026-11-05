@@ -4494,7 +4494,7 @@ export PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG="$SKILL_SLEEP_RESULTS/controls-
 "$NODE24" scripts/test-skill-default-cadence.mjs --controls
 ```
 
-This PG0 lane runs 40 controls. It explicitly defers the single real-PostgreSQL
+This PG0 lane runs 44 controls. It explicitly defers the single real-PostgreSQL
 observer case before its support probe. It requires the actual worker's preloaded
 guard marker and matching receipt. Ordinary Vitest runs keep all subprocess
 controls and defer only that launcher-specific parent assertion. An explicit

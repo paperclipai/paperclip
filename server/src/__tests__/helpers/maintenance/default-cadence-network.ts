@@ -10,4 +10,3 @@ function current(): GuardState {
 export function installDefaultCadenceNetwork() { current(); }
 export function defaultCadenceNetwork() { const stats = current().stats(); return { ...stats, offhostAttempts: stats.unexpectedAttempts }; }
 export function allowDefaultCadenceOrigin(origin: string) { current().allowOrigin(origin); }
-export function allowDefaultCadenceDatabase(url: string) { current().allowDatabase(url); }

@@ -33,8 +33,8 @@ function check(host = 'localhost', port, protocol) {
   if (protocol && !['http:', 'https:'].includes(protocol)) deny(`protocol ${protocol}`);
   if (!port || !endpoints.has(`${host}:${port}`) && !listeners.has(Number(port))) deny(`unowned loopback ${host}:${port}`);
 }
-function checkArgs(args) {
-  if (Array.isArray(args[0])) return checkArgs(args[0]);
+function checkArgs(args, httpProtocol) {
+  if (Array.isArray(args[0])) return checkArgs(args[0], httpProtocol);
   const first = args[0];
   if (first instanceof URL || typeof first === 'string' && /^https?:/.test(first)) {
     const url = first instanceof URL ? first : new URL(first); check(url.hostname, url.port || (url.protocol === 'https:' ? 443 : 80), url.protocol);
@@ -42,8 +42,9 @@ function checkArgs(args) {
       const override = args[1]; if (override.hostname || override.host) check(override.hostname || override.host, override.port || url.port || (url.protocol === 'https:' ? 443 : 80), override.protocol || url.protocol);
     }
   } else if (first && typeof first === 'object') {
-    if (first.path && !first.port) deny('unowned Unix socket');
-    check(first.hostname || first.host, first.port, first.protocol);
+    if (first.socketPath || !httpProtocol && first.path && !first.port) deny('unowned Unix socket');
+    const port = first.port || (httpProtocol === 'https:' ? 443 : httpProtocol === 'http:' ? 80 : undefined);
+    check(first.hostname || first.host, port, first.protocol || httpProtocol);
   } else if (typeof first === 'number') check(typeof args[1] === 'string' ? args[1] : undefined, first);
   else deny('unknown connection arguments');
 }
@@ -55,7 +56,7 @@ net.Server.prototype.listen = function(...args) {
   return Reflect.apply(listen, this, args);
 };
 for (const module of [http, https]) for (const name of ['request', 'get']) {
-  const original = module[name]; module[name] = function(...args) { checkArgs(args); return Reflect.apply(original, this, args); };
+  const original = module[name]; module[name] = function(...args) { checkArgs(args, module === https ? 'https:' : 'http:'); return Reflect.apply(original, this, args); };
 }
 for (const module of [dns, dns.promises]) for (const name of ['lookup', 'resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTxt', 'reverse']) if (typeof module[name] === 'function') {
   const original = module[name]; module[name] = function(...args) { local(args[0]); if (name !== 'lookup') deny(`unowned DNS ${name}`); return Reflect.apply(original, this, args); };

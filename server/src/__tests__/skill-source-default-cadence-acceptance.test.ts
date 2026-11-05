@@ -118,6 +118,7 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
           expect(originalD - new Date(source.last_success_at).getTime()).toBeLessThan(300_050);
           expect(source.automatic_updates && source.enabled).toBe(true);
           expect(source.lease_token).toBeNull();
+          const refreshRequestStart = requests.length;
           const sleep = await bridge.rpc('sleep');
           expect(server).toBeUndefined();
           expect(new Date(sleep.alarm.next_wake_at).getTime()).toBe(originalD);
@@ -147,9 +148,13 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
           await expect.poll(async () => (await persisted()).markdown, { timeout: 30_000 }).toContain(`Persisted useful revision ${cycle + 1}.`);
           const changed = await persisted();
           expect(changed.current_version_id).not.toBe(priorVersion);
+          expect(new Date(changed.last_success_at).getTime()).toBeGreaterThanOrEqual(originalD);
+          const refreshRequests = requests.slice(refreshRequestStart);
+          expect(refreshRequests.length).toBeGreaterThan(0);
+          expect(Math.min(...refreshRequests.map(request => request.at))).toBeGreaterThanOrEqual(originalD);
           priorVersion = changed.current_version_id;
           await server.settled();
-          cycles.push({ cycle, originalD, wakeAt, sleep, wake, changed, quiet: { snapBefore, snapAfter, queryCount, providerCount } });
+          cycles.push({ cycle, originalD, wakeAt, sleep, wake, changed, refreshRequestStart, refreshRequests, quiet: { snapBefore, snapAfter, queryCount, providerCount } });
           await writeFile(path.join(evidence!, 'two-cycle-receipt.json'), JSON.stringify({ cycles, requests, s3: s3.snapshot(),
             boundary: 'Actual app index/routes/source owner and signed Cloud gate/controller/Postgres alarms; controlled localhost Git/S3/process stop only; no Railway/Neon claim' }, null, 2));
         }
