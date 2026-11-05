@@ -10,6 +10,14 @@ import {
 import type { ManagedInstanceConfig } from "../services/managed-config.js";
 
 describe("instance settings service", () => {
+  it("retains the legacy composer preference through saved and unrelated settings updates", () => {
+    expect(normalizeExperimentalSettings({}).enableLegacyComposerSubmit).toBe(false);
+    const enabled = applyExperimentalSettingsPatch({}, { enableLegacyComposerSubmit: true });
+    const saved = JSON.parse(JSON.stringify(enabled));
+    expect(normalizeExperimentalSettings(saved).enableLegacyComposerSubmit).toBe(true);
+    expect(applyExperimentalSettingsPatch(saved, { enableCases: true }).enableLegacyComposerSubmit).toBe(true);
+    expect(applyExperimentalSettingsPatch(saved, { enableLegacyComposerSubmit: false }).enableLegacyComposerSubmit).toBe(false);
+  });
   it("defaults remote workspace enrollment on while preserving explicit operator choices", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).remoteWorkspaceStorageEnabled).toBe(true);
     expect(INSTANCE_FEATURE_CATALOG.remoteWorkspaceStorageEnabled).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
@@ -118,6 +126,7 @@ describe("instance settings service", () => {
       enableGoogleWorkspaceConnector: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
+      enableLegacyComposerSubmit: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableCases: false,

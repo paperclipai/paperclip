@@ -14,6 +14,7 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { listIssueSummaries } from "../services/issue-summaries.js";
+import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
@@ -8474,16 +8475,26 @@ export function issueRoutes(
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
-    const summaries: IssueSummary[] = visible.map((row) => ({
-      id: row.id,
-      companyId: row.companyId,
-      title: row.title,
-      identifier: row.identifier,
-      status: row.status as IssueSummary["status"],
-      displayStatus: row.displayStatus,
-      updatedAt: row.updatedAt,
-      externalConversationState: row.externalConversationState,
-    }));
+    // Blocked rows carry glyph-only blocker state so every task view resolves
+    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
+      (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
+        .map((row) => row.id),
+    ));
+    const summaries: IssueSummary[] = visible.map((row) => {
+      const attention = blockerAttention.get(row.id);
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        title: row.title,
+        identifier: row.identifier,
+        status: row.status as IssueSummary["status"],
+        displayStatus: row.displayStatus,
+        updatedAt: row.updatedAt,
+        externalConversationState: row.externalConversationState,
+        ...(attention ? { blockerAttention: attention } : {}),
+      };
+    });
     res.setHeader("Cache-Control", "private, no-store");
     res.json(summaries);
   });

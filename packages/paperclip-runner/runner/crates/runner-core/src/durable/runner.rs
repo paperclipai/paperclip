@@ -306,6 +306,11 @@ pub enum TerminalDeliveryReconciliation {
 }
 
 pub trait CommandExecutor {
+    /// Prove the existing provider is idle without restoring or starting it.
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {

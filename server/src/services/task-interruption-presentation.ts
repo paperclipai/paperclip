@@ -115,9 +115,13 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const recoveryRunning = system?.state === "running" && typeof activeObservation === "number"
     && activeObservation > now - 45_000;
   const recoveryScheduled = Boolean(system?.nextAttemptAt && system.nextAttemptAt > now);
+  const preparationDeadline = retryWait?.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
+  // A pending Retry preparation is already a Retry; never offer another one.
+  const preparationPending = retryWait?.sourceRunId === run.id && Boolean(retryWait.preparationStatus)
+    && ["issued", "processing"].includes(retryWait.preparationStatus!) && Number.isFinite(preparationDeadline);
   if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
-    const deadline = retryWait.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
-    const pending = ["issued", "processing"].includes(retryWait.preparationStatus) && Number.isFinite(deadline);
+    const deadline = preparationDeadline;
+    const pending = preparationPending;
     // Saved-work recovery gates a pending preparation, so it names the wait.
     // Failed or cancelled preparation stays authoritative.
     if (pending && !recoveryRunning && !recoveryScheduled)
@@ -126,7 +130,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: true,
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending,
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {

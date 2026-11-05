@@ -1134,11 +1134,12 @@ untyped capacity text, and Codex CLI transient upstream failures remain reportab
 The run keeps its failed state and its terminal diagnostic.
 
 A native Codex model capacity failure stays local only while its automatic
-retry owns recovery. The run must carry `native_provider_overloaded` and the
-closed `codex`/`server_overloaded` diagnostic. The proof of the retry is the
-`native_provider_overloaded` successor run for the same task, which only the
-committed capacity status decision creates. The run's own finalization fields
-are not required: a late terminal write can replace them with an earlier result.
+retry owns recovery. The run must carry `native_provider_overloaded`. The proof
+of the retry is the `native_provider_overloaded` successor run for the same
+task, which only the committed capacity status decision creates, and only for
+the typed `codex`/`server_overloaded` diagnostic. The run's own `resultJson` is
+not required: the live heartbeat's failed-status write replaces it with the
+adapter's copy, which lacks the finalizer's diagnostic and finalization fields.
 Exhausted or held capacity failures, other retry lanes, setup failures, signals,
 and unreadable retry evidence remain reportable. A failed retry reports its own
 outcome.

@@ -998,16 +998,17 @@ describe("nativeRunEventsToTranscript", () => {
 
   it("leaves families owned by other surfaces on the generic activity path", () => {
     expect(nativeRunEventsToTranscript([
-      event(1, "hook.completed", {
-        schema: "paperclip.hook.v1",
-        hookId: "hook-1",
-        event: "PreToolUse",
-        status: "completed",
-        summary: "lint hook",
+      event(1, "memory.citation.referenced", {
+        schema: "paperclip.memory.citation.v1",
+        citationId: "citation-1",
+        messageItemId: "message-1",
+        label: "Decision log",
+        available: false,
+        reference: null,
       }),
     ])).toEqual([
-      expect.objectContaining({ kind: "tool_call", toolUseId: "hook:hook-1" }),
-      expect.objectContaining({ kind: "tool_result", toolUseId: "hook:hook-1" }),
+      expect.objectContaining({ kind: "tool_call", toolUseId: "memory:citation-1" }),
+      expect.objectContaining({ kind: "tool_result", toolUseId: "memory:citation-1" }),
     ]);
   });
 
@@ -1186,5 +1187,136 @@ describe("nativeRunEventsToTranscript", () => {
         reportedWorkDisposition: "done",
       }),
     ])).toEqual([]);
+  });
+});
+
+describe("tool execution facts", () => {
+  const tool = (seq: number, eventType: string, fields: Record<string, unknown>) =>
+    event(seq, eventType, {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "toolu_bash",
+      transport: "builtin",
+      operation: "execute",
+      name: "Bash",
+      target: null,
+      status: "running",
+      durationMs: null,
+      exitCode: null,
+      output: null,
+      outputBytes: 0,
+      outputTruncated: false,
+      outputDigest: null,
+      ...fields,
+    });
+
+  it("carries the refined command, exit code, duration and refusal into the task-chat row", () => {
+    const transcript = nativeRunEventsToTranscript([
+      tool(1, "tool.execution.started", { name: "Terminal" }),
+      tool(2, "tool.execution.progressed", { subject: "node --test", description: "Run the unit tests" }),
+      tool(3, "tool.execution.completed", {
+        subject: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+        output: "not ok 2", outputBytes: 8,
+      }),
+      event(4, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "toolu_rm", transport: "builtin", operation: "execute",
+        name: "Bash", target: null, status: "failed", durationMs: 3, exitCode: null, subject: "rm -rf build",
+        blockedReason: "Denied by rule", output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "exec-read", transport: "process", operation: "read",
+        name: "/bin/zsh -lc 'cat src/db.ts'", target: "src/db.ts", subject: "cat src/db.ts", status: "completed",
+        durationMs: 19, exitCode: 0, output: "", outputBytes: 0, outputTruncated: false, outputDigest: null,
+      }),
+    ]);
+    const tools = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false }).filter((item) => item.kind === "tool");
+    expect(tools).toEqual([
+      expect.objectContaining({
+        rawName: "Bash", target: "node --test", description: "Run the unit tests", status: "failed", exitCode: 1, durationMs: 1840,
+      }),
+      expect.objectContaining({ rawName: "Bash", target: "rm -rf build", blockedReason: "Denied by rule" }),
+      expect.objectContaining({ rawName: "Read", operation: "read", target: "src/db.ts", exitCode: 0, durationMs: 19 }),
+    ]);
+  });
+});
+
+describe("edit diffs", () => {
+  const execution = (status: string, fileChanges?: unknown[]) => ({
+    schema: "paperclip.tool.execution.v1",
+    executionId: "edit-1",
+    transport: "builtin",
+    operation: "edit",
+    name: "Edit",
+    target: null,
+    status,
+    output: "",
+    outputBytes: 0,
+    outputTruncated: false,
+    outputDigest: null,
+    ...(fileChanges ? { fileChanges } : {}),
+  });
+  const change = (diff: string, additions: number, deletions: number) => ({
+    path: "src/price.js",
+    operation: "modify",
+    previousPath: null,
+    additions,
+    deletions,
+    diff,
+    diffTruncated: false,
+  });
+
+  it("attaches the latest patch of an edit call to its row", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+optimistic\n", 1, 1)])),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -3,2 +3,2 @@\n ctx\n-a\n+b\n", 1, 1)])),
+    ]);
+    expect(entries.find((entry) => entry.kind === "tool_call")).toMatchObject({
+      toolUseId: "edit-1",
+      input: { path: "src/price.js" },
+    });
+    expect(entries.filter((entry) => entry.kind === "diff")).toEqual([
+      expect.objectContaining({ changeType: "file_header", text: "src/price.js", toolUseId: "edit-1" }),
+      expect.objectContaining({ changeType: "hunk", text: "@@ -3,2 +3,2 @@" }),
+      expect.objectContaining({ changeType: "context", text: "ctx" }),
+      expect.objectContaining({ changeType: "remove", text: "a" }),
+      expect.objectContaining({ changeType: "add", text: "b" }),
+    ]);
+
+    const [tool] = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(tool).toMatchObject({ kind: "tool", target: "src/price.js", diff: { path: "src/price.js", added: 1, removed: 1 } });
+  });
+
+  it("attaches an edit's patch once when later events refine the call", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
+      event(2, "tool.execution.progressed", { ...execution("running"), subject: "edit price" }),
+      event(3, "tool.execution.completed", { ...execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)]), durationMs: 40 }),
+    ]);
+    expect(entries.filter((entry) => entry.kind === "tool_call").length).toBeGreaterThan(1);
+    expect(entries.filter((entry) => entry.kind === "diff" && entry.changeType === "file_header")).toHaveLength(1);
+  });
+
+  it("projects the harness change set and ends the turn with it", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "workspace.change.updated", {
+        schema: "paperclip.workspace.diff.v1",
+        changeSetId: "turn-1:workspace",
+        revision: 1,
+        source: "harness_reported",
+        complete: false,
+        files: [
+          { path: "a.js", operation: "create", previousPath: null, additions: 2, deletions: 0, binary: false, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" },
+          { path: "huge.js", operation: "modify", previousPath: null, additions: 0, deletions: 0, binary: false, diff: null, diffTruncated: true },
+        ],
+        totals: { files: 1, additions: 2, deletions: 0 },
+        patchArtifactRef: null,
+      }),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
+    ]);
+    const items = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(items.at(-1)).toMatchObject({ surface: "workspace_change", complete: true, totals: { files: 2, additions: 2 } });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files[1]).toMatchObject({ path: "huge.js", diff: null, diffTruncated: true });
+    expect(items.filter((item) => item.kind === "protocol" && item.surface === "workspace_change")).toHaveLength(1);
   });
 });

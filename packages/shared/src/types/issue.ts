@@ -872,6 +872,8 @@ export type IssueSummary = Pick<
   "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "updatedAt"
 > & {
   externalConversationState: "active" | "waiting" | null;
+  /** Present for blocked tasks so summary views resolve the same status glyph as detail views. */
+  blockerAttention?: IssueBlockerAttention;
 };
 
 export interface Issue {

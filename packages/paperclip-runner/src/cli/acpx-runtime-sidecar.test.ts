@@ -1,4 +1,5 @@
 import { bindAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { toolFileChangesFromAcpContent } from "../tool-file-changes.js";
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../drivers/acpx/kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
@@ -17,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -204,9 +206,11 @@ describe("qualified ACPX runtime sidecar", () => {
     const stableIdentity = new Function("createHash", "acpxProfileActivity", "openParams", "initializedAgent", `${stripTypeScriptTypes(source.slice(identityStart, source.indexOf("\nfunction canonicalJson", identityStart)))}; return stableProviderIdentity;`)(createHash, acpxProfileActivity, { agent: "cursor" }, "cursor");
     const boundStart = source.indexOf("function boundRuntimeEventForNormalization(");
     const bound = new Function("boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `${stripTypeScriptTypes(source.slice(boundStart, source.indexOf("\nfunction sanitizeRuntimeEvent", boundStart)))}; return boundRuntimeEventForNormalization;`)(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
       stableIdentity, () => [], null, () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent, () => [],
     );
     const start = source.indexOf("  const { signal } = context;", source.indexOf("async function waitForPermission"));
     const end = source.indexOf("\nasync function waitForInput", start);
@@ -606,6 +610,35 @@ describe("qualified ACPX runtime sidecar", () => {
     projection.settle();
   });
 
+  it("turns Claude status banners into paired provider notices before text projection", () => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const sanitizer = source.slice(source.indexOf("function sanitizeRuntimeEvent"), source.indexOf("function claudeStatusBannerNotice"));
+    // The banner check runs before the text_delta projection.
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeGreaterThan(0);
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeLessThan(sanitizer.indexOf('if (event.type === "text_delta")'));
+    const start = source.indexOf("function claudeStatusBannerNotice");
+    const end = source.indexOf("\nfunction sanitizeRuntimeStatus", start);
+    expect(start).toBeGreaterThan(0);
+    const fn = stripTypeScriptTypes(source.slice(start, end));
+    const make = (agent: string) => new Function("classifyClaudeStatusBanner",
+      `let initializedAgent = ${JSON.stringify(agent)}; let claudeCompactionCount = 0; ${fn} return claudeStatusBannerNotice;`,
+    )(classifyClaudeStatusBanner) as (event: Record<string, unknown>) => Record<string, unknown> | null;
+    const notice = make("claude");
+    const chunk = (text: string, messageId?: string) => ({ type: "text_delta", stream: "output", text, ...(messageId ? { messageId } : {}) });
+    const started = notice(chunk("Compacting..."));
+    const completed = notice(chunk("\n\nCompacting completed."));
+    const next = notice(chunk("Compacting..."));
+    expect(started).toMatchObject({ type: "provider_notice", category: "context_compaction", noticeKey: "compaction-1",
+      details: [{ name: "Phase", value: "running" }] });
+    expect(completed).toMatchObject({ noticeKey: "compaction-1", details: [{ name: "Phase", value: "completed" }] });
+    expect(next).toMatchObject({ noticeKey: "compaction-2" });
+    expect(notice(chunk("**Warning:** Stop hook blocked continuation"))).toMatchObject({
+      type: "provider_notice", category: "provider_informational", severity: "warning", summary: "Stop hook blocked continuation",
+    });
+    expect(notice(chunk("Compacting...", "msg_01"))).toBeNull();
+    expect(notice({ ...chunk("Compacting..."), stream: "thought" })).toBeNull();
+    expect(make("codex")(chunk("Compacting..."))).toBeNull();
+  });
   it("passes only validated Pi native boundaries and history through the real text sanitizer", () => {
     const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
     const start = source.indexOf('  if (event.type === "text_delta") {', source.indexOf("function sanitizeRuntimeEvent"));
@@ -745,6 +778,7 @@ describe("qualified ACPX runtime sidecar", () => {
       .replace("  } as BoundedRuntimeToolEvent;", "  };");
     const bound = new Function(
       "boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `return (${functionSource});`,
     )(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
@@ -752,6 +786,8 @@ describe("qualified ACPX runtime sidecar", () => {
       () => [],
       null,
       () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent,
+      () => ["/work/repo"],
     ) as (event: Record<string, unknown>) => Record<string, unknown>;
     const bounded = bound({
       type: "tool_call", toolCallId: "provider-tool", title: "search", kind: "other",
@@ -763,6 +799,16 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(canonical.payload).toMatchObject({ inputUpdated: true });
     expect(JSON.stringify(canonical.payload)).not.toContain("must not cross");
     expect(source).toContain("? boundedTool.inputUpdated");
+
+    // ACP diff content crosses as bounded, workspace-relative fileChanges.
+    const edit = bound({
+      type: "tool_call", toolCallId: "edit-tool", title: "Edit", kind: "edit", status: "completed",
+      content: [{ type: "diff", path: "/work/repo/a.js", oldText: "a", newText: "b" }],
+    });
+    expect(edit.paperclipFileChanges).toEqual([
+      expect.objectContaining({ path: "a.js", operation: "modify", additions: 1, deletions: 1 }),
+    ]);
+    expect(edit).not.toHaveProperty("content");
   });
 
   it.each(["paperclip_finish", "paperclip_block"])(

@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use paperclip_runner_core::durable::{
     AcpxLaunchProfile, Command, CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig,
-    OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    OpenCodeLaunchProfile, QualifiedLaunchArtifact, PROVIDER_STATE_INCOMPATIBLE,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
@@ -62,6 +62,17 @@ fn credential_observation_allows_fresh_acpx_session_startup() {
 #[test]
 #[cfg(unix)]
 fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
+    exercise_credential_updates(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn hosted_park_refreshes_credentials_without_selecting_a_provider() {
+    exercise_credential_updates(true);
+}
+
+#[cfg(unix)]
+fn exercise_credential_updates(parking: bool) {
     let root = temporary_directory("credential-updates");
     let root = fs::canonicalize(root).unwrap();
     let auth = root.join("auth.json");
@@ -88,16 +99,21 @@ fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
     assert!(executor.poll_events().unwrap().is_empty());
     write_auth("refreshed");
-    let _ = executor.execute(&Command {
-        schema: "paperclip.prp.command.v1".to_owned(),
-        command_id: "close-unselected".to_owned(),
-        controller_seq: 1,
-        command_type: "session.close".to_owned(),
-        issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
-        deadline_at: None,
-        precondition: None,
-        payload: json!({}),
-    });
+    if parking {
+        assert!(!executor.host_park_ready().unwrap());
+    } else {
+        let _ = executor.execute(&Command {
+            schema: "paperclip.prp.command.v1".to_owned(),
+            command_id: "close-unselected".to_owned(),
+            controller_seq: 1,
+            command_type: "session.close".to_owned(),
+            issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
+            deadline_at: None,
+            precondition: None,
+            payload: json!({}),
+        });
+    }
+    assert!(!root.join("codex-provider-state.json").exists());
     let updates = executor.retained_events().unwrap();
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].event_type, "auth.credentials.updated");
@@ -1521,6 +1537,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let original = executor
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(
             3,
@@ -1530,6 +1547,8 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .unwrap();
     let events = executor.poll_events().unwrap();
     executor.acknowledge_events(events.len()).unwrap();
+    // Generic ACPX recovery does not opt this provider into host parking.
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(4, "runner.suspend", json!({})))
         .unwrap();
@@ -1547,6 +1566,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .execute(&command(1, "run.attach", payload))
         .unwrap();
     assert_eq!(resumed.result["status"], "resumed");
+    assert!(!replacement.host_park_ready().unwrap());
     assert_eq!(
         resumed.result["providerSessionId"],
         original.result["providerSessionId"]
@@ -2200,6 +2220,7 @@ fn cursor_cloud_durable_recovery_rejects_a_changed_proxy_profile_without_rewriti
         assert!(error
             .to_string()
             .contains("Cursor Cloud runner launch profile changed across durable recovery"));
+        assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     }
     assert_eq!(fs::read(&state_path).unwrap(), saved);
     fs::remove_dir_all(directory).unwrap();
@@ -2291,6 +2312,7 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     let second_error = recovered
         .execute(&command(
             3,
@@ -2301,6 +2323,10 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(second_error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(
+        second_error.classification(),
+        Some(PROVIDER_STATE_INCOMPATIBLE)
+    );
     assert_eq!(fs::read(&state_path).unwrap(), state_before_recovery);
 
     let shutdown_error = recovered

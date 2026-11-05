@@ -130,6 +130,7 @@ describe("company-members helpers", () => {
       {
         principalId: "user-1",
         status: "active",
+        membershipRole: null,
         user: { id: "user-1", name: "Taylor", email: "taylor@example.com", image: null },
       },
     ];
