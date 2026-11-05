@@ -3157,8 +3157,9 @@ provider; it does not suspend every healthy warm turn.
 A cold continuation can retain the completed receipt from a prior warm handoff.
 Before inspecting that receipt against physical Runner state, the transport
 materializes the admitted external backup. A refused restore or mismatched
-session identity prevents provider startup. Pending handoffs and active warm
-transitions still require their original physical state and ownership checks.
+session identity prevents provider startup. Adoption of a live Runner, pending
+handoffs and active warm transitions still require their original physical state
+and ownership checks without restoring a backup.
 
 A different task can reuse the same physical sandbox after its prior task
 finishes. Provider ingress has one listener per allocation. Before a new logical

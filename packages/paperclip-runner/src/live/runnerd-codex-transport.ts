@@ -5547,7 +5547,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         controlPlaneState.completedWarmTransition !== undefined ||
         hasPendingWarmAttachment)
     ) {
-      if (!hasControlPlaneWarmBoundary && !hasPendingWarmAttachment) {
+      if (!this.options.adoptExistingRunner && !hasControlPlaneWarmBoundary && !hasPendingWarmAttachment) {
         await this.options.prepareExternalRunnerState?.();
       }
       candidateRunnerState = await this.options.readRunnerState();
