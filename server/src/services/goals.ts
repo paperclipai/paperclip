@@ -83,8 +83,6 @@ export function goalService(db: Db) {
         const [existing] = await tx.select({ companyId: goals.companyId }).from(goals)
           .where(eq(goals.id, id)).for("no key update");
         if (!existing) return null;
-        // Plugin RPC bypasses the HTTP validator, so enforce the same PATCH
-        // contract here before reading or persisting its raw fields.
         const parsed = updateGoalSchema.safeParse(data);
         if (!parsed.success) {
           throw unprocessable("Invalid goal update", parsed.error.issues);

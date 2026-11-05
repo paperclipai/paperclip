@@ -107,7 +107,6 @@ describeDatabase("goal parent company validation", () => {
     const service = goalService(db);
     const parent = await service.create(home, { title: "Home parent" });
     const child = await service.create(home, { title: "Original", parentId: parent.id });
-    // The plugin host forwards params.patch as any, outside the REST validator.
     const patch = { companyId: foreign, parentId: parent.id, title: "Must not change" };
     const failure = await service.update(child.id, patch as any)
       .then(() => null, (error: unknown) => error);
@@ -199,7 +198,6 @@ describeDatabase("goal parent company validation", () => {
       if (gatePid === undefined) throw new Error("Insert gate ended before it was ready");
       creation = service.create(companyId, { title: "Child", parentId: parent.id });
       void creation.catch(() => {});
-      // The insert's advisory wait proves its parent check has completed.
       await expect.poll(async () => {
         const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_locks
           where locktype = 'advisory' and not granted and ${gatePid} = any(pg_blocking_pids(pid))`);
@@ -243,8 +241,6 @@ describeDatabase("goal parent company validation", () => {
     const service = goalService(db);
     const first = await service.create(companyId, { title: "First" });
     const second = await service.create(companyId, { title: "Second" });
-    // Pause both real UPDATEs after their service row locks, before the FK
-    // checks. This exposes incompatible row locks without relying on timing.
     await db.execute(sql`create function goal_parent_test_gate() returns trigger language plpgsql as $$
       begin
         perform pg_advisory_xact_lock_shared(hashtextextended(current_database() || 'goal-parent-test', 0));
