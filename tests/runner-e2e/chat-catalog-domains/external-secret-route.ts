@@ -10,8 +10,10 @@ export async function visibleSecretSettingsURL(page:Page,reply:{body:string;comm
   const reachable=await node.evaluate(node=>{
    const rect=node.getBoundingClientRect(),style=getComputedStyle(node);
    if(/absolute|fixed/.test(style.position)&&(rect.right<=0||rect.left>=innerWidth||rect.bottom<=0||rect.top>=innerHeight))return false;
-   for(let parent=node.parentElement;parent;parent=parent.parentElement)if(/hidden|clip/.test(getComputedStyle(parent).overflowX+getComputedStyle(parent).overflowY)){
-    const box=parent.getBoundingClientRect();if(rect.right<=box.left||rect.left>=box.right||rect.bottom<=box.top||rect.top>=box.bottom)return false;
+   for(let parent=node.parentElement;parent;parent=parent.parentElement){
+    const style=getComputedStyle(parent),box=parent.getBoundingClientRect();
+    if(/hidden|clip/.test(style.overflowX)&&(rect.right<=box.left||rect.left>=box.right))return false;
+    if(/hidden|clip/.test(style.overflowY)&&(rect.bottom<=box.top||rect.top>=box.bottom))return false;
    }
    return true;
   });
@@ -31,9 +33,9 @@ export async function visibleSecretSettingsURL(page:Page,reply:{body:string;comm
     const style=getComputedStyle(element);opacity*=Number(style.opacity);
     if(style.display==="none"||style.visibility==="hidden"||style.visibility==="collapse"||opacity<0.05)return false;
     if(element instanceof HTMLDetailsElement&&!element.open&&!element.querySelector(":scope > summary")?.contains(node))return false;
-    if(/hidden|clip/.test(style.overflowX+style.overflowY)){
-     const box=element.getBoundingClientRect();if(rect.right<=box.left||rect.left>=box.right||rect.bottom<=box.top||rect.top>=box.bottom)return false;
-    }
+    const box=element.getBoundingClientRect();
+    if(/hidden|clip/.test(style.overflowX)&&(rect.right<=box.left||rect.left>=box.right))return false;
+    if(/hidden|clip/.test(style.overflowY)&&(rect.bottom<=box.top||rect.top>=box.bottom))return false;
    }
    return rect.width>0&&rect.height>0&&rect.right>0&&rect.left<innerWidth&&rect.bottom>0&&rect.top<innerHeight;
   };

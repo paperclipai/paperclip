@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 const port = vi.hoisted(() => ({ observation: {} as Record<string, unknown> }));
+vi.mock("./external-personal-secret-confirmation.js", async original => ({ ...await original<typeof import("./external-personal-secret-confirmation.js")>(), readVisiblePersonalSecretConfirmation: async () => ({ definitionVisible: true, visibleTextHash: "reader-tested-separately" }) }));
 vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => port.observation }));
 import { personalSecretExternalCases, personalSecretQuestionHandoff } from "./external-personal-secret.js";
 afterEach(() => { vi.useRealTimers(); });

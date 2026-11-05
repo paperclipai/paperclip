@@ -7,6 +7,10 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("admits the
  const browser=await chromium.launch({headless:true,...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?{executablePath:process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE}:{}}),page=await browser.newPage();
  const render=async(text:string,html?:string)=>page.setContent(`<article id="comment-native"><p>Personal credential setup</p>${html??`<code>${text}</code>`}</article>`);
  try{
+  await page.setContent(`<div style="height:100px;overflow-x:hidden;overflow-y:auto"><article id="comment-native"><code>${path+"?definition="+definition}</code><div style="height:1500px">Long reply</div></article></div>`);
+  await page.locator("body > div").evaluate(node=>node.scrollTop=node.scrollHeight);
+  expect(await personalSecretSetupURL(page,{body,commentId:"native"},origin,"RUN",definition,1000)).toBe(origin+path+"?definition="+definition);
+
   await render(path+"?definition="+definition);
   expect(await personalSecretSetupURL(page,{body,commentId:"native"},origin,"RUN",definition,1000)).toBe(origin+path+"?definition="+definition);
   await render("",`<a href="${path}?definition=${definition}">My secrets</a>`);
