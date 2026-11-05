@@ -1176,6 +1176,12 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(container.textContent).not.toContain("Show the Apps navigation");
   });
 
+  it("offers no Artifacts V1 toggle", async () => {
+    await renderPage([]);
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).not.toContain("Artifacts V1");
+  });
+
   it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {
     setWorktreeRuntimeMeta(true);
     const visible = new Set(["enableExternalObjects", "enableMemoryConnectors", "enableSimplifiedEnglishInteractions"]);
