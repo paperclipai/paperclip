@@ -10,6 +10,7 @@ import { expect, it, vi } from "vitest";
 import { SLACK_CHAT_BOT_SCOPES, type ToolCredentialSecretRef } from "@paperclipai/shared";
 import { activityLog, agents, applyPendingMigrations, authUsers, chatEndpoints, chatSlackRegistrations, closeCheckpointDb, closeFileStorageDb, closeLivenessDb, companies, companyMemberships, companySecrets, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../../../lib/dedicated-test-database-url.js";
+import { heartbeatService } from "../../heartbeat.js";
 import { chatChannelService } from "../../chat-channels.js";
 import { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { githubConnectionEventService } from "../../github-connection-events.js";
@@ -54,6 +55,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
   });
   const directory = await mkdtemp(path.join(os.tmpdir(), "slack-transition-"));
   let service: ReturnType<typeof chatChannelService> | undefined;
+  let heartbeat: ReturnType<typeof heartbeatService> | undefined;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
   const errors: unknown[] = [];
@@ -110,7 +112,8 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
       if (url.origin === "https://slack.com" && url.pathname === "/api/conversations.list") return Response.json({ ok: true, channels: [], response_metadata: {} });
       throw new Error(`Unexpected transition provider request ${url}`);
     };
-    service = chatChannelService(db, { fetch: fetchImpl, publicBaseUrl: "https://tenant.example" });
+    heartbeat = heartbeatService(db);
+    service = chatChannelService(db, { heartbeat, fetch: fetchImpl, publicBaseUrl: "https://tenant.example" });
     const events = githubConnectionEventService(db);
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
     worker = registerGitHubConnectionEventWork(db, coordinator, events, () => true); await worker.ready;
@@ -142,7 +145,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
     expect(errors).toEqual([]);
   } catch (error) { console.error("Slack instance transition body failure", error); throw error; }
   finally {
-    await worker?.stop(); await coordinator?.stop(); await service?.shutdown();
+    await worker?.stop(); await coordinator?.stop(); await service?.shutdown(); await heartbeat?.drainActiveRunExecutions();
     if (server.listening) { server.close(); await once(server, "close"); }
     vi.unstubAllEnvs();
     try {
