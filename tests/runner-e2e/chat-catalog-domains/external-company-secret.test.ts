@@ -3,7 +3,7 @@ import { chatCatalogHumanHistoryMatches,verifyChatCatalogHumanQuestionAnswer } f
 import { describe,expect,it,vi } from "vitest";
 vi.mock("./identity-support.js", async importOriginal => ({ ...await importOriginal<typeof import("./identity-support.js")>(), identityWorker: vi.fn(async () => ({id:"morgan"})), probeAgentPermission: vi.fn(async () => 403) }));
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
-import { companySecretQuestionHandoff,companySecretExternalCases,deploymentSecretGuidance,companySecretControllerBaseline,companySecretControllersUnchanged,companySecretFollowup } from "./external-company-secret.js";
+import { companyOperatorBindingRequested,companySecretQuestionHandoff,companySecretExternalCases,deploymentSecretGuidance,companySecretControllerBaseline,companySecretControllersUnchanged,companySecretFollowup } from "./external-company-secret.js";
 const controller={id:"controller",companyId:"company",scope:"company",ownerUserId:null,userSecretDefinitionId:null,key:"openrouter_api_key",name:"Runner E2E controller",provider:"local_encrypted",status:"active",managedMode:"paperclip_managed",latestVersion:1};
 const controllerRefs={OPENROUTER_API_KEY:{type:"secret_ref",secretId:"controller",version:"latest"}} as const;
 function valid(){return {scenarioId:"secrets.configure-company-secret",companyId:"company",leadId:"ceo",reply:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test.",phaseReplies:[{runId:"first",body:"Use secure secret settings for the deployment key, then bind its reference in Morgan's environment variables. Do not paste the key here."},{runId:"second",body:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test."}],runs:[{id:"first",status:"succeeded"},{id:"second",status:"succeeded"}],connections:[],profiles:[],secrets:[{id:"secret",name:"Deployment API key",status:"active"}],endpoints:[],interactions:[],activity:[{entityId:"secret",action:"secret.created",actorType:"user",actorId:"person"}],links:[],humanQueries:[],state:{morganConfigBefore:{env:{}},morganConfigAfter:{env:{DEPLOYMENT_API_KEY:{type:"secret_ref",secretId:"secret",version:"latest"}}},morganOtherConfigBefore:{adapterType:"paperclip_runner"},morganOtherConfigAfter:{adapterType:"paperclip_runner"},bindingEnvironmentName:"DEPLOYMENT_API_KEY",currentPersonId:"person",initialRunId:"first",agentCreateStatus:403,secretCountBeforeHuman:1,controllerSecretBaseline:[controller],controllerSecretsPreserved:true,operatorChannel:"private-browser-company-secret-and-public-browser-binding",secretUiVisible:true,humanSubmittedSecurely:true,storageClean:true,secureBrowserUntraced:true,secretId:"secret",morganId:"morgan",bindings:[{targetType:"agent",targetId:"morgan",configPath:"env.DEPLOYMENT_API_KEY",versionSelector:"latest"}],savedReferenceMatches:true,morganBindingVisible:true,bindingHumanAttributed:true,secretScanComplete:true,secretLeaked:false}};}
@@ -258,4 +258,20 @@ it.each(["OTHER_API_KEY","other_api_key","deployment"])("requires the actual ope
  expect(companySecretExternalCases[0]!.grade(o).passed).toBe(true);
  o.state.bindingEnvironmentName="DEPLOYMENT_API_KEY";o.state.bindings[0]!.configPath="env.DEPLOYMENT_API_KEY";Object.assign(o.state,{morganConfigAfter:{env:{DEPLOYMENT_API_KEY:{type:"secret_ref",secretId:"secret",version:"latest"}}}});
  expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+});
+
+it("accepts the server's canonical default reference metadata without accepting policy or unknown-field changes",()=>{
+ const outcome=valid();
+ Object.assign(outcome.state.morganConfigAfter.env.DEPLOYMENT_API_KEY,{projectionClass:"unclassified",projectionAllowlistKey:null});
+ expect(companySecretExternalCases[0]!.grade(outcome).passed).toBe(true);
+ for(const extra of [{projectionClass:"class_3_static_lease"},{projectionAllowlistKey:"changed-policy"},{unexpected:true},{value:"forbidden-value-field"}]){
+  const bad=valid();Object.assign(bad.state.morganConfigAfter.env.DEPLOYMENT_API_KEY,{projectionClass:"unclassified",projectionAllowlistKey:null},extra);
+  expect(companySecretExternalCases[0]!.grade(bad).passed).toBe(false);
+ }
+});
+it("keeps completed operator questions bound across whitespace without borrowing an agent promise",()=>{
+ expect(companyOperatorBindingRequested("Have you saved and\nbound the deployment key for Morgan?")).toBe(true);
+ expect(companyOperatorBindingRequested("Have you configured Morgan to use the deployment secret?")).toBe(true);
+ expect(companyOperatorBindingRequested("Have you configured the secret in Settings Secrets? I will bind the reference for Morgan.")).toBe(false);
+ expect(companyOperatorBindingRequested("Have you configured the secret in Settings Secrets\nI will bind the reference for Morgan.","Have you configured the secret in Settings Secrets")).toBe(false);
 });
