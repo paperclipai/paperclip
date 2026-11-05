@@ -319,8 +319,6 @@ export async function collectChatRunEvidence(
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   const reassignedBeforeStart = isReassignedUnstartedWake(run);
-  // A queued wake whose issue reached a terminal status was retired before
-  // admission; it never started and no log store was ever assigned.
   const terminalBeforeStart = run.status === "cancelled" && run.errorCode === "issue_terminal_status" &&
     run.startedAt === null && run.logStore === null && run.logRef === null;
   return {
