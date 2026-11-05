@@ -65,7 +65,7 @@ import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded
 import { nativeWorkspaceSyncStateRoot, prepareNativeWorkspaceSync, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { nativeWorkspaceExportPendingForResource } from "./native-runtime/native-workspace-finalization-state.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { prepareStoppedSandboxForRecovery, prepareSandboxStopAndRetain, settleStopOnlyCleanup, readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { recoverRetainedWorkspace, requestWorkspaceRecovery, scheduleRecoveredWorkspaceCleanup, reconcileRetainedWorkspaces, retainedWorkspaceCandidates } from "./workspace-recovery.js";
 import * as activity from "./activity-log.js";
@@ -3518,6 +3518,100 @@ describe("automatic retained workspace recovery", () => {
     expect(after.generationId).not.toBe(before.generationId);
     expect(after.attempts).toBe(1);
     expect(after.revision).toBeGreaterThan(before.revision);
+  }, 30_000);
+
+  const restartFailure = (diskFull: boolean) => new Error(diskFull
+    ? "Sandbox failed to start with state: error, error reason: write /home/daytona/workspace/.git/index: no space left on device"
+    : "Sandbox failed to start with state: error");
+  const leaseRow = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
+
+  it.each(["disk_full", "unknown_failure"] as const)("lets saved input continue after a file-preserving restart fails on a sandbox that cannot stop: %s", async failure => {
+    const f = await seed(), commentId = randomUUID(), queueId = randomUUID();
+    const stopped = (await leaseRow(f.lease.id)).metadata?.remoteExecutionTermination;
+    f.runtime.resumeRunLease.mockRejectedValue(restartFailure(failure === "disk_full"));
+    f.runtime.retryPendingSandboxTeardown.mockRejectedValue(new Error("Sandbox is in an error state"));
+    const source = await run(f.runId);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "board", body: "Continue from a clean workspace." });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: source.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, commentId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId], wakeCommentId: commentId } } });
+    const attempts = failure === "disk_full" ? 1 : 6;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      await recoverRetainedWorkspace(f.input);
+      if (attempt < attempts) await makeRetryDue(f.actionId);
+    }
+    await heartbeatService(db).resumeRemoteStopComments(await run(f.runId));
+    const turns = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(turns).toHaveLength(1);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0]).toMatchObject({ status: "coalesced", runId: turns[0].id });
+    expect(await readFreshWorkspaceReadiness(db, turns[0])).toMatchObject({ mode: "fresh_isolated_workspace",
+      retryIntentId: queueId, sourceRunId: f.runId, retainedSourceIds: [f.lease.id] });
+    const lease = await leaseRow(f.lease.id);
+    expect(lease).toMatchObject({ status: "released", cleanupStatus: "success" });
+    expect(hasRemoteTerminationReceipt(lease)).toBe(true);
+    expect(lease.metadata?.remoteExecutionTermination).toEqual(stopped);
+    expect(lease.metadata).not.toHaveProperty("sandboxStopAndRetain");
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted", attempts,
+      failure: failure === "disk_full" ? { code: "source_unavailable", retryClass: "use_alternative_strategy" }
+        : { code: "provider_unavailable", retryClass: "retry_transient" } });
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(attempts);
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 60_000);
+
+  it("continues a Retry in a fresh workspace without repeating a restart that cannot succeed", async () => {
+    const f = await seed();
+    f.runtime.resumeRunLease.mockRejectedValue(restartFailure(true));
+    f.runtime.retryPendingSandboxTeardown.mockRejectedValue(new Error("Sandbox is in an error state"));
+    const source = await run(f.runId);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    await recoverRetainedWorkspace(f.input);
+    const exhausted = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(exhausted).toMatchObject({ state: "exhausted", failure: { code: "source_unavailable", retryClass: "use_alternative_strategy" } });
+    const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
+    expect(request).toMatchObject({ accepted: true, stale: false });
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ generationId: exhausted.generationId,
+      state: "exhausted", attempts: 1, intentId: request.requestId });
+    await recoverRetainedWorkspace(f.input);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, request.requestId!), heartbeat.resumeTaskRetry(f.companyId, request.requestId!)]);
+    const turns = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(turns).toHaveLength(1);
+    expect(turns[0].contextSnapshot).toMatchObject({ taskRetryRequestId: request.requestId, previousRunId: f.runId });
+    expect(await readFreshWorkspaceReadiness(db, turns[0])).toMatchObject({ mode: "fresh_isolated_workspace",
+      retryIntentId: request.requestId, sourceRunId: f.runId });
+  }, 30_000);
+
+  it("keeps the stop obligation once the provider has confirmed a restart", async () => {
+    const f = await seed();
+    f.runtime.resumeRunLease.mockResolvedValue({ providerLeaseId: f.providerLeaseId, metadata: { remoteCwd: path.join(f.remote, "elsewhere") } });
+    f.runtime.retryPendingSandboxTeardown.mockRejectedValue(new Error("Provider stop unavailable"));
+    await recoverRetainedWorkspace(f.input);
+    const lease = await leaseRow(f.lease.id);
+    expect(lease).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+    expect(hasRemoteTerminationReceipt(lease)).toBe(false);
+    expect(readStopOnlyCleanup(lease)).toMatchObject({ runId: f.runId, leaseId: f.lease.id });
+    expect(lease.metadata?.sandboxStopAndRetain).not.toHaveProperty("priorStop");
+    expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledOnce();
+  }, 30_000);
+
+  it("restores the stop receipt after an interrupted restart that the provider never confirmed", async () => {
+    const f = await seed();
+    const stopped = (await leaseRow(f.lease.id)).metadata?.remoteExecutionTermination;
+    expect(await prepareStoppedSandboxForRecovery(db, await leaseRow(f.lease.id))).not.toBeNull();
+    f.runtime.resumeRunLease.mockRejectedValue(restartFailure(true));
+    f.runtime.retryPendingSandboxTeardown.mockRejectedValue(new Error("Sandbox is in an error state"));
+    await recoverRetainedWorkspace(f.input);
+    const lease = await leaseRow(f.lease.id);
+    expect(hasRemoteTerminationReceipt(lease)).toBe(true);
+    expect(lease.metadata?.remoteExecutionTermination).toEqual(stopped);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted",
+      failure: { code: "source_unavailable", retryClass: "use_alternative_strategy" } });
+    expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(2);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
   }, 30_000);
 
   it("discovers historical sources in the periodic sweep without creating a user request", async () => {
