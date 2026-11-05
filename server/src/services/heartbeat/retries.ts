@@ -21,7 +21,7 @@ import {
   accountingForScheduledRetry,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
-import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
@@ -134,7 +134,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
 export function isTransientWorkspacePreparationCode(code: string | null | undefined): boolean {
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated
-    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE;
+    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE
+    || code === REMOTE_WORKSPACE_RESTORE_FAILED_CODE;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =

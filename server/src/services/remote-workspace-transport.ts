@@ -31,8 +31,26 @@ const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFail
 // The only sandbox text a capture failure may add: a fixed stage plus bounded
 // structured fields from remoteWorkspaceFailureDetail. Anything else is dropped.
 const SANDBOX_CAPTURE_CAUSE = /^remote_workspace_capture_failed: stage=(?:helper|archive|publish)(?: (?:helper_)?(?:code|exit|signal|syscall|killed|program|name|reason)=[A-Za-z0-9_]{1,64}){0,16}$/;
+// Setup scripts name the step they were in plus closed, structured fields. A
+// reason is only a script's own snake_case refusal code; Git output selects a
+// fixed label and is never copied. The server drops anything outside this grammar.
+const SETUP_FAILURE_CHECK = String.raw`const setupFailure=(prefix,stage,error)=>{const fields=['stage='+stage];
+ const message=typeof error?.message==='string'?error.message:'',stderr=typeof error?.stderr==='string'?error.stderr.trim():'';
+ if(/^[a-z][a-z_]{2,47}$/.test(message))fields.push('reason='+message);
+ const archive=/^remote_workspace_archive_([a-z_]{1,48})$/.exec(stderr)?.[1];if(archive)fields.push('archive='+archive);
+ const errno=/^(E[A-Z0-9]{1,20}):/.exec(stderr)?.[1];if(errno)fields.push('code='+errno);
+ if(diskFull(error))fields.push('disk=full');
+ if(typeof error?.cmd==='string'&&error.cmd.startsWith('git ')){
+  const git=[[/Authentication failed|could not read Username|Permission denied \(publickey\)|terminal prompts disabled|returned error: 40[13]/i,'auth_failed'],
+   [/Repository not found|does not appear to be a git repository|returned error: 404/i,'repository_not_found'],
+   [/Could not resolve host|Connection (?:timed out|refused|reset)|Failed to connect|unable to access/i,'network'],
+   [/unknown revision|not a valid ref|Needed a single revision|invalid reference|did not match any|couldn't find remote ref/i,'ref_not_found']]
+   .find(([pattern])=>pattern.test(stderr))?.[1];if(git)fields.push('git='+git);}
+ for(const field of failureDetail(error).split(' ').filter(Boolean))if(!fields.some(value=>value.startsWith(field.split('=')[0]+'=')))fields.push(field);
+ return prefix+': '+fields.join(' ');};`;
+const SANDBOX_SETUP_CAUSE = /^remote_workspace_(prepare|repository|restore)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}$/;
 
-type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "restore" | "cleanup";
+type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup";
 
 export class RemoteWorkspaceOperationTimeoutError extends Error {
   constructor(readonly operation: RemoteWorkspaceOperation, readonly timeoutMs: number) {
@@ -57,7 +75,8 @@ export class RemoteWorkspaceOperationError extends Error {
  * error text is not one of these redacted forms and must stay off the record.
  */
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
-  if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError) return error.message;
+  if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError
+    || error instanceof RemoteWorkspaceRestoreError) return error.message;
   if (!(error instanceof Error)) return null;
   if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
   const operation = providerRefusals.get(error);
@@ -74,6 +93,45 @@ export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOpera
     this.name = "RemoteWorkspacePreparationTimeoutError";
     this.cause = error;
   }
+}
+
+export const REMOTE_WORKSPACE_RESTORE_FAILED_CODE = "remote_workspace_restore_failed";
+
+/** Where restoring a saved workspace into a new allocation stopped. */
+export type RemoteWorkspaceRestoreStep = "snapshot_lookup" | "snapshot_download" | "sandbox_restore";
+
+/**
+ * A saved workspace that could not be restored before the agent started. The
+ * saved version is never changed by a failed restore. The message names the
+ * step and a redacted cause; provider or command text is never copied.
+ * `retryable` is set only when the owner re-read the same writer, epoch, and
+ * saved version with no unsaved work, so a bounded retry cannot overwrite work.
+ */
+export class RemoteWorkspaceRestoreError extends Error {
+  readonly code = REMOTE_WORKSPACE_RESTORE_FAILED_CODE;
+
+  constructor(readonly step: RemoteWorkspaceRestoreStep, readonly retryable: boolean, cause: unknown) {
+    super(`${REMOTE_WORKSPACE_RESTORE_FAILED_CODE}: step=${step}; ${remoteWorkspaceRestoreFailureDetail(step, cause)}`);
+    this.name = "RemoteWorkspaceRestoreError";
+    this.cause = cause;
+  }
+}
+
+function remoteWorkspaceRestoreFailureDetail(step: RemoteWorkspaceRestoreStep, cause: unknown) {
+  const known = remoteWorkspaceFailureCause(cause);
+  if (known) return known;
+  // Server-side restore refusals are fixed snake_case codes.
+  if (cause instanceof Error && /^remote_workspace_[a-z_]{3,64}$/.test(cause.message)) return cause.message;
+  const { label, code, status } = sandboxProviderFailureLabel(cause);
+  return `${step === "snapshot_download" ? "storage" : "transport"}=${label}${code ? ` code=${code}` : ""}${status ? ` status=${status}` : ""}`;
+}
+
+/** The restore failure carried by a setup error, through at most four causes. */
+export function findRemoteWorkspaceRestoreError(error: unknown): RemoteWorkspaceRestoreError | null {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    if (cause instanceof RemoteWorkspaceRestoreError) return cause;
+  }
+  return null;
 }
 
 const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
@@ -137,8 +195,8 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
   args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
-  // Copy-back records why the provider refused the command.
-  const result = operation === "capture" || operation === "archive_helper"
+  // Copy-back and restore record why the provider refused the command.
+  const result = operation === "capture" || operation === "archive_helper" || operation === "restore"
     ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })
     : await execute();
   if (result.timedOut) throw new RemoteWorkspaceOperationTimeoutError(operation, timeoutMs);
@@ -152,7 +210,8 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
         ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value) : undefined);
     if (reported) throw new Error(reported);
     const cause = operation === "capture" || operation === "archive_helper"
-      ? output.find(value => value.length <= 1024 && SANDBOX_CAPTURE_CAUSE.test(value)) : undefined;
+      ? output.find(value => value.length <= 1024 && SANDBOX_CAPTURE_CAUSE.test(value))
+      : output.find(value => value.length <= 1024 && SANDBOX_SETUP_CAUSE.exec(value)?.[1] === operation);
     const status = [`operation=${operation}`,
       Number.isSafeInteger(result.exitCode) ? `exit=${result.exitCode}` : null,
       typeof result.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(result.signal) ? `signal=${result.signal}` : null,
@@ -165,6 +224,7 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
 const PREPARE = String.raw`
 const fs = require('node:fs/promises'), path = require('node:path'), cp = require('node:child_process');
 const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
+${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
 (async()=>{
  const [root,raw]=process.argv.slice(1), input=JSON.parse(raw);
  if (!path.isAbsolute(root)||!/^[a-f0-9]{64}$/.test(input.preparationIdentity)) throw Error('invalid_root');
@@ -172,11 +232,11 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
  const isolated={...process.env,...noConfig};for(const key of Object.keys(isolated))if(/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))delete isolated[key];
  const cloneEnv={...isolated};for(const key of input.authEnvKeys)if(/^GIT_CONFIG_(COUNT|(KEY|VALUE)_\d+)$/.test(key)&&process.env[key]!==undefined)cloneEnv[key]=process.env[key];
  const localEnv={...isolated};for(const key of input.authEnvKeys)delete localEnv[key];Object.assign(localEnv,noConfig);
- let current='/'; for(const part of path.dirname(root).split('/').filter(Boolean)) {
+ stage='create_parent';let current='/'; for(const part of path.dirname(root).split('/').filter(Boolean)) {
   current=path.join(current,part); await fs.mkdir(current,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
   const s=await fs.lstat(current); if(!s.isDirectory()||s.isSymbolicLink())throw Error('unsafe_root');
  }
- const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
+ stage='inspect_existing';const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
  if(prior){
   if(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root)throw Error('unsafe_root');
   const runtime=path.join(root,'.paperclip-runtime'),marker=path.join(runtime,'workspace-ready.json');
@@ -186,33 +246,34 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
   process.stdout.write(JSON.stringify({cwd:root}));return;
  }
  if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}
- const staged=await fs.mkdtemp(root+'.preparing-');
+ stage='stage';const staged=await fs.mkdtemp(root+'.preparing-');
  if(input.kind==='git'){
-  await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
+  stage='clone';await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
   const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],{env:localEnv});
   if(input.branchMode==='existing'){
-   if(!input.branchName)throw Error('existing_branch_required');
+   stage='checkout_branch';if(!input.branchName)throw Error('existing_branch_required');
    await git(['check-ref-format','--branch',input.branchName]);
    const remoteRef='refs/remotes/origin/'+input.branchName;
    await git(['rev-parse','--verify','--quiet',remoteRef+'^{commit}']);
    const local=await git(['show-ref','--verify','--quiet','refs/heads/'+input.branchName]).then(()=>true,()=>false);
    await git(local?['checkout',input.branchName]:['checkout','-b',input.branchName,remoteRef]);
   }else{
+   stage='checkout_ref';
    ${checkoutConfiguredRefScript}
    if(input.branchName)await git(['checkout','-B',input.branchName]);
   }
-  await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
+  stage='configure';await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
   await fs.appendFile(path.join(staged,'.git','info','exclude'),'\n/.paperclip-runtime/\n/.paperclip-repositories/\n');
  }else{
-  await fs.writeFile(path.join(staged,'.gitignore'),'/.paperclip-runtime/\n/.paperclip-repositories/\n',{flag:'wx',mode:0o600});
+  stage='configure';await fs.writeFile(path.join(staged,'.gitignore'),'/.paperclip-runtime/\n/.paperclip-repositories/\n',{flag:'wx',mode:0o600});
  }
- const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+ stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
  const runtimeStat=await fs.lstat(runtime);if(!runtimeStat.isDirectory()||runtimeStat.isSymbolicLink())throw Error('unsafe_receipt');
  await fs.writeFile(path.join(runtime,'workspace-ready.json'),JSON.stringify({preparationIdentity:input.preparationIdentity}),{flag:'wx',mode:0o600});
- if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
+ stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
  await fs.rename(staged,root);
  process.stdout.write(JSON.stringify({cwd:await fs.realpath(root)}));
-})().catch(()=>{process.stderr.write('remote_workspace_prepare_failed');process.exitCode=1});`;
+})().catch(error=>{process.stderr.write(setupFailure('remote_workspace_prepare_failed',stage,error));process.exitCode=1});`;
 
 export async function prepareRemoteWorkspaceDirectory(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; source: RemoteWorkspaceSource; resolveGitAuth: GitRemoteAuthProvider;
@@ -249,30 +310,32 @@ export async function prepareRemoteRepository(input: {
   pinnedCommit?: string; verifyOnly?: boolean; savedArchive?: boolean; resolveGitAuth: GitRemoteAuthProvider;
 }) {
   const script = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');const exec=promisify(cp.execFile);
+  ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
   (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const noConfig={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
   const env={...process.env,...noConfig};for(const key of Object.keys(env))if(/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key))delete env[key];
   const cloneEnv={...env};for(const key of input.authEnvKeys)if(/^GIT_CONFIG_(COUNT|(KEY|VALUE)_\d+)$/.test(key)&&process.env[key]!==undefined)cloneEnv[key]=process.env[key];
   const localEnv={...env};for(const key of input.authEnvKeys)delete localEnv[key];Object.assign(localEnv,noConfig);const opts={env:localEnv};
-  let parent='/';for(const part of path.dirname(root).split('/').filter(Boolean)){parent=path.join(parent,part);
+  stage='create_parent';let parent='/';for(const part of path.dirname(root).split('/').filter(Boolean)){parent=path.join(parent,part);
    await fs.mkdir(parent,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});const entry=await fs.lstat(parent);
    if(!entry.isDirectory()||entry.isSymbolicLink()||await fs.realpath(parent)!==parent)throw Error('unsafe_repository_parent');}
-  const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
+  stage='inspect';const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw Error('unsafe_repository')}
   else{if(input.verifyOnly||input.savedArchive)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}
-   const staged=await fs.mkdtemp(root+'.preparing-');try{
-    await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
+   stage='stage';const staged=await fs.mkdtemp(root+'.preparing-');try{
+    stage='clone';await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
     const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],opts);
+    stage='checkout_ref';
     ${checkoutConfiguredRefScript}
-    await fs.rename(staged,root);
+    stage='publish';await fs.rename(staged,root);
    }finally{await fs.rm(staged,{recursive:true,force:true});}}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
-  if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
+  stage='verify_origin';if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
   const hasOrigin=(await git(['remote'])).split('\n').includes('origin');
   const origin=hasOrigin?await git(['remote','get-url','origin']):null;
   if(origin!==input.repoUrl&&!(input.savedArchive&&origin===null))throw Error('repository_origin_changed');
-  const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit)await git(['cat-file','-e',input.pinnedCommit+'^{commit}']);
+  stage='verify_commit';const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit)await git(['cat-file','-e',input.pinnedCommit+'^{commit}']);
   const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:input.pinnedCommit||head,branchName:branch}));
-  })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
+  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_repository_failed',stage,error));process.exitCode=1});`;
   const payload = { ...input, target: undefined, resolveGitAuth: undefined };
   const prior = JSON.parse(await command(input.target, "repository", ["-e", script, input.remoteCwd,
     JSON.stringify({ ...payload, authArgs: [], authEnvKeys: [], probeOnly: true })])) as {
@@ -400,10 +463,11 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   const staged = await installArchiveHelper(input.target, parent, operationId);
   await input.target.runner!.syncIn!([{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }]);
+  }]).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
+  ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
   (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles]=process.argv.slice(1),files=JSON.parse(rawFiles);
    if(!/^[a-f0-9]{64}$/.test(identity)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
    for(const file of files)if(!/^\.paperclip-runtime\/[a-zA-Z0-9_-]+\.json$/.test(file.relativePath)
@@ -424,31 +488,31 @@ export async function restoreRemoteWorkspaceDirectory(input: {
      return {name:path.basename(name),content};}));
    };
    const parked=root+'.allocation-'+identity;
-   if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
-   const prior=await stat(root);if(prior)await directory(root);
+   stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
+   stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
    if(prior&&await stat(marker)){
-    await directory(path.dirname(marker));const file=await fs.lstat(marker);
+    stage='existing_receipt';await directory(path.dirname(marker));const file=await fs.lstat(marker);
     if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
     const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
     if(receipt.identity!==identity||receipt.manifestDigest!==digest)throw Error('workspace_owner_changed');
     if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}return;
    }
    if(prior&&allowEmpty!=='true')throw Error('occupied_root');
-   const retained=prior?await allocation(root):[];
+   stage='allocation';const retained=prior?await allocation(root):[];
    if(!prior&&files.length)throw Error('allocation_missing');
-   const staged=await fs.mkdtemp(root+'.restoring-');
+   stage='extract';const staged=await fs.mkdtemp(root+'.restoring-');
    try{
     await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
-    const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
+    stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
     await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
-    if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
+    stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
     if(prior){await allocation(root);if(await stat(parked))throw Error('occupied_parking');await fs.rename(root,parked);}
     try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(parked,root);throw e;}
-    if(prior){await allocation(parked);await fs.rm(parked,{recursive:true});}
+    stage='cleanup_parked';if(prior){await allocation(parked);await fs.rm(parked,{recursive:true});}
    }finally{await fs.rm(staged,{recursive:true,force:true});}
-  })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
+  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
   await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? [])]);
   // Publish the restored location before cleanup can fail, stall, or lose its
