@@ -572,20 +572,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(popup).not.toHaveBeenCalled();
   });
 
-  it.each(["arcade", "composio", "executor"])("inline aggregator %s binds OAuth to the task and retries the same draft", async (provider) => {
+  it.each([["page", "composio"], ["dialog", "arcade"], ["dialog", "composio"], ["dialog", "executor"]] as const)("%s aggregator setup preserves task callbacks and retries the same draft", async (host, provider) => {
     const onComplete = vi.fn();
     const onPhaseChange = vi.fn();
-    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const popup = { opener: window as Window | null, closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const connection = { id: "conn-inline-oauth", status: "draft", credentialPolicy: "per_user", authKind: "oauth" };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
-    const root = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
+    const root = await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
     const connectLabel = `Connect ${provider[0].toUpperCase()}${provider.slice(1)}`;
     if (provider === "composio") await act(async () => buttonByText("Reuse an existing session")!.click());
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp"));
     await act(async () => buttonByText(connectLabel)!.click());
     await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(connection.id, { asCurrentUser: true, interactionId: "intent-inline" }));
     expect(popup.location.assign).toHaveBeenCalled();
+    expect(popup.opener).toBe(window);
     popup.closed = true;
     expect(container.textContent).toContain("Paperclip is waiting for confirmation");
     expect(container.querySelector('a[target="_blank"]')?.getAttribute("href")).toBe("https://mcp.notion.com/authorize?state=resumed");
@@ -1712,6 +1713,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("binds OAuth to the task even when setup resumes in the page host", async () => {
+    const popup = { opener: window as Window | null, closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     mockSearch.value = "source=gmail&stage=setup&intent=intent-1";
     listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
     connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "shared" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
@@ -1719,6 +1722,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Continue to sign in")?.click());
     await flushReact();
     expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: false, interactionId: "intent-1" });
+    expect(popup.opener).toBe(window);
     expect(navigateTopLevelMock).not.toHaveBeenCalledWith("https://example.test/unbound");
   });
 
