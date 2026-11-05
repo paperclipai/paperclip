@@ -1,4 +1,5 @@
 import { bindAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { toolFileChangesFromAcpContent } from "../tool-file-changes.js";
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../drivers/acpx/kimi-closure-pins.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
@@ -205,9 +206,11 @@ describe("qualified ACPX runtime sidecar", () => {
     const stableIdentity = new Function("createHash", "acpxProfileActivity", "openParams", "initializedAgent", `${stripTypeScriptTypes(source.slice(identityStart, source.indexOf("\nfunction canonicalJson", identityStart)))}; return stableProviderIdentity;`)(createHash, acpxProfileActivity, { agent: "cursor" }, "cursor");
     const boundStart = source.indexOf("function boundRuntimeEventForNormalization(");
     const bound = new Function("boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `${stripTypeScriptTypes(source.slice(boundStart, source.indexOf("\nfunction sanitizeRuntimeEvent", boundStart)))}; return boundRuntimeEventForNormalization;`)(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
       stableIdentity, () => [], null, () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent, () => [],
     );
     const start = source.indexOf("  const { signal } = context;", source.indexOf("async function waitForPermission"));
     const end = source.indexOf("\nasync function waitForInput", start);
@@ -775,6 +778,7 @@ describe("qualified ACPX runtime sidecar", () => {
       .replace("  } as BoundedRuntimeToolEvent;", "  };");
     const bound = new Function(
       "boundedOptionalText", "stableProviderIdentity", "safeAcpxLocations", "openParams", "safeOutput",
+      "toolFileChangesFromAcpContent", "sidecarWorkspaceRoots",
       `return (${functionSource});`,
     )(
       (value: unknown, fallback: string, max: number) => typeof value === "string" ? value.slice(0, max) : fallback,
@@ -782,6 +786,8 @@ describe("qualified ACPX runtime sidecar", () => {
       () => [],
       null,
       () => ({ output: null, outputBytes: 0, outputTruncated: false, outputDigest: null }),
+      toolFileChangesFromAcpContent,
+      () => ["/work/repo"],
     ) as (event: Record<string, unknown>) => Record<string, unknown>;
     const bounded = bound({
       type: "tool_call", toolCallId: "provider-tool", title: "search", kind: "other",
@@ -793,6 +799,16 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(canonical.payload).toMatchObject({ inputUpdated: true });
     expect(JSON.stringify(canonical.payload)).not.toContain("must not cross");
     expect(source).toContain("? boundedTool.inputUpdated");
+
+    // ACP diff content crosses as bounded, workspace-relative fileChanges.
+    const edit = bound({
+      type: "tool_call", toolCallId: "edit-tool", title: "Edit", kind: "edit", status: "completed",
+      content: [{ type: "diff", path: "/work/repo/a.js", oldText: "a", newText: "b" }],
+    });
+    expect(edit.paperclipFileChanges).toEqual([
+      expect.objectContaining({ path: "a.js", operation: "modify", additions: 1, deletions: 1 }),
+    ]);
+    expect(edit).not.toHaveProperty("content");
   });
 
   it.each(["paperclip_finish", "paperclip_block"])(

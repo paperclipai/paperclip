@@ -237,6 +237,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableLegacyComposerSubmit: {
+    title: "Command/Ctrl+Enter to Submit",
+    description:
+      "Require Command/Ctrl+Enter to submit task replies and new tasks. Enter inserts a new line.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIssuePlanDecompositions: {
     title: "Task Plan Decomposition",
     description: "Show accepted-plan decomposition history on task detail pages.",

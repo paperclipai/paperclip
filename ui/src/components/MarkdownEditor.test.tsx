@@ -351,6 +351,44 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
+  it.each([false, true])("handles submission, newlines, and IME confirmation (raw fallback=%s)", async (fallback) => {
+    mdxEditorMockState.emitMountParseError = fallback;
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey="enter" />);
+    });
+    await flush();
+    if (fallback) {
+      await vi.waitFor(() => expect(container.querySelector("textarea")).not.toBeNull());
+    }
+    const input = container.querySelector(fallback ? "textarea" : '[contenteditable="true"]')!;
+    for (const modifiers of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers });
+      await act(() => { input.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSubmit).not.toHaveBeenCalled();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(() => { input.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
+  });
+
+  it("keeps ordinary document editors on Command/Ctrl+Enter", async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => { root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} />); });
+    await flush();
+    const input = container.querySelector('[contenteditable="true"]')!;
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true })); });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
+  });
+
   it("applies async external value updates once the editor ref becomes ready", async () => {
     const root = createRoot(container);
 
@@ -1593,6 +1631,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    onSubmit?: () => void,
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -1602,6 +1641,8 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          onSubmit={onSubmit}
+          submitKey="enter"
         />,
       );
     });
@@ -1632,6 +1673,21 @@ describe("MarkdownEditor", () => {
     expect(menu).toBeTruthy();
     return { option: option!, root, menu: menu! };
   }
+
+  it("accepts a mention on Enter before submitting the message", async () => {
+    const onSubmit = vi.fn();
+    const handleChange = vi.fn();
+    const { root } = await openMentionMenuFor(handleChange, undefined, undefined, onSubmit);
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(() => { editable.dispatchEvent(shiftEnter); });
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(handleChange).not.toHaveBeenCalled();
+    await act(() => { editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(handleChange).toHaveBeenCalled();
+    await act(() => { root.unmount(); });
+  });
 
   it("accepts mention selection from a touch tap", async () => {
     const handleChange = vi.fn();

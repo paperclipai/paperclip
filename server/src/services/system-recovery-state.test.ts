@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { exhaustedSystemRecoveryAction } from "./system-recovery.js";
 
 describe("durable system recovery budget", () => {
   it("makes six attempts with exponential delays that survive serialization and exhaustion", () => {
@@ -41,6 +42,14 @@ describe("durable system recovery budget", () => {
     const unsafe = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
       { now: 0, cause: { label: "/home/daytona/secret", code: null, status: null } });
     expect(unsafe.failure).not.toHaveProperty("cause");
+  });
+  it("names the last failure and its cause in the board handoff", () => {
+    const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
+    const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "sandbox_not_running", code: null, status: null } });
+    expect(exhaustedSystemRecoveryAction(withCause)).toContain("(last failure: provider_unavailable, cause: sandbox_not_running)");
+    const withoutCause = failSystemRecovery(state, new SystemRecoveryFailure("archive_unsafe", "service_required"), { now: 0 });
+    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("(last failure: archive_unsafe)");
   });
   it("reconciles a recorded attempt after restart without spending another retry", () => {
     const running = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;

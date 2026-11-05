@@ -92,6 +92,7 @@ import {
   type AcpxRecoveryWorkspaceLease,
 } from "./runtime-sandbox.js";
 
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
@@ -785,6 +786,7 @@ class CodexAcpxSession implements HarnessSession {
   /** Claude compaction banners in this session; pairs start and end notices. */
   #compactionCount = 0;
   #assistantMessageId: string | null = null;
+  #workspaceRoots: string[] | null = null;
   #closed = false;
   #closingStarted = false;
   #eventStreamClosed = false;
@@ -1769,10 +1771,12 @@ class CodexAcpxSession implements HarnessSession {
         cost: event.cost,
       });
     }
+    this.#workspaceRoots ??= workspaceRootsFor(this.#input.workingDirectory);
     for (const canonical of canonicalProviderEventsFromAcpxRuntimeEvent(
       event,
       fallbackItemId,
       turnId,
+      { workingDirectory: this.#workspaceRoots },
     )) {
       this.#emit(canonical.eventType, canonical.payload, {
         turnId,
