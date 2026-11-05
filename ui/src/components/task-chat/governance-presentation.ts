@@ -61,6 +61,10 @@ function hookPresentation(item: TaskChatProviderActivityItem): GovernancePresent
   const message = item.summary?.trim() || detail(item, "Message");
   const source = detail(item, "Source");
   const duration = durationLabel(detail(item, "Duration Ms"));
+  // The run ended before the hook reported a result.
+  if (item.status === "interrupted") {
+    return { icon: ShieldAlert, label: `${subject} stopped without a result`, detail: joined(tool, source), tone: "neutral" };
+  }
   if (item.status === "running" || outcome === "running") {
     return { icon: Webhook, label: eventName ? `Running ${eventName} hook` : "Running a hook", detail: joined(tool, source), tone: "neutral" };
   }
@@ -93,6 +97,10 @@ function safetyPresentation(item: TaskChatProviderActivityItem): GovernancePrese
   const action = detail(item, "Action");
   const risk = riskLabel(detail(item, "Risk Level"));
   const rationale = item.summary?.trim() || detail(item, "Rationale");
+  // The run ended before the reviewer reported a decision.
+  if (item.status === "interrupted") {
+    return { icon: ShieldAlert, label: "Auto-review stopped without a decision", detail: action, tone: "neutral" };
+  }
   if (item.status === "running" || decision === "pending") {
     return { icon: Shield, label: "Auto-reviewing", detail: action, tone: "neutral" };
   }

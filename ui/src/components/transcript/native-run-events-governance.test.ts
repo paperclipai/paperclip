@@ -165,6 +165,19 @@ describe("governance activity", () => {
     expect(label(rows[0]!).note).toBe("Migrations are append-only.");
   });
 
+  it("says a hook or review stopped when the run ended before it finished", () => {
+    const settled = transcriptToTaskChatItems(nativeRunEventsToTranscript([
+      event(1, "hook.started", { schema: "paperclip.hook.v1", hookId: "h", event: "preToolUse", scope: "turn", status: "running", blocking: true, durationMs: null, summary: null, outcome: "running" }),
+      review(2, "review-x", "exec-x", "pending"),
+    ]), { runId: RUN_ID, agentName: "Codex", running: false });
+    const rows = governance(settled);
+    expect(rows.map((row) => row.status)).toEqual(["interrupted", "interrupted"]);
+    expect(rows.map((row) => label(row).label)).toEqual([
+      "PreToolUse hook stopped without a result",
+      "Auto-review stopped without a decision",
+    ]);
+  });
+
   it("keeps a passing hook to one quiet line", () => {
     const [row] = governance(items([hook(1, {})]));
     expect(label(row!)).toEqual({ label: "PreToolUse hook ran", detail: "user hooks · 41 ms", tone: "neutral", note: undefined });
