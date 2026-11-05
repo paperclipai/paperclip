@@ -598,6 +598,8 @@
   /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
   --sz-turn-plan-list-max-h: min(40dvh, 22rem);
+  /* A subagent result scrolls inside its card instead of taking over the thread. */
+  --sz-subagent-result-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.

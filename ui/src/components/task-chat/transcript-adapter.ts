@@ -23,6 +23,8 @@ import type {
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
   TaskChatRuntimeRequestItem,
+  TaskChatSubagent,
+  TaskChatSubagentGroupItem,
 } from "./task-chat-model";
 import {
   humanizeToolName,
@@ -455,6 +457,11 @@ function providerActivityItem(
                 .filter(Boolean)
                 .join(" · ") || undefined,
             summary: stringValue(child.summary),
+            role: stringValue(child.role),
+            model: stringValue(child.model),
+            progress: stringValue(child.activitySummary),
+            prompt: stringValue(child.prompt),
+            result: stringValue(child.result),
           }))
       : [];
 
@@ -490,6 +497,21 @@ function providerActivityItem(
     outputTruncated,
     transcriptIndex: index,
     startedAt: entry.ts,
+    ...(entry.family === "tool_execution"
+      ? {
+          activityId: stringValue(entry.payload.executionId),
+          parentToolUseId: stringValue(entry.payload.parentItemId),
+        }
+      : {}),
+    ...(entry.family === "delegation"
+      ? (() => {
+          const atMs = Date.parse(entry.ts);
+          return {
+            activityId: stringValue(entry.payload.delegationId),
+            ...(Number.isFinite(atMs) ? { startedAtMs: atMs, updatedAtMs: atMs } : {}),
+          };
+        })()
+      : {}),
   };
 }
 
@@ -519,7 +541,12 @@ function mergeProviderActivityItem(
     previous.family !== "tool_execution" ||
     incoming.family !== "tool_execution"
   ) {
-    return { ...incoming, id: previous.id, startedAt: previous.startedAt ?? incoming.startedAt };
+    return {
+      ...incoming,
+      id: previous.id,
+      startedAt: previous.startedAt ?? incoming.startedAt,
+      ...(previous.startedAtMs != null ? { startedAtMs: previous.startedAtMs } : {}),
+    };
   }
   const details = new Map(
     previous.details.map((detail) => [detail.label, detail]),
@@ -558,6 +585,7 @@ function mergeProviderActivityItem(
       ? incoming.summary
       : previous.summary,
     details: [...details.values()],
+    parentToolUseId: incoming.parentToolUseId ?? previous.parentToolUseId,
   };
 }
 
@@ -797,6 +825,7 @@ export function transcriptToTaskChatItems(
             rawName: entry.name ?? undefined,
             target: summarizeToolInput(entry.input),
             status: "in_progress",
+            ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
           });
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
@@ -1765,12 +1794,69 @@ function phaseSummary(
  * slot. Pending requests keep a compact feed entry so they remain reachable
  * after their composer form is dismissed.
  */
+function delegationItem(
+  item: TaskChatItem,
+): TaskChatProviderActivityItem | null {
+  return (
+    item.kind === "protocol" &&
+    item.surface === "provider_activity" &&
+    item.family === "delegation" &&
+    item.children.length > 0
+  ) ? item : null;
+}
+
+function subagentStatus(
+  raw: string,
+  running: boolean,
+): TaskChatSubagent["status"] {
+  if (raw === "completed" || raw === "closed") return "completed";
+  if (raw === "failed") return "failed";
+  if (raw === "interrupted" || raw === "cancelled") return "cancelled";
+  // A child still running after its run settled was cut off.
+  return running ? "running" : "cancelled";
+}
+
+/** One subagent per delegation child; the first child owns nested tools. */
+function subagentsFromDelegation(
+  item: TaskChatProviderActivityItem,
+  running: boolean,
+): TaskChatSubagent[] {
+  return item.children.map((child) => {
+    const status = subagentStatus(child.status, running);
+    return {
+      id: `${item.id}:${child.id}`,
+      agentType: child.role ?? child.title ?? "Subagent",
+      description: child.summary ?? child.role ?? "Subagent",
+      prompt: child.prompt,
+      model: child.model,
+      status,
+      progressSummary: status === "running" ? child.progress : undefined,
+      startedAtMs: item.startedAtMs ?? null,
+      finishedAtMs: status === "running" ? null : (item.updatedAtMs ?? null),
+      activity: [],
+      // Providers without a dedicated result (Cursor) keep their activity
+      // text in `activitySummary`; keep it readable once the child settles.
+      result: child.result ?? (status === "running" ? undefined : child.progress),
+    };
+  });
+}
+
 export function buildTurnTimelineRows(
   parsed: readonly TaskChatItem[],
   running: boolean,
 ): TaskChatTurnChildItem[] {
   const rows: TaskChatTurnChildItem[] = [];
   let current: TaskChatActivityPhaseItem | null = null;
+  // Subagents dispatched back to back share one tree; their own tool calls
+  // nest inside them instead of breaking the group.
+  let subagentGroup: TaskChatSubagentGroupItem | null = null;
+  const subagentByExecutionId = new Map<string, TaskChatSubagent>();
+  // Some transports also report the spawning call as a tool; the card owns it.
+  const delegationIds = new Set(
+    parsed.flatMap((item) =>
+      delegationItem(item)?.activityId ? [delegationItem(item)!.activityId!] : [],
+    ),
+  );
   const latestRequestByKey = new Map<string, TaskChatProtocolItem>();
   for (const item of parsed) {
     if (item.kind !== "protocol" || item.surface !== "runtime_request")
@@ -1805,6 +1891,48 @@ export function buildTurnTimelineRows(
     return true;
   });
   for (const item of parsed) {
+    const delegation = delegationItem(item);
+    if (delegation) {
+      const subagents = subagentsFromDelegation(delegation, running);
+      if (delegation.activityId && subagents[0])
+        subagentByExecutionId.set(delegation.activityId, subagents[0]);
+      if (!subagentGroup || rows.at(-1) !== subagentGroup) {
+        subagentGroup = { id: `${delegation.id}:subagents`, kind: "subagent_group", subagents: [] };
+        rows.push(subagentGroup);
+      }
+      subagentGroup.subagents.push(...subagents);
+      current = null;
+      continue;
+    }
+    if (item.kind === "tool" && item.parentToolUseId) {
+      const parent = subagentByExecutionId.get(item.parentToolUseId);
+      if (parent) {
+        parent.activity.push(
+          parent.status === "running" || item.status !== "in_progress"
+            ? item
+            : { ...item, status: parent.status === "failed" ? "failed" : "completed" },
+        );
+        continue;
+      }
+    }
+    if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      item.family === "tool_execution"
+    ) {
+      if (item.activityId && delegationIds.has(item.activityId)) continue;
+      const parent = item.parentToolUseId
+        ? subagentByExecutionId.get(item.parentToolUseId)
+        : undefined;
+      if (parent) {
+        parent.activity.push(
+          parent.status === "running" || item.status !== "running"
+            ? item
+            : { ...item, status: parent.status === "failed" ? "failed" : "completed" },
+        );
+        continue;
+      }
+    }
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
       // usage row makes them non-tail. Channel-less legacy transcripts retain

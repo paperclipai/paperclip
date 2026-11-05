@@ -1739,6 +1739,13 @@ fn normalize_acpx_tool_call(
     if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
         normalized["inputUpdated"] = Value::Bool(input_updated);
     }
+    let parent = string(payload.get("parentToolCallId"));
+    if !parent.is_empty() {
+        let parent_item_id = acpx_opaque_item_id(parent, "", "tool");
+        if parent_item_id != item_id {
+            normalized["parentItemId"] = Value::String(parent_item_id);
+        }
+    }
     if let Some(file_changes) =
         crate::tool_file_changes::sanitize_file_changes(payload.get("fileChanges"))
     {
@@ -2292,6 +2299,44 @@ mod tests {
                 Value::String(location.to_owned()),
             );
         }
+    }
+
+    #[test]
+    fn acpx_opaque_tool_ids_match_the_sidecar() {
+        // Shared vector with claude-subagent-lineage.test.ts acpxOpaqueToolItemId.
+        assert_eq!(
+            acpx_opaque_item_id("toolu_01Abc", "", "tool"),
+            "toolu_01Abc"
+        );
+        assert_eq!(
+            acpx_opaque_item_id("tool/with slash", "", "tool"),
+            "acpx-tool-65b834e51b2f923abbb92966fc162e52736b1f0bc7675c8170cf08df837ec5d4"
+        );
+    }
+
+    #[test]
+    fn links_a_subagent_child_tool_to_its_parent_call() {
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_child", "tag": "tool_call",
+                "status": "pending", "title": "Read", "parentToolCallId": "toolu_agent",
+            }),
+            Some("read"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events[0].payload["parentItemId"], "toolu_agent");
+        let top = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_top", "tag": "tool_call", "status": "pending", "title": "Read"}),
+            Some("read"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert!(top[0].payload.get("parentItemId").is_none());
     }
 
     #[test]
