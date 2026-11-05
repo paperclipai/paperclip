@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleCheck,
   CircleHelp,
   Clock3,
   ExternalLink,
@@ -78,6 +79,7 @@ const FAMILY_ICON = {
   safety: ShieldCheck,
   terminal: TerminalSquare,
   wait: Clock3,
+  verification: CircleCheck,
   provider_notice: AlertTriangle,
 } as const;
 

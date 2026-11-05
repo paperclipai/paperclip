@@ -47,6 +47,7 @@ export type TaskChatProviderActivityFamily =
   | "safety"
   | "terminal"
   | "wait"
+  | "verification"
   | "provider_notice";
 
 export type TaskChatProviderActivityStatus =
@@ -382,6 +383,8 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** When the provider first reported this activity (ISO timestamp). */
+  startedAt?: string;
 }
 
 export interface TaskChatWorkspaceChangeItem {

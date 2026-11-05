@@ -318,6 +318,7 @@ const PROVIDER_DETAIL_KEYS: Record<
   safety: ["status", "decision", "targetExecutionId", "summary"],
   terminal: ["origin", "inputClass", "byteCount"],
   wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
+  verification: ["status", "detail", "reasonCode"],
   provider_notice: [
     "severity",
     "category",
@@ -379,7 +380,8 @@ function providerActivityItem(
       label: titleCaseKey(key),
       value: clip(
         value,
-        entry.family === "provider_notice" && (key === "summary" || key === "message")
+        (entry.family === "provider_notice" && (key === "summary" || key === "message")) ||
+          (entry.family === "verification" && key === "detail")
           ? 4000
           : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
       ),
@@ -488,6 +490,7 @@ function providerActivityItem(
     output: rawOutput ? rawOutput.slice(0, PROTOCOL_OUTPUT_MAX) : undefined,
     outputTruncated,
     transcriptIndex: index,
+    startedAt: entry.ts,
   };
 }
 
@@ -517,7 +520,7 @@ function mergeProviderActivityItem(
     previous.family !== "tool_execution" ||
     incoming.family !== "tool_execution"
   ) {
-    return { ...incoming, id: previous.id };
+    return { ...incoming, id: previous.id, startedAt: previous.startedAt ?? incoming.startedAt };
   }
   const details = new Map(
     previous.details.map((detail) => [detail.label, detail]),
@@ -551,6 +554,7 @@ function mergeProviderActivityItem(
   return {
     ...incoming,
     id: previous.id,
+    startedAt: previous.startedAt ?? incoming.startedAt,
     summary: meaningfulProviderToolSummary(incoming.summary)
       ? incoming.summary
       : previous.summary,
