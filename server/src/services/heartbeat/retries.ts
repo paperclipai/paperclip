@@ -1731,12 +1731,24 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       cutoff,
     });
     applyRunDispatchPostCommitEffects(result.postCommitEffects);
-    const { decisions, agents, degraded, capPerAgent } = result.releasePlan;
+    const { decisions, agents, degraded, capPerAgent, released, deferred } = result.releasePlan;
+    // `plan.deferred` holds every row that was not released, including retries
+    // of other mechanisms, which this sweep promotes on its existing path.
+    // Reporting those as "deferred" logged a promotion and a deferral for the
+    // same row, so the two populations are counted apart: `deferred` is quota
+    // retries actually held back, `outOfScope` is other mechanisms released
+    // elsewhere. `deferredApplied`/`deferralSuperseded` split the planned
+    // deferrals by whether the deferred write won its compare-and-set.
+    const deferredQuota = deferred.filter((decision) => !decision.outOfScope).length;
+    const outOfScope = decisions.length - released.length - deferredQuota;
     const summary = {
       now: result.releasePlan.now.toISOString(),
       promoted: result.promoted,
-      released: result.releasePlan.released.length,
-      deferred: result.releasePlan.deferred.length,
+      released: released.length,
+      deferred: deferredQuota,
+      outOfScope,
+      deferredApplied: result.deferredApplied,
+      deferralSuperseded: result.deferralSuperseded,
       degraded,
       capPerAgent,
       agents: agents.length,

@@ -535,29 +535,59 @@ export function createPostgresRunDispatchAdapter(
   }
 
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
-    const rows = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
-        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
-          lte(heartbeatRuns.scheduledRetryAt, input.now),
-          input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
-        ),
-      )
-      .orderBy(
-        asc(heartbeatRuns.scheduledRetryAt),
-        asc(heartbeatRuns.createdAt),
-        asc(heartbeatRuns.id),
-      )
-      .limit(input.limit);
+    const dueNow = and(
+      eq(heartbeatRuns.status, "scheduled_retry"),
+      sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
+      lte(heartbeatRuns.scheduledRetryAt, input.now),
+      input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
+    );
+    const columns = {
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      createdAt: heartbeatRuns.createdAt,
+    };
+    const orderByDue = [
+      asc(heartbeatRuns.scheduledRetryAt),
+      asc(heartbeatRuns.createdAt),
+      asc(heartbeatRuns.id),
+    ];
+
+    // Two reads, one per mechanism class, because the limit is a per-sweep
+    // ceiling on work, not a fairness policy. A quota-recovery cohort denied
+    // while the in-flight count is unreadable keeps its own (past) due time, so
+    // a single ordered read hands every later sweep the same head-of-queue
+    // cohort and never reaches the process-loss retries sorting behind it --
+    // retries that do not depend on that count at all. Each class gets its own
+    // budget and the merged result keeps the caller's due order.
+    const [quotaRows, otherRows] = await Promise.all([
+      db
+        .select(columns)
+        .from(heartbeatRuns)
+        .where(and(dueNow, eq(heartbeatRuns.scheduledRetryReason, QUOTA_RECOVERY_RETRY_REASON)))
+        .orderBy(...orderByDue)
+        .limit(input.limit),
+      db
+        .select(columns)
+        .from(heartbeatRuns)
+        .where(
+          and(
+            dueNow,
+            sql`${heartbeatRuns.scheduledRetryReason} is distinct from ${QUOTA_RECOVERY_RETRY_REASON}`,
+          ),
+        )
+        .orderBy(...orderByDue)
+        .limit(input.limit),
+    ]);
+
+    const rows = [...quotaRows, ...otherRows].sort(
+      (left, right) =>
+        (left.scheduledRetryAt?.getTime() ?? 0) - (right.scheduledRetryAt?.getTime() ?? 0) ||
+        (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0) ||
+        left.id.localeCompare(right.id),
+    );
 
     return rows.map((row) => ({
       runId: row.id,
@@ -596,6 +626,13 @@ export function createPostgresRunDispatchAdapter(
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.status, "scheduled_retry"),
+          // Compare-and-set on the due time this sweep read. Status alone is
+          // not enough: an operator "retry now" moves the due time and leaves
+          // the row `scheduled_retry`, so a status-only guard lets a stale
+          // sweep push the row an operator just released back into the future.
+          // Compared at millisecond precision because Postgres keeps
+          // microseconds and a JS Date does not.
+          sql`date_trunc('milliseconds', ${heartbeatRuns.scheduledRetryAt}) = date_trunc('milliseconds', ${input.previousScheduledRetryAt}::timestamptz)`,
         ),
       )
       .returning({ id: heartbeatRuns.id });

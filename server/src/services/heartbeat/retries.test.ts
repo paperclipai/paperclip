@@ -46,7 +46,7 @@ function callbacks() {
     runDispatch: {
       nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
-      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], releasePlan: emptyReleasePlan() })),
+      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], releasePlan: emptyReleasePlan(), deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
     },
   } satisfies HeartbeatRetryDependencies;
@@ -163,7 +163,7 @@ describe("heartbeat retry module callbacks", () => {
       invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "wake",
     };
     deps.getWorktreeExecutionCutoff.mockResolvedValue(cutoff);
-    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect], releasePlan: emptyReleasePlan(now) });
+    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect], releasePlan: emptyReleasePlan(now), deferredApplied: 0, deferralSuperseded: 0, deferralSupersededRunIds: [] });
     expect(await extracted.createHeartbeatRetries(database.db, deps).promoteDueScheduledRetries(now)).toEqual({ promoted: 1, runIds: ["retry"] });
     expect(deps.runDispatch.promoteDueScheduledRetries).toHaveBeenCalledWith({ now, cutoff });
     expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenCalledWith([effect]);

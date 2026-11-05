@@ -14,10 +14,12 @@ const SWEEP_NOW = new Date("2026-01-01T00:00:00.000Z");
 function fakeReader(
   dueRuns: DueRetryRun[] = [],
   inflight: ReadonlyMap<string, number> | null = new Map(),
-): ScheduledRetryReader & { evaluateCalls: unknown[] } {
+): ScheduledRetryReader & { evaluateCalls: unknown[]; listCalls: unknown[] } {
   const evaluateCalls: unknown[] = [];
+  const listCalls: unknown[] = [];
   return {
     evaluateCalls,
+    listCalls,
     async nextScheduledRetryAt() {
       return dueRuns[0]?.scheduledRetryAt.getTime() ?? null;
     },
@@ -25,8 +27,12 @@ function fakeReader(
       evaluateCalls.push(input);
       return { allowed: true };
     },
-    async listDueRetries() {
-      return dueRuns;
+    // The real reader bounds each retry-mechanism class by `limit`; the fake
+    // honours it too, so a sweep ceiling is proven by what the caller asks for
+    // rather than by a second slice inside the use case.
+    async listDueRetries(input) {
+      listCalls.push(input);
+      return dueRuns.slice(0, input.limit);
     },
     async countInflightQuotaRecoveryRetries() {
       if (inflight instanceof Error) throw inflight;
@@ -162,6 +168,9 @@ describe("createPromoteDueScheduledRetries", () => {
 
     expect(result.promoted).toBe(50);
     expect(result.runIds).toEqual(dueRuns.slice(0, 50).map(({ runId }) => runId));
+    // The ceiling is requested from the reader, which applies it per retry
+    // mechanism class; the use case must not re-slice a merged read.
+    expect(reader.listCalls).toEqual([{ now: SWEEP_NOW, cutoff: null, limit: 50 }]);
   });
 
   it("releases only the per-agent cap and pushes the rest to a later due time", async () => {
@@ -233,6 +242,37 @@ describe("createPromoteDueScheduledRetries", () => {
     // a company-wide throttle.
     expect(result.promoted).toBe(3);
     expect((writer.deferCalls as unknown[]).length).toBe(1);
+  });
+
+  it("passes the due time it read as the compare-and-set guard and counts a superseded deferral", async () => {
+    // The row's due time is what makes the deferral safe against an operator
+    // "retry now" landing between the read and the write: the adapter matches on
+    // it, and this use case must hand it over rather than let status decide.
+    const applied = new Date("2025-12-31T23:59:00.000Z");
+    const superseded = new Date("2025-12-31T23:58:00.000Z");
+    const reader = fakeReader([
+      dueRetry({ runId: "run-1" }),
+      dueRetry({ runId: "run-2", scheduledRetryAt: applied }),
+      dueRetry({ runId: "run-3", scheduledRetryAt: superseded }),
+    ]);
+    const writer = fakeWriter({
+      deferScheduledRetry: async (input) => {
+        writer.deferCalls.push(input);
+        return input.runId === "run-3" ? { deferred: false } : { deferred: true };
+      },
+    });
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    // One cap slot for the agent: run-1 released, the other two deferred.
+    expect(result.deferredApplied).toBe(1);
+    expect(result.deferralSuperseded).toBe(1);
+    expect(result.deferralSupersededRunIds).toEqual(["run-3"]);
+    const calls = writer.deferCalls as { runId: string; previousScheduledRetryAt: Date }[];
+    expect(calls.map((call) => call.runId)).toEqual(["run-2", "run-3"]);
+    expect(calls.map((call) => call.previousScheduledRetryAt.toISOString())).toEqual([
+      applied.toISOString(),
+      superseded.toISOString(),
+    ]);
   });
 
   it("is reproducible for the same sweep instant and seed", async () => {
