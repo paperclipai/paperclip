@@ -528,6 +528,16 @@ describe("provider-neutral events", () => {
     expect(canonicalProviderEventsFromCodex("item/completed", { item: message })).toEqual([]);
   });
 
+  it("keeps literal proposed_plan tags inside a plan body", () => {
+    const body = "# Plan\n\n1. Teach the format: `<proposed_plan>example</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+    expect(claudePlanProposalEvent({ toolCallId: "toolu_1", markdown: body }).payload.markdown).toBe(body);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "plan-2", type: "plan", text: `<proposed_plan>\n${body}\n</proposed_plan>` },
+      })[0]?.payload.markdown,
+    ).toBe(body);
+  });
+
   it("maps a captured Claude ExitPlanMode plan to a completed proposal", () => {
     expect(
       claudePlanProposalEvent({ toolCallId: "toolu_01", markdown: "# Plan\n\n1. Fix it" }),

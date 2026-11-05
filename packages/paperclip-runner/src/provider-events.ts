@@ -771,8 +771,12 @@ export function claudePlanProposalEvent(proposal: {
 
 /** Codex wraps plan-mode output in `<proposed_plan>` tags; keep only the document. */
 function unwrapProposedPlan(markdown: string): string {
-  const match = markdown.match(/<proposed_plan>\s*([\s\S]*?)\s*(?:<\/proposed_plan>|$)/i);
-  return (match?.[1] ?? markdown).trim();
+  // Only a wrapper around the whole document is removed. Literal tags inside
+  // the plan (an inline or fenced example) stay part of its text.
+  const trimmed = markdown.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
 }
 
 function researchSources(

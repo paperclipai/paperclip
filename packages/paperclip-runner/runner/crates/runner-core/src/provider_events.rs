@@ -594,18 +594,23 @@ fn proposed_plan_block(value: &str) -> Option<String> {
 /// A proposed-plan document, redacted and bounded by the `plan.proposed`
 /// schema rather than the short display bound, which would cut it.
 fn plan_proposal_markdown(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    let body = match lower.find("<proposed_plan>") {
-        Some(open) => {
-            let inner = &value[open + "<proposed_plan>".len()..];
-            match inner.to_ascii_lowercase().find("</proposed_plan>") {
-                Some(close) => &inner[..close],
-                None => inner,
-            }
+    // Only a wrapper around the whole document is removed. Literal tags inside
+    // the plan (an inline or fenced example) stay part of its text.
+    let trimmed = value.trim();
+    let mut lines: Vec<&str> = trimmed.split('\n').collect();
+    if lines
+        .first()
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case("<proposed_plan>"))
+    {
+        lines.remove(0);
+        if lines
+            .last()
+            .is_some_and(|line| line.trim().eq_ignore_ascii_case("</proposed_plan>"))
+        {
+            lines.pop();
         }
-        None => value,
-    };
-    redact_sensitive_text_values(body.trim())
+    }
+    redact_sensitive_text_values(lines.join("\n").trim())
         .chars()
         .take(MAX_PLAN_PROPOSAL_CHARS)
         .collect()
@@ -2466,10 +2471,13 @@ mod tests {
         let body = format!("# Plan\n{}", "- step\n".repeat(1_000).trim_end());
         let message = format!("Ready for review.\n<proposed_plan>\n{body}\n</proposed_plan>");
         assert!(message.chars().count() > MAX_TEXT_CHARS);
-        for kind in ["agentMessage", "plan"] {
+        // A message carries prose around the block; a plan item is the
+        // wrapped document itself.
+        let plan_item = format!("<proposed_plan>\n{body}\n</proposed_plan>");
+        for (kind, text) in [("agentMessage", &message), ("plan", &plan_item)] {
             let events = normalize_codex_notification(
                 "item/completed",
-                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": message}}),
+                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": text}}),
             );
             let proposal = events
                 .iter()
@@ -2512,6 +2520,21 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn keeps_literal_proposed_plan_tags_inside_a_plan_body() {
+        let body = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-2", "type": "plan", "text": format!("<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        assert_eq!(events[0].payload["markdown"].as_str(), Some(body));
+        let bare = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-3", "type": "plan", "text": body}}),
+        );
+        assert_eq!(bare[0].payload["markdown"].as_str(), Some(body));
     }
 
     #[test]
