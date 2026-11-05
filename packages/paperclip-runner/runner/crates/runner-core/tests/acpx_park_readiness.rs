@@ -252,3 +252,42 @@ fn ordinary_acpx_replacement_retains_a_multi_batch_tail_behind_existing_ack_debt
         executor.shutdown().unwrap();
     }
 }
+
+#[test]
+fn rejected_read_tail_returns_a_command_error_without_starting_another_turn() {
+    let (fixture, _config, mut executor, _) = fixture("claude");
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"first","text":"Complete."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    fs::write(fixture.0.join("fault"), "read-invalid-tail").unwrap();
+    executor
+        .execute(&command(4, "session.goal.get", json!({})))
+        .unwrap();
+    fs::write(fixture.0.join("fault"), "").unwrap();
+    let error = executor
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId":"second","text":"Must fail without a panic."}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("session is not open"));
+    let journal = fs::read_to_string(fixture.0.join("sidecar.jsonl")).unwrap();
+    assert_eq!(
+        journal
+            .lines()
+            .filter(|line| line.contains("\"command\":\"turn.start\""))
+            .count(),
+        1
+    );
+    let state: Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("acpx-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["lifecycle"], "closed");
+    assert_eq!(state["activeTurnId"], Value::Null);
+}

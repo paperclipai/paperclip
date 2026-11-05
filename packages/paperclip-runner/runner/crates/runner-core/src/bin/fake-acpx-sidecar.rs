@@ -142,6 +142,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     next_sequence += 1;
                 }
             }
+            if command == "session.goal.get" && fault == "read-invalid-tail" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    "unbound-old-turn",
+                    json!({"type":"text_delta","text":"Rejected stale tail."}),
+                )?;
+                next_sequence += 1;
+            }
             if command == "session.snapshot" && fault == "goal-during-snapshot" {
                 source_goal_revision += 1;
                 let frame = json!({

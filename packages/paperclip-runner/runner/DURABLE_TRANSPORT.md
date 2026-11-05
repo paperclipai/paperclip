@@ -144,10 +144,11 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
-Before replacing an idle ACPX sidecar, ordinary next-turn and attachment
-admission retain its already-buffered read events under their source authority.
-The existing warm-quiesce snapshot exposes that ACK debt before attachment.
-The deliberate sidecar replacement and persistent session identity are unchanged.
+Before B attaches, Runner saves the events it already received from A's sidecar.
+The readiness snapshot stays blocked until Core acknowledges those events.
+Another turn within A also keeps its buffered events without waiting for an ACK.
+ACPX still replaces the sidecar at the next turn or run attachment. The saved
+provider identity continues through that replacement.
 
 ## Host park eligibility
 

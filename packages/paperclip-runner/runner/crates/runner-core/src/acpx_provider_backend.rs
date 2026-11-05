@@ -1730,9 +1730,6 @@ impl AcpxCommandExecutor {
                 "turn.start payload.turnId is invalid",
             ));
         }
-        if self.session.is_none() {
-            return Err(DurableRunnerError::invalid("ACPX session is not open"));
-        }
         // Retain the old sidecar's read tail before its MCP receipt epoch changes.
         if self
             .session
@@ -1740,6 +1737,9 @@ impl AcpxCommandExecutor {
             .is_some_and(|session| session.state().has_settled_turns())
         {
             self.retain_buffered_provider_events()?;
+        }
+        if self.session.is_none() {
+            return Err(DurableRunnerError::invalid("ACPX session is not open"));
         }
         let (provider_process_will_be_replaced, previous_process_id) = self
             .session
