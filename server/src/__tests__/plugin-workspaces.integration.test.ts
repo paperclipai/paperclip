@@ -558,8 +558,10 @@ const support = await getEmbeddedPostgresTestSupport();
       const workspace = await preparePluginWorkspace(db, f.workers, f.input);
       const svc = projectService(db);
       await expect(
-        svc.update(f.input.projectId, { executionWorkspacePolicy: {} }),
-      ).rejects.toThrow("storage owner");
+        svc.update(f.input.projectId, {
+          executionWorkspacePolicy: { storageProviderPluginId: null },
+        }),
+      ).rejects.toThrow("stays attached");
       await expect(
         svc.updateWorkspace(f.input.projectId, f.input.projectWorkspaceId, {
           repoUrl: "https://github.com/example/other.git",

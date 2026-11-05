@@ -3,7 +3,7 @@ import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
-import { requiredQualityReviewSchema } from "@paperclipai/shared";
+import { requiredQualityReviewSchema, type RequestCheckboxConfirmationOption } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -97,6 +97,7 @@ import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { readPersistedConfirmationDecision } from "../confirmation-decision.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { logActivity, persistActivity, publishActivity } from "../activity-log.js";
@@ -2468,6 +2469,7 @@ export class PaperclipRunnerToolAuthority {
     revisionId: string;
     revisionNumber: number;
     markdown: string;
+    approvedOptions?: RequestCheckboxConfirmationOption[];
   } | null> {
     const acceptedTarget = record(
       record(record(contextSnapshot).planReviewInteraction).acceptedTargetRevision,
@@ -2475,7 +2477,8 @@ export class PaperclipRunnerToolAuthority {
     let revisionId = typeof acceptedTarget.revisionId === "string"
       ? acceptedTarget.revisionId
       : null;
-    if (!revisionId) revisionId = await this.#latestAcceptedPlanRevisionId();
+    const approval = await this.#latestAcceptedPlanApproval(revisionId);
+    if (!revisionId) revisionId = approval?.revisionId ?? null;
     if (!revisionId) return null;
 
     const [revision] = await this.db.select({
@@ -2496,33 +2499,42 @@ export class PaperclipRunnerToolAuthority {
         eq(documentRevisions.companyId, this.binding.companyId),
       ))
       .limit(1);
-    if (!revision || !this.binding.museRuntime) return revision ?? null;
+    if (!revision) return null;
+    const acceptedRevision = { ...revision, ...(approval?.approvedOptions ? { approvedOptions: approval.approvedOptions } : {}) };
+    if (!this.binding.museRuntime) return acceptedRevision;
     const document = await documentService(this.db).getIssueDocumentByKey(this.binding.issueId, "plan");
     const [visible] = await this.#projectMuseDocumentContent(issue, [{
       id: revision.revisionId, documentId: revision.documentId, body: revision.markdown,
     }], document ? [document] : []);
-    return { ...revision, markdown: visible!.body };
+    return { ...acceptedRevision, markdown: visible!.body };
   }
 
-  async #latestAcceptedPlanRevisionId(): Promise<string | null> {
-    const rows = await this.db.select({ payload: issueThreadInteractions.payload })
+  async #latestAcceptedPlanApproval(revisionId: string | null): Promise<{
+    revisionId: string;
+    approvedOptions: RequestCheckboxConfirmationOption[] | null;
+  } | null> {
+    const rows = await this.db.select({ payload: issueThreadInteractions.payload, kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status, result: issueThreadInteractions.result, resolvedAt: issueThreadInteractions.resolvedAt })
       .from(issueThreadInteractions)
       .where(and(
         eq(issueThreadInteractions.companyId, this.binding.companyId),
         eq(issueThreadInteractions.issueId, this.binding.issueId),
-        eq(issueThreadInteractions.kind, "request_confirmation"),
+        inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
         eq(issueThreadInteractions.status, "accepted"),
+        revisionId ? sql`${issueThreadInteractions.payload}->'target'->>'revisionId' = ${revisionId}` : undefined,
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
     for (const row of rows) {
-      const target = record(record(row.payload).target);
+      const decision = readPersistedConfirmationDecision(row);
+      if (!decision) continue;
+      const target = decision.target;
       if (
-        target.type === "issue_document"
+        target?.type === "issue_document"
         && (target.issueId === undefined || target.issueId === this.binding.issueId)
         && target.key === "plan"
         && typeof target.revisionId === "string"
         && target.revisionId.length > 0
-      ) return target.revisionId;
+      ) return { revisionId: target.revisionId, approvedOptions: decision.approvedOptions };
     }
     return null;
   }

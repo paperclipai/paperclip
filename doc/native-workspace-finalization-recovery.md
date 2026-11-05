@@ -306,6 +306,12 @@ extracted. No host path or link target is copied into the informational run even
 
 ## Repairing a failed workspace export without rerunning the agent
 
+The background workspace worker runs up to four copy-backs at once, one per
+task, so a slow sandbox export does not hold every other task's retry. Due work
+runs oldest first. Work without a saved retry time, such as a copy-back that a
+restart interrupted, is ordered by when it became pending; it does not go ahead
+of older retries that are already due.
+
 Transient export failures retry three times, then produce
 `native_workspace_sync_out_retry_exhausted`. The accepted result stays saved,
 and the exact sandbox is stopped and retained for export-only recovery. The
@@ -401,6 +407,10 @@ and startup cancellation. Before dispatch, the controller stores a separate
 and original plugin. The initial cleanup and restart sweep both require that
 plugin to advertise `environmentStopLease`. Missing capability or failed stop
 leaves pending cleanup; ordinary release and destroy are never fallback methods.
+A typed terminal stop failure (`PluginEnvironmentStopError` with reason
+`resource_unrecoverable` or `recovery_failed`) escalates the lease for operator
+attention on its first attempt and uses the long retry interval. The lease stays
+in pending cleanup.
 
 A matching stopped receipt clears the pending intent, leaves the lease released
 and resumable, and saves `sandboxStopAndRetainReceipt`. Its request identity,

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import net from "node:net";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +84,49 @@ describe("portable remote workspace archives", () => {
   it("round trips an empty workspace", async () => {
     const snapshot = await capture(await source()); const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual([]);
+  });
+  it.skipIf(process.platform === "win32").each(["local", "serialized"])("preserves files beside a transient socket in %s capture", async mode => {
+    const cwd = await source(), socketPath = path.join(cwd, "s");
+    const server = net.createServer();
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+    try {
+      await fs.writeFile(path.join(cwd, "saved.txt"), "uncommitted work\n");
+      let snapshot: Awaited<ReturnType<typeof capture>>;
+      if (mode === "serialized") {
+        const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "remote.pcws");
+        await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+        snapshot = { archivePath, ...JSON.parse((await execute(process.execPath, [helper, "capture", cwd, archivePath])).stdout) };
+      } else snapshot = await capture(cwd);
+      expect((await fs.lstat(socketPath)).isSocket()).toBe(true);
+      const restored = await restore(snapshot);
+      expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("uncommitted work\n");
+      expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
+      const archive = await fs.readFile(snapshot.archivePath), start = Buffer.from("PCWS1\n").length;
+      const length = archive.readUInt32BE(start);
+      expect(JSON.parse(archive.subarray(start + 4, start + 4 + length).toString()).excluded).toContain("s");
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
+  it.skipIf(process.platform === "win32")("keeps named pipes outside the portable archive contract", async () => {
+    const cwd = await source(), pipe = path.join(cwd, "pipe");
+    await execute("mkfifo", [pipe]);
+    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_unsupported_entry");
+    expect((await fs.lstat(pipe)).isFIFO()).toBe(true);
+  });
+  it.skipIf(process.platform === "win32")("retains a file that replaces a socket during capture", async () => {
+    const cwd = await source(), socketPath = path.join(cwd, "s"), server = net.createServer();
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+    try {
+      archiveIo.beforeOpen = async target => {
+        if (target !== path.join(root, "snapshot.pcws")) return;
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        await fs.writeFile(socketPath, "new work\n");
+      };
+      await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_changed");
+      expect(await fs.readFile(socketPath, "utf8")).toBe("new work\n");
+      await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
   });
   it("captures with room for one archive and bounded metadata without another copy of working files", async () => {
     const cwd = await source(), payload = Buffer.alloc(4 * 1024 * 1024, 123);
@@ -320,11 +364,11 @@ describe("portable remote workspace archives", () => {
     expect(await fs.readFile(archivePath, "utf8")).toBe("preexisting archive bytes\n");
     expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("retained source bytes\n");
   });
-  it("keeps an unrecognized real filesystem error private in the serialized capture helper", async () => {
+  it("names only the code of an unrecognized real filesystem error in the serialized capture helper", async () => {
     const helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "snapshot.pcws");
     await fs.writeFile(helper, remoteWorkspaceArchiveScript());
     await expect(execute(process.execPath, [helper, "capture", path.join(root, "SYNTHETIC_PRIVATE_NAME".repeat(20)), archivePath], { env }))
-      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed" });
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: code=ENAMETOOLONG syscall=lstat" });
     await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("preserves shallow repository boundaries and a nested managed checkout", async () => {
