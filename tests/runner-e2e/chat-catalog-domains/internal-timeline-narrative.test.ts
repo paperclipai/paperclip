@@ -25,6 +25,11 @@ it("does not infer the initial worker over a contrary possessive within the comm
     .replace("The verification command failed", "The verification command failed on Riley's attempt");
   expect(grade(reply)).toBe(false);
 });
+it("does not credit a different worker's execution as the first failed attempt", () => {
+  const reply = account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed during Riley's execution");
+  expect(grade(reply)).toBe(false);
+});
 it("keeps a contrary worker heading as invalidation across blank lines", () => {
   const reply = account.replace("First attempt (Morgan)", "Initial attempt (Riley)")
     .replace("Morgan built the page. ", "Riley built the page.\n\n");
