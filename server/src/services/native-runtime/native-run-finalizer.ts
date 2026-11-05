@@ -269,7 +269,7 @@ async function claimCoordinator(input: {
  */
 export function readWorkspaceFailureCause(value: unknown): string | null {
   return typeof value === "string" && value.length <= 1024
-    && /^(?:remote_workspace|native_post_result)_[a-z_]+(?::[A-Za-z0-9_=;:,. -]*)?$/.test(value) ? value : null;
+    && /^(?:remote_workspace|native_post_result)_[a-z_]+(?::[A-Za-z0-9_=;:,.() -]*)?$/.test(value) ? value : null;
 }
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,

@@ -59,7 +59,9 @@ export class RemoteWorkspaceOperationError extends Error {
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
   if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError) return error.message;
   if (!(error instanceof Error)) return null;
-  return remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message ? error.message : null;
+  if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
+  const operation = providerRefusals.get(error);
+  return operation ? remoteWorkspaceProviderRefusalCause(operation, error) : null;
 }
 
 export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepare_timeout";
@@ -77,6 +79,7 @@ export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOpera
 const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
   [/daytona_sandbox_not_found/i, "daytona_sandbox_not_found"],
   [/sandbox lease \S+ is no longer active/i, "sandbox_lease_inactive"],
+  [/\b(?:EACCES|EPERM|permission denied)\b/i, "permission_denied"],
   [/\b(?:not (?:started|running)|is stopped|state[^A-Za-z]{1,4}stopped|stopped sandbox)\b/i, "sandbox_not_running"],
   [/\b(?:timed? ?out|timeout|ETIMEDOUT)\b/i, "transport_timeout"],
   [/\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|channel lost|transport_closed|websocket)\b/i, "transport_closed"],
@@ -85,15 +88,22 @@ const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
   [/\b(?:5\d\d|service unavailable|bad gateway|internal server error)\b/i, "provider_unavailable"],
 ];
 
+// Copy-back errors the provider threw before any exit status, by operation.
+// The error itself is rethrown unchanged, so existing callers and classifiers
+// keep their contracts; only the recorded cause is derived from this.
+const providerRefusals = new WeakMap<object, RemoteWorkspaceOperation>();
+function noteProviderRefusal(operation: RemoteWorkspaceOperation, error: unknown) {
+  if (error && typeof error === "object" && !providerRefusals.has(error)) providerRefusals.set(error, operation);
+}
+
 /**
  * A copy-back command that never produced an exit status (the provider or its
  * transport threw) is named by a closed label and an optional errno-style code.
  * Provider text can carry sandbox paths or identifiers, so it is never copied.
  */
-export function remoteWorkspaceTransportFailure(operation: RemoteWorkspaceOperation, error: unknown): Error {
-  if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError) return error;
-  // Archive-safety refusals keep their exact text: their classifier owns the retry policy.
-  if (classifyWorkspaceRestoreFailure(error) !== "restore_failed") return error as Error;
+function remoteWorkspaceProviderRefusalCause(operation: RemoteWorkspaceOperation, error: unknown): string | null {
+  // Archive-safety and Git-metadata refusals have their own exact diagnostics.
+  if (["restore_unsafe_archive", "restore_invalid_metadata"].includes(classifyWorkspaceRestoreFailure(error))) return null;
   const texts: string[] = [];
   let code: string | null = null;
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
@@ -105,20 +115,16 @@ export function remoteWorkspaceTransportFailure(operation: RemoteWorkspaceOperat
   const text = texts.join("\n");
   const label = TRANSPORT_FAILURE_LABELS.find(([pattern]) => pattern.test(text) || (code !== null && pattern.test(code)))?.[1]
     ?? "provider_error";
-  const failure = new RemoteWorkspaceOperationError(
-    `remote_workspace_operation_failed: operation=${operation} transport=${label}${code ? ` code=${code}` : ""}`);
-  failure.cause = error;
-  return failure;
+  return `remote_workspace_operation_failed: operation=${operation} transport=${label}${code ? ` code=${code}` : ""}`;
 }
 
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
   args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
-  // Copy-back records why the provider refused the command; other operations
-  // keep their existing error contracts.
+  // Copy-back records why the provider refused the command.
   const result = operation === "capture" || operation === "archive_helper"
-    ? await execute().catch((error: unknown) => { throw remoteWorkspaceTransportFailure(operation, error); })
+    ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })
     : await execute();
   if (result.timedOut) throw new RemoteWorkspaceOperationTimeoutError(operation, timeoutMs);
   if (result.exitCode !== 0) {
@@ -362,8 +368,8 @@ export async function captureRemoteWorkspaceArchive(input: {
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
-    throw error instanceof Error && error.message === "remote_workspace_capture_transfer_mismatch"
-      ? error : remoteWorkspaceTransportFailure("download", error);
+    if (!(error instanceof Error && error.message === "remote_workspace_capture_transfer_mismatch")) noteProviderRefusal("download", error);
+    throw error;
   }
 }
 

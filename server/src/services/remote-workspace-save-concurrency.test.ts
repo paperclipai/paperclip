@@ -493,7 +493,7 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
       execute: async () => { throw new Error("Daytona sandbox lease SYNTHETIC-private-id is no longer active."); } } };
     await expect(saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
       target: refused, assertOwned: async () => undefined }))
-      .rejects.toThrow("remote_workspace_operation_failed: operation=archive_helper transport=sandbox_lease_inactive");
+      .rejects.toThrow("Daytona sandbox lease SYNTHETIC-private-id is no longer active.");
     const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
       eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;

@@ -13,6 +13,7 @@ import {
   cleanupRemoteWorkspaceArchive,
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
+  remoteWorkspaceFailureCause,
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
@@ -546,8 +547,10 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     execute.mockRejectedValueOnce(Object.assign(new Error(message), code ? { code } : {}));
     const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
       .then(() => null, (error: unknown) => error as Error);
-    expect(failure?.message).toBe(`remote_workspace_operation_failed: operation=archive_helper ${named}`);
-    expect(failure?.message).not.toMatch(/SYNTHETIC|private/);
+    // The thrown error is unchanged for existing callers; only the recorded cause is redacted.
+    expect(failure?.message).toBe(message);
+    expect(remoteWorkspaceFailureCause(failure)).toBe(`remote_workspace_operation_failed: operation=archive_helper ${named}`);
+    expect(remoteWorkspaceFailureCause(failure)).not.toMatch(/SYNTHETIC|private/);
     // The sandbox-loss classification that stops retries still sees its code.
     expect(classifyNativeWorkspaceFailure(failure).code).toBe(message.startsWith("daytona_sandbox_not_found")
       ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed");
@@ -557,8 +560,21 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic bytes\n");
     const { remote } = target();
     remote.runner!.syncOut = vi.fn(async () => { throw new Error("Daytona download of /SYNTHETIC/private timed out"); });
-    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed: operation=download transport=transport_timeout$/);
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: unknown) => error as Error);
+    expect(remoteWorkspaceFailureCause(failure)).toBe("remote_workspace_operation_failed: operation=download transport=transport_timeout");
+  });
+
+  it("names a permission-denied archive download without its path", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic bytes\n");
+    const { remote } = target();
+    remote.runner!.syncOut = vi.fn(async () => {
+      throw Object.assign(new Error("EACCES: permission denied, open '/SYNTHETIC/private'"), { code: "EACCES" });
+    });
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: unknown) => error as Error);
+    expect(remoteWorkspaceFailureCause(failure))
+      .toBe("remote_workspace_operation_failed: operation=download transport=permission_denied code=EACCES");
   });
 
   it("keeps an archive-safety refusal exact for its own retry policy", async () => {
@@ -566,8 +582,14 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const { remote } = target();
     const refusal = "Daytona syncOut refusing tarball member that escapes the extraction dir: ../private";
     remote.runner!.syncOut = vi.fn(async () => { throw new Error(refusal); });
-    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(refusal);
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(refusal);
+    expect(remoteWorkspaceFailureCause(failure)).toBeNull();
+  });
+
+  it("does not label a provider error that did not come from a copy-back command", () => {
+    expect(remoteWorkspaceFailureCause(new Error("Daytona sandbox lease SYNTHETIC is no longer active."))).toBeNull();
   });
 
   it.each([
