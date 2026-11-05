@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgentMentionHref,
   buildSkillMentionHref,
+  instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
@@ -14,6 +15,7 @@ import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, HeartbeatRun } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
@@ -1138,6 +1140,40 @@ describe("TaskChatComposer", () => {
     expect(creation.onSubmit).toHaveBeenCalledExactlyOnceWith(creation.value, "standard", null);
   });
 
+  it.each([false, true])("waits for the saved shortcut preference before enabling Enter submission (legacy=%s)", async (legacy) => {
+    let resolveSettings!: (settings: Awaited<ReturnType<typeof instanceSettingsApi.getExperimental>>) => void;
+    const pendingSettings = new Promise<Awaited<ReturnType<typeof instanceSettingsApi.getExperimental>>>((resolve) => {
+      resolveSettings = resolve;
+    });
+    const getSettings = vi.spyOn(instanceSettingsApi, "getExperimental").mockReturnValue(pendingSettings);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    try {
+      render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" /></QueryClientProvider>);
+      typeText("Keep this draft");
+      pressKey("Enter");
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("Keep this draft");
+
+      await act(async () => {
+        resolveSettings(instanceExperimentalSettingsSchema.parse({ enableLegacyComposerSubmit: legacy }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushAsync();
+      pressKey("Enter");
+      await flushAsync();
+      if (legacy) {
+        expect(onAdd).not.toHaveBeenCalled();
+        pressKey("Enter", { metaKey: true });
+        await flushAsync();
+      }
+      expect(onAdd).toHaveBeenCalledTimes(1);
+    } finally {
+      getSettings.mockRestore();
+    }
+  });
+
   it("restores the old shortcut for task replies and updates the preference without remounting", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
     client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: true });
@@ -1672,6 +1708,27 @@ describe("TaskChatComposer", () => {
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     expect(onAdd).toHaveBeenCalledWith(expected.trim(), undefined, undefined, undefined, expect.any(String));
+  });
+
+  it("does not submit an unselected slash menu with Enter", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
+    typeText("/dep");
+    await placeCaretAtEnd();
+    autocompleteOption("/deploy");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(editable().textContent).toBe("/dep");
+
+    pressKey("ArrowDown");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
   it("inserts a /-command from the autocomplete menu", async () => {

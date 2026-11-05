@@ -17,5 +17,7 @@ export function useComposerSubmitKey(): "enter" | "mod-enter" {
     },
     contextClient ?? detachedClient!,
   );
-  return contextClient && data?.enableLegacyComposerSubmit === true ? "mod-enter" : "enter";
+  if (!contextClient) return "enter";
+  // Keep plain Enter safe until the saved preference is known on a cold load.
+  return !data || data.enableLegacyComposerSubmit === true ? "mod-enter" : "enter";
 }

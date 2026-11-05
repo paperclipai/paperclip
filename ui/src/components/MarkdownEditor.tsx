@@ -1484,9 +1484,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }
         }
 
-        // Plain Enter first accepts an active autocomplete selection.
+        // Leave an unselected slash menu's Enter with the editor.
         if (
           onSubmit && isSubmitShortcut(e)
+          && !(mentionActive && filteredMentions.length > 0)
           && e.target instanceof HTMLElement
           && e.target.closest('[contenteditable="true"]')
         ) {
