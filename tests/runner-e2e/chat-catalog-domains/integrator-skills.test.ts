@@ -76,4 +76,5 @@ it("preserves required mobile checks beside protective nonoverflow instructions 
  expect(preservesWebsiteChecklist(original.replace(websiteChecklist[3]!, `${websiteChecklist[3]!.slice(0, -1)}; ${protection}`))).toBe(true);
  expect(preservesWebsiteChecklist(`${original.replace(websiteChecklist[3]!, `Do not test the landing page at a 375 pixel viewport without horizontal scrolling.`)}\n- ${protection}`)).toBe(false);
  expect(preservesWebsiteChecklist(`${original.replace(websiteChecklist[3]!, `Testing the landing page at a 375 pixel viewport without horizontal scrolling is optional.`)}\n- ${protection}`)).toBe(false);
+ expect(preservesWebsiteChecklist(original.replace(websiteChecklist[3]!, `Do not perform the 375px review. ${websiteChecklist[3]!}`))).toBe(false);
 });
