@@ -1,3 +1,4 @@
+import { continuationFailureRetryOptions } from "./heartbeat/continuation-retry-policy.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
@@ -1002,7 +1003,7 @@ export function heartbeatService(
     // attempt cannot be retried again through this lane.
     transientRetryBudgetSpent: (run) =>
       executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      (continuationFailureRetryOptions(run)?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
   });
   const runDispatch = createRunDispatch(db);
   const {

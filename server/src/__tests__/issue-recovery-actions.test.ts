@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -1042,6 +1043,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("cancels a routine execution lost to transient infrastructure instead of blocking it", async () => {
+    const cleanupWake = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.terminalWorkspaces, cleanupWake);
+    try {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineId = randomUUID();
     const routineRunId = randomUUID();
@@ -1117,6 +1121,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, executionIssueId));
     expect(actionRows).toHaveLength(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(cleanupWake).toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("does not cancel a routine execution after a newer same-status run is attached", async () => {

@@ -1,3 +1,4 @@
+import { CONVERSATION_CONTINUATION_POLICY } from "../conversation-continuation.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -237,6 +238,37 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, run };
   }
+
+  it("uses the configured infrastructure budget and exponential delay in the real scheduler", async () => {
+    const { run, agent } = await fixture();
+    // Two previous automatic retries used to exhaust the shared scheduler even
+    // though continuation recovery advertised a larger infrastructure budget.
+    const failed = { ...run, errorCode: "acpx_turn_failed", scheduledRetryAttempt: 2,
+      scheduledRetryReason: "transient_failure",
+      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } };
+    await db.update(heartbeatRuns).set(failed).where(eq(heartbeatRuns.id, run.id));
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now });
+    expect(result).toMatchObject({ outcome: "scheduled" });
+    if (result.outcome !== "scheduled") return;
+    expect(result.run.scheduledRetryAttempt).toBe(3);
+    expect(result.run.scheduledRetryReason).toBe("transient_failure");
+    expect(result.run.scheduledRetryAt?.getTime()).toBe(now.getTime() + 240_000);
+    const exhausted = await boundRetries().retries.scheduleBoundedRetryForRun({
+      ...result.run, status: "failed", errorCode: "acpx_turn_failed", resultJson: failed.resultJson,
+    }, agent, { now });
+    expect(exhausted).toMatchObject({ outcome: "retry_exhausted", maxAttempts: 3 });
+  });
+
+  it("keeps unknown legacy action outcomes held despite a larger infrastructure budget", async () => {
+    const { run, agent } = await fixture();
+    const failed = { ...run, errorCode: "acpx_turn_failed", scheduledRetryAttempt: 2,
+      scheduledRetryReason: "transient_failure", resultJson: null };
+    await db.update(heartbeatRuns).set(failed).where(eq(heartbeatRuns.id, run.id));
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now });
+    expect(result).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successors).toHaveLength(0);
+  });
 
   it.each([false, true])("records a workspace wait only for the deferral's workspace (task moved after cancel: %s)", async (moved) => {
     const { run, agent, issue, companyId } = await fixture();

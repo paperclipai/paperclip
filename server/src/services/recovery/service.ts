@@ -1,3 +1,4 @@
+import { isTransientAcpxTurnFailure } from "@paperclipai/adapter-utils/acpx-engine/recovery-classification";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -546,25 +547,6 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "acpx_backend_unavailable",
   "acpx_timeout",
 ]);
-
-// Categories of an ACP agent's typed terminal failure that report a lost
-// connection or an unavailable service. Other categories, such as a configured
-// budget, turn or context limit, are permanent: retrying the same settings
-// cannot repair them, so they keep the default bounded retry and stay visible.
-const TRANSIENT_ACPX_TERMINAL_FAILURE_CATEGORIES = new Set<string>(["connection", "service"]);
-
-/**
- * `acpx_turn_failed` covers both transport failures and typed terminal failures
- * from the ACP agent. A run without a typed diagnostic died on the transport.
- */
-function isTransientAcpxTurnFailure(latestRun: LatestIssueRun) {
-  const resultJson = latestRun?.resultJson;
-  if (typeof resultJson !== "object" || resultJson === null) return true;
-  const failure = (resultJson as Record<string, unknown>).terminalSessionFailure;
-  if (typeof failure !== "object" || failure === null) return true;
-  const category = readNonEmptyString((failure as Record<string, unknown>).category);
-  return category === null || TRANSIENT_ACPX_TERMINAL_FAILURE_CATEGORIES.has(category);
-}
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
@@ -4125,7 +4107,7 @@ export function recoveryService(
     issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
-  }, tx: DbTransaction, publications: ActivityPublication[]) {
+  }, tx: DbTransaction, publications: ActivityPublication[], postCommitActions: IssuePostCommitAction[]) {
     // Routine execution issues are one-shot scheduled firings, not standing work.
     // There is no retry budget to exhaust: retrying a routine execution issue would
     // only duplicate the firing, while the next scheduled run already supersedes
@@ -4153,21 +4135,13 @@ export function recoveryService(
     ) {
       return locked;
     }
-    const rows = await tx
-      .update(issues)
-      .set({
-        status: "cancelled",
-        // Workspace cleanup measures closed time from cancelledAt.
-        cancelledAt: new Date(),
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(issues.id, input.issue.id))
-      .returning();
-    const updatedIssue = rows[0];
+    const updatedIssue = await issueService(tx as unknown as Db).update(input.issue.id, {
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    }, tx, publications, postCommitActions);
     if (!updatedIssue) return null;
 
     if (input.issue.originRunId) {
@@ -4305,7 +4279,7 @@ export function recoveryService(
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
-      }, tx, publications);
+      }, tx, publications, postCommitActions);
       if (closed) return closed;
     }
 
