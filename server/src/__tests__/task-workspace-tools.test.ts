@@ -23,6 +23,25 @@ describe("task workspace semantic transport", () => {
     });
     expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/companies/company/execution-workspaces?summary=true&selectableForTask=true&limit=51", expect.objectContaining({ method: "GET" })]);
   });
+  it("fits large summary fields in a byte-bounded page with a usable cursor", async () => {
+    const rows = Array.from({ length: 51 }, (_, i) => ({ id: `workspace-${i}`, name: "🦀\\\"".repeat(4_000) }));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(rows)));
+    const page = await callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} });
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(128 * 1024);
+    expect(page.workspaces.length).toBeGreaterThan(0);
+    expect(page.workspaces.length).toBeLessThan(50);
+    expect(page.nextCursor).toBe(page.workspaces.at(-1).id);
+    expect(page.hasMore).toBe(true);
+    expect(page.workspaces.every((row: unknown, i: number) => JSON.stringify(row) === JSON.stringify(rows[i]))).toBe(true);
+  });
+  it("returns an explicit preview and advances past an individually oversized summary", async () => {
+    const row = { id: "workspace-one", name: "🦀\\\"".repeat(100_000), cwd: "/tmp/source" };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([row, { id: "workspace-two", name: "Next" }])));
+    const page = await callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} });
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(128 * 1024);
+    expect(page).toMatchObject({ returnedCount: 1, hasMore: true, nextCursor: row.id,
+      workspaces: [{ id: row.id, cwd: row.cwd, truncatedFields: ["name"] }] });
+  });
   it("uses the normal bound task routes without passing caller identities or interrupt requests", async () => {
     const fetcher = vi.fn(async () => Response.json({ kind: "scheduled", applies: "next_normal_admission" }));
     vi.stubGlobal("fetch", fetcher);

@@ -60,9 +60,34 @@ it.skipIf(process.env.PAPERCLIP_LIVE_WORKSPACE_DISCOVERY !== "true")("settles wo
       const after = await heartbeat.getRun(run!.id);
       expect({ status: after?.status, errorCode: after?.errorCode, error: after?.error }).toMatchObject({ status: "succeeded", errorCode: null });
       expect(after?.resultJson?.recoveredExecutionFailure).toBeUndefined();
-      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run!.id));
-      const calls = events.filter(event => event.eventType === "tool.execution.started" && JSON.stringify(event.payload).includes('"list_workspaces"'));
-      expect(calls.length).toBeGreaterThanOrEqual(2);
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run!.id)).orderBy(heartbeatRunEvents.seq);
+      type ToolItem = { id: string; type: string; name?: string; input?: { cursor?: string; limit?: number };
+        is_error?: boolean; error?: unknown; result?: { workspaces: Array<{ id: string }>; returnedCount: number; hasMore: boolean; nextCursor: string | null } };
+      const items = events.flatMap(event => {
+        const item = (event.payload as { prpEvent?: { payload?: { item?: ToolItem } } } | null)?.prpEvent?.payload?.item;
+        return item ? [item] : [];
+      });
+      const calls = items.filter(item => item.type === "tool_use" && item.name === "list_workspaces");
+      const receipts = new Map(items.filter(item => item.type === "tool_result").map(item => [item.id, item]));
+      for (const call of calls) {
+        expect(receipts.get(call.id)).toMatchObject({ result: { hasMore: true } });
+        expect(receipts.get(call.id)?.is_error).not.toBe(true);
+        expect(receipts.get(call.id)?.error).toBeUndefined();
+        expect(Buffer.byteLength(JSON.stringify(receipts.get(call.id)?.result))).toBeLessThanOrEqual(128 * 1024);
+      }
+      const firstIndex = calls.findIndex(call => call.input?.limit === 2 && !call.input.cursor);
+      const first = calls[firstIndex];
+      expect(first).toBeDefined();
+      const firstPage = receipts.get(first!.id)!.result!;
+      expect(firstPage).toMatchObject({ returnedCount: 2, hasMore: true });
+      expect(firstPage.workspaces).toHaveLength(2);
+      expect(firstPage.nextCursor).toBe(firstPage.workspaces.at(-1)!.id);
+      const second = calls.slice(firstIndex + 1).find(call => call.input?.limit === 2 && call.input.cursor === firstPage.nextCursor);
+      expect(second).toBeDefined();
+      const secondPage = receipts.get(second!.id)!.result!;
+      expect(secondPage).toMatchObject({ returnedCount: 2, hasMore: true });
+      expect(secondPage.workspaces).toHaveLength(2);
+      expect(new Set([...firstPage.workspaces, ...secondPage.workspaces].map(row => row.id)).size).toBe(4);
       expect(await readFile(join(f.workspace, "discovery.txt"), "utf8")).toBe(markers.slice(0, index + 1).join("\n") + "\n");
       const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       expect(task).toMatchObject({ status: "done", executionRunId: null, checkoutRunId: null });
@@ -70,7 +95,8 @@ it.skipIf(process.env.PAPERCLIP_LIVE_WORKSPACE_DISCOVERY !== "true")("settles wo
     }
     expect(completed[1].providerSessionId).toBe(completed[0].providerSessionId);
     const evidence = { passed: true, model: "gpt-6.1-sol", effort: "high", lifecycleMode: "per_turn",
-      platform: `${process.platform}-${process.arch}`, inventory: 2_000, completed, fileLines: 2, taskStatus: "done", locksCleared: true };
+      platform: `${process.platform}-${process.arch}`, inventory: 2_000, completed, fileLines: 2, taskStatus: "done", locksCleared: true,
+      cursorFollowed: true, nonOverlappingPages: true };
     if (process.env.PAPERCLIP_LIVE_EVIDENCE_PATH) await writeFile(process.env.PAPERCLIP_LIVE_EVIDENCE_PATH, JSON.stringify(evidence, null, 2) + "\n");
     console.log(JSON.stringify(evidence));
   } finally {

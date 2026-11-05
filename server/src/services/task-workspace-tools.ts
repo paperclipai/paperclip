@@ -31,6 +31,32 @@ function repositoryView(repo: Record<string, unknown>) {
     state: repo.state, pinnedCommit: repo.pinnedCommit, branchName: repo.branchName };
 }
 
+function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
+  const workspaces: Array<Record<string, unknown>> = [];
+  const result = () => ({ workspaces, limit, returnedCount: workspaces.length,
+    hasMore: rows.length > workspaces.length,
+    nextCursor: rows.length > workspaces.length ? workspaces.at(-1)!.id : null });
+  for (const row of rows.slice(0, limit)) {
+    workspaces.push(row);
+    if (Buffer.byteLength(JSON.stringify(result())) <= 128 * 1024) continue;
+    workspaces.pop();
+    if (workspaces.length === 0) {
+      const preview = { ...row };
+      const truncatedFields: string[] = [];
+      for (const [key, value] of Object.entries(row)) {
+        if (typeof value !== "string") continue;
+        const text = Array.from(value.slice(0, 2048)).slice(0, 1024).join("");
+        if (text === value) continue;
+        preview[key] = text;
+        truncatedFields.push(key);
+      }
+      workspaces.push({ ...preview, truncatedFields });
+    }
+    break;
+  }
+  return result();
+}
+
 export async function callTaskWorkspaceTool(input: { name: string; arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string; issueId: string; workspaceRoot?: string }) {
   let route = `/issues/${input.issueId}/workspace`;
   let method = "GET";
@@ -52,10 +78,7 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Workspace tool failed (${response.status})`);
   if (page) {
-    const workspaces = result.slice(0, page.limit);
-    const hasMore = result.length > page.limit;
-    return { workspaces, limit: page.limit, returnedCount: workspaces.length, hasMore,
-      nextCursor: hasMore ? workspaces.at(-1).id : null };
+    return workspacePage(result, page.limit);
   }
   if (input.name === "prepare_repository") {
     const { operationId, ...rest } = result;

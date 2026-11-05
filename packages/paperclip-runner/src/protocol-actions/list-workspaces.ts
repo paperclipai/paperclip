@@ -25,7 +25,7 @@ export const listWorkspacesAction = {
   },
   "documentation": {
     "title": "List available workspaces",
-    "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
+    "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Pages fit 128 KiB and may contain fewer than limit rows. An individually oversized summary includes truncatedFields and string previews; read its full record from GET /api/execution-workspaces/{id} under current access. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
     "note": null
   },
   "examples": {
@@ -46,7 +46,7 @@ export const listWorkspacesAction = {
       "operationId": "list_workspaces",
       "version": 1,
       "title": "List available workspaces",
-      "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
+      "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Pages fit 128 KiB and may contain fewer than limit rows. An individually oversized summary includes truncatedFields and string previews; read its full record from GET /api/execution-workspaces/{id} under current access. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
       "effect": "read",
       "requiredClaims": [],
       "allowedModes": [
@@ -59,7 +59,7 @@ export const listWorkspacesAction = {
         "type": "object",
         "properties": {
           "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
-          "cursor": { "type": "string", "format": "uuid", "description": "The nextCursor from the previous page. Omit for the first page." }
+          "cursor": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", "description": "The nextCursor from the previous page. Omit for the first page." }
         },
         "required": [],
         "additionalProperties": false
@@ -71,7 +71,7 @@ export const listWorkspacesAction = {
           "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
           "returnedCount": { "type": "integer", "minimum": 0, "maximum": 100 },
           "hasMore": { "type": "boolean" },
-          "nextCursor": { "type": ["string", "null"], "format": "uuid" }
+          "nextCursor": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }
         },
         "required": ["workspaces", "limit", "returnedCount", "hasMore", "nextCursor"],
         "additionalProperties": false

@@ -379,7 +379,11 @@ This is why `in_progress` can be strict for agents without forcing the same runt
 
 Native `list_workspaces` discovery returns a page with `workspaces`, `limit`,
 `returnedCount`, `hasMore` and `nextCursor`. The default page holds 50 summaries;
-the maximum is 100. Callers follow `nextCursor` until null to enumerate an
+the maximum is 100. Serialized pages also fit within 128 KiB. A page can contain
+fewer rows when summaries are large. An individually oversized summary returns
+1,024-character string previews and names the affected fields in `truncatedFields`;
+its full record remains available through the authorized workspace detail API.
+Callers follow `nextCursor` until null to enumerate an
 inventory. Pages use ascending workspace IDs, and apply current company,
 visibility and task-selection conditions before the database limit. Concurrent
 changes require a fresh scan. The summary API accepts opt-in `limit` and `cursor`

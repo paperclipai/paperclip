@@ -200,6 +200,34 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(list({ limit: 1_000 })).rejects.toThrow();
     await expect(list({ cursor: "not-a-workspace-id" })).rejects.toThrow();
   });
+  it("bounds encoded summary bytes and preserves discovery past oversized individual records", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const giantId = "00000000-0000-4000-8000-000000000001";
+    const giantName = "🦀\\\"".repeat(100_000);
+    const rows = await server.db.insert(executionWorkspaces).values([
+      { id: giantId, companyId: f.companyId, name: giantName, mode: "shared_workspace", strategyType: "task_directory" },
+      ...Array.from({ length: 60 }, () => ({ companyId: f.companyId, name: "🦀\\\"".repeat(4_000), mode: "shared_workspace", strategyType: "task_directory" })),
+    ]).returning({ id: executionWorkspaces.id });
+    type Page = { workspaces: Array<{ id: string; name: string; truncatedFields?: string[] }>; hasMore: boolean; nextCursor: string | null };
+    const list = (cursor?: string) => f.authority.execute({ tool: "list_workspaces", arguments: { limit: 100, ...(cursor ? { cursor } : {}) }, callId: randomUUID() }) as Promise<Page>;
+    let page = await list();
+    expect(page).toMatchObject({ nextCursor: giantId, workspaces: [{ id: giantId, truncatedFields: ["name"] }] });
+    const seen: string[] = [];
+    for (;;) {
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(128 * 1024);
+      seen.push(...page.workspaces.map(row => row.id));
+      if (!page.nextCursor) break;
+      const cursor = page.nextCursor;
+      page = await list(cursor);
+      expect(page.nextCursor === null || page.nextCursor > cursor).toBe(true);
+      expect(page.workspaces.every(row => row.name === "🦀\\\"".repeat(4_000))).toBe(true);
+    }
+    expect(seen).toEqual(rows.map(row => row.id).sort());
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.userId);
+    const detail = await fetch(`${server.apiUrl}/api/execution-workspaces/${giantId}`, { headers: { authorization: `Bearer ${token}` } });
+    expect(detail.status).toBe(200);
+    expect((await detail.json()).name).toBe(giantName);
+  });
   it("keeps source authorization on projectless task workspace inspection, selection, and preparation", async () => {
     const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
     await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, f.issueId));
