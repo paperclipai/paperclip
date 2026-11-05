@@ -2022,6 +2022,10 @@ impl CodexProvider {
                 "Codex turn text is empty or exceeds the 1 MiB limit",
             ));
         }
+        // Resolve the planning preset before any turn state changes, so a
+        // local planning error never leaves an ambiguous turn start behind.
+        let collaboration_mode =
+            codex_plan_collaboration_mode(&self.config, self.observed_model.as_deref(), effort)?;
         self.rollover_settled_turn_epoch_if_needed()?;
         // Preserve the prior durable result until a replacement turn identity
         // is accepted. A rejected, ambiguous, or transport-failed attempt does
@@ -2072,9 +2076,7 @@ impl CodexProvider {
         // A read-only (Planning) Codex run uses Codex's native plan
         // collaboration mode, so a finished proposal arrives as Codex's own
         // `plan` item for Paperclip's Plan document and approval gate.
-        if let Some(collaboration_mode) =
-            codex_plan_collaboration_mode(&self.config, self.observed_model.as_deref(), effort)?
-        {
+        if let Some(collaboration_mode) = collaboration_mode {
             turn_params_object.insert("collaborationMode".to_owned(), collaboration_mode);
         }
         let result = match self.request_classified("turn/start", turn_params) {
