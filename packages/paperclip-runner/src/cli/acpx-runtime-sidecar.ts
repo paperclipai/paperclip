@@ -2,7 +2,7 @@
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
-import { acpxProviderFailure, acpxTerminalResult } from "../drivers/acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
@@ -426,6 +426,8 @@ async function dispatch(
     });
     activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
+    // ACPX reports a generic terminal error; the provider's typed reason arrives here first.
+    const sessionFailure: { value?: AcpxTerminalSessionFailure } = {};
     const timed = request.params.performance === true;
     const timingStart = receivedAt;
     let statusMs = 0;
@@ -442,12 +444,13 @@ async function dispatch(
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
           waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
+        onTerminalSessionFailure: (failure) => { sessionFailure.value = failure; },
       });
     } catch (error) {
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     const promptStart = timed ? performance.now() : 0;
@@ -664,6 +667,7 @@ async function pumpTurn(
   drainExtensions: () => Promise<void>,
   activity: AcpxActivityAdapter,
   toolEvidence?: AcpxToolEvidence,
+  sessionFailure: { value?: AcpxTerminalSessionFailure } = {},
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -716,7 +720,7 @@ async function pumpTurn(
       // not replace the provider's authoritative completed/cancelled result.
       diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
     }
-    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env) : boundedSidecarValue(result);
+    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env, sessionFailure.value) : boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",
@@ -724,7 +728,7 @@ async function pumpTurn(
         ...(error instanceof AcpxApprovalRequiredError || error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}),
         message: safeMessage(error),
         retryable: false,
-        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env) ?? undefined } : {}),
+        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env, false, sessionFailure.value) ?? undefined } : {}),
       },
     };
   } finally {

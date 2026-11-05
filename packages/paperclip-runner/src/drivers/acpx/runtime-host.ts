@@ -6,6 +6,7 @@ import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
+import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -131,6 +132,8 @@ export interface AcpxRuntimeTurnInput {
   onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
   onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
   onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  /** Receives the typed AIR failure behind ACPX's generic terminal error. */
+  onTerminalSessionFailure?: (failure: AcpxTerminalSessionFailure) => void;
 }
 
 export interface AcpxRuntimeTurn {
@@ -914,6 +917,7 @@ export class AcpxRuntimeHost {
       ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
       ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
+      ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
     });
     this.#activeTurn = turn;
     const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);

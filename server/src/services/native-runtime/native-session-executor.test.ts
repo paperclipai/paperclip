@@ -12842,6 +12842,30 @@ describe("native session bounded recovery", () => {
         payload: { status: "failed", error: { message: "usageLimitExceeded" } },
       }),
     ).toBe(false);
+    // ACP harnesses report the same terminal through a typed provider failure.
+    const acpLimit = (category: string) => ({
+      ...event,
+      payload: {
+        status: "failed",
+        error: {
+          code: "RUNTIME",
+          message: "ACP agent reported a terminal limit failure.",
+          providerFailure: {
+            schema: "paperclip.provider-failure.v1",
+            provider: "anthropic",
+            phase: "turn",
+            category,
+            message: "ACP agent reported a terminal limit failure.\nYou've hit your session limit · resets 2am (UTC)",
+            retryability: "unknown",
+          },
+        },
+      },
+    });
+    expect(nativeProviderUsageLimitFromEvent(acpLimit("quota_exhausted"))).toBe(true);
+    expect(nativeProviderUsageLimitFromEvent(acpLimit("rate_limit"))).toBe(true);
+    // A context, turn or budget limit is not an account allowance.
+    expect(nativeProviderUsageLimitFromEvent(acpLimit("unknown"))).toBe(false);
+    expect(nativeProviderUsageLimitFromEvent({ ...acpLimit("quota_exhausted"), sourceKind: "provider" as never })).toBe(false);
     expect(
       nativeSessionFailureDisposition(
         1,

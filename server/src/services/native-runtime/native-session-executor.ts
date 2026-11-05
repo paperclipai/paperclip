@@ -6,6 +6,7 @@ import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256,
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
+import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
@@ -7123,12 +7124,13 @@ export function nativeProviderUsageLimitFromEvent(
   event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
 ): boolean {
   const payload = record(event.payload);
-  return (
-    event.sourceKind === "runner" &&
-    event.eventType === "turn.failed" &&
-    payload.status === "failed" &&
-    record(payload.error).codexErrorInfo === "usageLimitExceeded"
-  );
+  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
+  const error = record(payload.error);
+  if (error.codexErrorInfo === "usageLimitExceeded") return true;
+  // ACP harnesses type the same exhausted allowance as a provider failure.
+  // Context, turn and configured budget limits stay ordinary terminals.
+  const category = readProviderFailure(error.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
 }
 
 export function nativeSessionFailureDisposition(
