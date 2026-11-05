@@ -206,7 +206,7 @@ finite offline operation adds no idle background work. A resumed rehearsal can
 measure the fix but cannot replace fresh full-image migration and empty-home
 recovery proof.
 
-During offline migration, known task-only assignment, configuration and
+During offline migration, known task-only assignment, configuration, deliberate-wait and
 disposition warnings can remain unchanged while the owner saves local files.
 They do not certify file recovery and are not resolved by migration. An active
 system recovery, native execution failure marker, declared workspace recovery

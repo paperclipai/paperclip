@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
+import { workspaceExportCauses } from "./workspace-recovery-source.js";
 import type { StorageService } from "../storage/types.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
@@ -213,8 +214,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     // These warnings govern task disposition, not file authority. Keep them
     // unchanged while the offline owner saves the workspace. Unknown recovery
     // kinds and any declared file source still require explicit preservation.
-    return !["stranded_assigned_issue", "configuration_validation", "missing_disposition"].includes(recovery.kind)
-      || ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(recovery.cause)
+    return !["stranded_assigned_issue", "configuration_validation", "missing_disposition", "deliberate_wait_without_target"].includes(recovery.kind)
+      || workspaceExportCauses.includes(recovery.cause)
       || ["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock"]
         .some(key => recovery.evidence?.[key] != null);
   })) reasons.push("workspace_recovery_unresolved");
