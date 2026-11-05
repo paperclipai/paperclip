@@ -1,0 +1,60 @@
+{
+  "pending": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "captured-fixture-session",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "fixture-tool",
+        "title": "receipt-receipt_fixture",
+        "kind": "other",
+        "status": "pending",
+        "rawInput": {}
+      }
+    }
+  },
+  "completed": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "captured-fixture-session",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "fixture-tool",
+        "status": "completed",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "{\"fixture\":\"known-small-result\",\"accepted\":false}{\"schema\":\"paperclip.semantic_tool_receipt.v1\",\"operationId\":\"receipt_fixture\",\"callIdentitySha256\":\"8880622e75a82af5d9b588823af9d706f2bf3a04dce96ee9aab2fa4a91c55508\",\"inputSha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"resultSha256\":\"b325c663fc4bb7617a745373367ca8cbc7a3445f1b2fdb3a2a151da39f73553c\",\"outcome\":\"returned\"}"
+            }
+          }
+        ],
+        "rawOutput": {
+          "content": "{\"fixture\":\"known-small-result\",\"accepted\":false}{\"schema\":\"paperclip.semantic_tool_receipt.v1\",\"operationId\":\"receipt_fixture\",\"callIdentitySha256\":\"8880622e75a82af5d9b588823af9d706f2bf3a04dce96ee9aab2fa4a91c55508\",\"inputSha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"resultSha256\":\"b325c663fc4bb7617a745373367ca8cbc7a3445f1b2fdb3a2a151da39f73553c\",\"outcome\":\"returned\"}",
+          "detailedContent": "{\"fixture\":\"known-small-result\",\"accepted\":false}{\"schema\":\"paperclip.semantic_tool_receipt.v1\",\"operationId\":\"receipt_fixture\",\"callIdentitySha256\":\"8880622e75a82af5d9b588823af9d706f2bf3a04dce96ee9aab2fa4a91c55508\",\"inputSha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"resultSha256\":\"b325c663fc4bb7617a745373367ca8cbc7a3445f1b2fdb3a2a151da39f73553c\",\"outcome\":\"returned\"}",
+          "contents": [
+            {
+              "type": "text",
+              "text": "{\"fixture\":\"known-small-result\",\"accepted\":false}"
+            },
+            {
+              "type": "text",
+              "text": "{\"schema\":\"paperclip.semantic_tool_receipt.v1\",\"operationId\":\"receipt_fixture\",\"callIdentitySha256\":\"8880622e75a82af5d9b588823af9d706f2bf3a04dce96ee9aab2fa4a91c55508\",\"inputSha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"resultSha256\":\"b325c663fc4bb7617a745373367ca8cbc7a3445f1b2fdb3a2a151da39f73553c\",\"outcome\":\"returned\"}"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "authoritativeReceipt": {
+    "schema": "paperclip.semantic_tool_receipt.v1",
+    "operationId": "receipt_fixture",
+    "callIdentitySha256": "8880622e75a82af5d9b588823af9d706f2bf3a04dce96ee9aab2fa4a91c55508",
+    "inputSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "resultSha256": "b325c663fc4bb7617a745373367ca8cbc7a3445f1b2fdb3a2a151da39f73553c",
+    "outcome": "returned"
+  }
+}

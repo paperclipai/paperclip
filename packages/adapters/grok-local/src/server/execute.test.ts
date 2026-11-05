@@ -163,6 +163,18 @@ async function makeCtx(runId: string, cwd: string): Promise<AdapterExecutionCont
 }
 
 describe("grok_local execute", () => {
+  it.each([false, true])("resumes a managed connection only when its isolated history exists (%s)", async present => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("managed-resume", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "fixture-session", cwd: root };
+    if (present) await fs.mkdir(path.join(root, "home", "sessions", "encoded-cwd", "fixture-session"), { recursive: true });
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "next-session" }));
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(present);
+    expect(result.sessionParams?.sessionId).toBe("next-session");
+  });
   it("resumes the conversation while rotating runtime tool access", async () => {
     const root = await makeTempRoot();
     runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "existing-session" }));
@@ -178,6 +190,19 @@ describe("grok_local execute", () => {
     expect(args[args.indexOf("--resume") + 1]).toBe("existing-session");
     expect(runProcessMock.mock.calls[1][4].env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL).toBe("https://example.test/current-tools/mcp");
     expect(result.sessionParams?.sessionId).toBe("existing-session");
+  });
+
+  it("clears an unavailable managed session when the fresh turn provides no replacement ID", async () => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("missing-history", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "discarded-session", cwd: root };
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stdout: JSON.stringify({ type: "end", stopReason: "EndTurn" }) });
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(false);
+    expect(result.sessionParams).toBeNull();
+    expect(result.clearSession).toBe(true);
   });
 
   it.each(["grok-4.7", "grok-4.6"])("forwards the explicit %s model and xhigh effort", async (model) => {

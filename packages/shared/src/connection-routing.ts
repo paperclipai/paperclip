@@ -1,5 +1,6 @@
 import type {
   AskUserQuestionsQuestion,
+  PaperclipQuestionSetPayload,
   ConnectionSearchResultItem,
 } from "./types/index.js";
 import {
@@ -7,6 +8,8 @@ import {
   type RemoteMcpConnectorId,
 } from "./remote-mcp-connectors.js";
 import composioCatalog from "./composio-search-catalog.json" with { type: "json" };
+import arcadeCatalog from "./arcade-app-catalog.json" with { type: "json" };
+import { aggregatorAppIdentity } from "./aggregator-app-catalog.js";
 import { prepareConnectionSearch, scoreConnectionSearch } from "./connection-search.js";
 
 export const AGGREGATOR_PRIORITY = [
@@ -214,6 +217,19 @@ for (const [toolkit, name] of composioCatalog.toolkits as Array<[string, string]
   }
 }
 
+for (const app of arcadeCatalog.apps) {
+  const existing = AGGREGATOR_SUPPORT_INDEX.find((entry) =>
+    entry.slug === app.slug || aggregatorAppIdentity(entry.name) === aggregatorAppIdentity(app.name));
+  if (existing) {
+    existing.aliases = [...new Set([...existing.aliases, app.slug, ...app.aliases])];
+    existing.providers = { ...existing.providers, arcade: arcadeCatalog.verifiedAt };
+    existing.evidenceUrls = { ...existing.evidenceUrls, arcade: app.docsUrl };
+  } else {
+    AGGREGATOR_SUPPORT_INDEX.push({ slug: app.slug, name: app.name, aliases: app.aliases,
+      providers: { arcade: arcadeCatalog.verifiedAt }, evidenceUrls: { arcade: app.docsUrl } });
+  }
+}
+
 export function searchAggregatorServices(query: string | ReturnType<typeof prepareConnectionSearch>) {
   const prepared = typeof query === "string" ? prepareConnectionSearch(query) : query;
   return AGGREGATOR_SUPPORT_INDEX.map(service => ({ service,
@@ -320,6 +336,20 @@ export function aggregatorProviderQuestion(
         description: "Do not connect through an external service.",
       },
     ],
+  };
+}
+
+/** Native question form, preserving the exact saved-answer authorization contract. */
+export function aggregatorProviderQuestionSet(question: AskUserQuestionsQuestion): PaperclipQuestionSetPayload {
+  return {
+    schema: "paperclip.question_set.v1",
+    questions: [{
+      id: question.id,
+      prompt: question.prompt,
+      required: true,
+      answerMode: "single_select",
+      options: question.options.map(({ id, label, description }) => ({ id, label, ...(description != null ? { description } : {}) })),
+    }],
   };
 }
 

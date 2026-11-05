@@ -1,6 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
 import {
-  AlertTriangle,
   Check,
   ChevronRight,
   Circle,
@@ -11,6 +10,7 @@ import {
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { WorkspaceFileLink } from "@/components/WorkspaceFileLink";
 import { cn } from "@/lib/utils";
+import { useTaskChatShimmer } from "./TaskChatShimmer";
 import type {
   TaskChatProtocolDetail,
   TaskChatProtocolItem,
@@ -23,6 +23,7 @@ import {
   protocolActivityIsRunning,
   protocolActivityLabel,
   protocolActivityPresentation,
+  providerNoticeSeverity,
 } from "./task-chat-activity-presentation";
 
 const COMPACT_RESEARCH_RESULT_LIMIT = 5;
@@ -276,19 +277,22 @@ function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "fail
 }
 
 export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolItem }) {
+  const shimmer = useTaskChatShimmer(item.id);
   const [open, setOpen] = useState(false);
   const detailId = `task-chat-protocol-activity-${useId().replaceAll(":", "")}`;
   const presentation = protocolActivityPresentation(item);
   if (!presentation) return null;
   if (item.surface === "provider_activity" && item.family === "provider_notice") {
+    const NoticeIcon = presentation.icon;
+    const severity = providerNoticeSeverity(item);
     const summary = item.summary
       ?? item.details.find((entry) => entry.label === "Summary")?.value
       ?? "The provider reported a notice without a message.";
     return (
       <div className="flex min-w-0 flex-col gap-1.5 py-1 text-xs" data-testid="task-chat-protocol-activity-row" data-activity-family="provider_notice">
         <div className="flex items-center gap-2 text-muted-foreground">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
-          <span className="font-medium">{item.status === "failed" ? "Error" : item.details.find(detail => detail.label === "Severity")?.value === "info" ? "Provider update" : "Warning"}</span>
+          <NoticeIcon className="size-(--sz-protocol-notice-icon) shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
+          <span className="font-medium">{severity === "error" ? "Error" : severity === "info" ? "Provider update" : "Warning"}</span>
         </div>
         <p className="min-w-0 whitespace-pre-wrap break-words text-foreground">{summary}</p>
         {item.details.some(detail => detail.label !== "Summary") ? (
@@ -311,8 +315,10 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
       <span className="flex w-5 shrink-0 items-center justify-center">
         <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
       </span>
-      <span className={cn("shrink-0 font-medium", active && "shimmer-text shimmer-text-muted")}>{label}{active ? "…" : ""}</span>
-      {presentation.detail ? <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro)">{presentation.detail}</span> : null}
+      <span data-conversation-tool-running={active && shimmer && item.surface === "provider_activity" && item.family === "tool_execution" ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <span className={cn("shrink-0 font-medium", active && shimmer && "shimmer-text shimmer-text-muted")}>{label}{active ? "…" : ""}</span>
+        {presentation.detail ? <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro)">{presentation.detail}</span> : null}
+      </span>
       <span className="ml-auto flex shrink-0 items-center gap-2">
         {expandable ? (
           <ChevronRight

@@ -605,6 +605,17 @@ afterEach(async () => {
 });
 
 describe("Capability clean-room chat server", () => {
+  it.each(["claude", "codex"])("allows an unlisted %s model in the test-drive configuration", async acpxAgent => {
+    const { capabilityIssueThreadServerInternals: internals } = await import("../../scripts/capability-issue-thread-server.mjs");
+    const model = "custom/model[reasoning=medium]";
+    expect(internals.harnessConfiguration({ provider: "acpx", acpxAgent, model }))
+      .toMatchObject({ provider: "acpx", acpxAgent, model });
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent, model: " " }))
+      .toThrow("requires an explicit model");
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent: "unknown", model }))
+      .toThrow("ACPX agent must be");
+  });
+
   it("validates the exact Claude Managed lab profile and canonical agent version", async () => {
     const module = await import("../../scripts/capability-issue-thread-server.mjs");
     const internals = module.capabilityIssueThreadServerInternals;

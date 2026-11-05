@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,7 @@ vi.mock("../sentry.js", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 
 function agentTaskRunCalls(fromIndex: number) {
   return mockTelemetryClient.track.mock.calls
@@ -112,6 +114,9 @@ describeEmbeddedPostgres(
         processPid: process.pid,
         contextSnapshot: { issueId },
       });
+      await persistHeartbeatRunProcessMetadata(db, runId, {
+        pid: process.pid, processGroupId: null, startedAt: new Date().toISOString(), targetKind: "local",
+      });
       await db.insert(nativeRunFinalizations).values({
         runId,
         companyId,
@@ -143,3 +148,6 @@ describeEmbeddedPostgres(
     });
   },
 );
+
+
+enableRunFailureReporting();

@@ -131,8 +131,8 @@ export function SidebarAccountMenu({
   // fallback there because it drives a different invitation flow.
   const cloudInviteUrl = useCloudInviteUrl();
   // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
-  // to boards that hold it (company owner/admin, instance admins, local
-  // boards) so a plain member is never sent to a permission error.
+  // to boards with role-default access (company owner/admin/operator,
+  // instance admins, local boards). The server checks the actual grants.
   const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
   const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
   const showInvite =
@@ -149,7 +149,6 @@ export function SidebarAccountMenu({
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });

@@ -8,6 +8,11 @@ import {
   type NoticeMetadataSection,
 } from "./notice-format.js";
 
+/** The saved version is unchanged by a failed restore; the run names the failed step. */
+export const REMOTE_WORKSPACE_RESTORE_NEXT_ACTION =
+  "Open the failed run to see which restore step failed. The saved workspace version was kept. "
+  + "If the sandbox folder is already occupied, inspect and move it aside, then retry the task.";
+
 // Short human-readable body plus the presentation header for one recovery
 // family. The escalation path merges in the metadata rows only it knows
 // (recovery action, owner, source run) via buildStrandedRecoveryEscalationNotice.
@@ -49,6 +54,9 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
+  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
+  remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
+  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
@@ -113,6 +121,38 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_base_ref_unresolved") {
+    return {
+      title: "Workspace base ref unavailable",
+      body: "Paperclip stopped before the agent started because the configured workspace base ref could not be resolved to a Git commit. The task is blocked until its workspace configuration or repository access is repaired.",
+      nextAction: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "shared_realization_unsupported") {
+    if (configurationIncomplete?.holderStale === true) {
+      return {
+        title: "Shared workspace still held",
+        body: "Paperclip stopped before the agent started because another run still holds this task's shared workspace but has produced no output for more than an hour, and this execution environment cannot place concurrent agents in one physical shared folder.",
+        nextAction: "Check whether the other run is still working and stop it if it is stuck, or select an isolated task workspace, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "Shared workspace unavailable",
+      body: "Paperclip stopped before the agent started because this task allows concurrent agents in a shared workspace that another live run is using, and this execution environment cannot place concurrent agents in one physical shared folder.",
+      nextAction: "Select an isolated task workspace, use a local or SSH environment, or change shared workspace concurrency from `allow` so the task waits for the other run.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
+    return {
+      title: "Task couldn’t start",
+      body: "The task couldn’t start.",
+      nextAction: "Retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",
@@ -232,6 +272,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

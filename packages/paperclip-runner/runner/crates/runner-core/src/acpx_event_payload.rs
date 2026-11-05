@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -61,6 +61,7 @@ pub enum AcpxEventPayload {
         details: Value,
     },
     InputRequested {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
@@ -124,7 +125,22 @@ pub fn decode_acpx_event(
             validate_question_set(&question_set)?;
             let question_set = sanitize_question_set(question_set)?;
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
+            // Native methods are interpreted by the provider adapter. This
+            // transport validates the opaque reference under the event scope.
+            let tool_call_id = if event.payload.get("toolCallId").is_some() {
+                let id =
+                    required_id_with_limit(&event.payload, "toolCallId", "input parent tool", 240)?;
+                if id.len() > 240 || sanitize_value(&json!(id)) != json!(id) {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input parent tool identity is invalid",
+                    ));
+                }
+                Some(id)
+            } else {
+                None
+            };
             Ok(AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id: required_id_with_limit(
                     &event.payload,
                     "requestId",
@@ -380,7 +396,7 @@ fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {
             };
             // IDs, answer modes, and validation patterns are protocol values:
             // changing them would break response correlation or semantics.
-            redact_object_text(question, &["header", "prompt", "helpText"]);
+            redact_object_text(question, &["header", "prompt", "helpText", "initialText"]);
             if let Some(options) = question.get_mut("options").and_then(Value::as_array_mut) {
                 for option in options {
                     if let Some(option) = option.as_object_mut() {
@@ -615,6 +631,15 @@ pub(crate) fn validate_question_set(value: &Value) -> Result<(), LocalRunnerErro
         if !ids.insert(id) {
             return Err(LocalRunnerError::invalid(
                 "ACPX input question ids must be unique",
+            ));
+        }
+        if question
+            .get("initialText")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.chars().count() > 100_000)
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX initial text exceeds its Unicode code-point bound",
             ));
         }
         let mut option_ids = BTreeSet::new();

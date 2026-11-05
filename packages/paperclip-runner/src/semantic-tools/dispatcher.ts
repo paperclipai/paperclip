@@ -183,14 +183,26 @@ export class CapabilitySemanticDispatcher {
         context,
         {
           ...scenario,
-          // These descriptors belong to the server's authenticated project
-          // authority. This mock command port has no project/repository binding;
+          // These descriptors belong to the server's authenticated authority.
+          // This mock command port has no project, repository, or case binding;
           // it must neither advertise nor accept them merely for lacking claims.
           denyOperations: [...new Set([
             ...(scenario.denyOperations ?? []),
+            "get_workspace" as const,
+            "list_workspaces" as const,
+            "select_workspace" as const,
+            "prepare_repository" as const,
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,
+            "handoff_case" as const,
+            "read_case" as const,
+            "update_case" as const,
+            "create_case" as const,
+            "list_workflows" as const,
+            "read_workflow" as const,
+            "create_workflow" as const,
+            "update_workflow" as const,
           ])],
         },
         this.options.explicitClaims ?? context.capabilities,
@@ -331,6 +343,10 @@ export class CapabilitySemanticDispatcher {
           slug: typeof input.slug === "string" ? input.slug : undefined,
           description: requiredString(input.description), markdown: requiredString(input.markdown) };
         break;
+      case "update_skill":
+        command = { kind: "update_skill", taskId, skillId: requiredString(input.skillId),
+          expectedVersionId: requiredString(input.expectedVersionId), markdown: requiredString(input.markdown) };
+        break;
       case "write_document":
         command = {
           kind: "write_document",
@@ -418,6 +434,13 @@ export class CapabilitySemanticDispatcher {
       if (skill) return readSuccess(outcome.result.stateRevision, {
         id: skill.id, name: skill.name, slug: skill.slug, description: skill.description,
         versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
+      });
+    }
+    if (operationId === "update_skill" && outcome.ok) {
+      const id = outcome.result.entityRefs.find(ref => ref.startsWith("skill:"))?.slice(6);
+      const skill = this.port.snapshot().skills?.find(candidate => candidate.id === id);
+      if (skill) return readSuccess(outcome.result.stateRevision, {
+        skillId: skill.id, path: "SKILL.md", versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
       });
     }
     return commandOutcome(outcome);

@@ -18,7 +18,7 @@ const {
     signal: null,
     timedOut: false,
     stdout: args.includes("--version")
-      ? "2.1.280 (Claude Code)\n"
+      ? "2.1.284 (Claude Code)\n"
       : [
           JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
           JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }),
@@ -189,11 +189,11 @@ describe("claude remote execution", () => {
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
       followSymlinks: true,
     }));
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    const call = runChildProcess.mock.calls[0] as unknown as
+    expect(runChildProcess.mock.calls.filter(call => !call[2].includes("--version"))).toHaveLength(1);
+    const call = runChildProcess.mock.calls.find(call => !call[2].includes("--version")) as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    expect(call?.[2]).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
+    expect(call?.[2]).toEqual(expect.arrayContaining(["--model", "claude-opus-5-5"]));
     expect(call?.[2]).toContain("--dangerously-skip-permissions");
     expect(call?.[2]).not.toContain("--allowedTools");
     expect(call?.[2]).toContain("--append-system-prompt-file");
@@ -255,7 +255,7 @@ describe("claude remote execution", () => {
         sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
       },
@@ -280,9 +280,37 @@ describe("claude remote execution", () => {
       onLog: async () => {},
     });
 
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(runChildProcess.mock.calls.filter(call => !call[2].includes("--version"))).toHaveLength(1);
+    const call = runChildProcess.mock.calls.find(call => !call[2].includes("--version")) as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).not.toContain("--resume");
+  });
+
+  it("explains a remote-to-local session reset even when the cwd matches", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-local-reset-"));
+    cleanupDirs.push(rootDir);
+    vi.stubEnv("PAPERCLIP_HOME", rootDir);
+    const onLog = vi.fn(async () => {});
+
+    await execute({
+      runId: "run-local-reset",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        sessionParams: {
+          cwd: rootDir,
+          remoteExecution: { transport: "ssh", host: "remote.test", port: 22, username: "fixture", remoteCwd: rootDir },
+        },
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", cwd: rootDir, paperclipRuntimeSkills: [] },
+      context: {},
+      onLog,
+    });
+
+    expect(runChildProcess.mock.calls[0]?.[2]).not.toContain("--resume");
+    expect(onLog).toHaveBeenCalledWith("stdout", expect.stringContaining("does not match the current execution target"));
+    expect(onLog).not.toHaveBeenCalledWith("stdout", expect.stringContaining("was saved for cwd"));
   });
 
   it("resumes saved Claude sessions for remote SSH execution when the remote identity matches", async () => {
@@ -317,7 +345,7 @@ describe("claude remote execution", () => {
         sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
       },
@@ -342,8 +370,8 @@ describe("claude remote execution", () => {
       onLog: async () => {},
     });
 
-    expect(runChildProcess).toHaveBeenCalledTimes(1);
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(runChildProcess.mock.calls.filter(call => !call[2].includes("--version"))).toHaveLength(1);
+    const call = runChildProcess.mock.calls.find(call => !call[2].includes("--version")) as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
@@ -385,7 +413,7 @@ describe("claude remote execution", () => {
         sessionDisplayId: null,
         taskKey: null,
       },
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
       },
@@ -435,7 +463,7 @@ describe("claude remote execution", () => {
           sessionDisplayId: null,
           taskKey: null,
         },
-        config: {
+        config: { model: "claude-opus-5",
         engine: "cli",
           command: "claude",
           ...config,
@@ -467,7 +495,7 @@ describe("claude remote execution", () => {
       return { args: call?.[2] ?? [], result };
     }
 
-    it.each(["claude-fable-5-1", "claude-opus-5-5"])("passes %s as --model on the CLI lane", async (model) => {
+    it.each(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"])("passes %s as --model on the CLI lane", async (model) => {
       const { args } = await executeWithModel("paperclip-claude-model-direct-", {
         model,
       });
@@ -500,6 +528,7 @@ describe("claude remote execution", () => {
     it.each([
       ["claude-fable-5-1", "2.1.251", "2.1.247"],
       ["claude-opus-5-5", "2.1.280", "2.1.279"],
+      ["claude-sonnet-5-5", "2.1.284", "2.1.283"],
     ])("rejects %s before launch below CLI %s", async (model, minimumVersion, detectedVersion) => {
       runChildProcess.mockResolvedValueOnce({
         exitCode: 0,
@@ -590,7 +619,7 @@ describe("claude remote execution", () => {
         sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
         env: { ANTHROPIC_API_KEY: "fixture-anthropic-key" },
@@ -604,7 +633,7 @@ describe("claude remote execution", () => {
 
     expect(result.exitCode).toBe(0);
     expect(runChildProcess).toHaveBeenCalledTimes(2);
-    const first = (runChildProcess.mock.calls[0] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
+    const first = (runChildProcess.mock.calls.find(call => !call[2].includes("--version")) as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
     const retry = (runChildProcess.mock.calls[1] as unknown as [string, string, string[], { stdin?: string }])[3]?.stdin ?? "";
     expect(first).toContain("## Compact assignment");
     expect(first).not.toContain("Explain the next step before starting work.");

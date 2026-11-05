@@ -17,6 +17,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
@@ -27,6 +28,57 @@ export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "cancelled",
   "rejected",
 ]);
+
+// A run silent for this long no longer counts as the shared-workspace holder
+// it was waiting behind. Kept here so the deferral gate and the parked-wait
+// check in this module's adapter read one value.
+export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
+// Fallback re-check for a parked workspace wait. The holder ending wakes the
+// waiter directly; this only bounds a missed wake.
+export const WORKSPACE_BUSY_PARKED_RECHECK_MS = 5 * 60 * 1000;
+export const WORKSPACE_BUSY_WAIT_KEY = "workspaceBusyWait";
+
+/** What a workspace-busy retry is waiting behind, recorded at deferral. */
+export type WorkspaceBusyWait = {
+  /** `execution:<id>` or `project:<id>`; waiters on one key are admitted in arrival order. */
+  key: string;
+  holderRunId: string;
+  /** ISO time of the first deferral for this key; carried across re-deferrals. */
+  waitingSince: string;
+  /**
+   * The task's workspace binding when it deferred. The wait applies only while
+   * the binding is unchanged; a remote reservation can defer before it binds.
+   */
+  issueExecutionWorkspaceId: string | null;
+  issueProjectWorkspaceId: string | null;
+};
+
+export function workspaceBusyWaitKey(input: {
+  executionWorkspaceId: string | null;
+  projectWorkspaceId: string | null;
+}): string | null {
+  if (input.executionWorkspaceId) return `execution:${input.executionWorkspaceId}`;
+  if (input.projectWorkspaceId) return `project:${input.projectWorkspaceId}`;
+  return null;
+}
+
+export function readWorkspaceBusyWait(
+  retryReason: string | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): WorkspaceBusyWait | null {
+  if (retryReason !== WORKSPACE_BUSY_RETRY_REASON) return null;
+  const wait = parseObject(parseObject(contextSnapshot)[WORKSPACE_BUSY_WAIT_KEY]);
+  const key = readNonEmptyString(wait.key);
+  const holderRunId = readNonEmptyString(wait.holderRunId);
+  const waitingSince = readNonEmptyString(wait.waitingSince);
+  if (!key || !holderRunId || !waitingSince || Number.isNaN(Date.parse(waitingSince))) return null;
+  if (!("issueExecutionWorkspaceId" in wait) || !("issueProjectWorkspaceId" in wait)) return null;
+  return {
+    key, holderRunId, waitingSince,
+    issueExecutionWorkspaceId: readNonEmptyString(wait.issueExecutionWorkspaceId),
+    issueProjectWorkspaceId: readNonEmptyString(wait.issueProjectWorkspaceId),
+  };
+}
 
 /**
  * True for a resource-wait retry whose original run did not
@@ -41,7 +93,7 @@ export function isNonAssigneeWorkspaceBusyRetry(
   return (
     (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
-    (retryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+    ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
       contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
   );
 }
@@ -75,6 +127,25 @@ export function deriveCommentId(
 }
 
 /**
+ * The external chat conversation a wake answers. Several conversations can
+ * share one issue (for example GitHub review finding threads), but a reviewed
+ * chat run can attest only one, so wakes for different conversations must
+ * never share a batch.
+ */
+export const CHAT_CONVERSATION_ID_KEY = "chatConversationId";
+
+export function readWakeChatConversationId(contextSnapshot: unknown): string | null {
+  return readNonEmptyString(parseObject(contextSnapshot)[CHAT_CONVERSATION_ID_KEY]);
+}
+
+/** True when both wakes answer a chat conversation and they are different ones. */
+export function wakeChatConversationsConflict(existing: unknown, incoming: unknown): boolean {
+  const existingId = readWakeChatConversationId(existing);
+  const incomingId = readWakeChatConversationId(incoming);
+  return existingId !== null && incomingId !== null && existingId !== incomingId;
+}
+
+/**
  * `allowedWakeReasons` is the issue-tree-control module's own set of wake
  * reasons that excuse an interaction wake. This file stays free of service
  * imports, so the caller passes the set in rather than this function reading
@@ -94,7 +165,10 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   const interactionId = readNonEmptyString(context.interactionId);
   const interactionStatus = readNonEmptyString(context.interactionStatus);
   if (!interactionId || !interactionStatus) return false;
-  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
+  const retiredConnection = interactionStatus === "expired"
+    && context.interactionKind === "connection_intent"
+    && context.connectionIntentResolution === "existing_connection";
+  if (!retiredConnection && !RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
 
   const mutation = readNonEmptyString(context.mutation);
   const wakeReason = readNonEmptyString(context.wakeReason);

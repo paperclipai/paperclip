@@ -4,11 +4,11 @@ import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-f
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
-import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
 import { boundedCodexPayload as boundedPayload, boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
-import { runtimeRequestResponse } from "./codex-question-adapter.js";
+import { runtimeRequestProtocolPayload, runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
   isSupportedCodexNotificationMethod,
   codexThreadLineage as lineageFromThread,
@@ -28,6 +28,7 @@ import {
   recordWorkspaceChanges,
 } from "./codex-session-workspace.js";
 import {
+  RUNNERD_RUNTIME_ACTIVITY,
   boundedText,
   differingJsonPaths,
   itemFromParams,
@@ -35,6 +36,28 @@ import {
   record,
   text,
 } from "./codex-driver-values.js";
+
+const DELTA_KINDS: Record<string, string> = {
+  "item/agentMessage/delta": "agentMessage",
+  "item/plan/delta": "plan",
+  "item/reasoning/summaryTextDelta": "reasoning",
+  "item/reasoning/textDelta": "reasoning",
+  "item/commandExecution/outputDelta": "commandExecution",
+  "item/fileChange/outputDelta": "fileChange",
+  "item/fileChange/patchUpdated": "fileChange",
+  "turn/diff/updated": "diff",
+  "turn/plan/updated": "plan",
+};
+
+// Turn-scoped activity a resumed runner can replay from committed history.
+// turn/completed is excluded: its replay still passes the fingerprint check.
+const REPLAYABLE_TURN_METHODS = new Set([
+  "turn/started",
+  "item/started",
+  "item/completed",
+  "item/mcpToolCall/progress",
+  ...Object.keys(DELTA_KINDS),
+]);
 
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
@@ -105,6 +128,14 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
   }
 
 async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+    if (notification.method === "paperclip/runtimeActivityRecorded") {
+      const params = notification.params;
+      if ((params as Record<PropertyKey, unknown>)[RUNNERD_RUNTIME_ACTIVITY] !== true) return;
+      const pending = state.pendingRunAttachment;
+      if (pending && params.runId === pending.runId && params.runId !== state.runId) await pending.settled;
+      if (params.runId === state.runId) state.emit("runtime.activity.recorded", record(params.payload));
+      return;
+    }
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
     if (notification.method === "item/completed" && notification.params.kind === "steering_acknowledgement"
       && !notification.params.threadId && !notification.params.turnId && !notification.params.thread && !notification.params.turn) return;
@@ -150,12 +181,48 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    // Check before canonical mapping, which would otherwise emit tool and plan
+    // events for the replayed turn while no turn is active.
+    if (
+      threadId === state.opened.threadId
+      && REPLAYABLE_TURN_METHODS.has(notification.method)
+      && ignoreRestoredTerminalReplay(state, notification.method, turnId)
+    ) return;
+    if (notification.method === "paperclip/runtimeRequestExpired") {
+      const payload = record(params.payload);
+      const requestId = text(payload.requestId);
+      const pending = state.pendingRuntimeRequestMap.get(requestId);
+      if (pending === undefined) return;
+      const expected = runtimeRequestProtocolPayload(pending.request);
+      if (pending.request.turnId !== turnId || payload.requestKind !== expected.requestKind
+        || payload.requestType !== (pending.request.input === undefined ? "permission" : "input")
+        || payload.replayAllowed !== false || typeof payload.reason !== "string" || !payload.reason) {
+        state.failProtocol("turn_binding_mismatch", "Canonical request expiry changed its callback binding.");
+        return;
+      }
+      state.pendingRuntimeRequestMap.delete(requestId);
+      // Preserve durable expiry evidence with the same facade identity used
+      // when creating this callback. Terminal handling must not cancel it again.
+      state.emit("runtime_request.expired", { ...payload,
+        turnId: pending.request.turnId, itemId: pending.request.itemId,
+      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
+      return;
+    }
     if (notification.method === "paperclip/canonicalProviderEvent") {
       if (!isCanonicalProviderEventType(params.eventType)) {
         state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");
         return;
       }
       const canonicalPayload = record(params.payload);
+      if (params.eventType === "auth.credentials.updated") {
+        if (!isPrpAuthCredentialsUpdated(canonicalPayload)) {
+          state.failProtocol("credential_update_invalid", "Invalid credential update notification.");
+          return;
+        }
+        state.emit(params.eventType, canonicalPayload, { turnId: turnId || undefined, itemId: itemId || undefined });
+        return;
+      }
       if (params.eventType === "harness.diagnostic" && canonicalPayload.code === "codex_resume_usage_snapshot") {
         state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, canonicalPayload.cumulative, true);
         state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
@@ -331,12 +398,12 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     if (
       notification.method === "item/completed"
       && text(params.kind) === "steering_acknowledgement"
-      && Object.keys(item).length === 0
     ) {
       // runnerd persists its own command acknowledgement as a canonical PRP
       // item. The request() call is already the authoritative acknowledgement
       // and steer() emits the user-visible item with the active turn binding.
-      // Do not reinterpret this transport-level echo as an unbound Codex item.
+      // Rehydration adds an item object to this transport echo; it still must
+      // not become a second acknowledgement beside the correlation-bound item.
       return;
     }
     if (notification.method === "paperclip/runResult") {
@@ -492,18 +559,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         recordWorkspaceChanges(state, turnId, item.changes, true);
       return;
     }
-    const deltaKinds: Record<string, string> = {
-      "item/agentMessage/delta": "agentMessage",
-      "item/plan/delta": "plan",
-      "item/reasoning/summaryTextDelta": "reasoning",
-      "item/reasoning/textDelta": "reasoning",
-      "item/commandExecution/outputDelta": "commandExecution",
-      "item/fileChange/outputDelta": "fileChange",
-      "item/fileChange/patchUpdated": "fileChange",
-      "turn/diff/updated": "diff",
-      "turn/plan/updated": "plan",
-    };
-    const deltaKind = deltaKinds[notification.method];
+    const deltaKind = DELTA_KINDS[notification.method];
     if (deltaKind !== undefined) {
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
       const methodChannel = channelForDelta(state, notification.method);
@@ -533,14 +589,25 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
-      if (state.driverKind === "codex_app_server" && Object.keys(record(record(params.tokenUsage).total)).length > 0) {
-        state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(params.tokenUsage).total, false);
-        state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+      if (state.driverKind === "codex_app_server") {
+        const reported = record(record(params.tokenUsage).total);
+        const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+        // The monotonic snapshot retains absent counters from older reports.
+        // Preserve whether this provider report can actually close accounting.
+        const runDeltaComplete = validCount(reported.inputTokens) && validCount(reported.outputTokens)
+          && Object.entries(reported).every(([key, value]) => !key.endsWith("Tokens") || validCount(value))
+          && Object.keys(state.codexUsageBaseline?.latest ?? {}).every(key => !key.endsWith("Tokens") || validCount(reported[key]));
+        if (Object.keys(reported).length > 0) {
+          state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, reported, false);
+          state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+        }
+        state.usageSnapshot = { ...state.usageSnapshot, runDeltaComplete };
       }
       // Codex can replay a thread-scoped usage snapshot while a resumed thread
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.
       if (state.activeTurnId === null || turnId !== state.activeTurnId) return;
+      if (state.codexUsageBaseline) state.codexUsageBaseline.accounted = { ...state.codexUsageBaseline.latest };
       state.emit(
         "item.completed",
         { kind: "usage", usage: state.usageSnapshot },
@@ -552,6 +619,26 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
   }
+
+// Resume can re-deliver committed history for a turn the checkpoint already
+// settled. Between turns the identity classifier sees no active turn, so the
+// replay would otherwise reach the live-turn guards and fail the session.
+function ignoreRestoredTerminalReplay(
+  state: CodexSessionState,
+  method: string,
+  turnId: string,
+): boolean {
+  if (!state.isRestoredTerminalReplay(turnId)) return false;
+  if (state.notificationIdentityDiagnostics < 32) {
+    state.notificationIdentityDiagnostics += 1;
+    state.emit("harness.diagnostic", {
+      code: "provider_notification_identity", method: method.slice(0, 128),
+      classification: "restored_terminal_replay",
+      expectedTurnId: state.activeTurnId, receivedTurnId: turnId.slice(0, 256),
+    });
+  }
+  return true;
+}
 
 function channelForStartedItem(
   state: CodexSessionState,

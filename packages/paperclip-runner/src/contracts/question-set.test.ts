@@ -1,3 +1,5 @@
+import Ajv2020 from "ajv/dist/2020.js";
+import { questionSetSchema } from "../protocol/generated/schema-bundle.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -49,6 +51,37 @@ describe("Paperclip question-set contract", () => {
         replicas: { text: "3" },
       },
     });
+  });
+
+  it("preserves bounded initial text only as presentation, including empty text", () => {
+    for (const initialText of ["", "  Draft\n漢字\n", "a".repeat(100_000)]) {
+      const input = { schema: PAPERCLIP_QUESTION_SET_SCHEMA, questions: [{ id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText }] };
+      expect(parsePaperclipQuestionSet(input)).toEqual(input);
+      expect(() => parsePaperclipQuestionResponse(input, { schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA, answers: {} })).toThrow(/required/);
+    }
+    for (const initialText of [null, 1, "a".repeat(100_001), "a".repeat(100_000) + "😀"]) {
+      expect(() => parsePaperclipQuestionSet({ ...questionSet, questions: [{ ...questionSet.questions[1], initialText }] })).toThrow(/initialText/);
+    }
+    expect(() => parsePaperclipQuestionSet({ ...questionSet, questions: [{ ...questionSet.questions[0], initialText: "staging" }] })).toThrow(/only text/);
+    const input = { ...questionSet, questions: [{ ...questionSet.questions[1], initialText: "21" }] };
+    expect(() => parsePaperclipQuestionResponse(input, { schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA, answers: { replicas: { text: "21" } } })).toThrow(/at most 20/);
+  });
+
+  it("matches the published Unicode code-point draft limit within the wire byte cap", () => {
+    const validate = new Ajv2020({ strict: true, strictRequired: false }).compile(questionSetSchema);
+    for (const codePoints of [100_000, 100_001]) {
+      const initialText = "a".repeat(codePoints - 1) + "😀";
+      const input = { schema: PAPERCLIP_QUESTION_SET_SCHEMA, questions: [{ id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText }] };
+      expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThan(196 * 1024);
+      expect(initialText.length).toBe(codePoints + 1);
+      expect(validate(input)).toBe(codePoints === 100_000);
+      if (codePoints === 100_000) {
+        expect(parsePaperclipQuestionSet(input)).toEqual(input);
+        expect(() => parsePaperclipQuestionResponse(input, { schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA, answers: { draft: { text: initialText } } })).toThrow();
+      } else {
+        expect(() => parsePaperclipQuestionSet(input)).toThrow(/Unicode code points/);
+      }
+    }
   });
 
   it("rejects missing, unknown, and provider-shaped answers", () => {

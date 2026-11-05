@@ -33,9 +33,9 @@ describe("InlineEntitySelector", () => {
     document.body.innerHTML = "";
   });
 
-  it("allows touch scrolling in a mobile picker portalled outside a parent dialog", async () => {
+  it.each([false, true])("allows wheel and touch scrolling outside a parent dialog (mobile: %s)", async (mobile) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === "(max-width: 40rem)",
+      matches: mobile && query === "(max-width: 40rem)",
       media: query,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -56,7 +56,7 @@ describe("InlineEntitySelector", () => {
               onChange={vi.fn()}
               triggerTestId="nested-assignee-picker"
               openOnFocus={false}
-              disablePortal
+              modal
             />
           </DialogContent>
         </Dialog>,
@@ -78,6 +78,9 @@ describe("InlineEntitySelector", () => {
         clientHeight: { configurable: true, value: 200 },
       });
       const option = list.querySelector("button")!;
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+      option.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
       const touch = (type: string, y: number) => {
         const event = new Event(type, { bubbles: true, cancelable: true });
         Object.defineProperties(event, {
@@ -133,6 +136,59 @@ describe("InlineEntitySelector", () => {
       expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
       expect(document.activeElement).toBe(outside);
       await act(() => trigger.focus());
+      expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
+    } finally {
+      await act(() => root.unmount());
+    }
+  });
+
+  it("dismisses the mobile project sheet from its backdrop and preserves the task dialog", async () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 40rem)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    const onChange = vi.fn();
+    const root = createRoot(container);
+    await act(() => {
+      root.render(
+        <Dialog defaultOpen>
+          <DialogContent aria-describedby={undefined}>
+            <DialogTitle>New task</DialogTitle>
+            <InlineEntitySelector
+              value="project-1"
+              options={[{ id: "project-1", label: "Board UI" }]}
+              placeholder="Project"
+              noneLabel="No project"
+              searchPlaceholder="Search projects..."
+              emptyMessage="No projects found."
+              onChange={onChange}
+              triggerTestId="project-picker"
+              openOnFocus={false}
+            />
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    try {
+      const trigger = document.querySelector<HTMLButtonElement>('[data-testid="project-picker"]')!;
+      await act(() => trigger.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      const backdrop = document.querySelector<HTMLElement>("[data-mobile-entity-picker]")!.parentElement!;
+      await act(() => {
+        const pointerDown = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+        Object.defineProperty(pointerDown, "pointerType", { value: "touch" });
+        backdrop.dispatchEvent(pointerDown);
+        backdrop.click();
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(document.querySelector("[data-mobile-entity-picker]")).toBeNull();
+      expect(document.querySelector("[data-slot=dialog-content]")).not.toBeNull();
+      expect(trigger.textContent).toContain("Board UI");
+      expect(document.activeElement).toBe(trigger);
+      expect(onChange).not.toHaveBeenCalled();
+      await act(() => trigger.click());
       expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
     } finally {
       await act(() => root.unmount());
@@ -294,6 +350,67 @@ describe("InlineEntitySelector", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps the no-selection action first when requested", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value="project-1"
+          options={[
+            { id: "project-1", label: "Project One" },
+            { id: "project-2", label: "Project Two" },
+          ]}
+          recentOptionIds={["project-2"]}
+          placeholder="Project"
+          noneLabel="No project"
+          noneAtTop
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement;
+    await act(() => trigger.click());
+
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(options.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project One",
+      "Project Two",
+    ]);
+
+    const searchInput = document.querySelector<HTMLInputElement>('input[placeholder="Search projects..."]');
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(() => {
+      nativeInputValue?.call(searchInput, "Two");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const filteredOptions = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(filteredOptions.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project Two",
+    ]);
+
+    await act(() => {
+      searchInput?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(onChange).toHaveBeenCalledWith("project-2");
+
+    act(() => root.unmount());
   });
 
   it("does not open the popover when disabled", async () => {

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "slug": "firecrawl",
+  "name": "Firecrawl",
+  "description": "Search, scrape, and parse public web pages with Firecrawl.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/firecrawl.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.firecrawl.dev/*"
+  ],
+  "docsUrl": "https://docs.firecrawl.dev/mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Firecrawl",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use interactive Firecrawl account authorization for the full hosted MCP tool surface.",
+      "defaults": {
+        "serverUrl": "https://mcp.firecrawl.dev/v2/mcp-oauth",
+        "scopesHint": [
+          "firecrawl:global",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Sign in and choose the Firecrawl team whose usage should apply. This route exposes the account-authorized tool surface; review paid jobs and action policies before execution.",
+      "riskTier": "S4",
+      "warnings": [
+        "Account authorization exposes Firecrawl’s broader hosted MCP surface, including job-based research tools that may use account credits.",
+        "Crawls and research jobs can use provider credits; review their tool actions and limits before execution."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "label": "Use a Firecrawl API key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-created Firecrawl API key in a Bearer header for unattended or higher-limit access.",
+      "defaults": {
+        "serverUrl": "https://mcp.firecrawl.dev/v2/mcp"
+      },
+      "guidanceMd": "Create a Firecrawl API key for the intended team, then connect it with a Bearer header. The authenticated server may expose additional job tools and spend team credits.",
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Use a Firecrawl API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter provider credential",
+          "secret": true,
+          "helperMd": "Create an API key for the intended Firecrawl team with access to the search, scrape, parse, and any job tools you intend to use. Jobs can consume credits; Paperclip cannot increase an existing key’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://docs.firecrawl.dev/mcp-server",
+        "docs": "https://docs.firecrawl.dev/mcp-server"
+      }
+    },
+    {
+      "key": "keyless",
+      "label": "Try keyless access",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the rate-limited keyless public web-search route without a Firecrawl credential.",
+      "defaults": {
+        "serverUrl": "https://mcp.firecrawl.dev/v2/mcp"
+      },
+      "guidanceMd": "The keyless route currently exposes Search, Scrape, and Parse. Keep requests bounded; these calls can consume the provider’s keyless allowance.",
+      "riskTier": "S2"
+    }
+  ]
+}

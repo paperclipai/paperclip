@@ -15,11 +15,68 @@ function validDoc(overrides: Record<string, unknown> = {}) {
     v: 1,
     mode: "cloud",
     catalogVersion: "2026.720.0",
-    features: { enableApps: false, enablePipelines: true },
+    features: { enableApps: false, enableStatusCards: true },
     plugins: { autoInstall: ["daytona", "kubernetes"] },
     ...overrides,
   });
 }
+
+describe("plugins.workerEnv", () => {
+  const plugins = (workerEnv: unknown) => ({ plugins: { autoInstall: ["daytona"], workerEnv } });
+
+  it("is absent from documents that do not declare it", () => {
+    expect(parseManagedConfigEnv(envWith(validDoc()))?.plugins).toEqual({ autoInstall: ["daytona", "kubernetes"] });
+  });
+
+  it("accepts variable names for an auto-installed plugin", () => {
+    const parsed = parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: ["PROVIDER_ORIGIN", "PROVIDER_CAPABILITY_2"] }))));
+    expect(parsed?.plugins.workerEnv).toEqual({ daytona: ["PROVIDER_ORIGIN", "PROVIDER_CAPABILITY_2"] });
+  });
+
+  it.each([
+    "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "BETTER_AUTH_SECRET", "DATABASE_MIGRATION_URL", "DATABASE_URL", "DB_PASSWORD",
+    "GH_TOKEN", "GITHUB_TOKEN", "LD_PRELOAD", "NODE_OPTIONS", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_AUTH_SECRET", "PAPERCLIP_BACKUP_WORKER_DATABASE_URL",
+    "PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY", "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "PAPERCLIP_DECISION_SIGNING_SECRET", "PAPERCLIP_MANAGED_CONFIG",
+    "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE", "PAPERCLIP_TEST_POSTGRES_ADMIN_URL", "PATH", "SENTRY_DSN",
+  ])("refuses to start with a grant of %s", (name) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))).toThrow(`must not grant host credential or loader variable "${name}"`);
+  });
+
+  it.each(["PAPERCLIP_CLOUD_API_ORIGIN", "PAPERCLIP_PRIMARY_HOST", "PROVIDER_CAPABILITY", "MONKEY_ORIGIN"])("accepts a grant of %s", (name) => {
+    expect(parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))?.plugins.workerEnv).toEqual({ daytona: [name] });
+  });
+
+  it.each([
+    ["a plugin that is not auto-installed", { other: ["PROVIDER_ORIGIN"] }, /not in "plugins.autoInstall"/],
+    ["a non-object section", ["PROVIDER_ORIGIN"], /must be an object/],
+    ["an empty grant", { daytona: [] }, /non-empty array/],
+    ["a value instead of a name", { daytona: ["https://example.test"] }, /uppercase variable names/],
+    ["a lowercase name", { daytona: ["database_url"] }, /uppercase variable names/],
+    ["a duplicate name", { daytona: ["PROVIDER_ORIGIN", "PROVIDER_ORIGIN"] }, /duplicate entry/],
+  ])("refuses to start with %s", (_label, workerEnv, message) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins(workerEnv))))).toThrow(message);
+  });
+});
+
+describe("plugins.enabledCompanies", () => {
+  const companyId = "f0679247-e2be-5a76-adb6-6bd360e5a833";
+  const plugins = (enabledCompanies: unknown) => ({ plugins: { autoInstall: ["daytona"], enabledCompanies } });
+
+  it("accepts company ids for an auto-installed plugin", () => {
+    expect(parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [companyId] }))))?.plugins.enabledCompanies).toEqual({ daytona: [companyId] });
+  });
+
+  it.each([
+    ["a plugin that is not auto-installed", { other: [companyId] }, /not in "plugins.autoInstall"/],
+    ["a non-object section", [companyId], /must be an object/],
+    ["an empty list", { daytona: [] }, /non-empty array/],
+    ["a value that is not a UUID", { daytona: ["all"] }, /lowercase company UUIDs/],
+    ["an uppercase UUID", { daytona: [companyId.toUpperCase()] }, /lowercase company UUIDs/],
+    ["a duplicate id", { daytona: [companyId, companyId] }, /duplicate entry/],
+  ])("refuses to start with %s", (_label, enabledCompanies, message) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins(enabledCompanies))))).toThrow(message);
+  });
+});
 
 describe("managedFeatureKeySet", () => {
   it("contains exactly the boolean flags of the experimental schema", () => {
@@ -50,7 +107,7 @@ describe("parseManagedConfigEnv", () => {
       v: 1,
       mode: "cloud",
       catalogVersion: "2026.720.0",
-      features: { enableApps: false, enablePipelines: true },
+      features: { enableApps: false, enableStatusCards: true },
       plugins: { autoInstall: ["daytona", "kubernetes"] },
       environments: [],
     });
@@ -163,6 +220,14 @@ describe("parseManagedConfigEnv", () => {
     expect(() => parseManagedConfigEnv(envWith(validDoc({ features: ["enableApps"] })))).toThrow(
       /"features" must be an object/,
     );
+  });
+
+  it.each([true, false])("ignores the retired Pipelines flag (%s) from older Cloud catalogs", (enabled) => {
+    const config = parseManagedConfigEnv(envWith(validDoc({
+      features: { enablePipelines: enabled, enableCases: true },
+    })));
+    expect(config?.features).toEqual({ enableCases: true });
+    expect(managedFeatureKeySet().has("enablePipelines")).toBe(false);
   });
 
   it("throws on an unknown feature key", () => {

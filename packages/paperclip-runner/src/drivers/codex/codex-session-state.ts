@@ -1,6 +1,7 @@
 import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
 import type {
   HarnessRuntimeRequest,
+  HarnessSessionRecoveryOptions,
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   PersistedHarnessSemanticResult,
@@ -102,6 +103,7 @@ export class CodexSessionState {
   readonly goalReason: string | null;
   readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
   readonly reasoningEffort: string | undefined;
+  readonly diagnosticEnvironment: NodeJS.ProcessEnv;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -112,9 +114,11 @@ export class CodexSessionState {
   codexUsageBaseline: CodexUsageBaseline | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
+  readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
   resultCallId: string | null = null;
   resultTurnId: string | null = null;
   turnStartPending = false;
+  pendingRunAttachment: { runId: string; settled: Promise<void> } | null = null;
   /**
    * Resolves once a pending turn/start settles, on the accepted path or on a
    * provider rejection. A terminal notification for that turn must wait on
@@ -133,6 +137,12 @@ export class CodexSessionState {
   dispositionOnlyRecoveryTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
+  /**
+   * Turns already terminal in the checkpoint this session was restored from.
+   * A replacement runner can re-deliver their committed history as live
+   * notifications; those replays are not new provider activity.
+   */
+  readonly restoredTerminalTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
   readonly itemChannels = new Map<
@@ -158,6 +168,7 @@ export class CodexSessionState {
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
+    normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
     terminalTurns?: PersistedHarnessTurnTerminal[];
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
@@ -176,6 +187,7 @@ export class CodexSessionState {
     goalReason: string | null;
     skillInputs?: CodexAppServerDriverOptions["skillInputs"];
     reasoningEffort?: string;
+    diagnosticEnvironment?: NodeJS.ProcessEnv;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -201,6 +213,7 @@ export class CodexSessionState {
     this.goalReason = input.goalReason;
     this.skillInputs = structuredClone(input.skillInputs ?? []);
     this.reasoningEffort = input.reasoningEffort;
+    this.diagnosticEnvironment = input.diagnosticEnvironment ?? {};
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;
@@ -214,6 +227,7 @@ export class CodexSessionState {
         structuredClone(input.opened.lineage),
       );
     }
+    this.normalizeReplayPayload = input.normalizeReplayPayload;
     if (input.semanticResult) {
       const validation = validatePrpStructuredRunResult(
         input.semanticResult.result,
@@ -242,6 +256,7 @@ export class CodexSessionState {
         );
       }
       this.terminalTurns.set(terminal.turnId, terminal.fingerprint);
+      this.restoredTerminalTurns.add(terminal.turnId);
     }
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
@@ -322,6 +337,18 @@ export class CodexSessionState {
       pending.settle(safeRequestResponse(pending.request.method, "cancel"));
       this.pendingRuntimeRequestMap.delete(requestId);
     }
+  }
+
+  /**
+   * True for a notification that only replays a turn restored as terminal.
+   * The caller drops it without emitting turn or item events; its terminal
+   * fingerprint was already committed, and turn/completed still checks it.
+   */
+  isRestoredTerminalReplay(turnId: string): boolean {
+    return turnId.length > 0
+      && !this.protocolFailed
+      && turnId !== this.activeTurnId
+      && this.restoredTerminalTurns.has(turnId);
   }
 
   notificationNamesActiveTurn(turnId: string, kind: string): boolean {
@@ -447,7 +474,7 @@ export class CodexSessionState {
       ...(refs.itemId ? { itemId: refs.itemId } : {}),
       eventType,
       schemaVersion: 1,
-      priority: eventType === "run.result.proposed" ? 0 : 1,
+      priority: eventType === "run.result.proposed" || eventType === "auth.credentials.updated" ? 0 : 1,
       emittedAt: this.now().toISOString(),
       payload,
     });

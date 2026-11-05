@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { captureNativeDefault, gradeNativeDefault, nativeCompletionProfile, nativeCompletionWorkspaceDigest, NATIVE_MASTER_DEFAULT_SHA256, type NativeDefaultReceipt } from "./native-completion-defaults.js";
 import { mkdtemp, mkdir, writeFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,7 +59,7 @@ describe("native production defaults", () => {
     expect(original.instructionsBundle).toBeDefined();
     expect(() => nativeCompletionProfile({ ...profile, generation: "legacy" })).toThrow();
   });
-  it("hashes actual public bundle bytes before execution without publishing the body", async () => {
+  it("captures current default configuration independently of the frozen native qualification contract", async () => {
     const content = readFileSync(new URL("../../server/src/onboarding-assets/default/AGENTS.md", import.meta.url), "utf8");
     const called: string[] = [];
     const api = { async get<T>(path: string): Promise<T> {
@@ -67,7 +68,12 @@ describe("native production defaults", () => {
         : path.includes("instructions-bundle/file") ? { content } : { budgetMonthlyCents: 1000 }) as T;
     } };
     const actual = await captureNativeDefault({ api, agentId: "agent", companyId: "company" });
-    expect(gradeNativeDefault(actual).passed).toBe(true);
+    const currentSha256 = createHash("sha256").update(content).digest("hex");
+    expect(actual.files).toEqual([{ path: "AGENTS.md", sha256: currentSha256, bytes: Buffer.byteLength(content) }]);
+    // The archived native comparison intentionally pins its original master
+    // context. Accurate capture of a later configuration does not qualify it
+    // against those historical live results.
+    expect(gradeNativeDefault(actual).passed).toBe(currentSha256 === NATIVE_MASTER_DEFAULT_SHA256);
     expect(called).toContain("/api/agents/agent/instructions-bundle/file?path=AGENTS.md");
     expect(JSON.stringify(actual)).not.toContain(content);
   });

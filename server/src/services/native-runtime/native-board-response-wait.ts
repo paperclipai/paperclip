@@ -1,3 +1,4 @@
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
@@ -281,6 +282,7 @@ export async function readNativeBoardResponseWaitSource(
           eq(issueThreadInteractions.companyId, binding.companyId),
           eq(issueThreadInteractions.issueId, binding.issueId),
           eq(issueThreadInteractions.status, "pending"),
+          activeIssueInteractionCondition({ runId: binding.runId }),
         ),
       )
       .limit(1),

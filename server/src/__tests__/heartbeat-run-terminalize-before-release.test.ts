@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   companies,
   createDb,
@@ -71,6 +72,7 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(issues);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -343,7 +345,7 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     const [environment] = await db.insert(environments).values({ name: `cleanup-${runId}`, driver: "sandbox" }).returning();
     await db.insert(environmentLeases).values({ companyId, environmentId: environment.id,
-      heartbeatRunId: runId, agentId, provider, providerLeaseId: "sandbox-owned",
+      heartbeatRunId: runId, provider, providerLeaseId: "sandbox-owned",
       status: "active", leasePolicy: "ephemeral" });
     const releaseRunLeases = vi.fn(async () => []);
     const heartbeat = heartbeatService(db, {
