@@ -340,7 +340,14 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     const moved = await issueService(db).update(movingId, { parentId: childId, title: "Renamed anyway" });
     expect(moved?.parentId).toBeNull();
     expect(moved?.title).toBe("Renamed anyway");
-    expect(moved?.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: false });
+    expect(moved?.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: false, effectiveParent: null });
+
+    // An already-parented task keeps its parent, and the notice names it.
+    const otherRootId = await seedIssue(companyId, { identifier: `KEEP-${randomUUID().slice(0, 6)}` });
+    const parentedId = await seedIssue(companyId, { parentId: otherRootId });
+    const kept = await issueService(db).update(parentedId, { parentId: childId });
+    expect(kept?.parentId).toBe(otherRootId);
+    expect(kept?.parentAdjusted).toMatchObject({ applied: false, effectiveParent: { id: otherRootId } });
   });
 
   describe("moves", () => {

@@ -11268,7 +11268,12 @@ export function issueService(db: Db) {
         // A placement above the requested parent needs the caller's confirmed
         // authorization (expectedParentId); otherwise only the move is skipped.
         if (plan.adjustment?.applied && plan.parentId !== null && data.expectedParentId === undefined) {
-          plan = { parentId: undefined, adjustment: { ...plan.adjustment, applied: false, effectiveParent: null } };
+          // The task keeps its current parent; report that one.
+          const [currentParent] = existing.parentId ? await dbOrTx
+            .select({ id: issues.id, identifier: issues.identifier })
+            .from(issues)
+            .where(and(eq(issues.companyId, existing.companyId), eq(issues.id, existing.parentId))) : [];
+          plan = { parentId: undefined, adjustment: { ...plan.adjustment, applied: false, effectiveParent: currentParent ?? null } };
         }
         const plannedParentId = plan.parentId === undefined ? existing.parentId : plan.parentId;
         if (data.expectedParentId !== undefined && plannedParentId !== data.expectedParentId) {
