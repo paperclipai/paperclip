@@ -16,11 +16,6 @@ export const IMPORT_TRANSFER_PART_SIZE_BYTES = 32 * 1024 * 1024;
 /** Upload attempts per part before the transfer surfaces a failure. */
 export const IMPORT_TRANSFER_PART_ATTEMPTS = 3;
 
-// `crypto.subtle` is only defined in a secure context (HTTPS or http://localhost).
-// A Paperclip instance served over plain HTTP on a LAN or tailnet address has
-// `crypto.subtle === undefined`, and reading `.digest` on it throws the opaque
-// "Cannot read properties of undefined (reading 'digest')" TypeError. Replace
-// that with a clear message that names the real cause and the two paths out.
 const INSECURE_CONTEXT_HINT =
   "Large zip imports need the browser SubtleCrypto API, which is only available on HTTPS or http://localhost. "
   + "Serve Paperclip over HTTPS, or re-export the company without large attachments so the package fits the inline path.";

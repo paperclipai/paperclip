@@ -1,9 +1,13 @@
 // @vitest-environment node
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { webcrypto } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 
-import { buildImportTransferManifest } from "./import-transfer";
+import { IMPORT_TRANSFER_PART_SIZE_BYTES, buildImportTransferManifest } from "./import-transfer";
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 describe("buildImportTransferManifest", () => {
   afterEach(() => {
@@ -11,18 +15,28 @@ describe("buildImportTransferManifest", () => {
   });
 
   it("hashes the whole buffer and every byte-range part in a secure context", async () => {
-    // Node 20 exposes webcrypto; the real path reads it as `globalThis.crypto`.
     vi.stubGlobal("crypto", webcrypto);
-    const buffer = new Uint8Array([0, 1, 2, 3, 4]).buffer;
-    const manifest = await buildImportTransferManifest(buffer);
-    expect(manifest.totalBytes).toBe(5);
-    expect(manifest.parts).toHaveLength(1);
-    expect(manifest.zipSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(manifest.parts[0]!.sha256).toMatch(/^[0-9a-f]{64}$/);
+    const bytes = new Uint8Array(IMPORT_TRANSFER_PART_SIZE_BYTES + 3);
+    bytes.fill(1, 0, IMPORT_TRANSFER_PART_SIZE_BYTES);
+    bytes.set([2, 3, 4], IMPORT_TRANSFER_PART_SIZE_BYTES);
+    const manifest = await buildImportTransferManifest(bytes.buffer);
+    expect(manifest.totalBytes).toBe(bytes.byteLength);
+    expect(manifest.zipSha256).toBe(sha256Hex(bytes));
+    expect(manifest.parts).toEqual([
+      {
+        index: 0,
+        byteSize: IMPORT_TRANSFER_PART_SIZE_BYTES,
+        sha256: sha256Hex(bytes.subarray(0, IMPORT_TRANSFER_PART_SIZE_BYTES)),
+      },
+      {
+        index: 1,
+        byteSize: 3,
+        sha256: sha256Hex(bytes.subarray(IMPORT_TRANSFER_PART_SIZE_BYTES)),
+      },
+    ]);
   });
 
   it("rejects with a HTTPS/localhost hint when SubtleCrypto is unavailable", async () => {
-    // Simulate the http:// (non-localhost) deployment where crypto.subtle is undefined.
     vi.stubGlobal("crypto", { subtle: undefined });
     await expect(buildImportTransferManifest(new ArrayBuffer(1))).rejects.toThrow(
       /HTTPS or http:\/\/localhost/,
