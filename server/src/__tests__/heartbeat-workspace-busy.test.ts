@@ -798,6 +798,25 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       expect(executedRunIds).not.toContain(retryRun.id);
     });
 
+    it("stops waiting on the old holder when the task moves to another workspace", async () => {
+      const fixture = await seedInheritedWorkspace();
+      const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);
+      const dueAt = new Date(new Date(retryRun.scheduledRetryAt!).getTime() + 1_000);
+      expect((await heartbeat.promoteDueScheduledRetries(dueAt)).runIds).not.toContain(retryRun.id);
+
+      const movedWorkspaceId = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id: movedWorkspaceId, companyId: fixture.companyId, projectId: fixture.projectId, mode: "shared_workspace",
+        strategyType: "project_primary", name: "Moved workspace", status: "active", cwd: workspaceCwd,
+        providerType: "local_fs", providerRef: workspaceCwd,
+      });
+      await db.update(issues).set({ executionWorkspaceId: movedWorkspaceId }).where(eq(issues.id, fixture.issueId));
+
+      // The old holder is still live, but the task no longer uses its workspace.
+      expect((await heartbeat.promoteDueScheduledRetries(new Date(dueAt.getTime() + 10 * 60_000))).runIds).toContain(retryRun.id);
+      expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+    });
+
     it("still lets the user stop a parked waiter", async () => {
       const fixture = await seedInheritedWorkspace();
       const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);
@@ -832,7 +851,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         });
         siblings.push({ agentId, issueId });
       }
-      const waiters = [];
+      const waiters: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const sibling of siblings) waiters.push(await deferredRetryFor(sibling.agentId, sibling.issueId));
 
       await heartbeat.cancelRun(fixture.holderRunId);

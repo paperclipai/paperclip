@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { notifyScheduledRetryDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import {
@@ -8,6 +8,7 @@ import {
   WORKSPACE_BUSY_RETRY_REASON,
   WORKSPACE_BUSY_WAIT_KEY,
   readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
 } from "../domain/wake-context.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -29,6 +30,10 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   if (run.status !== "scheduled_retry") return false;
   const wait = readWorkspaceBusyWait(run.scheduledRetryReason, run.contextSnapshot);
   if (!wait) return false;
+  // The task may have moved to another workspace while parked (a parked retry
+  // does not block that change). Then the saved wait no longer applies, and
+  // normal dispatch re-resolves the workspace and its holder.
+  if (!(await taskStillUsesWaitedWorkspace(tx, run, wait.key))) return false;
 
   const [holder] = await tx
     .select({
@@ -81,6 +86,20 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     ))
     .returning({ id: heartbeatRuns.id });
   return Boolean(parked);
+}
+
+async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, key: string): Promise<boolean> {
+  const context = run.contextSnapshot ?? {};
+  const issueId = typeof context.issueId === "string" ? context.issueId : null;
+  if (!issueId) return false;
+  const [issue] = await tx
+    .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
+    .from(issues)
+    .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+  if (!issue) return false;
+  return key.startsWith("execution:")
+    ? workspaceBusyWaitKey({ executionWorkspaceId: issue.executionWorkspaceId, projectWorkspaceId: null }) === key
+    : workspaceBusyWaitKey({ executionWorkspaceId: null, projectWorkspaceId: issue.projectWorkspaceId }) === key;
 }
 
 /**
