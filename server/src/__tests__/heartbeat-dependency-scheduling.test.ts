@@ -1285,6 +1285,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedRun?.resultJson).toMatchObject({ cancellation: { source: "control_plane", expected: true } });
     const [waitingIssue] = await db.select().from(issues).where(eq(issues.id, blockedIssueId));
     expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "resolved", canRetry: false });
+    await db.update(heartbeatRuns).set({ resultJson: { ...blockedRun!.resultJson, timeoutFired: true } })
+      .where(eq(heartbeatRuns.id, blockedRunId));
+    expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(heartbeatRuns).set({ resultJson: blockedRun!.resultJson }).where(eq(heartbeatRuns.id, blockedRunId));
     expect(blockedWakeup?.status).toBe("skipped");
     expect(blockedWakeup?.error).toContain("dependencies are still blocked");
     expect(blockedIssue).toMatchObject({
