@@ -2019,7 +2019,7 @@ function createSessionStreamBuffer(
     // Do not publish that suffix or count its replacement bytes until a replay
     // confirms it. A real final U+FFFD is flushed at confirmed command exit.
     const text = stream.pendingReplacement + chunk;
-    stream.pendingReplacement = final ? "" : (text.match(/�+$/u)?.[0] ?? "");
+    stream.pendingReplacement = final ? "" : (text.match(/\uFFFD+$/u)?.[0] ?? "");
     const buf = Buffer.from(text.slice(0, text.length - stream.pendingReplacement.length), "utf8");
     const start = stream.connectionBytes;
     stream.connectionBytes = start + buf.length;
