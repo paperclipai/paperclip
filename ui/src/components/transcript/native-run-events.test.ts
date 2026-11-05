@@ -243,6 +243,16 @@ describe("native proposed-plan presentation", () => {
       }),
     ]);
     expect(transcript[0]).toMatchObject({ kind: "assistant", text: "Plan ready." });
+
+    const fenced = "Format:\n```\n<proposed_plan>\n# Plan…[truncated]";
+    const fencedTranscript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-2", { kind: "agentMessage", channel: "final", text: fenced }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1", proposalId: "msg-2", status: "completed",
+        markdown: "# Other", source: "codex_plan_item",
+      }),
+    ]);
+    expect(fencedTranscript[0]).toMatchObject({ kind: "assistant", text: fenced });
   });
 
   it("keeps a Claude ExitPlanMode proposal out of the turn checklist", () => {

@@ -192,6 +192,9 @@ describe("readCompletedAssistantMessageCandidate", () => {
     const documented = "Use this format:\n```\n<proposed_plan>\n# Plan\n</proposed_plan>\n```";
     expect(candidate(documented)?.text).toBe(documented);
     expect(candidate("Plan ready.\n<proposed_plan>\n# Fix\n1. Ship…[truncated]")?.text).toBe("Plan ready.");
+    // A fenced example in a cut-off preview keeps its text.
+    const fencedPreview = "Format:\n```\n<proposed_plan>\n# Plan…[truncated]";
+    expect(candidate(fencedPreview)?.text).toBe(fencedPreview);
     expect(completedPlanProposalIds([
       { payload: { prpEvent: { payload: { proposalId: "msg-1", status: "completed" } } } },
       { payload: { prpEvent: { payload: { proposalId: "msg-2", status: "streaming" } } } },

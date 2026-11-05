@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
-import { RUNNERD_CANONICAL_ITEM } from "./drivers/codex/codex-driver-values.js";
 import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
 import {
   toolFileChangesFromAcpContent,
@@ -698,6 +697,9 @@ function turnPlanPayload(
 }
 
 // Matches the provider-event schema; keeps the event under the 256 KiB payload cap.
+/** Same registered Symbol as `RUNNERD_CANONICAL_ITEM` in the Codex driver values. */
+const RUNNERD_CANONICAL_ITEM_KEY = Symbol.for("paperclip.runnerd.canonical-item");
+
 const PLAN_PROPOSAL_MAX_MARKDOWN = 60_000;
 
 /**
@@ -725,7 +727,7 @@ export function planProposalPayload(
  * their own lines outside fenced code, so quoting or documenting the tag never
  * creates a proposal.
  */
-export function splitProposedPlanBlock(value: string): { plan: string | null; rest: string } {
+export function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
   const lines = value.split("\n");
   let fence: string | null = null;
   let start = -1;
@@ -742,10 +744,16 @@ export function splitProposedPlanBlock(value: string): { plan: string | null; re
       return {
         plan: lines.slice(start + 1, index).join("\n").trim(),
         rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
       };
     }
   }
-  return { plan: null, rest: value };
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
 }
 
 /** Claude Code's ExitPlanMode plan, captured at its permission request. */
@@ -877,7 +885,7 @@ export function canonicalProviderEventsFromCodex(
   // approval, so read it there as well.
   // On the runnerd path Rust already emitted the proposal from the full item;
   // its forwarded item text is a short display preview and must not repeat it.
-  const runnerdCanonical = (item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM] === true;
+  const runnerdCanonical = (item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM_KEY] === true;
   if (!runnerdCanonical && completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
     const { plan } = splitProposedPlanBlock(text(item.text));
     if (plan) {

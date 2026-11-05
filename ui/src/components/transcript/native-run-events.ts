@@ -101,7 +101,7 @@ function proposedPlanMarkdown(value: string): string {
  * their own lines outside fenced code, so quoting or documenting the tag never
  * creates a proposal.
  */
-function splitProposedPlanBlock(value: string): { plan: string | null; rest: string } {
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
   const lines = value.split("\n");
   let fence: string | null = null;
   let start = -1;
@@ -118,18 +118,23 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
       return {
         plan: lines.slice(start + 1, index).join("\n").trim(),
         rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
       };
     }
   }
-  return { plan: null, rest: value };
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
 }
 
 function withoutProposedPlanBlock(value: string): string {
-  const { plan, rest } = splitProposedPlanBlock(value);
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
   if (plan !== null) return rest;
   // A stored preview can end inside the block; hide its cut-off remainder.
-  const open = value.search(/(^|\n)[ \t]*<proposed_plan>[ \t]*(\n|$)/i);
-  return open < 0 ? value : value.slice(0, open).trim();
+  return unclosedStart === null ? value : value.slice(0, unclosedStart).trim();
 }
 
 function planProposalEntry(
