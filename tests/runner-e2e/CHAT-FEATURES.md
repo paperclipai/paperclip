@@ -251,9 +251,10 @@ attempts are retained; component controls do not establish a native pass.
 
 ### Team install conflict recovery
 
-`teams.install-team` v2 accepts either an honestly reported missing required
+`teams.install-team` v3 accepts either an honestly reported missing required
 skill or a supported catalog recovery that preserves the original local skill
-and agent. Recovery requires the accepted catalog key and source hash, exact
+and agent. An unresolved report may name the required skill’s currently occupied
+slug or name; it need not use a particular failure label. Recovery requires the accepted catalog key and source hash, exact
 current immutable-version bytes, and that key assigned to the intended imported
 members. It does not accept merely installing an unattached skill. The original
 repeat query, resource identity reconciliation, final rendered-link inspection,
