@@ -71,6 +71,8 @@ function externalizeThirdParty(isBundled, runtimeDir) {
   };
 }
 
+/** @param {{ entry: string, outdir: string, maintenanceEntry?: string, ephemeralMigrationEntry?: string,
+ * nativeHarnessPrestageEntry?: string, isBundled?: (specifier: string) => boolean }} options */
 export async function bundleRuntime({ entry, outdir, maintenanceEntry, ephemeralMigrationEntry, nativeHarnessPrestageEntry, isBundled = (specifier) => specifier.startsWith("@paperclipai/") }) {
   await rm(outdir, { recursive: true, force: true });
   const result = await build({
