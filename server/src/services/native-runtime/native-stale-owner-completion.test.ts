@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults,
-  statusDecisions, type Db } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, heartbeatRuns, issueWorkProducts, issues, nativeRunFinalizations,
+  nativeRunResults, statusDecisions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, supersedeStaleOwnerCompletion, type NativeStatusDecision } from "./status-arbiter.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_STALE_OWNER_TEST_DATABASE_URL");
@@ -43,8 +44,11 @@ describe.skipIf(!support.supported)("native completion after reassignment", () =
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  /** A low-risk task whose original owner reported done in an accepted result. */
-  async function acceptedDoneResult() {
+  /**
+   * A task whose original owner reported done in an accepted result. With
+   * pendingEvidence, the server arbiter waits for review of a work product.
+   */
+  async function acceptedDoneResult(options: { pendingEvidence?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), successorId = randomUUID(), issueId = randomUUID();
     const runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stale owner fixture", issuePrefix: companyId.slice(0, 8) });
@@ -55,23 +59,29 @@ describe.skipIf(!support.supported)("native completion after reassignment", () =
     await db.insert(issues).values({ id: issueId, companyId, title: "FizzBuzz variants", status: "in_progress",
       assigneeAgentId: agentId, description: "Write fizzbuzz with tests and mark done." });
     const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
-      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "low", completionAuthority: "agent_claim_policy",
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: options.pendingEvidence ? "standard" : "low",
+      completionAuthority: options.pendingEvidence ? "server_arbiter" : "agent_claim_policy",
       incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "test", objective: "Write fizzbuzz", criteria: [{ id: "objective", requirement: "Complete the task" }] },
       canonicalSha256: `stale-owner-${issueId}`, createdByActorType: "system", createdByActorId: "test" }).returning();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, nativeSessionId: sessionId,
       runnerInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       status: "running", runtimeMode: "native", contextSnapshot: { issueId, source: "issue.assigned" } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const workProductId = randomUUID();
+    if (options.pendingEvidence) await db.insert(issueWorkProducts).values({ id: workProductId, companyId, issueId,
+      type: "artifact", provider: "paperclip", title: "fizzbuzz.py", status: "ready_for_review", reviewState: "none" });
+    const evidenceRef = options.pendingEvidence ? `work_product:${workProductId}` : `task:${issueId}`;
     const port = new NativeRunCoordinatorStore(db, { companyId, issueId, runId, agentId, normalizedSessionId: sessionId,
       runnerSourceInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       completionContractRevision: "test", completionContractCriterionIds: ["objective"] });
     await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
       summary: "Implemented fizzbuzz; 6 passed.", completionClaim: { contractRevision: "test", objectiveSatisfied: true,
-        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [`task:${issueId}`] }], remainingWork: [] },
-      evidence: [{ ref: `task:${issueId}` }], verification: [{ commandOrCheck: "pytest -q", status: "passed", detail: "6 passed" }], attentionRequests: [], artifacts: [] },
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [evidenceRef] }], remainingWork: [] },
+      evidence: [{ ref: evidenceRef }],
+      verification: [{ commandOrCheck: "pytest -q", status: "passed", detail: "6 passed", artifactRef: evidenceRef }], attentionRequests: [], artifacts: [] },
     terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed",
       reportedWorkDisposition: "done" }, turnId: "fizzbuzz-turn" });
-    return { companyId, agentId, successorId, issueId, runId };
+    return { companyId, agentId, successorId, issueId, runId, workProductId };
   }
 
   /** The board's reassignment: new owner, and the old run loses execution. */
@@ -143,5 +153,31 @@ describe.skipIf(!support.supported)("native completion after reassignment", () =
     expect(reassigned).toBe(true);
     expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: f.successorId });
     expect((await decision(f.runId)).row).toMatchObject({ reasonCode: "completion_owner_superseded" });
+  });
+  async function approveEvidenceLater(f: Awaited<ReturnType<typeof acceptedDoneResult>>) {
+    await db.update(issueWorkProducts).set({ reviewState: "approved", updatedAt: new Date(Date.now() + 1_000) })
+      .where(eq(issueWorkProducts.id, f.workProductId));
+  }
+
+  it("closes the owner's task when later evidence satisfies the contract", async () => {
+    const f = await acceptedDoneResult({ pendingEvidence: true });
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
+    expect((await issue(f.issueId)).status).not.toBe("done");
+    await approveEvidenceLater(f);
+    await reconcileNativeFinalizations(db, [f.runId]);
+    expect(await issue(f.issueId)).toMatchObject({ status: "done", assigneeAgentId: f.agentId });
+    expect((await decision(f.runId)).row.reasonCode).toBe("decision_superseded_by_new_evidence");
+  });
+
+  it("does not let later evidence from a reassigned-away run close the new owner's task", async () => {
+    const f = await acceptedDoneResult({ pendingEvidence: true });
+    await reassign(f);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
+    const [acceptedBefore] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+    await approveEvidenceLater(f);
+    await reconcileNativeFinalizations(db, [f.runId]);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", assigneeAgentId: f.successorId });
+    expect((await decision(f.runId)).row).toMatchObject({ toStatus: "in_progress", reasonCode: "completion_owner_superseded" });
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId)))[0]).toEqual(acceptedBefore);
   });
 });
