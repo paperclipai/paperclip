@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -39,9 +39,19 @@ if (!cloud || !path.isAbsolute(cloud) || !existsSync(path.join(cloud, 'dist/slee
 if (!path.isAbsolute(process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_NODE || '')) throw new Error('Set exact Node22 executable');
 if (!/^[a-f0-9]{40}$/.test(process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA || '')) throw new Error('Set exact Cloud source SHA');
 const evidence = process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE;
-if (!evidence || !path.isAbsolute(evidence) || !existsSync(evidence)) throw new Error('Set an existing absolute evidence directory');
+if (!evidence || !path.isAbsolute(evidence) || !existsSync(evidence) || !lstatSync(evidence).isDirectory()) {
+  throw new Error('Set an existing absolute evidence directory without a symlink');
+}
 const log = process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG;
-if (!log || !path.isAbsolute(log) || !existsSync(path.dirname(log)) || existsSync(log) && statSync(log).size !== 0) throw new Error('Set a fresh absolute guard log');
+const logStat = log && path.isAbsolute(log) ? lstatSync(log, { throwIfNoEntry: false }) : undefined;
+if (!log || !path.isAbsolute(log) || !existsSync(path.dirname(log))
+  || logStat && (!logStat.isFile() || logStat.size !== 0)) throw new Error('Set a fresh absolute guard log');
+for (const entry of readdirSync(evidence)) {
+  const existing = path.join(evidence, entry);
+  if (path.resolve(existing) !== path.resolve(log) || !lstatSync(existing).isFile() || statSync(existing).size !== 0) {
+    throw new Error('Owner acceptance requires a fresh evidence directory; existing artifacts must be preserved');
+  }
+}
 const require = createRequire(new URL('../server/package.json', import.meta.url));
 const guard = path.join(root, 'scripts/fixtures/skill-default-cadence-network-guard.cjs');
 delete process.env.DATABASE_URL;
