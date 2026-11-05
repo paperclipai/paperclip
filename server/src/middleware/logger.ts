@@ -54,8 +54,7 @@ export const basePinoOptions = {
     streamWrite(serialized: string) {
       try {
         const record: unknown = JSON.parse(serialized);
-        const safe = redactCredentialFields(record);
-        return safe === record ? serialized : `${JSON.stringify(safe)}\n`;
+        return `${JSON.stringify(redactCredentialFields(record))}\n`;
       } catch {
         return '{"level":50,"msg":"Log record could not be safely redacted"}\n';
       }

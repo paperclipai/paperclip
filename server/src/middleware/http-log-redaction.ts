@@ -281,9 +281,10 @@ function redactFieldsEntry(
   entry: unknown,
   depth: number,
   seen: WeakSet<object>,
+  headerMap = false,
 ): unknown {
   try {
-    return redactFieldsValue(entry, depth, seen);
+    return redactFieldsValue(entry, depth, seen, headerMap);
   } catch {
     return UNREADABLE_MARKER;
   }
@@ -301,6 +302,7 @@ function redactFieldsValue(
   value: unknown,
   depth: number,
   seen: WeakSet<object>,
+  headerMap = false,
 ): unknown {
   if (typeof value === "string") return sanitizeCredentialText(value);
   if (!value || typeof value !== "object") return value;
@@ -331,7 +333,7 @@ function redactFieldsValue(
       ? ([] as unknown as Record<string | number, unknown>)
       : {};
     for (const key of keys) {
-      if (typeof key === "string" && isKnownCredentialName(key)) {
+      if (typeof key === "string" && (isKnownCredentialName(key) || (headerMap && isCredentialBearingHeader(key)))) {
         const entry = readFieldValue(value, key);
         out[key] = entry === VALUE_REDACTION_MARKER
           ? VALUE_REDACTION_MARKER
@@ -354,7 +356,7 @@ function redactFieldsValue(
         out[key] = entry;
         continue;
       }
-      const next = redactFieldsEntry(entry, depth + 1, seen);
+      const next = redactFieldsEntry(entry, depth + 1, seen, typeof key === "string" && key.toLowerCase() === "headers");
       if (next !== entry) changed = true;
       out[key] = next;
     }
