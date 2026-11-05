@@ -2481,8 +2481,8 @@ Every Paperclip-managed MCP entry in the isolated Codex configuration uses
 native `default_tools_approval_mode = "approve"`. This permits the call to
 reach Paperclip's gateway, which owns live per-tool authorization, denial and
 human approval cards. Per-tool policy is evaluated at the gateway rather than
-copied into Codex configuration. The shared renderer covers CLI and ACPX;
-unmanaged MCP entries keep their existing approval modes.
+copied into Codex configuration. The shared renderer covers CLI runs only;
+ACPX runs do not use it. Unmanaged MCP entries keep their existing approval modes.
 
 Codex retains the model conversation. Paperclip resumes with `excludeTurns: true`,
 reads lightweight thread state, and fetches paginated turn metadata or specific

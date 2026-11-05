@@ -434,8 +434,8 @@ Paperclip-managed Codex MCP entries set native
 `default_tools_approval_mode = "approve"` so calls reach the gateway under
 noninteractive execution. The gateway applies current tool policies, denies
 unauthorized calls and creates a human approval card when review is required.
-The shared configuration renderer applies this setting for CLI and ACPX runs
-and removes it with the managed block. Unmanaged MCP entries retain their own
+The shared configuration renderer applies this setting for CLI runs
+and removes it with the managed block. ACPX runs do not use this renderer. Unmanaged MCP entries retain their own
 approval settings. See [execution semantics](doc/execution-semantics.md).
 
 <br/>
