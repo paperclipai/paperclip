@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, type IssueSnapshot } from "../src/contracts.js";
-import { collectDeliveryFacts, decideLevel, evaluateIssue } from "../src/evidence.js";
+import { collectDeliveryFacts, decideLevel, evaluateIssue, parseRepoSlug } from "../src/evidence.js";
 
 function snapshot(overrides: Partial<IssueSnapshot> = {}): IssueSnapshot {
   return {
@@ -64,6 +64,47 @@ describe("gate de entrega", () => {
       snapshot({ planBody: "# Plan\n\nHice un análisis XYZ y creo que convendría..." }),
     );
     expect(result.ok).toBe(false);
+  });
+
+  it("un PR de otro repo no cuenta como entrega de esta issue", () => {
+    const result = evaluateIssue(
+      snapshot({
+        expectedRepo: "gampify/gampify",
+        comments: [{ id: "c1", body: "Listo https://github.com/vicinapp/vicin/pull/37" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.missing).toContain("otro repo");
+  });
+
+  it("un PR del repo del proyecto sí cuenta", () => {
+    const result = evaluateIssue(
+      snapshot({
+        expectedRepo: "gampify/gampify",
+        comments: [{ id: "c1", body: "Listo https://github.com/gampify/gampify/pull/91" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("pull_request");
+  });
+
+  it("sin repo conocido, un PR cuenta (no hay contra qué comparar)", () => {
+    const result = evaluateIssue(
+      snapshot({ comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }] }),
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("parseRepoSlug", () => {
+  it("normaliza https, ssh y git@", () => {
+    expect(parseRepoSlug("https://github.com/gampify/gampify")).toBe("gampify/gampify");
+    expect(parseRepoSlug("https://github.com/gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("git@github.com:gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("ssh://git@github.com/gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("gampify/gampify")).toBe("gampify/gampify");
+    expect(parseRepoSlug(null)).toBe(null);
+    expect(parseRepoSlug("")).toBe(null);
   });
 });
 

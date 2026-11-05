@@ -5,12 +5,14 @@ import {
   type PluginEvent,
 } from "@paperclipai/plugin-sdk";
 import { DEFAULT_CONFIG, type EgmGateConfig, type IssueSnapshot } from "./contracts.js";
-import { buildGateComment, evaluateIssue } from "./evidence.js";
-import { JOB_KEY_RECONCILE, TOOL_KEY_LEVEL } from "./manifest.js";
+import { buildGateComment, evaluateIssue, parseRepoSlug } from "./evidence.js";
+import { TOOL_KEY_LEVEL } from "./manifest.js";
 
 const PLUGIN_NAME = "egm-gate";
 const STATE_KEY = "gate:last-action";
 const MAX_COMMENTS_PER_ISSUE = 3;
+/** El mapa de estado se poda: las entradas viejas no sirven de nada. */
+const STATE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
 
 type GateRecord = { at: string; count: number };
 
@@ -21,14 +23,27 @@ async function readConfig(ctx: PluginContext, companyId?: string): Promise<EgmGa
   return { ...DEFAULT_CONFIG, fullDiffLines: lines, fullDiffFiles: files };
 }
 
+/** Repo `owner/name` del workspace principal del proyecto (si lo hay). */
+async function projectRepo(ctx: PluginContext, projectId: string | null, companyId: string): Promise<string | null> {
+  if (!projectId) return null;
+  try {
+    const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+    const primary = workspaces.find((w) => w.isPrimary) ?? workspaces[0];
+    return parseRepoSlug(primary?.repoUrl ?? null);
+  } catch {
+    return null;
+  }
+}
+
 /** Arma la foto de una issue con todo lo que el gate puede verificar. */
 async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: string): Promise<IssueSnapshot | null> {
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue) return null;
-  const [comments, attachments, plan] = await Promise.all([
+  const [comments, attachments, plan, expectedRepo] = await Promise.all([
     ctx.issues.listComments(issueId, companyId).catch(() => []),
     ctx.issues.listAttachments(issueId, companyId).catch(() => []),
     ctx.issues.documents.get(issueId, "plan", companyId).catch(() => null),
+    projectRepo(ctx, issue.projectId ?? null, companyId),
   ]);
   return {
     issueId: issue.id,
@@ -44,12 +59,18 @@ async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: str
       contentType: a.contentType ?? null,
     })),
     planBody: plan?.body ?? null,
+    expectedRepo,
   };
 }
 
 async function readRecords(ctx: PluginContext, companyId: string): Promise<Record<string, GateRecord>> {
   const raw = await ctx.state.get({ scopeKind: "company", scopeId: companyId, stateKey: STATE_KEY });
-  return (raw ?? {}) as Record<string, GateRecord>;
+  const records = (raw ?? {}) as Record<string, GateRecord>;
+  const cutoff = Date.now() - STATE_MAX_AGE_MS;
+  for (const [id, record] of Object.entries(records)) {
+    if (!record?.at || Date.parse(record.at) < cutoff) delete records[id];
+  }
+  return records;
 }
 
 async function writeRecord(ctx: PluginContext, companyId: string, issueId: string, record: GateRecord): Promise<void> {
@@ -102,7 +123,23 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
     await ctx.issues.createComment(issueId, buildGateComment(evaluation, snapshot.identifier), companyId);
   }
 
-  await ctx.issues.update(issueId, { status: config.reopenAsInReview ? "in_review" : "todo" }, companyId);
+  // Volver a `in_review` puede ser rechazado por el guard de disposicion (una
+  // issue sin camino de revision tipado). Si pasa, la issue se queda en `done`
+  // sin evidencia: exactamente lo que el gate tiene que impedir. Se cae a
+  // `todo`, que siempre es una transicion valida.
+  const target = config.reopenAsInReview ? "in_review" : "todo";
+  let reopenedAs = target;
+  try {
+    await ctx.issues.update(issueId, { status: target }, companyId);
+  } catch (error) {
+    reopenedAs = "todo";
+    await ctx.issues.update(issueId, { status: "todo" }, companyId).catch(() => undefined);
+    ctx.logger.warn("gate: no se pudo volver a in_review, se deja en todo", {
+      issueId,
+      identifier: snapshot.identifier,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   await writeRecord(ctx, companyId, issueId, { at: new Date().toISOString(), count });
   await ctx.activity.log({
     companyId,
@@ -113,7 +150,7 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
       identifier: snapshot.identifier,
       count,
       missing: evaluation.missing,
-      reopenedAs: config.reopenAsInReview ? "in_review" : "todo",
+      reopenedAs,
     },
   });
   ctx.logger.warn("gate: cierre sin evidencia", {
@@ -176,13 +213,8 @@ const plugin = definePlugin({
     );
 
     // 3. Barrido horario de cierres sin evidencia (sustituye al gate en shell).
-    ctx.jobs.register(JOB_KEY_RECONCILE, async (job) => {
-      ctx.logger.info(`${PLUGIN_NAME}: barrido de cierres`, { jobKey: job.jobKey, runId: job.runId });
-      // El barrido real lo hace el host vía rutina gestionada; el job queda
-      // registrado como punto de extensión paraikos sweeps por proyecto.
-    });
 
-    // 4. Datos para la UI: estado del gate por issue.
+    // 3. Datos para la UI: estado del gate por issue.
     ctx.data.register("gate-status", async (params) => {
       const issueId = String(params.issueId ?? "");
       const companyId = String(params.companyId ?? "");

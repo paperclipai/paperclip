@@ -17,10 +17,27 @@ import {
  * Ninguna de las dos últimas requiere código: son entregables explícitos.
  */
 
-const PR_PATTERN = /https?:\/\/(?:www\.)?github\.com\/[^\s)]+\/pull\/\d+/i;
+const PR_PATTERN = /https?:\/\/(?:www\.)?github\.com\/([^\s)]+)\/pull\/(\d+)/i;
 const VERIFIED_PATTERN = /^\s*EGM-VERIFIED\s*:/im;
 const DELIVERABLE_DECISION_PATTERN = /^\s*EGM-DELIVERABLE\s*:\s*decision\s*$/im;
 const DIFF_PATTERN = /^\s*EGM-DIFF\s*:\s*(\d+)\s+lines?\s+(\d+)\s+files?/im;
+
+/**
+ * Normaliza una URL de repo a `owner/name`.
+ * Acepta https, ssh y git@, con o sin `.git`.
+ */
+export function parseRepoSlug(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const text = String(url).trim();
+  if (!text) return null;
+  const ssh = /^(?:ssh:\/\/)?git@([^:/]+)[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(text);
+  if (ssh) return `${ssh[2]}/${ssh[3]}`;
+  const https = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(text);
+  if (https) return `${https[1]}/${https[2]}`;
+  const bare = /^([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(text);
+  if (bare) return `${bare[1]}/${bare[2]}`;
+  return null;
+}
 
 export type DeliveryFacts = {
   signals: EvidenceSignal[];
@@ -29,18 +46,28 @@ export type DeliveryFacts = {
   diffFiles?: number;
   /** El texto de la issue menciona un tema que exige aprobación humana. */
   touchesHumanTopic: boolean;
+  /** PRs que se descartaron por ser de otro repo. */
+  foreignPullRequests: string[];
 };
 
 export function collectDeliveryFacts(snapshot: IssueSnapshot): DeliveryFacts {
   const signals: EvidenceSignal[] = [];
+  const foreignPullRequests: string[] = [];
   let diffLines: number | undefined;
   let diffFiles: number | undefined;
+  const expected = snapshot.expectedRepo ? snapshot.expectedRepo.toLowerCase() : null;
 
   for (const comment of snapshot.comments) {
-    const match = comment.body.match(PR_PATTERN);
-    if (match) {
-      signals.push({ kind: "pull_request", ref: match[0], source: "comment" });
+    const match = PR_PATTERN.exec(comment.body);
+    if (!match) continue;
+    const slug = `${match[1]}/${match[2]}`.replace(/[^\w./-]/g, "");
+    const repo = slug.split("/").slice(0, 2).join("/");
+    // Un PR de otro repo no es la entrega de esta issue.
+    if (expected && repo.toLowerCase() !== expected) {
+      foreignPullRequests.push(`${repo}/pull/${match[2]}`);
+      continue;
     }
+    signals.push({ kind: "pull_request", ref: `https://github.com/${repo}/pull/${match[2]}`, source: "comment" });
   }
 
   for (const attachment of snapshot.attachments) {
@@ -66,7 +93,7 @@ export function collectDeliveryFacts(snapshot: IssueSnapshot): DeliveryFacts {
   const haystack = `${snapshot.title}\n${plan}`.toLowerCase();
   const touchesHumanTopic = DEFAULT_CONFIG.humanTopics.some((topic) => haystack.includes(topic));
 
-  return { signals, diffLines, diffFiles, touchesHumanTopic };
+  return { signals, diffLines, diffFiles, touchesHumanTopic, foreignPullRequests };
 }
 
 /**
@@ -100,13 +127,17 @@ export function evaluateIssue(
   const level = decideLevel(facts, config);
 
   if (facts.signals.length === 0) {
+    const extra = facts.foreignPullRequests.length
+      ? ` (el PR ${facts.foreignPullRequests.join(", ")} es de otro repo: no es la entrega de esta issue)`
+      : "";
     return {
       ok: false,
       level: "off",
       kind: "none",
       signals: [],
       missing:
-        "sin entrega verificable: falta un PR (github.com/<owner>/<repo>/pull/<n>), un parche adjunto (.patch/.diff) o una medición marcada `EGM-VERIFIED:` en el documento `plan`",
+        "sin entrega verificable: falta un PR del repo del proyecto (github.com/<owner>/<repo>/pull/<n>), un parche adjunto (.patch/.diff) o una medición marcada `EGM-VERIFIED:` en el documento `plan`" +
+        extra,
     };
   }
 

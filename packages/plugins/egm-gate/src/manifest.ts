@@ -1,7 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.egm-gate";
-const JOB_KEY_RECONCILE = "reconcile-closures";
 const TOOL_KEY_LEVEL = "egm_level";
 const DEFAULT_FULL_DIFF_LINES = 300;
 const DEFAULT_FULL_DIFF_FILES = 8;
@@ -22,12 +21,13 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.create",
     "issue.documents.read",
     "issue.attachments.read",
+    "projects.read",
+    "project.workspaces.read",
     "agents.read",
     "activity.log.write",
     "plugin.state.read",
     "plugin.state.write",
     "events.subscribe",
-    "jobs.schedule",
     "agent.tools.register",
   ],
   entrypoints: {
@@ -48,15 +48,6 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     },
   },
-  jobs: [
-    {
-      jobKey: JOB_KEY_RECONCILE,
-      displayName: "Reconciliar cierres sin evidencia",
-      description:
-        "Repasa las issues cerradas sin evidencia de entrega y devuelve a `in_review` las que no la tienen. Sustituye al gate en shell.",
-      schedule: "17 * * * *",
-    },
-  ],
   tools: [
     {
       name: TOOL_KEY_LEVEL,
@@ -75,4 +66,4 @@ const manifest: PaperclipPluginManifestV1 = {
 };
 
 export default manifest;
-export { JOB_KEY_RECONCILE, TOOL_KEY_LEVEL, PLUGIN_ID };
+export { TOOL_KEY_LEVEL, PLUGIN_ID };

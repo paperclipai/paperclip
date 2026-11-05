@@ -47,6 +47,12 @@ export type IssueSnapshot = {
   attachments: { id: string; fileName?: string | null; contentType?: string | null }[];
   /** Cuerpo del documento `plan` de la issue, si existe. */
   planBody?: string | null;
+  /**
+   * Repo `owner/name` del proyecto (el de su workspace principal). Si se conoce,
+   * un PR de otro repo NO cuenta como entrega: sin esto un agent cerraba la issue
+   * pegando el link de un PR viejo o de otro proyecto.
+   */
+  expectedRepo?: string | null;
 };
 
 /** Reglas de umbral, configurables por instancia. */

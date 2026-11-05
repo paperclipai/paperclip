@@ -21,15 +21,30 @@ propio host:
 
 | Señal | Dónde se ve | Qué significa |
 | --- | --- | --- |
-| `pull_request` | Link `github.com/<owner>/<repo>/pull/<n>` en un comentario | Hay un PR abierto. |
+| `pull_request` | Link `github.com/<owner>/<repo>/pull/<n>` en un comentario | Hay un PR abierto **del repo del proyecto**. |
 | `patch` | Adjunto `.patch`/`.diff` | Hay un parche para aplicar. |
 | `measurement` | `EGM-VERIFIED:` en el documento `plan` | Hay una medición real (comando + salida). |
 | `decision` | `EGM-DELIVERABLE: decision` en el `plan` | La issue no lleva código por diseño. |
+
+El PR tiene que ser **del repo del proyecto** (el de su workspace principal): un
+link a un PR de otro repo —o de otro proyecto— no cuenta como entrega, y el
+comentario del gate lo dice explícitamente. Sin esa comprobación, cerrar una
+issue pegando el link de un PR viejo era tan fácil como escribir un plan.
 
 Sin evidencia, el plugin devuelve la issue a `in_review` con un comentario que
 dice exactamente qué falta. **No pide una card, no pide decisión y no pide un
 documento**: pide el cambio. Un plan, un veredicto o un análisis son el
 borrador de la entrega, no la entrega.
+
+Dos detalles de robustez:
+
+- **Gracia de 4 s**: el cierre y la revisión del `plan` pueden llegar con
+  milisegundos de diferencia. Antes de rebotar, el gate relee el documento una
+  vez más; si la revisión llegó tarde, la issue no se devuelve.
+- **Fallback de estado**: volver a `in_review` puede ser rechazado por el guard
+  de disposición (una issue sin camino de revisión tipado). Si pasa, la issue se
+  deja en `todo`, que siempre es una transición válida: nunca se queda en `done`
+  sin evidencia.
 
 ## Condición de entrada: EGM sólo cuando hace falta
 
@@ -56,12 +71,13 @@ paperclipai plugin enable paperclip.egm-gate
 
 - **Eventos**: `ctx.events.on("issue.updated")` — sin polling, sin cron.
 - **Estado**: `ctx.state` — el contador de comentarios por issue, en el
- ámbito de la compañía.
+  ámbito de la compañía (podado a 14 días).
 - **Actividad**: `ctx.activity.log` — la auditoría vive en el activity log de
   Paperclip.
 - **Herramienta de agente**: `ctx.tools.register` — el agente puede preguntar
   "¿qué nivel necesita esta tarea?".
-- **Job**: `ctx.jobs.register` — el barrido horario de cierres sin evidencia.
+- **Repo del proyecto**: `ctx.projects.listWorkspaces` — para exigir que el PR
+  sea del repo que toca.
 
 El watchdog de runs mudos ya lo tiene el servidor
 (`scanSilentActiveRuns`, `reconcileTaskWatchdogs`); no hace falta un guardián
