@@ -165,6 +165,22 @@ creation time. A queued follow-up can predate the prior turn completion. A remot
 stop can also predate a later logical failure caused by recovery timeout. These
 proofs use the recorded execution start and never rewrite lifecycle timestamps.
 
+A missing managed task checkout can still have its runtime-owned branch in the
+verified company and project Git cache. Preserve that exact commit when the
+recorded private path matches, no other workspace owns the branch, and Git has
+no surviving worktree registration or index for it. Pin and recheck the commit
+before publication. This saves the surviving committed tree; it does not
+certify recovery of files that were already absent. An active record requires
+the existing offline provider fence and keeps its original status. Invalid
+restore recipes, live registrations and competing branch owners stay blocked.
+
+For a user-owned retained branch, require its exact successful unforced worktree
+removal receipt after archival. Forced removal or a revoked receipt does not
+grant this authority. Preserve the branch and its ownership metadata unchanged.
+For a deleted private branch, prefer its verified recorded private object source
+while it still exists. A missing project cache or a later project-source change
+must not hide that original retained commit.
+
 ### Existing typed checkpoint authority
 
 When a retained source already has a valid typed database checkpoint, derive its
@@ -205,15 +221,6 @@ and rejection at the archive limit before any object or row is published. This
 finite offline operation adds no idle background work. A resumed rehearsal can
 measure the fix but cannot replace fresh full-image migration and empty-home
 recovery proof.
-
-A missing managed task checkout can still have its runtime-owned branch in the
-verified company and project Git cache. Preserve that exact commit when the
-recorded private path matches, no other workspace owns the branch, and Git has
-no surviving worktree registration or index for it. Pin and recheck the commit
-before publication. This saves the surviving committed tree; it does not
-certify recovery of files that were already absent. An active record requires
-the existing offline provider fence and keeps its original status. Invalid
-restore recipes, live registrations and competing branch owners stay blocked.
 
 During offline migration, known task-only assignment, configuration, deliberate-wait and
 disposition warnings can remain unchanged while the owner saves local files.

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaces, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import type { StorageService } from "../storage/types.js";
@@ -15,6 +15,7 @@ import { ensureSavedGitCommit, gitRestorePointExpired, managedSourcePaths, readG
 import { localRepositoryPath } from "./local-repository-path.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
+import { recordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
 export type ArchivedGitMigrationSource = {
@@ -54,8 +55,13 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
   const [projectWorkspace] = workspace.projectWorkspaceId ? await db.select({ cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
     .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, workspace.projectWorkspaceId),
       eq(projectWorkspaces.companyId, workspace.companyId), workspace.projectId ? eq(projectWorkspaces.projectId, workspace.projectId) : undefined)) : [];
-  const sourcePath = projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
-  if (!sourcePath || projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
+  const privateSource = recordedIsolatedRemoteSource(workspace);
+  const privatePresent = privateSource ? await fs.lstat(privateSource).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }) : null;
+  const sourcePath = privatePresent && privateSource ? privateSource : projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
+  if (!sourcePath || !privatePresent && projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
   const [operation] = archived && workspace.closedAt ? await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.phase, "worktree_cleanup"), eq(workspaceOperations.status, "succeeded"),
@@ -70,11 +76,29 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
     // A branch that was never deleted still owns its committed tree. It does
     // not certify lost untracked files. Any surviving worktree registration
     // can retain additional index/files authority and must stay blocked.
-    if (!isRuntimeOwnedGitBranch(workspace.metadata) || workspace.mode !== "isolated_workspace"
-      || !workspace.projectId || !managedSourcePaths(workspace).includes(sourcePath)) return null;
+    if (workspace.mode !== "isolated_workspace" || !workspace.projectId || !managedSourcePaths(workspace).includes(sourcePath)) return null;
     await git(sourcePath, ["check-ref-format", `refs/heads/${workspace.branchName}`]);
     const expected = path.join(sourcePath, ".paperclip", "worktrees", workspace.branchName);
     if (workspace.cwd !== expected || workspace.providerRef && workspace.providerRef !== expected) return null;
+    let removalId: string | null = null;
+    if (!isRuntimeOwnedGitBranch(workspace.metadata)) {
+      // User-owned branches must not be deleted. A successful unforced removal
+      // proves their old checkout was clean; preserve the branch without
+      // converting that receipt into branch-deletion authority.
+      if (workspace.metadata?.createdByRuntime !== false || !archived || !workspace.closedAt) return null;
+      const [removal] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
+        eq(workspaceOperations.phase, "worktree_cleanup"), eq(workspaceOperations.status, "succeeded"),
+        eq(workspaceOperations.command, `git worktree remove ${expected}`), isNotNull(workspaceOperations.finishedAt),
+        gte(workspaceOperations.startedAt, workspace.closedAt),
+        sql`${workspaceOperations.metadata}->>'cleanupAction' = 'worktree_remove'`,
+        sql`${workspaceOperations.metadata}->>'workspaceId' = ${workspace.id}`,
+        sql`${workspaceOperations.metadata}->>'workspacePath' = ${expected}`,
+        sql`${workspaceOperations.metadata}->>'branchName' = ${workspace.branchName}`,
+      )).orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.id)).limit(1);
+      if (!removal) return null;
+      removalId = removal.id;
+    }
     await verifiedManagedGitObjectSource(workspace, sourcePath);
     const [other] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
       eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.projectId, workspace.projectId),
@@ -85,7 +109,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       .split("\0").includes(`branch refs/heads/${workspace.branchName}`)) throw unavailable();
     const commit = await git(sourcePath, ["rev-parse", "--verify", `refs/heads/${workspace.branchName}^{commit}`]);
     if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
-    return { commit, sourcePath, cleanupOperationId: null, recipe: null, retainedBranch: workspace.branchName };
+    return { commit, sourcePath, cleanupOperationId: removalId, recipe: null, retainedBranch: workspace.branchName };
   }
   const receipt = operation?.stdoutExcerpt?.trim(), prefix = `Deleted branch ${workspace.branchName} (was `;
   if (!operation || !receipt?.startsWith(prefix) || !receipt.endsWith(").")) return null;

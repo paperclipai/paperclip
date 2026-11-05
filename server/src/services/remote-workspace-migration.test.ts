@@ -504,7 +504,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
-  it.each(["valid", "foreign-cache", "wrong-origin", "missing-receipt", "revoked-receipt"])("recovers deleted isolated history only from an authorized receipt and project object cache (%s)", async state => {
+  it.each(["valid", "foreign-cache", "wrong-origin", "missing-receipt", "revoked-receipt", "private-cache"])("recovers deleted isolated history only from an authorized receipt and project object cache (%s)", async state => {
     const f = await gitArchiveFixture(), privateBase = isolatedRemoteSourcePath(f.companyId, f.issueId);
     const privateCwd = path.join(privateBase, ".paperclip", "worktrees", f.branchName);
     await fs.mkdir(path.dirname(privateBase), { recursive: true });
@@ -515,7 +515,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await git(privateBase, "worktree", "remove", privateCwd);
     const receipt = await git(privateBase, "branch", "-d", f.branchName);
     await git(f.base, "merge", "--ff-only", f.branchName); await git(f.base, "worktree", "remove", f.cwd);
-    await git(f.base, "branch", "-d", f.branchName); await fs.rm(privateBase, { recursive: true });
+    await git(f.base, "branch", "-d", f.branchName);
+    if (state !== "private-cache") await fs.rm(privateBase, { recursive: true });
     const closedAt = new Date();
     await db.update(executionWorkspaces).set({ cwd: privateCwd, providerRef: privateCwd, status: "archived", closedAt,
       metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1, isolatedRemoteSource: {
@@ -532,7 +533,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await fs.writeFile(path.join(f.base, "base.txt"), "new shared checkout\n");
     await fs.writeFile(path.join(f.base, "unrelated.txt"), "not task history\n");
     await git(f.base, "add", "."); await git(f.base, "commit", "-qm", "new shared default");
-    if (state === "wrong-origin") await git(f.base, "remote", "set-url", "origin", "https://example.invalid/foreign.git");
+    if (state === "wrong-origin" || state === "private-cache") await git(f.base, "remote", "set-url", "origin", "https://example.invalid/foreign.git");
     if (state === "foreign-cache") {
       const foreign = resolveManagedProjectWorkspaceDir({ companyId: randomUUID(), projectId: f.projectId, repoName: "repository" });
       await fs.mkdir(path.dirname(foreign), { recursive: true }); await fs.rename(f.base, foreign);
@@ -547,7 +548,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         return result;
       };
     }
-    if (state !== "valid") {
+    if (state !== "valid" && state !== "private-cache") {
       await expect(migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.workspaceId, apply: true })).rejects.toThrow();
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull(); return;
     }
@@ -555,6 +556,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
     expect(row.status).toBe("archived"); expect(authority.source).toMatchObject({ kind: "git", ref: f.commit });
     await fs.rm(f.base, { recursive: true });
+    await fs.rm(privateBase, { recursive: true, force: true });
     const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
     const archivePath = path.join(root, "isolated-history.pcws"), targetDir = path.join(root, "restored-isolated-history");
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
@@ -564,7 +566,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
     expect(await fs.stat(path.join(targetDir, "unrelated.txt")).catch(() => null)).toBeNull();
   });
-  it.each(["valid", "changed-branch", "competing-owner", "registered-branch", "unowned", "missing-branch", "active-online", "active-offline"])("preserves a missing checkout from its retained owned branch (%s)", async mode => {
+  it.each(["valid", "changed-branch", "competing-owner", "registered-branch", "unowned", "missing-branch", "active-online", "active-offline", "user-owned-receipt", "user-owned-force-receipt", "user-owned-revoked-receipt"])("preserves a missing checkout from its retained owned branch (%s)", async mode => {
     const f = await gitArchiveFixture(), closedAt = new Date();
     const active = mode.startsWith("active-");
     await db.update(executionWorkspaces).set({ status: active ? "active" : "archived", closedAt: active ? null : closedAt })
@@ -583,12 +585,24 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         repoUrl: f.repoUrl, branchName: f.branchName, cwd: path.join(root, "other-owner") });
     }
     if (mode === "registered-branch") await git(f.base, "worktree", "add", path.join(root, "registered"), f.branchName);
+    if (mode.startsWith("user-owned-")) {
+      await db.update(executionWorkspaces).set({ metadata: { createdByRuntime: false, gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      const [receipt] = await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        phase: "worktree_cleanup", status: "succeeded", startedAt: new Date(), finishedAt: new Date(),
+        command: `git worktree remove ${mode === "user-owned-force-receipt" ? "--force " : ""}${f.cwd}`,
+        metadata: { cleanupAction: "worktree_remove", workspaceId: f.workspaceId, workspacePath: f.cwd, branchName: f.branchName } }).returning();
+      if (mode === "user-owned-revoked-receipt") {
+        const put = storage.putFile.bind(storage);
+        storage.putFile = async input => { const saved = await put(input); await db.update(workspaceOperations).set({ status: "failed" })
+          .where(eq(workspaceOperations.id, receipt!.id)); return saved; };
+      }
+    }
     if (mode === "unowned") await db.update(executionWorkspaces).set({ metadata: { gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
     if (mode === "missing-branch") await git(f.base, "branch", "-D", f.branchName);
     const offline = mode === "active-offline";
     if (offline) vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const migrate = () => migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: offline });
-    if (!["valid", "active-offline"].includes(mode)) {
+    if (!["valid", "active-offline", "user-owned-receipt"].includes(mode)) {
       await expect(migrate()).rejects.toThrow();
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull(); return;
     }
