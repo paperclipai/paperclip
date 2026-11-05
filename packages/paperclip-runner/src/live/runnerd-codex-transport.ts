@@ -7107,10 +7107,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             },
           };
           const threadId = this.#threadId, turnId = this.#turnId, handler = this.#handler;
+          const runId = core.store.state.identity.runId;
           this.#queue.pushControl(request, () => {
-            // A detached controller, replaced turn or settled durable request
-            // cannot acquire approval authority when a slow consumer resumes.
+            // Recheck authority when the consumer resumes. Retain the durable
+            // fact and pending binding while stale source presentation is held.
+            const owner = this.#authorityRunId();
             if (this.#closed || this.#failure || this.#core !== core || this.#handler !== handler
+              || this.#retainsSourceInputs()
+              || core.store.state.identity.runId !== runId || owner !== undefined && owner !== runId
               || this.#threadId !== threadId || this.#turnId !== turnId
               || this.#bridgedRuntimeInputs.get(requestId) !== binding) return;
             try {
