@@ -2599,7 +2599,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/connection-setup.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v5",
+    "oracleVersion": "paperclip.chat-catalog.external.v6",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 420000,
@@ -4909,7 +4909,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v9",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v10",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -4948,7 +4948,7 @@
       "../../packages/plugins/sdk/dist/index.js",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v5",
+    "oracleVersion": "paperclip.chat-catalog.external.v6",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "minimumRunCount": 3,
@@ -4990,7 +4990,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v11",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v12",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
@@ -5022,7 +5022,7 @@
       "../../server/src/services/secret-proposal-notifications.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v5",
+    "oracleVersion": "paperclip.chat-catalog.external.v6",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 4,
     "minimumRunCount": 4,
@@ -5070,7 +5070,7 @@
       "../../ui/src/pages/secrets/ImportFromVaultDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v5",
+    "oracleVersion": "paperclip.chat-catalog.external.v6",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 2,
@@ -5094,7 +5094,7 @@
       "../../ui/src/pages/CompanySkills.tsx",
       "../../ui/src/lib/company-skill-routes.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v4",
+    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v5",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
