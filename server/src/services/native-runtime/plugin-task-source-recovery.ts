@@ -137,27 +137,51 @@ export async function claimPluginTaskSourceRecovery(db: Db, input: {
   });
 }
 
-/** The worker never derives this exception from an arbitrary mismatched run ID. */
-export async function assertPluginTaskSourceRecovery(db: Db, input: {
+async function assertSourceIdentity(db: Db, input: {
   companyId: string; leaseId: string; context: NativeExecutionContext | undefined;
-  operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" | "submit" }>;
+  identity: Identity; accountIdentity?: string; resumeFrom?: string; requireDispatched?: boolean;
 }): Promise<PluginTaskSourceRecovery> {
-  if (!input.context || input.operation.recoveryPurpose !== "source_reconcile" || !input.operation.resumeFrom) return deny();
-  const operation = input.operation;
-  const identity = operation.kind === "prepare" ? operation.requirements.identity : {
-    runnerInstanceId: operation.runner.runnerId, environmentLeaseId: operation.runner.leaseId, runId: operation.runner.runId,
-    normalizedSessionId: operation.runner.sessionId, turnId: operation.runner.turnId, itemId: operation.runner.itemId,
-  };
+  if (!input.context) return deny();
+  const { identity } = input;
   return db.transaction(async tx => {
     const [lease] = await tx.select({ metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, input.leaseId)));
     const expected = readRecovery(lease?.metadata?.runnerTaskSourceRecovery);
-    if (!expected || keys.some(key => expected.identity[key] !== identity[key]) || expected.resumeFrom !== operation.resumeFrom ||
-        expected.accountIdentity !== operation.accountIdentity) return deny();
-    const inspected = await inspect(tx, { ...input, context: input.context!, identity, resumeFrom: operation.resumeFrom!, accountIdentity: expected.accountIdentity }, expected);
+    if (!expected || keys.some(key => expected.identity[key] !== identity[key]) ||
+        input.resumeFrom !== undefined && expected.resumeFrom !== input.resumeFrom || expected.accountIdentity !== input.accountIdentity) return deny();
+    const inspected = await inspect(tx, { ...input, context: input.context!, resumeFrom: expected.resumeFrom, accountIdentity: expected.accountIdentity }, expected);
+    if (input.requireDispatched && (inspected.lease.metadata?.runnerTaskDispatched !== true ||
+        inspected.lease.metadata?.runnerTaskExecutionStopped === true)) return deny();
     const consumer = record(inspected.sourceLease.metadata?.runnerTaskSourceConsumer);
     if (consumer.leaseId !== input.leaseId || consumer.runId !== expected.consumerRunId || consumer.resumeFrom !== expected.resumeFrom || consumer.accountIdentity !== expected.accountIdentity ||
         fingerprint(consumer.identity) !== fingerprint(identity)) return deny();
     return expected;
   });
+}
+
+/** The worker never derives this exception from an arbitrary mismatched run ID. */
+export async function assertPluginTaskSourceRecovery(db: Db, input: {
+  companyId: string; leaseId: string; context: NativeExecutionContext | undefined;
+  operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" | "submit" }>;
+}): Promise<PluginTaskSourceRecovery> {
+  const operation = input.operation;
+  if (operation.recoveryPurpose !== "source_reconcile" || !operation.resumeFrom) return deny();
+  const identity = operation.kind === "prepare" ? operation.requirements.identity : {
+    runnerInstanceId: operation.runner.runnerId, environmentLeaseId: operation.runner.leaseId, runId: operation.runner.runId,
+    normalizedSessionId: operation.runner.sessionId, turnId: operation.runner.turnId, itemId: operation.runner.itemId,
+  };
+  return assertSourceIdentity(db, { ...input, identity, resumeFrom: operation.resumeFrom, accountIdentity: operation.accountIdentity });
+}
+
+/** A fresh source incarnation can attach B without pretending it was warm reuse. */
+export async function assertPluginTaskSourceAttachment(db: Db, input: {
+  companyId: string; leaseId: string; context: NativeExecutionContext | undefined;
+  operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>;
+}): Promise<PluginTaskSourceRecovery> {
+  const { operation } = input, target = operation.requirements.identity;
+  if (!operation.priorIdentity || operation.recoveryPurpose || operation.resumeFrom || operation.requirements.provider !== "codex") return deny();
+  const recovery = await assertSourceIdentity(db, { ...input, identity: operation.priorIdentity, accountIdentity: operation.accountIdentity, requireDispatched: true });
+  if (target.runId !== recovery.consumerRunId || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key =>
+    target[key as keyof Identity] !== recovery.identity[key as keyof Identity])) return deny();
+  return recovery;
 }

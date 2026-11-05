@@ -99,6 +99,8 @@ PRP journal, confirmed physical termination, and no other source consumer. Core
 claims the source under the current native controller lease. This does not change
 the source run's status or result. A stale source controller cannot write its
 journal after this claim. Workspace export and settlement holds still apply.
+After source submission, the same current owner can prepare its attachment with
+the exact source as `priorIdentity`. This does not grant ordinary warm reuse.
 
 The provider must verify the original account, workspace, runtime, and source
 ownership before launch. The native Runner must reject active goals, pending

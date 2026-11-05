@@ -14,7 +14,7 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
-import { assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
+import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
@@ -97,7 +97,11 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || (operation.kind === "connection" && !retainedConnection) || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
       (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
   if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
-  const warmAttachment = !!prior && metadata.runnerTaskReused === true &&
+  const sourceReference = metadata.runnerTaskSourceRecovery as { identity?: { runId?: unknown } } | undefined;
+  const sourceAttachment = operation.kind === "prepare" && prior && sourceReference?.identity?.runId === prior.runId
+    ? await assertPluginTaskSourceAttachment(db, { companyId: input.companyId, leaseId: lease.id,
+      context: context instanceof NativeExecutionContext ? context : undefined, operation }) : undefined;
+  const warmAttachment = !!prior && (metadata.runnerTaskReused === true || !!sourceAttachment) &&
     (matches(prior, savedIdentity) || matches(prior, priorSaved) && operation.kind === "prepare" && matches(operation.requirements.identity, savedIdentity)) && runner?.runnerId === prior.runnerInstanceId &&
     runner?.leaseId === prior.environmentLeaseId && runner?.sessionId === prior.normalizedSessionId;
   if (prior && !warmAttachment) throw new Error("Plugin warm task prior identity mismatch");
@@ -378,6 +382,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (sourceRecovery && (operation.kind === "prepare" || operation.kind === "submit")) {
       await assertPluginTaskSourceRecovery(db, { companyId: input.companyId, leaseId: lease.id,
+        context: context instanceof NativeExecutionContext ? context : undefined, operation });
+    }
+    if (sourceAttachment && operation.kind === "prepare") {
+      await assertPluginTaskSourceAttachment(db, { companyId: input.companyId, leaseId: lease.id,
         context: context instanceof NativeExecutionContext ? context : undefined, operation });
     }
     if (operation.kind === "read_file") {

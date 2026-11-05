@@ -113,6 +113,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     await expect(f.task()).rejects.toThrow("ownership_unverified");
     await claimPluginTaskSourceRecovery(db, f);
+    const attachment = { ...f.operation, recoveryPurpose: undefined, resumeFrom: undefined, priorIdentity: f.identity,
+      requirements: { ...f.operation.requirements, identity: { ...f.identity, runId: f.runId, turnId: `turn-${f.runId}`, itemId: `item-${f.runId}` } } };
+    await expect(f.task(attachment)).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).not.toHaveBeenCalled();
     await expect(f.task()).resolves.toMatchObject({ kind: "prepared" });
     expect(f.workers.call.mock.calls[0][2]).toMatchObject({ runId: f.runId, operation: { recoveryPurpose: "source_reconcile", requirements: { identity: f.identity } } });
     await f.task({ kind: "check_project_auth", configurationId: "source-configuration", provider: "openai", projectIds: [] });
@@ -125,6 +129,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     })).resolves.toMatchObject({ kind: "accepted" });
     expect(f.workers.call.mock.calls.at(-1)![2]).toMatchObject({ runId: f.runId, operation: {
       kind: "submit", recoveryPurpose: "source_reconcile", runner: { runId: f.sourceRunId },
+    } });
+    for (const key of ["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId"]) {
+      await expect(f.task({ ...attachment, requirements: { ...attachment.requirements,
+        identity: { ...attachment.requirements.identity, [key]: randomUUID() } } })).rejects.toThrow("ownership_unverified");
+    }
+    await expect(f.task({ ...attachment, accountIdentity: "different-account" })).rejects.toThrow("ownership_unverified");
+    await expect(f.task(attachment)).resolves.toMatchObject({ kind: "prepared" });
+    await expect(f.task(attachment)).resolves.toMatchObject({ kind: "prepared" });
+    expect(f.workers.call.mock.calls.at(-1)![2]).toMatchObject({ runId: f.runId, operation: {
+      kind: "prepare", priorIdentity: f.identity, requirements: { identity: { runId: f.runId } },
     } });
     await expect(f.task({ ...f.operation, recoveryPurpose: undefined } as never)).rejects.toThrow("execution identity mismatch");
     const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
