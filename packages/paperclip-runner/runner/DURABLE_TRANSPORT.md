@@ -121,11 +121,13 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
-### Host park eligibility
+## Host park eligibility
 
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
 for the existing process that completed the current turn. An eligibility check
-never selects or restores a provider and cannot release source reconciliation.
+never selects or restores a provider. A restored process must complete its own
+authoritative turn before it can be eligible.
+ACPX remains ineligible in this slice, including after qualified recovery.
 Active turns, goals, startup attempts, tool calls, pending credentials, and
 unsettled events block parking. The bounded completed-turn tail drain retains
 late accounting and goal changes for durable state and normal event delivery.

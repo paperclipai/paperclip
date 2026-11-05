@@ -1537,6 +1537,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let original = executor
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(
             3,
@@ -1546,6 +1547,8 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .unwrap();
     let events = executor.poll_events().unwrap();
     executor.acknowledge_events(events.len()).unwrap();
+    // Generic ACPX recovery does not opt this provider into host parking.
+    assert!(!executor.host_park_ready().unwrap());
     executor
         .execute(&command(4, "runner.suspend", json!({})))
         .unwrap();
@@ -1563,6 +1566,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         .execute(&command(1, "run.attach", payload))
         .unwrap();
     assert_eq!(resumed.result["status"], "resumed");
+    assert!(!replacement.host_park_ready().unwrap());
     assert_eq!(
         resumed.result["providerSessionId"],
         original.result["providerSessionId"]

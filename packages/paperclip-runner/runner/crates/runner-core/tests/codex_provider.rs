@@ -139,9 +139,11 @@ fn ordinary_recovery_restores_a_completed_idle_session() {
         "{}",
         snapshot.result
     );
-    assert!(!executor.host_park_ready().unwrap());
     assert_eq!(call_count(&directory, "process-start"), 2);
     assert_eq!(call_count(&directory, "turn/start"), 1);
+    // Warm attachment readiness does not prove this new provider generation
+    // completed its own authoritative turn.
+    assert!(!executor.host_park_ready().unwrap());
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
