@@ -67,6 +67,7 @@ describePostgres("leases of cancelled runs with no executor", () => {
       triggerDetail: "system",
       status: "running",
       runtimeMode: "legacy",
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
       contextSnapshot: { issueId },
       startedAt: new Date(),
     });
