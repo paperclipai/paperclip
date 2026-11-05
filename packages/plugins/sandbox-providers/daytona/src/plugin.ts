@@ -271,8 +271,16 @@ export function effectiveAutoStopIntervalMinutes(
 }
 
 function parseWarmIdleTimeoutMs(raw: Record<string, unknown>): number | null {
-  // Only a reusable lease can host a warm runner; per_turn never keeps one.
-  if (raw.reuseLease !== true || raw.runnerLifecycleMode === "per_turn") return null;
+  // Only a reusable lease can host a warm runner.
+  if (raw.reuseLease !== true) return null;
+  // The host forwards the run's resolved warm window (environment or agent
+  // setting) only when the run actually keeps a warm runner.
+  const forwarded = parseOptionalInteger(raw.warmRunnerIdleTimeoutMs);
+  if (forwarded != null && forwarded > 0) return forwarded;
+  // An environment that itself selects a warm runner (no host forwarding, for
+  // example a legacy warm lifecycle) uses its own window. Inherit and per_turn
+  // apply no floor: the host forwards the window when the run is warm.
+  if (raw.runnerLifecycleMode !== "warm") return null;
   const configured = parseOptionalInteger(raw.runnerIdleTimeoutMs);
   return configured != null && configured > 0 ? configured : DEFAULT_WARM_RUNNER_IDLE_TIMEOUT_MS;
 }
@@ -298,6 +306,10 @@ const GIT_NETWORK_TIMEOUT_MS = 120_000;
 // clear error. It is configurable through `livenessTimeoutMs`; a value of 0 or
 // less disables the extra bound.
 const DEFAULT_LIVENESS_TIMEOUT_MS = 30_000;
+
+// Bound on the optional resume-time auto-stop update, so a slow provider
+// write cannot consume the host's resume budget.
+const AUTO_STOP_UPDATE_TIMEOUT_MS = 5_000;
 
 // Extra margin added to the SDK start/recover timeout when the plugin wraps
 // those lifecycle calls in its own per-call bound. The SDK call already carries
@@ -1533,7 +1545,7 @@ const sandboxHandleCache = (() => {
       // since we last confirmed it, so the cached `state` snapshot can't hide a
       // provider-initiated stop from `ensureSandboxStarted`. A failed refresh
       // means the handle is no longer trustworthy — evict and fail closed.
-      const thresholdMs = staleHandleRefreshThresholdMs(effectiveAutoStopIntervalMinutes(scope.config));
+      const thresholdMs = staleHandleRefreshThresholdMs(scope.config.autoStopInterval);
       if (thresholdMs != null && handleFreshnessNow() - entry.verifiedAtMs >= thresholdMs) {
         try {
           await withLivenessTimeout("sandbox.refreshData", scope.config.livenessTimeoutMs, () =>
@@ -2998,7 +3010,9 @@ const plugin = definePlugin(trackDaytonaHooks({
         const currentAutoStop = sandbox.autoStopInterval;
         if (autoStopInterval != null && autoStopInterval > 0 && config.warmIdleTimeoutMs != null
           && typeof currentAutoStop === "number" && currentAutoStop > 0 && currentAutoStop < autoStopInterval) {
-          await Promise.resolve().then(() => sandbox.setAutostopInterval(autoStopInterval)).catch(() => undefined);
+          await withLivenessTimeout("sandbox.setAutostopInterval",
+            Math.max(1, Math.min(config.livenessTimeoutMs > 0 ? config.livenessTimeoutMs : AUTO_STOP_UPDATE_TIMEOUT_MS, AUTO_STOP_UPDATE_TIMEOUT_MS)),
+            () => Promise.resolve().then(() => sandbox.setAutostopInterval(autoStopInterval))).catch(() => undefined);
         }
         try {
           return await traceLeaseStep("lease.verify", async () => {

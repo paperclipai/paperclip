@@ -552,6 +552,8 @@ export interface EnvironmentDriverLeaseInput {
 
 export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInput {
   requestedCwd?: string;
+  /** The run's warm runner idle window, forwarded to the provider worker only. */
+  warmRunnerIdleTimeoutMs?: number;
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
@@ -1644,7 +1646,7 @@ function createSandboxEnvironmentDriver(
         const workerConfig = {
           ...stripSandboxProviderEnvelope(parsed.config),
           // Provider-only view of the run's warm idle window (see the input doc).
-          ...(input.warmRunnerIdleTimeoutMs !== undefined ? { runnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+          ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
         };
         const storedConfig = pinnedSnapshotId ? { ...storedParsed.config, snapshot: pinnedSnapshotId } : storedParsed.config;
         if (pinnedSnapshotId) delete storedConfig.image;
@@ -2575,9 +2577,13 @@ function createSandboxEnvironmentDriver(
       }
       // This is a lifecycle resume, never acquisition: no replacement, host
       // seed, lease mutation, or provider turn is allowed at this boundary.
-      const config = stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
-        environment: input.environment, lease: input.lease, provider: providerKey,
-      }) as SandboxEnvironmentConfig);
+      const config = {
+        ...stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
+          environment: input.environment, lease: input.lease, provider: providerKey,
+        }) as SandboxEnvironmentConfig),
+        // Provider-only view of the run's warm idle window (see the input doc).
+        ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+      };
       const resumed = await pluginWorkerManager.call(pluginId, "environmentResumeLease", {
         driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,

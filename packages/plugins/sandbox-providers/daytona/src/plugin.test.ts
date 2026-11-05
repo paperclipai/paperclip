@@ -990,7 +990,9 @@ describe("Daytona sandbox provider plugin", () => {
     it.each([
       [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000 }, 900_000],
       [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000, autoStopInterval: 15 }, 900_000],
-      [{ runnerLifecycleMode: "inherit", runnerIdleTimeoutMs: 1_800_000 }, 1_800_000],
+      // Agent-level warm on an inherit environment: the host forwards the window.
+      [{ runnerLifecycleMode: "inherit", warmRunnerIdleTimeoutMs: 1_800_000 }, 1_800_000],
+      [{ warmRunnerIdleTimeoutMs: 900_000, autoStopInterval: 15 }, 900_000],
       [{ runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 125_000, autoStopInterval: 2 }, 125_000],
       [{ runnerLifecycleMode: "warm" }, 300_000],
     ])("auto-stops a warm reusable sandbox only after the warm idle window plus a margin (%o)", async (config, warmIdleMs) => {
@@ -1007,6 +1009,9 @@ describe("Daytona sandbox provider plugin", () => {
     it("leaves per-turn and non-reusable sandboxes on the configured auto-stop", async () => {
       expect(await acquire({ reuseLease: false, runnerLifecycleMode: "warm", runnerIdleTimeoutMs: 900_000 })).toBe(15);
       expect(await acquire({ reuseLease: true, runnerLifecycleMode: "per_turn", runnerIdleTimeoutMs: 900_000 })).toBe(15);
+      // Inherit with a per-turn agent: the host forwards no warm window.
+      expect(await acquire({ reuseLease: true, runnerLifecycleMode: "inherit", autoStopInterval: 2 })).toBe(2);
+      expect(await acquire({ reuseLease: true, autoStopInterval: 2 })).toBe(2);
     });
 
     it("raises the auto-stop of an existing warm sandbox on resume", async () => {
@@ -1014,6 +1019,30 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
       const [minutes] = sandbox.setAutostopInterval.mock.calls[0] as [number];
       expect(minutes * 60_000).toBeGreaterThanOrEqual(900_000 + marginMs);
+    });
+
+    it("bounds a resume-time auto-stop update that never settles", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const sandbox = createMockSandbox({ id: "sandbox-slow", state: "started" });
+        sandbox.setAutostopInterval.mockReturnValue(new Promise<void>(() => {}));
+        sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+          result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+        mockGet.mockResolvedValue(sandbox);
+        const pending = plugin.definition.onEnvironmentResumeLease!({
+          driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+          config: { reuseLease: true, warmRunnerIdleTimeoutMs: 900_000 },
+          leaseMetadata: { workspaceSentinel: {
+            path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+            token: "sentinel-token", result: "written" } },
+        });
+        await vi.advanceTimersByTimeAsync(6_000);
+        await expect(pending).resolves.toMatchObject({ providerLeaseId: sandbox.id });
+        expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("does not change auto-stop on resume of a per-turn reusable sandbox", async () => {

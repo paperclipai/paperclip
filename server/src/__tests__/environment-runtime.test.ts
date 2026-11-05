@@ -409,9 +409,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       configuredEnvironment: environment, issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
       adapterType: "paperclip_runner", warmRunnerIdleTimeoutMs: 900_000 });
     expect(worker.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
-      config: expect.objectContaining({ reuseLease: true, runnerIdleTimeoutMs: 900_000 }),
+      config: expect.objectContaining({ reuseLease: true, warmRunnerIdleTimeoutMs: 900_000 }),
     }), expect.any(Number));
-    expect(acquired.lease.metadata).not.toHaveProperty("runnerIdleTimeoutMs");
+    expect(acquired.lease.metadata).not.toHaveProperty("warmRunnerIdleTimeoutMs");
   });
 
   it.each([["paperclip_runner", false, false], ["paperclip_runner", true, false], ["paperclip_runner", true, undefined], ["claude_local", false, false], [null, false, false]] as const)("pins qualified snapshots only for native execution (%s, warm=%s, savedReuse=%s)", async (adapterType, warm, savedReuse) => {
