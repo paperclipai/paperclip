@@ -56,7 +56,8 @@ export function TaskChatStatusNotice({
     );
   }
 
-  const expandable = extra.length > 0 || (presentation.detail?.length ?? 0) > 80 || expandedText !== presentation.detail;
+  // Any message can be truncated on a narrow screen, so it stays reachable.
+  const expandable = extra.length > 0 || Boolean(presentation.detail) || expandedText !== presentation.detail;
   const chip = (
     <>
       <Icon
@@ -75,7 +76,7 @@ export function TaskChatStatusNotice({
     </>
   );
   const chipClass = cn(
-    "inline-flex min-h-6 max-w-full min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-opacity duration-500",
+    "inline-flex min-h-6 max-w-full min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-opacity duration-(--motion-status-notice-fade)",
     TONE_CLASS[presentation.tone],
     resolved && "opacity-60",
   );
