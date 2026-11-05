@@ -3154,6 +3154,12 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+A cold continuation can retain the completed receipt from a prior warm handoff.
+Before inspecting that receipt against physical Runner state, the transport
+materializes the admitted external backup. A refused restore or mismatched
+session identity prevents provider startup. Pending handoffs and active warm
+transitions still require their original physical state and ownership checks.
+
 A different task can reuse the same physical sandbox after its prior task
 finishes. Provider ingress has one listener per allocation. Before a new logical
 session starts, Runner retires a locally retained idle session that still owns
