@@ -751,9 +751,15 @@ fn claude_status_notices_pair_by_key_and_keep_details() {
     };
     let started = notice("running");
     let completed = notice("completed");
-    assert_eq!(started[0].payload["noticeId"], completed[0].payload["noticeId"]);
+    assert_eq!(
+        started[0].payload["noticeId"],
+        completed[0].payload["noticeId"]
+    );
     assert_eq!(started[0].payload["category"], "context_compaction");
-    assert_eq!(completed[0].payload["details"], json!([{"name": "Phase", "value": "completed"}]));
+    assert_eq!(
+        completed[0].payload["details"],
+        json!([{"name": "Phase", "value": "completed"}])
+    );
     let plain = normalize(
         AcpxRuntimeEventKind::ProviderNotice,
         json!({"type": "provider_notice", "category": "acpx_x", "summary": "x"}),

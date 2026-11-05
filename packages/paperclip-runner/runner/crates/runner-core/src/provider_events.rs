@@ -639,9 +639,18 @@ fn codex_error_notice(params: &Value) -> Value {
         .trim()
         .strip_prefix("Reconnecting...")
         .and_then(|rest| rest.trim().split_once('/'))
-        .and_then(|(attempt, max)| Some((attempt.trim().parse::<u32>().ok()?, max.trim().parse::<u32>().ok()?)));
+        .and_then(|(attempt, max)| {
+            Some((
+                attempt.trim().parse::<u32>().ok()?,
+                max.trim().parse::<u32>().ok()?,
+            ))
+        });
     let additional = string(error.get("additionalDetails")).trim();
-    let summary = if attempt.is_some() && !additional.is_empty() { additional } else { summary };
+    let summary = if attempt.is_some() && !additional.is_empty() {
+        additional
+    } else {
+        summary
+    };
     let mut details = Vec::new();
     if let Some((attempt, max)) = attempt {
         details.push(json!({"name": "Attempt", "value": attempt.to_string()}));
@@ -1175,10 +1184,12 @@ pub fn normalize_acpx_runtime_event(
                     .filter_map(|detail| {
                         let name = detail.get("name").and_then(Value::as_str)?;
                         let value = detail.get("value").and_then(Value::as_str)?;
-                        (!name.trim().is_empty()).then(|| json!({
-                            "name": bounded_text(name, 160),
-                            "value": bounded_text(value, MAX_TEXT_CHARS),
-                        }))
+                        (!name.trim().is_empty()).then(|| {
+                            json!({
+                                "name": bounded_text(name, 160),
+                                "value": bounded_text(value, MAX_TEXT_CHARS),
+                            })
+                        })
                     })
                     .collect();
                 if !details.is_empty() {
@@ -1735,12 +1746,15 @@ mod tests {
         assert_eq!(notice["category"], "provider_retry");
         assert_eq!(notice["severity"], "warning");
         assert_eq!(notice["recoverable"], true);
-        assert_eq!(notice["details"], json!([
-            {"name": "Attempt", "value": "2"},
-            {"name": "Max attempts", "value": "5"},
-            {"name": "Reason", "value": "responseStreamDisconnected"},
-            {"name": "HTTP status", "value": "502"},
-        ]));
+        assert_eq!(
+            notice["details"],
+            json!([
+                {"name": "Attempt", "value": "2"},
+                {"name": "Max attempts", "value": "5"},
+                {"name": "Reason", "value": "responseStreamDisconnected"},
+                {"name": "HTTP status", "value": "502"},
+            ])
+        );
         let fatal = normalize_codex_notification(
             "error",
             &json!({"turnId": "turn-1", "willRetry": false,
