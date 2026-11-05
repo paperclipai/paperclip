@@ -1008,7 +1008,7 @@ export function inspectStagedRunAttachment(state: unknown, expectedTarget?: Dura
 /** Recover admitted instructions without opening the retired controller's assets.
  * Inspection is evidence only; the caller still authorizes the runner and lease. */
 export function inspectRetainedRunInstructions(state: unknown, expected: {
-  runId: string; normalizedSessionId: string; runtimeContextDigest: string;
+  runId: string; normalizedSessionId: string; runtimeContextDigest: string | null;
 }): string | null {
   try {
     if (!isRecord(state) || !exactIdentity(state.identity) || !isStoredCoreState(state, state.identity)) return null;
@@ -1020,7 +1020,8 @@ export function inspectRetainedRunInstructions(state: unknown, expected: {
       : matches(state.identity) ? state.runAttachTemplate : null;
     if (!isRecord(template) || !isRecord(template.provider)) return null;
     const { instructions, runtimeContext } = template.provider;
-    return isRecord(runtimeContext) && runtimeContext.aggregateDigest === expected.runtimeContextDigest
+    return (expected.runtimeContextDigest === null ? runtimeContext == null
+      : isRecord(runtimeContext) && runtimeContext.aggregateDigest === expected.runtimeContextDigest)
       && typeof instructions === "string" && instructions.trim().length > 0 ? instructions : null;
   } catch { return null; }
 }

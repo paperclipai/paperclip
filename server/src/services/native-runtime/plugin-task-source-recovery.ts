@@ -1,6 +1,8 @@
+import { readPluginTaskSourceRecovery, type PluginTaskSourceRecovery } from "./native-source-recovery-reference.js";
+export type { PluginTaskSourceRecovery } from "./native-source-recovery-reference.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
+import { type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { parseNativeExecutionInput, inspectDurablePrpCheckpointHeader, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { resolvePluginTaskResume } from "../plugin-task-resume.js";
 import { legacyShutdownWorkspaceResourceProtected } from "../legacy-shutdown-workspace-settlement.js";
@@ -17,30 +19,6 @@ const keys = ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSess
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const deny = (): never => { throw new Error("native_source_recovery_ownership_unverified"); };
 
-export type PluginTaskSourceRecovery = {
-  schema: "paperclip.runner.source-recovery.v1";
-  resumeFrom: string;
-  sourceLeaseId: string;
-  identity: Identity;
-  consumerLeaseId: string;
-  consumerRunId: string;
-  controllerBootId: string;
-  controllerGeneration: number;
-  contextId: string;
-  accountIdentity: string;
-  sourceProfileSha256: string;
-  consumerProfileSha256: string;
-};
-
-function readRecovery(value: unknown): PluginTaskSourceRecovery | null {
-  const v = record(value);
-  const identity = environmentTaskOperationSchema.safeParse({ kind: "read_state", identity: v.identity });
-  return v.schema === "paperclip.runner.source-recovery.v1" && identity.success &&
-    ["resumeFrom", "sourceLeaseId", "consumerLeaseId", "consumerRunId", "controllerBootId", "contextId", "accountIdentity"].every(key => typeof v[key] === "string" && v[key] !== "") &&
-    Number.isSafeInteger(v.controllerGeneration) && Number(v.controllerGeneration) >= 0 &&
-    [v.sourceProfileSha256, v.consumerProfileSha256].every(hash => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))
-    ? v as unknown as PluginTaskSourceRecovery : null;
-}
 
 function pinnedSource(recovery: PluginTaskSourceRecovery) {
   const { controllerBootId: _boot, controllerGeneration: _generation, contextId: _context, ...source } = recovery;
@@ -124,7 +102,7 @@ export async function claimPluginTaskSourceRecovery(db: Db, input: {
     if (!input.matchesExecution(inspected.sourceExecution)) return deny();
     const { recovery, sourceLease, lease } = inspected;
     if (Object.hasOwn(lease.metadata ?? {}, "runnerTaskSourceRecovery")) {
-      const saved = readRecovery(lease.metadata?.runnerTaskSourceRecovery);
+      const saved = readPluginTaskSourceRecovery(lease.metadata?.runnerTaskSourceRecovery);
       if (!saved || fingerprint(pinnedSource(saved)) !== fingerprint(pinnedSource(recovery))) return deny();
     }
     const consumer = { leaseId: lease.id, runId: recovery.consumerRunId, resumeFrom: recovery.resumeFrom,
@@ -155,7 +133,7 @@ async function assertSourceIdentity(db: Db, input: {
   return db.transaction(async tx => {
     const [lease] = await tx.select({ metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, input.leaseId)));
-    const expected = readRecovery(lease?.metadata?.runnerTaskSourceRecovery);
+    const expected = readPluginTaskSourceRecovery(lease?.metadata?.runnerTaskSourceRecovery);
     if (!expected || keys.some(key => expected.identity[key] !== identity[key]) ||
         input.resumeFrom !== undefined && expected.resumeFrom !== input.resumeFrom || expected.accountIdentity !== input.accountIdentity) return deny();
     const inspected = await inspect(tx, { ...input, context: input.context!, resumeFrom: expected.resumeFrom, accountIdentity: expected.accountIdentity }, expected);

@@ -102,6 +102,16 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   expect(f.calls).not.toContain("stop");
   expect(f.calls.filter(call=>call==="submit")).toHaveLength(1);
  });
+ it("keeps recovery consumption on its original run when the live task changes owner",async()=>{
+  const f=await fixture();
+  const [prior]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.first.lease.id));
+  const source={schema:"paperclip.runner.source-recovery.v1",consumerRunId:f.identity.runId,consumerLeaseId:f.first.lease.id,resumeFrom:"old-source"};
+  await db.update(environmentLeases).set({metadata:{...prior.metadata,runnerTaskSourceRecovery:source}}).where(eq(environmentLeases.id,prior.id));
+  await f.nextRun();const next=await f.acquire();
+  expect(next.lease.providerLeaseId).toBe(f.first.lease.providerLeaseId);
+  expect(next.lease.metadata?.runnerTaskSourceRecovery).toBeUndefined();
+  expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id,prior.id)))[0].metadata?.runnerTaskSourceRecovery).toEqual(source);
+ });
  it("resumes stopped checkpoints through a new physical task instead of reusing a tombstone",async()=>{
   const f=await fixture();f.stopped();await f.nextRun();
   const next=await f.acquire();

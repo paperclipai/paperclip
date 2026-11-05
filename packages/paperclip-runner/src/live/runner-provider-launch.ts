@@ -7,6 +7,7 @@ import { validatePreparedLaunchWorkingDirectory } from "../drivers/codex/codex-b
 import { usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
+import { inspectRetainedRunInstructions } from "../control-plane/durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { CapabilityRunnerdCodexTransportOptions } from "./runnerd-codex-transport.js";
@@ -74,6 +75,36 @@ export function runnerProviderLaunchRequirements(
   };
   // PRP hashes strict JSON; absent settings must not remain undefined properties.
   return JSON.parse(JSON.stringify(requirements)) as RunnerProviderLaunchRequirements;
+}
+
+/** Recover policy from the source journal; the provider owns executable paths. */
+export function inspectSourceReconciliationLaunchRequirements(state: unknown, expected: {
+  identity: DurableRecoveryIdentity;
+  provider: "codex";
+  runtimeContextDigest: string | null;
+  settings: RunnerProviderLaunchRequirements["settings"];
+}): RunnerProviderLaunchRequirements | null {
+  try {
+    const value = state as Record<string, unknown>;
+    const identity = value.identity as Record<string, unknown>;
+    if (!identity || Object.entries(expected.identity).some(([key, v]) => identity[key] !== v) ||
+        value.stagedRunAttachment != null || value.warmTransition != null) return null;
+    const instructions = inspectRetainedRunInstructions(state, { ...expected.identity,
+      runtimeContextDigest: expected.runtimeContextDigest });
+    if (instructions === null) return null;
+    const provider = (value.runAttachTemplate as Record<string, unknown>).provider as Record<string, unknown>;
+    if (provider.kind !== expected.provider) return null;
+    const context = provider.runtimeContext == null ? null : parseNativeRuntimeContext(provider.runtimeContext);
+    const collaborationSuffix = `\n\n${CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS}`;
+    const includeCollaboration = provider.includeCollaborationModeInstructions !== false && instructions.endsWith(collaborationSuffix);
+    const baseInstructions = includeCollaboration ? instructions.slice(0, -collaborationSuffix.length) : instructions;
+    return runnerProviderLaunchRequirements({ provider: expected.provider, ...expected.settings }, expected.identity, {
+      model: provider.model, approvalPolicy: provider.approvalPolicy,
+      permissions: provider.readOnly === true ? "paperclip-runner-workspace-read-only" : "paperclip-runner-workspace-only",
+      conversationMode: provider.conversationMode,
+      config: { include_collaboration_mode_instructions: includeCollaboration },
+    }, context, baseInstructions);
+  } catch { return null; }
 }
 
 /** Resolve assigned resource locations without changing their policy or content identities. */
