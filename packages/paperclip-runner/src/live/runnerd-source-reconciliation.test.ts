@@ -135,18 +135,12 @@ it.each(["isolated", "preconfigured"] as const)("recovers the real native backen
   } finally { await f.dispose(); }
 }, 30_000);
 
-it.each(["attach", "prepared-attach", "suspend"] as const)("reconciles killed source then uses ordinary %s without a cold receipt", async mode => {
+it.each(["attach", "suspend"] as const)("reconciles killed source then uses ordinary %s without a cold receipt", async mode => {
   const fixture = await sourceFixture();
   try {
-    if (mode === "prepared-attach") {
-      const provider = await read(fixture.providerFile);
-      Object.assign(provider, { lifecycle: "prepared", completedTurnAuthoritative: false,
-        completedTurnProcessGeneration: null, completedProviderTurnId: null });
-      await writeFile(fixture.providerFile, JSON.stringify(provider));
-    }
     const resumed = fixture.recover();
     expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
-    await fixture.settled(mode !== "prepared-attach");
+    await fixture.settled();
     for (const method of ["turn/start", "turn/steer", "thread/goal/set"]) {
       await expect(resumed.transport.request(method, method === "turn/steer" ? { input: [{ type: "text", text: "Unowned" }] } : {})).rejects.toThrow("source_attachment_pending");
     }

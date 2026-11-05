@@ -70,10 +70,10 @@ recovery integrity checks. There is no separate native recovery mode;
 `--source-reconcile` is rejected. Recovered dormant provider state with no
 uncertain effectful command must still be dormant after restoration. An
 unexpected live turn or active goal fails closed. Same-run active recovery and
-indeterminate command replay retain their existing behavior. A retained prepared
-session is restored initially only when this identity's successful `session.open`
-or `run.attach` journal result names the same provider thread; missing or
-compacted proof preserves the ordinary prepared-session behavior.
+indeterminate command replay retain their existing behavior. Prepared
+state retains its existing no-restore behavior during reads and cleanup. It is
+not a candidate for new completed-predecessor admission; existing prepared
+cleanup and ordinary continuation remain available.
 
 A process owner may reconcile a completed predecessor under its exact six-field
 authority before ordinary authenticated `run.attach`. The selected execution

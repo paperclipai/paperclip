@@ -101,6 +101,35 @@ fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
 }
 
 #[test]
+fn ordinary_recovery_restores_a_completed_idle_session() {
+    let directory = temporary_directory("dormant-recovery");
+    let (config, _) = dormant_source_fixture(&directory);
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_recovery_state(&runner).unwrap();
+    executor
+        .execute(&command("restore", 1, "session.snapshot", json!({})))
+        .unwrap();
+    while !poll_and_ack(&mut executor).unwrap().is_empty() {}
+    let snapshot = executor
+        .execute(&command("snapshot", 2, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(
+        snapshot.result["warmAttachReady"], true,
+        "{}",
+        snapshot.result
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
     for fault in ["active", "goal"] {
         let directory = temporary_directory("dormant-live-recovery");
@@ -174,85 +203,38 @@ fn ordinary_recovery_preserves_pending_same_run_goal_effects() {
 }
 
 #[test]
-fn ordinary_recovery_restores_prepared_only_for_a_journal_bound_session() {
-    for proof in [
-        "same-session",
-        "attached-session",
-        "rotated-empty-journal",
-        "foreign-session",
-        "prepare-before-crash",
-        "fresh-journal",
-    ] {
-        let directory = temporary_directory("prepared-journal-recovery");
-        let (config, mut provider) = dormant_source_fixture(&directory);
-        provider["lifecycle"] = json!("prepared");
-        provider["completedTurnAuthoritative"] = json!(false);
-        provider["completedTurnProcessGeneration"] = Value::Null;
-        provider["completedProviderTurnId"] = Value::Null;
-        fs::write(
-            directory.join("codex-provider-state.json"),
-            serde_json::to_vec(&provider).unwrap(),
-        )
+fn ordinary_recovery_does_not_restore_prepared_during_reads_or_cleanup() {
+    let directory = temporary_directory("prepared-journal-recovery");
+    let (config, mut provider) = dormant_source_fixture(&directory);
+    provider["lifecycle"] = json!("prepared");
+    provider["completedTurnAuthoritative"] = json!(false);
+    provider["completedTurnProcessGeneration"] = Value::Null;
+    provider["completedProviderTurnId"] = Value::Null;
+    fs::write(
+        directory.join("codex-provider-state.json"),
+        serde_json::to_vec(&provider).unwrap(),
+    )
+    .unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_recovery_state(&runner).unwrap();
+    let snapshot = executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
         .unwrap();
-        let mut context = config.clone();
-        if !matches!(proof, "same-session" | "attached-session") {
-            context.run_id = "new-run".to_owned();
-        }
-        let store = DurableStateStore::new(&directory).unwrap();
-        let mut runner = store.load_or_create(&context).unwrap().0;
-        let binding = command(
-            "binding",
-            1,
-            if proof == "prepare-before-crash" {
-                "run.prepare"
-            } else if proof == "attached-session" {
-                "run.attach"
-            } else {
-                "session.open"
-            },
-            json!({}),
-        );
-        // Warm authority rotation starts an empty journal; it does not retain the old attachment.
-        if proof != "rotated-empty-journal" {
-            runner.begin_command(&binding).unwrap();
-            runner.complete_command(&binding, json!({"status":"resumed", "providerSessionId":
-                if proof == "foreign-session" { json!("foreign-thread") } else { provider["threadId"].clone() }})).unwrap();
-        }
-        store.save(&runner).unwrap();
-        // Simulate the second crash too: a new B journal now exists, but preparation never opened A.
-        let (runner, recovered) = store.load_or_create(&context).unwrap();
-        assert!(recovered);
-        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &context);
-        if proof != "fresh-journal" {
-            executor.observe_recovery_state(&runner).unwrap();
-        }
-        executor
-            .execute(&command("snapshot", 2, "session.snapshot", json!({})))
-            .unwrap();
-        let expected_starts = if matches!(proof, "same-session" | "attached-session") {
-            2
-        } else {
-            1
-        };
-        assert_eq!(
-            call_count(&directory, "process-start"),
-            expected_starts,
-            "{proof}"
-        );
-        executor
-            .execute(&command("stop", 3, "turn.stop", json!({})))
-            .unwrap();
-        executor
-            .execute(&command("drain", 4, "runner.drain", json!({})))
-            .unwrap();
-        assert_eq!(
-            call_count(&directory, "process-start"),
-            expected_starts,
-            "{proof}"
-        );
-        executor.shutdown().unwrap();
-        fs::remove_dir_all(directory).unwrap();
-    }
+    assert_eq!(snapshot.result["warmAttachReady"], false);
+    executor
+        .execute(&command("drain", 2, "runner.drain", json!({})))
+        .unwrap();
+    executor
+        .execute(&command("stop", 3, "turn.stop", json!({})))
+        .unwrap();
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -668,7 +650,7 @@ fn recorded_tool_responses(directory: &Path) -> Vec<String> {
 }
 
 fn poll_and_ack(
-    executor: &mut CodexCommandExecutor,
+    executor: &mut impl CommandExecutor,
 ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
     let events = executor.poll_events()?;
     executor.acknowledge_events(events.len())?;

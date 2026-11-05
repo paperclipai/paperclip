@@ -1857,7 +1857,6 @@ pub struct CodexCommandExecutor {
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
     recovery_pending_effects: Option<usize>,
-    recovered_prepared_session_owned: bool,
 }
 
 impl CodexCommandExecutor {
@@ -1874,7 +1873,6 @@ impl CodexCommandExecutor {
             startup_command: None,
             startup_evidence_error: None,
             recovery_pending_effects: None,
-            recovered_prepared_session_owned: false,
         }
     }
 
@@ -1886,27 +1884,8 @@ impl CodexCommandExecutor {
         executor
     }
 
-    pub(crate) fn observe_recovery_state(
-        &mut self,
-        state: &crate::durable::DurableState,
-    ) -> Result<(), DurableRunnerError> {
-        self.load_state_without_provider()?;
+    pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
         self.recovery_pending_effects = Some(state.recovery_pending_effects());
-        // A recovered journal alone does not bind retained prepared files to this run.
-        self.recovered_prepared_session_owned = self.state.as_ref().is_some_and(|provider| {
-            provider.thread_id.as_ref().is_some_and(|thread_id| {
-                state.processed_commands.values().any(|command| {
-                    command.status == "completed"
-                        && matches!(command.command_type.as_str(), "session.open" | "run.attach")
-                        && matches!(
-                            command.result["status"].as_str(),
-                            Some("started" | "resumed")
-                        )
-                        && command.result["providerSessionId"].as_str() == Some(thread_id.as_str())
-                })
-            })
-        });
-        Ok(())
     }
 
     fn bind_opencode_launch_profile(
@@ -2241,14 +2220,10 @@ impl CodexCommandExecutor {
             return Ok(());
         };
         if self.provider.is_some()
-            || !(matches!(
+            || !matches!(
                 state.lifecycle.as_str(),
                 "session_open" | "turn_active" | "provider_exited"
-            ) || (state.config.provider == "codex"
-                && self.recovered_prepared_session_owned
-                && !self.restore_checked
-                && state.lifecycle == "prepared"
-                && state.thread_id.is_some()))
+            )
         {
             return Ok(());
         }
@@ -2257,7 +2232,7 @@ impl CodexCommandExecutor {
                 .recovery_pending_effects
                 .as_ref()
                 .is_some_and(|count| *count == 0)
-            && (state.lifecycle == "prepared" || state.completed_turn_authoritative)
+            && state.completed_turn_authoritative
             && state.active_provider_turn_id.is_none()
             && !state.ambiguous_turn_start_pending
             && state.startup_attempt.is_none()
