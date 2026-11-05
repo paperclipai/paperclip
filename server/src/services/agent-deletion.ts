@@ -10,7 +10,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
-  budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
+  budgetReservations, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
   caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -46,6 +46,16 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   )).limit(1);
   if (fastResponseHold) throw conflict("Wait for active fast responses or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_fast_response_accounting_pending",
+  });
+  const agentRunIds = sql`(select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.agentId} = ${id})`;
+  const [retainedCost] = await tx.select({ id: costEvents.id }).from(costEvents).where(and(
+    eq(costEvents.companyId, companyId), or(eq(costEvents.agentId, id), sql`${costEvents.heartbeatRunId} in ${agentRunIds}`),
+  )).limit(1);
+  const [retainedFinance] = retainedCost ? [] : await tx.select({ id: financeEvents.id }).from(financeEvents).where(and(
+    eq(financeEvents.companyId, companyId), or(eq(financeEvents.agentId, id), sql`${financeEvents.heartbeatRunId} in ${agentRunIds}`),
+  )).limit(1);
+  if (retainedCost || retainedFinance) throw conflict("Recorded cost history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
+    code: "agent_accounting_history_retained",
   });
   await notifyAttentionRetentionWork(tx, { companyId });
   await notifyExternalConversationSettlement(tx, { companyId });
