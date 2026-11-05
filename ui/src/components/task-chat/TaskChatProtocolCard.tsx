@@ -270,11 +270,20 @@ function PlanProposalCard({ item }: { item: TaskChatProviderActivityItem }) {
     return <TaskChatPlanPreviewCard source={{ kind: "live", activity: item }} testId="task-chat-plan-proposal" />;
   }
   const title = item.output ? planPreviewContent(item.output).title : "Plan";
+  // The saved Plan document normally carries the proposal, but a conflicting
+  // edit can keep it out. The proposal itself stays readable here.
   return (
-    <div className="flex items-center gap-2 px-1 py-1 text-sm text-muted-foreground" data-testid="task-chat-plan-proposal">
-      <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 truncate">Proposed a plan · <span className="text-foreground">{title}</span></span>
-    </div>
+    <details className="group" data-testid="task-chat-plan-proposal">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 truncate">Proposed a plan · <span className="text-foreground">{title}</span></span>
+      </summary>
+      {item.output ? (
+        <div className="mt-1 rounded-md border border-border bg-muted/25 px-4 py-3 text-sm" data-testid="task-chat-plan-proposal-body">
+          <MarkdownBody>{item.output}</MarkdownBody>
+        </div>
+      ) : null}
+    </details>
   );
 }
 

@@ -467,7 +467,7 @@ function providerActivityItem(
         : undefined;
   const outputTruncated =
     entry.payload.outputTruncated === true ||
-    Boolean(rawOutput && rawOutput.length > PROTOCOL_OUTPUT_MAX);
+    Boolean(rawOutput && entry.family !== "plan_proposal" && rawOutput.length > PROTOCOL_OUTPUT_MAX);
   const summary =
     entry.summary && entry.summary !== entry.eventType
       ? entry.summary
@@ -489,7 +489,10 @@ function providerActivityItem(
     steps,
     links,
     children,
-    output: rawOutput ? rawOutput.slice(0, PROTOCOL_OUTPUT_MAX) : undefined,
+    // A proposed plan is a document, bounded by its own 60k event schema.
+    output: rawOutput
+      ? rawOutput.slice(0, entry.family === "plan_proposal" ? 60_000 : PROTOCOL_OUTPUT_MAX)
+      : undefined,
     outputTruncated,
     transcriptIndex: index,
     startedAt: entry.ts,
