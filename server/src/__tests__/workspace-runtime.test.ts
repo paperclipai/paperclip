@@ -9388,6 +9388,29 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       startedByRunId: "run-1",
     });
     expect(first[0]?.id).toBe(second[0]?.id);
+    expect(first[0]?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it("keeps a report-supplied UUID and derives a UUID for any other report id", () => {
+    const workspace = buildWorkspace("/tmp/project");
+    const normalize = (id: string) => normalizeAdapterManagedRuntimeServices({
+      adapterType: "openclaw_gateway",
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        name: "Gateway Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      reports: [{ id, serviceName: "preview", scopeType: "run" }],
+    })[0]?.id;
+
+    expect(normalize("6F9619FF-8B86-4D11-B42D-00C04FC964FF")).toBe("6f9619ff-8b86-4d11-b42d-00c04fc964ff");
+    const derived = normalize("preview-1");
+    expect(derived).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(normalize("preview-1")).toBe(derived);
+    expect(normalize("preview-2")).not.toBe(derived);
   });
 
   it("prefers execution workspace ids over cwd for execution-scoped adapter services", () => {

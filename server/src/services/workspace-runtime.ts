@@ -717,6 +717,8 @@ export async function ensureServerWorkspaceLinksCurrent(
 }
 
 
+const RUNTIME_SERVICE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function stableRuntimeServiceId(input: {
   adapterType: string;
   runId: string;
@@ -727,7 +729,8 @@ function stableRuntimeServiceId(input: {
   providerRef: string | null;
   reuseKey: string | null;
 }) {
-  if (input.reportId) return input.reportId;
+  const reportId = input.reportId?.trim() || null;
+  if (reportId && RUNTIME_SERVICE_UUID_RE.test(reportId)) return reportId.toLowerCase();
   const digest = createHash("sha256")
     .update(
       stableStringify({
@@ -738,11 +741,18 @@ function stableRuntimeServiceId(input: {
         serviceName: input.serviceName,
         providerRef: input.providerRef,
         reuseKey: input.reuseKey,
+        ...(reportId ? { reportId } : {}),
       }),
     )
-    .digest("hex")
-    .slice(0, 32);
-  return `${input.adapterType}-${digest}`;
+    .digest("hex");
+  const variant = ((parseInt(digest[16]!, 16) & 0x3) | 0x8).toString(16);
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    `5${digest.slice(13, 16)}`,
+    `${variant}${digest.slice(17, 20)}`,
+    digest.slice(20, 32),
+  ].join("-");
 }
 
 function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<RuntimeServiceRef>): RuntimeServiceRef {
