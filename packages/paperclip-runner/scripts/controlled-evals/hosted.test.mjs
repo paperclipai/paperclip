@@ -6,9 +6,9 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fixture, success } from './controller-fixture.mjs';
-import { canonical, sha256, validateManifest } from './manifest.mjs';
+import { canonical, sha256, units, validateManifest } from './manifest.mjs';
 const runtime = process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME ? pathToFileURL(resolve(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME) + '/') : import.meta.url;
-const { hostedPaths, hostedPolicyConfiguration, prepareHostedManifest, verifyHostedCell, hostedAdmissionDiagnostic } = await import(new URL('./hosted.mjs', runtime));
+const { hostedPaths, hostedPolicy, prepareHostedManifest, verifyHostedCell, hostedAdmissionDiagnostic } = await import(new URL('./hosted.mjs', runtime));
 const { packControlledAttempt, summarizeControlledManifest } = await import(new URL('./archive.mjs', runtime));
 
 async function campaign(t) {
@@ -30,16 +30,17 @@ async function campaign(t) {
   const prepared = { schema: 'paperclip.runner-eval.prepared-requests/v1', campaignId: catalog.campaignId, githubRunId: runId, githubRunAttempt: 1,
     sourceRevision: f.manifest.sourceRevision, definitionsRevision: f.manifest.definitionsRevision, catalogSha256, runnerd: f.requests[0].request.runnerd,
     cells: cells.map((cell, index) => ({ cellId: cell.cellId, runId: `${catalog.campaignId}-${cell.cellId}`, request: f.requests[index].request })) };
-  for (const component of f.manifest.overhead.components) component.provisionalBound.evidenceSha256 = sha256(component.component);
-  const { provisionalBound, ...observability } = f.manifest.observability;
+  const { projectId, capture, nativeLimits } = f.manifest.observability;
   const { executionId, attemptId, requestSha256, ...allocation } = f.manifest.attempts[0];
-  const policy = { schema: 'paperclip.runner-eval.hosted-policy/v1', controllerLockSha256: 'e'.repeat(64), maxUsd: f.manifest.maxUsd, maxCells: 2, durationMs: 60000,
-    pricingVerifiedAt: f.manifest.pricingVerifiedAt, pricingExpiresAt: f.manifest.pricingExpiresAt,
-    route: 'direct', models: f.manifest.models, overhead: f.manifest.overhead, observability, allocations: [allocation] };
-  policy.capacityBound = { version: 1, scope: 'full_lifecycle', evidenceSha256: f.manifest.overhead.components.find(component => component.component === 'observability').provisionalBound.evidenceSha256, configurationSha256: sha256(canonical(hostedPolicyConfiguration(policy))) };
+  const { verifiedAt, expiresAt, components, ...overhead } = f.manifest.overhead;
+  // Committed defaults carry no cell count, review window, lock pin or self-hashed bounds.
+  const defaults = { schema: 'paperclip.runner-eval.hosted-defaults/v1', maxUsd: f.manifest.maxUsd, durationMs: 60000, route: 'direct',
+    models: f.manifest.models.map(({ provisionalBound, ...model }) => model), allocations: [allocation],
+    overhead: { ...overhead, accountingReadiness: 'model_requests', components: components.map(({ provisionalBound, ...component }) => component) },
+    observability: { capture, nativeLimits } };
   const environment = { ...f.environment, GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_RUN_ID: runId,
     GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: f.manifest.sourceRevision, PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: prepared.sourceRevision, PAPERCLIP_PROTOCOL_EVALS_SHA: prepared.definitionsRevision };
-  const input = { catalog, catalogSha256, prepared, policy, artifacts, environment };
+  const input = { catalog, catalogSha256, prepared, defaults, projectId, controllerLockSha256: 'e'.repeat(64), artifacts, environment };
   const build = () => prepareHostedManifest(input);
   return { f, input, paths, environment, build };
 }
@@ -76,34 +77,31 @@ test('hosted preparation rejects selection drift, unsupported cells and unreview
     input => { input.prepared.cells[0].request.driver = 'unsupported'; },
     input => { input.catalog.cells[0].driver = 'unsupported'; input.catalog.matrices[0].include[0].driver = 'unsupported'; },
     input => { input.prepared.cells[0].request.runnerd.sha256 = 'sha256:' + '0'.repeat(64); },
-    input => { input.policy.maxUsd = '0.01'; },
+    input => { input.maxUsd = '0.01'; },
+    input => { input.maxUsd = 'unbounded'; },
+    input => { input.prepared.cells = []; },
     input => { input.environment.GITHUB_RUN_ATTEMPT = '2'; },
     input => { input.environment.GITHUB_SHA = 'wrong'; },
     input => { input.environment.GITHUB_SHA = 'c'.repeat(40); },
-    input => { delete input.policy.observability; },
-    input => { delete input.policy.controllerLockSha256; },
-    input => { input.policy.controllerLockSha256 = 'f'.repeat(64); },
+    input => { delete input.defaults.observability; },
+    input => { delete input.controllerLockSha256; },
+    input => { input.controllerLockSha256 = 'not-a-digest'; },
+    input => { input.defaults.durationMs = 5 * 3_600_000; },
+    input => { input.defaults.schema = 'paperclip.runner-eval.hosted-policy/v1'; },
   ];
   for (const change of changes) {
     const input = structuredClone(c.input); change(input);
     assert.throws(() => prepareHostedManifest(input));
   }
-  const mixed = structuredClone(c.input);
-  mixed.policy.capacityBound.evidenceSha256 = mixed.policy.overhead.components.find(component => component.component !== 'observability').provisionalBound.evidenceSha256;
-  assert.throws(() => prepareHostedManifest(mixed), /Observability capacity requires its operating bound evidence/);
-  const input = structuredClone(c.input); input.policy.maxUsd = '0.01';
-  input.policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(input.policy)));
+  const input = structuredClone(c.input); input.maxUsd = '0.01';
   assert.throws(() => prepareHostedManifest(input), /budget/);
 });
 
 test('hosted admission rejects local and fleet origins while preserving retained manifests', async t => {
   const c = await campaign(t);
-  c.input.policy.overhead.accountingReadiness = 'model_requests';
-  for (const component of c.input.policy.overhead.components) delete component.provisionalBound;
-  delete c.input.policy.capacityBound;
   const original = c.build().manifest;
   for (const runner of ['local', 'aws-fleet']) {
-    const input = structuredClone(c.input); input.policy.overhead.runner = runner;
+    const input = structuredClone(c.input); input.defaults.overhead.runner = runner;
     assert.throws(() => prepareHostedManifest(input), /GitHub-hosted operating origin/);
     const retained = structuredClone(original); retained.overhead.runner = runner;
     assert.equal(validateManifest(retained, Date.now(), { admission: false }).manifest.overhead.runner, runner);
@@ -142,9 +140,6 @@ test('hosted CLI reports safe admission reasons without echoing private paths or
 
 test('model-readiness policy retains operating holds without requiring vendor cost proofs', async t => {
   const c = await campaign(t);
-  c.input.policy.overhead.accountingReadiness = 'model_requests';
-  for (const component of c.input.policy.overhead.components) delete component.provisionalBound;
-  delete c.input.policy.capacityBound;
   const result = c.build();
   assert.equal(result.manifest.overhead.accountingReadiness, 'model_requests');
   assert.equal(result.manifest.observability.provisionalBound, undefined);
@@ -163,27 +158,45 @@ test('model-readiness policy retains operating holds without requiring vendor co
   assert.equal(complete.operatingHeldUsd, '0.004000000');
   assert.equal(complete.accountingReadiness, 'model_requests');
   assert.equal(complete.operatingReconciliation, 'pending');
-  delete c.input.policy.overhead.accountingReadiness;
-  assert.throws(() => c.build(), /cost bound|operating bound/);
+  delete c.input.defaults.overhead.accountingReadiness;
+  assert.throws(() => c.build(), /operating bound/);
 });
 
 
-test('model readiness still validates supplied operating and capacity proofs', async t => {
-  const c = await campaign(t), policy = c.input.policy;
-  policy.overhead.accountingReadiness = 'model_requests';
-  for (const component of policy.overhead.components) {
-    component.provisionalBound.configurationSha256 = sha256(canonical({ accountingReadiness: 'model_requests',
-      reference: policy.overhead.reference, runner: policy.overhead.runner, verifiedAt: policy.overhead.verifiedAt,
-      expiresAt: policy.overhead.expiresAt, component: { component: component.component, maxUsd: component.maxUsd, reference: component.reference } }));
-  }
-  policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(policy)));
-  assert.equal(c.build().manifest.overhead.accountingReadiness, 'model_requests');
-  const mismatch = structuredClone(c.input); mismatch.policy.capacityBound.evidenceSha256 = '0'.repeat(64);
-  assert.throws(() => prepareHostedManifest(mismatch), /Observability capacity requires its operating bound evidence/);
-  const stale = structuredClone(c.input); stale.policy.capacityBound.configurationSha256 = '0'.repeat(64);
-  assert.throws(() => prepareHostedManifest(stale), /Reviewed cost bound configuration changed/);
-  const absent = structuredClone(c.input);
-  for (const component of absent.policy.overhead.components) delete component.provisionalBound;
-  absent.policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(absent.policy)));
-  assert.throws(() => prepareHostedManifest(absent), /Observability capacity requires its operating bound evidence/);
+test('the campaign policy is derived from the selection and committed defaults', async t => {
+  const c = await campaign(t), now = Date.now(), result = c.build();
+  assert.equal(result.policy.maxCells, 2);
+  assert.equal(result.policy.schema, 'paperclip.runner-eval.hosted-policy/v2');
+  assert.equal(result.manifest.hosted.controllerLockSha256, 'e'.repeat(64));
+  assert.equal(result.manifest.models[0].provisionalBound, undefined);
+  // The validity window covers this campaign only; the committed table itself never expires.
+  assert.ok(Date.parse(result.manifest.pricingVerifiedAt) <= Date.now() && Date.parse(result.manifest.pricingVerifiedAt) >= now - 1000);
+  assert.ok(Date.parse(result.manifest.pricingExpiresAt) > Date.parse(result.manifest.deadlineAt));
+  assert.equal(result.manifest.overhead.expiresAt, result.manifest.pricingExpiresAt);
+  const later = structuredClone(c.input); later.now = now + 400 * 86_400_000;
+  later.environment = { ...later.environment };
+  assert.equal(hostedPolicy(later.defaults, { cellCount: 2, now: later.now, controllerLockSha256: 'e'.repeat(64) }).pricingVerifiedAt,
+    new Date(later.now).toISOString());
+  const capped = structuredClone(c.input); capped.maxUsd = '5';
+  assert.equal(prepareHostedManifest(capped).manifest.maxUsd, '5');
+});
+
+test('the committed defaults admit the full 41-case Claude plan within their spend cap', async () => {
+  const defaults = JSON.parse(await readFile(new URL('./hosted-defaults.json', import.meta.url), 'utf8'));
+  const now = Date.now(), projectId = '4dcaad06-b1ce-4416-ac28-482f1443d5ea';
+  const manifestFor = cells => {
+    const policy = hostedPolicy(defaults, { cellCount: cells, now, projectId, controllerLockSha256: 'e'.repeat(64) });
+    const attempts = Array.from({ length: cells }, (_, index) => ({ ...policy.allocations[0],
+      executionId: `protocol-live-testops-claude--case-${index}`, attemptId: `attempt-${index}`, requestSha256: 'a'.repeat(64) }));
+    return { schema: 'paperclip.runner-eval.controller/v1', campaignId: 'gha-1-1', maxUsd: policy.maxUsd,
+      deadlineAt: new Date(now + policy.durationMs).toISOString(), pricingVerifiedAt: policy.pricingVerifiedAt, pricingExpiresAt: policy.pricingExpiresAt,
+      route: policy.route, projectId: policy.projectId, models: policy.models, overhead: policy.overhead, observability: policy.observability,
+      sourceRevision: 'b'.repeat(40), definitionsRevision: 'c'.repeat(40),
+      runnerCli: { path: '/tmp/r/cli.js', sha256: '1'.repeat(64) }, runnerPackage: { path: '/tmp/r/p.tgz', sha256: '2'.repeat(64) },
+      runnerd: { path: '/tmp/r/runnerd', sha256: '3'.repeat(64) }, outputDirectory: '/tmp/r/evidence', attempts };
+  };
+  const full = validateManifest(manifestFor(41), now);
+  assert.equal(full.manifest.attempts.length, 41);
+  assert.equal(full.allocatedUsd, "339.000000000"); assert.ok(units(full.allocatedUsd) <= units(defaults.maxUsd));
+  assert.throws(() => validateManifest(manifestFor(49), now), /exceed the campaign budget/);
 });

@@ -300,17 +300,21 @@ function workflowShell(workflow, name) {
   return script.split('\n').map(line => line.slice(10)).join('\n');
 }
 
-test('controlled admission rejects missing policy, automatic retries and job reruns before paid work', async () => {
+test('controlled admission rejects automatic retries and job reruns without a hand-maintained policy', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');
   const root = await mkdtemp(resolve(tmpdir(), 'runner-workflow-admission-'));
   try {
+    // The retired policy variable is ignored whether it is absent or still set.
     for (const [mode, event, attempt, retries, policy, status] of [
-      ['controlled', 'workflow_dispatch', '1', '0', '', 1],
+      ['controlled', 'workflow_dispatch', '1', '0', '', 0],
       ['controlled', 'workflow_dispatch', '2', '0', JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}), 1],
-      ['controlled', 'workflow_dispatch', '1', '1', JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}), 1],
-      ['legacy', 'schedule', '1', '1', '', 1],
+      ['controlled', 'workflow_dispatch', '1', '1', '', 1],
+      // Schedules are forced to controlled mode with zero retries, so requested legacy retries cannot apply.
+      ['legacy', 'schedule', '1', '1', '', 0],
+      ['controlled', 'schedule', '2', '0', '', 1],
       ['controlled', 'workflow_dispatch', '1', '0', JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}), 0],
+      ['controlled', 'workflow_dispatch', '1', '0', 'not json', 0],
       ['legacy', 'workflow_dispatch', '1', '1', '', 0],
     ]) {
       const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
@@ -375,7 +379,7 @@ test('TestOps admission preserves the selected mode gates, current source and de
     for (const [mode, source, roster, policy, retries, expected] of [
       ['legacy', 'a', 'protocol-live-testops-claude', true, '0', 0],
       ['controlled', 'a', 'protocol-live-testops-claude', true, '0', 0],
-      ['controlled', 'a', 'protocol-live-testops-claude', false, '0', 1],
+      ['controlled', 'a', 'protocol-live-testops-claude', false, '0', 0],
       ['controlled', 'a', 'protocol-live-testops-claude', true, '1', 1],
       ['controlled', 'b', 'protocol-live-testops-claude', true, '0', 1],
       ['legacy', 'b', 'protocol-live-testops-claude', true, '0', 1],
@@ -431,11 +435,12 @@ test('controlled capacity counts the filtered selection before any provider work
   const cell = { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime' };
   const root = await mkdtemp(resolve(tmpdir(), 'runner-selected-capacity-'));
   try {
-    for (const [cells, maximum, expected] of [[[cell], 1, 0], [Array(41).fill(cell), 1, 1],
-      [[cell, cell], 1, 1], [[{ ...cell, provider: 'unsupported' }], 1, 1], [[cell], 0, 1]]) {
+    // Campaign size is the selection itself; the spend cap is enforced during manifest preparation.
+    for (const [cells, expected] of [[[cell], 0], [Array(41).fill(cell), 0], [Array(512).fill(cell), 0],
+      [Array(513).fill(cell), 1], [[{ ...cell, provider: 'unsupported' }], 1], [[], 1]]) {
       await writeFile(resolve(root, 'runner-protocol-eval-catalog.json'), JSON.stringify({ cells }));
       const result = spawnSync('bash', ['-euc', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH,
-        CONTROLLER_POLICY_JSON: JSON.stringify({ maxCells: maximum }) } });
+        CONTROLLER_POLICY_JSON: JSON.stringify({ maxCells: 1 }) } });
       assert.equal(result.status === 0, expected === 0, result.stderr);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -483,7 +488,12 @@ test('private archive jobs consume verified controller code without resolving de
   assert.doesNotMatch(builder, /id-token: write|environment:|secrets\./u);
   assert.match(builder, /build-runtime.mjs/u);
   assert.doesNotMatch(builder, /--no-frozen-lockfile/u);
-  assert.match(builder, /test "\$RESOLVED_LOCK_SHA256" = "\$EXPECTED_LOCK_SHA256"/u);
+  assert.doesNotMatch(builder, /target_lock|RESOLVED_LOCK_SHA256|runner-controller-lock/u);
+  assert.match(builder, /git diff --quiet HEAD -- pnpm-lock\.yaml/u);
+  assert.match(preparer, /committed="\$\(sha256sum pnpm-lock\.yaml/u);
+  assert.match(preparer, /PAPERCLIP_RUNNER_EVAL_CONTROLLER_LOCK_SHA256: \$\{\{ steps\.controller_lock\.outputs\.sha256 \}\}/u);
+  assert.match(preparer, /scripts\/controlled-evals\/hosted-defaults\.json/u);
+  assert.doesNotMatch(workflow, /RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON/u);
   assert.match(builder, /pnpm install --frozen-lockfile --ignore-scripts --store-dir/u);
   assert.doesNotMatch(preparer, /pnpm install|build-runtime.mjs|cache: pnpm/u);
   assert.ok(preparer.indexOf('verify-runtime.mjs') < preparer.indexOf('hosted.mjs" prepare'));
@@ -498,23 +508,20 @@ test('private archive jobs consume verified controller code without resolving de
   }
 });
 
-test('controller dependency lock rejects resolution or byte drift before installation', async () => {
+test('controller dependency lock rejects a modified committed lockfile before installation', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const script = workflowShell(workflow, 'Build portable controller in an unprivileged job');
-  const pin = script.slice(script.indexOf('test "$RESOLVED_LOCK_SHA256"'), script.indexOf('pnpm install'));
-  const root = await mkdtemp(resolve(tmpdir(), 'runner-reviewed-lock-'));
-  const digest = createHash('sha256').update('reviewed dependencies').digest('hex');
+  const guard = script.slice(0, script.indexOf('pnpm install'));
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-committed-lock-'));
+  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   try {
-    await mkdir(resolve(root, 'runner-controller-lock'));
-    for (const [index, resolved, bytes, status] of [[0, digest, 'reviewed dependencies', 0], [1, 'f'.repeat(64), 'reviewed dependencies', 1], [2, digest, 'changed dependencies', 1]]) {
-      const cwd = resolve(root, `worker-${index}`); await mkdir(cwd);
-      await writeFile(resolve(root, 'runner-controller-lock/pnpm-lock.yaml'), bytes);
-      const result = spawnSync('bash', ['-euc', pin], { cwd, encoding: 'utf8', env: {
-        PATH: process.env.PATH, RUNNER_TEMP: root, EXPECTED_LOCK_SHA256: digest, RESOLVED_LOCK_SHA256: resolved,
-      } });
-      assert.equal(result.status, status, result.stderr);
-      if (status === 0) assert.equal(await readFile(resolve(cwd, 'pnpm-lock.yaml'), 'utf8'), bytes);
-      else await assert.rejects(readFile(resolve(cwd, 'pnpm-lock.yaml')), { code: 'ENOENT' });
-    }
+    git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'test');
+    await writeFile(resolve(root, 'pnpm-lock.yaml'), 'committed dependencies');
+    git('add', 'pnpm-lock.yaml'); git('commit', '-qm', 'lock');
+    const head = git('rev-parse', 'HEAD').stdout.trim();
+    const run = () => spawnSync('bash', ['-euc', guard], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, GITHUB_SHA: head } });
+    assert.equal(run().status, 0, run().stderr);
+    await writeFile(resolve(root, 'pnpm-lock.yaml'), 'changed dependencies');
+    assert.notEqual(run().status, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
