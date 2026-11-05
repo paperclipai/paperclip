@@ -731,6 +731,37 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect(redeclared.body.alreadyCompleted).toBe(false);
   });
 
+  it.each([false, true])("uses stored part sizes on re-declaration when the uploaded spool is damaged: %s", async (damaged) => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+
+    const redeclaration = {
+      ...body,
+      partSizeBytes: body.partSizeBytes + 1,
+      parts: body.parts.map((part, index) => ({
+        ...part,
+        byteSize: part.byteSize + (index === 0 ? 1 : -1),
+      })),
+    };
+    if (damaged) {
+      await fs.appendFile(path.join(spoolRoot, transferId, "part-0"), Buffer.from([0]));
+    }
+
+    const redeclared = await request(app).post("/api/companies/import/transfers").send(redeclaration);
+    expect(redeclared.status).toBe(200);
+    expect(redeclared.body.transferId).toBe(transferId);
+    expect(redeclared.body.totalParts).toBe(body.parts.length);
+    expect(redeclared.body.missingParts).toEqual(damaged ? [0, 1] : [1]);
+
+    const status = await request(app).get(`/api/companies/import/transfers/${transferId}`);
+    expect(status.body.missingParts).toEqual(redeclared.body.missingParts);
+    expect((await putPart(transferId, 1, slices[1]!)).status).toBe(200);
+    expect((await companyTransferRunService.getRun(db, transferId))!.manifest).toEqual(body);
+  });
+
   it("reports an already-applied transfer on re-declaration", async () => {
     const zip = buildFixtureZip();
     const { body, slices } = declareTransfer(zip, zip.length);

@@ -831,13 +831,15 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
         blobCount: 0,
       });
     }
+    const storedManifest = importTransferManifestSchema.safeParse(run.manifest);
+    const manifest = storedManifest.success ? storedManifest.data : declared;
     await companyTransferRunService.start(db, run.id);
     res.json({
       transferId: run.id,
       status: "running",
       alreadyCompleted: false,
-      totalParts: declared.parts.length,
-      missingParts: await importTransferMissingParts(run, declared),
+      totalParts: manifest.parts.length,
+      missingParts: await importTransferMissingParts(run, manifest),
     } satisfies CompanyImportTransferCreated);
   });
 
