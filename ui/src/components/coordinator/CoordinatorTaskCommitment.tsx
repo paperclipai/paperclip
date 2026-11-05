@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, FileCheck2 } from "lucide-react";
-import type { ConversationTaskHandoff } from "@paperclipai/shared";
+import type { ConversationTaskHandoff, IssueSummary } from "@paperclipai/shared";
 import type { SuggestTasksInteraction } from "@/lib/issue-thread-interactions";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -123,7 +123,8 @@ export function CoordinatorTaskMotion({
  * handoffs, so both creation paths settle into the same card. */
 export function CoordinatorCreatedTaskLink({ task, createdAt }: {
   createdAt?: Date | string | null;
-  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] };
+  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] }
+    & Partial<Pick<IssueSummary, "displayStatus" | "externalConversationState" | "blockerAttention">>;
 }) {
   return <Link to={`/issues/${task.identifier ?? task.issueId}`} className="coordinator-created-task">
     {task.status ? <StatusIcon {...taskStatusIconProps({ ...task, status: task.status })} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
@@ -154,6 +155,9 @@ function CreatedTaskLinks({ interaction }: { interaction: SuggestTasksInteractio
         identifier: summary?.identifier ?? task.identifier ?? null,
         title: summary?.title ?? task.title ?? "Task created",
         status: summary?.status,
+        displayStatus: summary?.displayStatus,
+        externalConversationState: summary?.externalConversationState,
+        blockerAttention: summary?.blockerAttention,
       }} />;
     })}
   </div>;

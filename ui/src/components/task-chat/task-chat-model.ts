@@ -631,7 +631,7 @@ export interface TaskChatTurnItem {
 export interface TaskChatTaskCreatedItem {
   id: string;
   kind: "task_created";
-  task: Pick<Issue, "id" | "identifier" | "title" | "status">;
+  task: Pick<Issue, "id" | "identifier" | "title" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention">;
   isSubtask: boolean;
   timestamp: string;
 }

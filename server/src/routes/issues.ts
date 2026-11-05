@@ -12,8 +12,9 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueSummariesQuerySchema, type IssueBlockerAttention, type IssueSummary } from "@paperclipai/shared";
+import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { listIssueSummaries } from "../services/issue-summaries.js";
+import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
@@ -8418,12 +8419,12 @@ export function issueRoutes(
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
-    // Blocked rows carry their blocker state so every task view resolves the
-    // same glyph (covered → "in queue") as the task pane. At most five IDs.
-    const blockedRows = visible.filter((row) => row.status === "blocked");
-    const blockerAttention = blockedRows.length > 0
-      ? await svc.listBlockerAttention(companyId, blockedRows)
-      : new Map<string, IssueBlockerAttention>();
+    // Blocked rows carry glyph-only blocker state so every task view resolves
+    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
+      (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
+        .map((row) => row.id),
+    ));
     const summaries: IssueSummary[] = visible.map((row) => {
       const attention = blockerAttention.get(row.id);
       return {

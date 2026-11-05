@@ -125,7 +125,32 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
 
     const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: `${parent!.id},${f.rows[0]!.id}` }).expect(200);
     expect(res.body[0].blockerAttention).toMatchObject({ state: "covered", reason: "active_child", sampleBlockerIdentifier: "SUM-9" });
+    // Only what the glyph needs: no blocker titles or IDs.
+    expect(Object.keys(res.body[0].blockerAttention).sort()).toEqual([
+      "attentionBlockerCount", "coveredBlockerCount", "reason", "sampleBlockerIdentifier",
+      "sampleStalledBlockerIdentifier", "stalledBlockerCount", "state", "unresolvedBlockerCount",
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain("Running child");
+    expect(JSON.stringify(res.body)).not.toContain(child!.id);
     // Unblocked tasks keep the bounded summary shape.
     expect(res.body[1]).not.toHaveProperty("blockerAttention");
+  });
+
+  it("does not disclose a private blocker through a readable blocked task's summary", async () => {
+    const f = await fixture();
+    const [parent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Public parent", status: "blocked" }).returning();
+    const privateId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: privateId, companyId: f.companyId, title: "Secret blocker title", status: "todo", visibility: "private",
+      privacyRootIssueId: privateId, responsibleUserId: "someone-else", createdByUserId: "someone-else",
+    });
+    await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: privateId, relatedIssueId: parent!.id, type: "blocks" });
+
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: parent!.id }).expect(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].blockerAttention?.state).toBeDefined();
+    expect(JSON.stringify(res.body)).not.toContain("Secret blocker title");
+    expect(JSON.stringify(res.body)).not.toContain(privateId);
+    expect(res.body[0].blockerAttention).not.toHaveProperty("terminalBlocker");
   });
 });
