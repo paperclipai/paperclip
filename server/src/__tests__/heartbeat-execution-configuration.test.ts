@@ -276,6 +276,62 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
+  async function runnerTaskEnvironment(supportsTasks = true): Promise<Environment> {
+    const pluginId = randomUUID(), pluginKey = `test.runner-tasks.${pluginId}`;
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/runner-tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Runner tasks", description: "Runner task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks, configSchema: { type: "object" } }] } });
+    const [environment] = await db.insert(environments).values({ name: `Runner tasks ${pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    return environment as unknown as Environment;
+  }
+
+  it.each([
+    { name: "a run without a managed AI connection", managed: false, homeMode: undefined, persisted: false, supportsTasks: true, refused: true },
+    { name: "a preconfigured home that drops the managed AI connection", managed: true, homeMode: "preconfigured", persisted: false, supportsTasks: true, refused: true },
+    { name: "a run with a managed AI connection", managed: true, homeMode: undefined, persisted: false, supportsTasks: true, refused: false },
+    { name: "resumed native input admitted before the rule", managed: false, homeMode: undefined, persisted: true, supportsTasks: true, refused: false },
+    { name: "a plugin environment without Runner tasks", managed: false, homeMode: undefined, persisted: false, supportsTasks: false, refused: false },
+  ] as const)("plugin Runner-task environments require a managed AI connection: $name", async ({ managed, homeMode, persisted, supportsTasks, refused }) => {
+    const f = await seed(managed);
+    const environment = await runnerTaskEnvironment(supportsTasks);
+    const config = { provider: "codex", model: "gpt-6.1-sol", ...(homeMode ? { homeMode } : {}) };
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue",
+      status: "running", runtimeMode: "native", contextSnapshot: { issueId: f.issueId } }).returning();
+    const reached = "fixture passed managed AI admission";
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error(reached));
+    skillFailures.set(f.companyId, reached);
+    const secretsResolved = vi.fn(), redactorPrepared = vi.fn();
+    const opening = prepareHeartbeatExecutionConfiguration(db, {
+      run, agent, task: { issueId: f.issueId, context: {}, responsibleUserId: f.userId,
+        acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
+        routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
+      config: { sourceWorkspaceConfig: config, aiBinding: managed ? aiConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
+        resolvedInstanceSettings: await instanceSettingsService(db).get(),
+        persistedNativeExecutionInput: persisted ? { schema: "paperclip.native-execution-input.v5" } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"] : null },
+      services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
+      onFailureSecretsResolved: secretsResolved, onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: redactorPrepared,
+    });
+    if (refused) {
+      await expect(opening).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure", code: "configuration_incomplete",
+        message: expect.stringContaining("requires a managed AI connection"),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_required", actionUrl: `/agents/${f.agentId}/runtime` } } });
+      // Refused before observability, secrets, or the managed runtime.
+      expect(redactorPrepared).not.toHaveBeenCalled();
+      expect(secretsResolved).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+    } else {
+      await expect(opening).rejects.toThrow(reached);
+      expect(redactorPrepared).toHaveBeenCalledOnce();
+    }
+  });
+
   async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"]) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();

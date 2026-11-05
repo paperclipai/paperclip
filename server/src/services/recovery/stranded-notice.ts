@@ -164,6 +164,14 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_required") {
+    return {
+      title: "AI connection required",
+      body: "Paperclip stopped before the agent started because this agent runs in a plugin-provided environment, which requires a managed AI connection. The task is blocked until the agent has one.",
+      nextAction: "Choose an AI connection for this agent in Configuration, then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",

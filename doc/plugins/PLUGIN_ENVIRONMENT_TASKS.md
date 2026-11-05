@@ -177,8 +177,7 @@ change, reject submission and require new preparation and validation.
 Return `project_auth` with the same configuration ID and provider.
 Set `allowed: true` only after the checks pass.
 Core saves this result on the task lease. Core requires the exact configuration,
-provider, and project set before each submission. This also applies when the
-provider uses an installed account.
+provider, and project set before each submission.
 A new preparation or check removes the prior validation. A failed check does not
 authorize credential transfer. The dispatch update also checks that validation
 has not changed while Core waited for database work.

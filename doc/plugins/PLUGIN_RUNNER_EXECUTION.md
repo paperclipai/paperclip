@@ -4,6 +4,19 @@ Core can run `paperclip_runner` tasks in a plugin environment.
 The plugin owns the execution host and its files.
 Core owns run identity, selected policy, assigned tools, and the PRP journal.
 
+## Managed AI connection required
+
+A task-capable environment runs only agents with a managed AI connection.
+Core does not use an account installed on the plugin's execution host.
+Before it acquires a lease or calls the plugin, Core fails a new run that has
+no managed AI connection. This includes an agent whose `homeMode: "preconfigured"`
+setting drops its connection. The run fails as `configuration_incomplete` with
+reason `ai_connection_required`, and the task is blocked with a notice to choose
+an AI connection. A setup or verification probe without a managed AI connection
+fails the `ai_connection_required` check and calls no task operation.
+Verification then waits for the configuration to change.
+A resumed native run keeps the contract it was admitted under.
+
 ## Required hooks
 
 Set `supportsTasks: true` on the environment driver.

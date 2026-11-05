@@ -8,6 +8,7 @@ import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -27,7 +28,8 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
-    const code = result.checks.some(check => check.code === RUNNER_REVISION_MISMATCH_CODE) ? RUNNER_REVISION_MISMATCH_CODE
+    const code = result.checks.some(check => check.code === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED) ? PLUGIN_RUNNER_AI_CONNECTION_REQUIRED
+      : result.checks.some(check => check.code === RUNNER_REVISION_MISMATCH_CODE) ? RUNNER_REVISION_MISMATCH_CODE
       : result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
       : authenticationFailed ? "harness_auth_failed"
       : has("_hello_probe_model_unavailable") || has("_model_invalid") ? "harness_model_unavailable"
