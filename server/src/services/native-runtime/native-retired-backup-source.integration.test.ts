@@ -56,7 +56,6 @@ describeDb("retired native backup source authority", () => {
         const row = { ...sourceLease, id: index === options.handoffs ? leaseId : randomUUID(),
           heartbeatRunId: ownerRunId, environmentId, issueId, executionWorkspaceId: workspaceId, acquiredAt,
           leasePolicy: "reuse_by_environment", metadata: { ...sourceLease.metadata, agentId } };
-        // Only the last owner destroyed the allocation and stamped this backup.
         if (index < options.handoffs) {
           const { nativeHarnessBackup: _backup, remoteExecutionTermination: _termination, ...metadata } = row.metadata;
           history.push({ ...row, metadata });

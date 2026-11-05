@@ -43,9 +43,6 @@ export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: 
   ));
   const source = leases.filter(lease => lease.companyId === input.companyId
     && lease.providerLeaseId === input.manifest.sourceProviderLeaseId);
-  // Normal warm handoffs retain the expired predecessor rows. Only the unique
-  // final owner may authorize restore, with every other row accounted for by
-  // the existing two-sided handoff proof. Unlinked or active owners stay held.
   const tips = source.filter(lease => !Object.hasOwn(lease.metadata ?? {}, "reusableLeaseSuccessor"));
   if (tips.length !== 1) return false;
   const lease = tips[0]!;
