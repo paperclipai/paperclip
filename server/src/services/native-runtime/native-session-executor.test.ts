@@ -165,6 +165,7 @@ type BackendFactoryOptions = {
 
 type RunnerTransportOptions = {
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
+  onRecoveryAccountingEvent?: unknown;
   environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
@@ -7905,8 +7906,46 @@ describe("native terminal-turn accounting", () => {
       await retainedHook(secondReport);
       expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);
       expect(firstCapture).toHaveBeenCalledTimes(1);
-      await expect(retainedHook(firstReport)).rejects.toThrow("native_usage_run_binding_mismatch");
+      await retainedHook(firstReport);
+      expect(firstCapture).toHaveBeenCalledTimes(2);
+      expect(secondCapture).toHaveBeenCalledTimes(1);
+      await expect(retainedHook({ ...firstReport, runId: "unrelated-run" })).rejects.toThrow("native_usage_run_binding_mismatch");
     } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("delivers plugin task usage to the producer that owns the run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "native-plugin-usage-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = directory;
+    const current = { ...execution, provider: { kind: "codex", model: "gpt-6-astra" },
+      binding: { ...execution.binding, runId: "plugin-usage-run", executionWorkspaceId: "plugin-usage-workspace" },
+      session: { ...execution.session, normalizedSessionId: "plugin-usage-session" } } as NativeExecutionInput;
+    const launcher = vi.fn(), registration = vi.fn();
+    const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+    const task = vi.fn(async (operation: unknown) => {
+      environmentTaskOperationSchema.parse(operation);
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
+        runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    const capture = vi.fn(async (_event: PrpEvent) => {});
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    try {
+      await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "plugin-producer", runnerIngressAuthorized: true,
+        onAccountingEvent: capture, runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin",
+          leaseId: "plugin-usage-lease", remoteCwd: "/unused", runnerTask: task } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const options = state.createTransport.mock.calls.at(-1)![0];
+      const report = { eventType: "usage.reported", runId: current.binding.runId, sourceInstanceId: "plugin-producer" } as PrpEvent;
+      await options.onAccountingEvent!(report);
+      expect(capture).toHaveBeenCalledExactlyOnceWith(report);
+      expect(options.onRecoveryAccountingEvent).toEqual(expect.any(Function));
+    } finally {
+      owner.mockRestore();
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(directory, { recursive: true, force: true });
     }
