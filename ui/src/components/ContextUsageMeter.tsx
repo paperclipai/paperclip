@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { timeAgo } from "@/lib/timeAgo";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /**
@@ -25,6 +26,8 @@ export interface ContextUsage {
   costUsd?: number | null;
   /** Number of compactions so far in this session. */
   compactions?: number;
+  /** When the provider reported this reading (ISO timestamp). */
+  observedAt?: string | null;
 }
 
 export type ContextUsageLevel = "normal" | "near" | "full";
@@ -93,6 +96,7 @@ function ContextUsageCard({ usage }: { usage: ContextUsage }) {
       </div>
       <p className="mt-0.5 text-muted-foreground tabular-nums">
         {formatContextTokens(usage.usedTokens)} of {formatContextTokens(usage.contextWindow)} tokens
+        {usage.observedAt ? <> · updated {timeAgo(usage.observedAt)}</> : null}
       </p>
       <Bar percent={percent} level={level} className="mt-2 w-full" />
       {level !== "normal" ? (

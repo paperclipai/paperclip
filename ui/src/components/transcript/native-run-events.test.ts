@@ -1226,6 +1226,32 @@ describe("context compaction", () => {
     );
   });
 
+  it("keeps every compaction in a run even when the provider reuses its id", () => {
+    const compacted = (seq: number) => event(seq, "context.compacted", {
+      schema: "paperclip.context.compacted.v1",
+      compactionId: "thread-1",
+      reason: "provider",
+      preTokens: null,
+      postTokens: null,
+      sameSession: true,
+    });
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 230_000),
+      compacted(2),
+      compacted(3),
+      usage(4, 40_000),
+      usage(5, 235_000),
+      compacted(6),
+      usage(7, 36_000),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const markers = items.filter((item) => item.kind === "marker" && item.variant === "context_compacted");
+    expect(markers.map((item) => item.kind === "marker" ? item.detail : null)).toEqual([
+      "230k → 40k tokens",
+      "235k → 36k tokens",
+    ]);
+  });
+
   it("keeps the divider when the provider reports no sizes", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "context.compacted", {

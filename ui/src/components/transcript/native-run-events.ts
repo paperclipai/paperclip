@@ -815,6 +815,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   // "before" size from the last report and its "after" size from the next.
   let latestContextUsedTokens: number | null = null;
   let awaitingPostCompaction: Record<string, unknown> | null = null;
+  let lastCompaction: Record<string, unknown> | null = null;
+  let usageSinceLastCompaction = false;
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -840,6 +842,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (event.eventType === "item.completed" && payload.kind === "usage") {
       const context = contextUsageFromUsagePayload(payload.usage);
       if (context) {
+        usageSinceLastCompaction = true;
         if (awaitingPostCompaction && context.usedTokens < (latestContextUsedTokens ?? Infinity)) {
           awaitingPostCompaction.postTokens = context.usedTokens;
           awaitingPostCompaction = null;
@@ -849,12 +852,21 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "context.compacted" && payload.schema === "paperclip.context.compacted.v1") {
+      // A provider can report the same compaction twice (item start and end)
+      // with no usage between them. Later compactions always follow usage.
+      if (
+        lastCompaction
+        && lastCompaction.compactionId === payload.compactionId
+        && !usageSinceLastCompaction
+      ) continue;
+      usageSinceLastCompaction = false;
       const compaction: Record<string, unknown> = {
         ...payload,
         preTokens: finiteCount(payload.preTokens) ?? latestContextUsedTokens,
         postTokens: finiteCount(payload.postTokens),
       };
       if (compaction.postTokens === null) awaitingPostCompaction = compaction;
+      lastCompaction = compaction;
       entries.push({
         kind: "provider_activity",
         ts,

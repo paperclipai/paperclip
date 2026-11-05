@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { RotateCw } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueContextUsage } from "@paperclipai/shared";
 import { issuesApi } from "../../api/issues";
@@ -21,6 +22,7 @@ export function contextUsageFromIssue(value: IssueContextUsage): ContextUsage {
         }
       : null,
     costUsd: value.costUsd,
+    observedAt: value.observedAt,
     compactions: value.compactions,
   };
 }
@@ -49,10 +51,24 @@ export function IssueContextUsageRow({
     if (wasActive.current && !hasActiveRun) void refetch();
     wasActive.current = hasActiveRun;
   }, [hasActiveRun, refetch]);
-  if (!query.data) return null;
+  const retry = query.isError ? (
+    <button
+      type="button"
+      onClick={() => void refetch()}
+      disabled={query.isFetching}
+      className="flex items-center gap-1 rounded-md px-1 text-xs text-destructive hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      data-testid="context-usage-retry"
+      title="Retry loading the context window"
+    >
+      <RotateCw className="size-3" aria-hidden />
+      {query.data ? "Retry" : "Couldn't load. Retry"}
+    </button>
+  ) : null;
+  if (!query.data) return retry ? <PropertyRow label="Context">{retry}</PropertyRow> : null;
   return (
     <PropertyRow label="Context">
       <ContextUsageMeter usage={contextUsageFromIssue(query.data)} />
+      {retry}
     </PropertyRow>
   );
 }

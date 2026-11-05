@@ -1,10 +1,14 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import type { IssueContextUsage } from "@paperclipai/shared";
 
-/** Recent runs searched for the latest context measurement. */
-const RECENT_RUN_LIMIT = 10;
+/**
+ * Recent runs of the assignee searched for its current session. A session is
+ * reused across consecutive runs, so a short window is enough and keeps the
+ * event lookups bounded to a few runs.
+ */
+const RECENT_RUN_LIMIT = 3;
 
 function count(value: unknown): number | null {
   const parsed = typeof value === "string" ? Number(value) : value;
@@ -16,25 +20,46 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Reads the most recent provider-reported context occupancy for a task's
- * agent session. Returns null until a harness reports a context window.
+ * Reads the most recent provider-reported context occupancy for the current
+ * agent session on a task. Only the assignee's newest session counts: after a
+ * reassignment or a fresh session, older readings are not returned. Returns
+ * null until that session reports a context window.
  */
 export async function issueContextUsage(
   db: Db,
   companyId: string,
-  issueId: string,
+  issue: { id: string; assigneeAgentId: string | null },
 ): Promise<IssueContextUsage | null> {
+  if (!issue.assigneeAgentId) return null;
   const runs = await db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId),
-      or(eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.nativeIssueId, issueId)),
+      eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+      or(eq(heartbeatRuns.issueId, issue.id), eq(heartbeatRuns.nativeIssueId, issue.id)),
     ))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
     .limit(RECENT_RUN_LIMIT);
   if (runs.length === 0) return null;
   const runIds = runs.map((run) => run.id);
+  const sessionIdSql = sql<string | null>`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'normalizedSessionId'`;
+
+  // The newest session the assignee reported for this task.
+  const [current] = await db
+    .select({ sessionId: sessionIdSql })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.companyId, companyId),
+      inArray(heartbeatRunEvents.runId, runIds),
+      isNotNull(sessionIdSql),
+    ))
+    .orderBy(desc(heartbeatRunEvents.createdAt), desc(heartbeatRunEvents.id))
+    .limit(1);
+  const sessionId = current?.sessionId ?? null;
+  if (!sessionId) return null;
+  const inSession = sql`${sessionIdSql} = ${sessionId}`;
+
   const usagePayload = sql`${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload'`;
   const [latest] = await db
     .select({
@@ -42,13 +67,13 @@ export async function issueContextUsage(
       agentId: heartbeatRunEvents.agentId,
       createdAt: heartbeatRunEvents.createdAt,
       usage: sql<unknown>`${usagePayload} -> 'usage'`,
-      sessionId: sql<string | null>`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'normalizedSessionId'`,
     })
     .from(heartbeatRunEvents)
     .where(and(
       eq(heartbeatRunEvents.companyId, companyId),
       inArray(heartbeatRunEvents.runId, runIds),
       eq(heartbeatRunEvents.eventType, "item.completed"),
+      inSession,
       sql`${usagePayload} ->> 'kind' = 'usage'`,
       sql`${usagePayload} -> 'usage' ? 'context'`,
     ))
@@ -68,9 +93,7 @@ export async function issueContextUsage(
       eq(heartbeatRunEvents.companyId, companyId),
       inArray(heartbeatRunEvents.runId, runIds),
       eq(heartbeatRunEvents.eventType, "context.compacted"),
-      latest.sessionId
-        ? sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'normalizedSessionId' = ${latest.sessionId}`
-        : sql`true`,
+      inSession,
     ));
 
   const total = record(usage?.total);
@@ -81,7 +104,7 @@ export async function issueContextUsage(
   return {
     runId: latest.runId,
     agentId: latest.agentId,
-    sessionId: latest.sessionId,
+    sessionId,
     usedTokens,
     windowTokens,
     observedAt: latest.createdAt.toISOString(),

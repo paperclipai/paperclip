@@ -39,7 +39,7 @@ PRP records ordered, replayable execution evidence. It is not the model's Paperc
 | `session` | Provider-neutral session open, resume, reconciliation, close, and failure. | `session.starting`<br>`session.started`<br>`session.resuming`<br>`session.resumed`<br>`session.reconciled`<br>`session.updated`<br>`session.closed`<br>`session.failed` | 8 |
 | `turn` | Model turn submission through terminal turn disposition. | `turn.submitted`<br>`turn.accepted`<br>`turn.started`<br>`turn.completed`<br>`turn.failed`<br>`turn.interrupted`<br>`turn.cancelled` | 7 |
 | `item` | Provider-neutral model/tool item lifecycle. | `item.started`<br>`item.delta`<br>`item.completed`<br>`item.failed` | 4 |
-| `usage` | Provider/model-attributed usage and accounting boundaries, plus optional context-window occupancy (`context.usedTokens` of `context.windowTokens`). | `usage.reported` | 1 |
+| `usage` | Provider/model-attributed usage and accounting boundaries. | `usage.reported` | 1 |
 | `semantic_tool` | Canonical authorized Paperclip tool input and result evidence. | `semantic_tool.input`<br>`semantic_tool.result`<br>`semantic_tool.reconciled` | 3 |
 | `mcp_app` | MCP App discovery, initialization, tool, action, host-context, and teardown evidence. | `mcp_app.discovered`<br>`mcp_app.resource.resolved`<br>`mcp_app.initializing`<br>`mcp_app.ready`<br>`mcp_app.tool_input`<br>`mcp_app.tool_result`<br>`mcp_app.action.requested`<br>`mcp_app.action.resolved`<br>`mcp_app.host_context.changed`<br>`mcp_app.failed`<br>`mcp_app.teardown` | 11 |
 | `runtime_request` | Runtime permission/input request lifecycle. | `runtime_request.created`<br>`runtime_request.resolved`<br>`runtime_request.expired`<br>`runtime_request.cancelled` | 4 |

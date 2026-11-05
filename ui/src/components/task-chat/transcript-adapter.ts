@@ -913,16 +913,8 @@ export function transcriptToTaskChatItems(
       }
       case "provider_activity": {
         if (entry.eventType === "context.compacted") {
-          const compactionId = String(entry.payload.compactionId ?? i);
-          const key = `compaction:${compactionId}`;
-          const marker = contextCompactedMarker(entry, `${runId}:compaction:${compactionId}`);
-          const existingIndex = protocolIndexByKey.get(key);
-          if (existingIndex == null) {
-            items.push(marker);
-            protocolIndexByKey.set(key, items.length - 1);
-          } else {
-            items[existingIndex] = marker;
-          }
+          // One entry per compaction; producers may reuse a thread-scoped id.
+          items.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${i}`));
           resetInline();
           break;
         }

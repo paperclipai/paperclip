@@ -392,7 +392,7 @@ export function activityRoutes(db: Db) {
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(req.params.id as string), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    res.json(await issueContextUsage(db, issue.companyId, issue.id));
+    res.json(await issueContextUsage(db, issue.companyId, issue));
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {

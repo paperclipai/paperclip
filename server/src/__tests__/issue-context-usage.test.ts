@@ -27,7 +27,7 @@ suite("issue context usage", () => {
       { id: issueId, companyId, title: "Context", status: "in_progress", assigneeAgentId: agentId },
       { id: otherIssueId, companyId, title: "Other", status: "in_progress", assigneeAgentId: agentId },
     ]);
-    expect(await issueContextUsage(db, companyId, issueId)).toBeNull();
+    expect(await issueContextUsage(db, companyId, { id: issueId, assigneeAgentId: agentId })).toBeNull();
 
     const runId = randomUUID(), otherRunId = randomUUID();
     await db.insert(heartbeatRuns).values([
@@ -52,7 +52,8 @@ suite("issue context usage", () => {
         createdAt: new Date("2026-11-05T10:00:04Z") },
     ]);
 
-    expect(await issueContextUsage(db, companyId, issueId)).toMatchObject({
+    const issue = { id: issueId, assigneeAgentId: agentId };
+    expect(await issueContextUsage(db, companyId, issue)).toMatchObject({
       runId,
       agentId,
       sessionId: "session-a",
@@ -62,6 +63,21 @@ suite("issue context usage", () => {
       costUsd: null,
       compactions: 1,
     });
-    expect(await issueContextUsage(db, randomUUID(), issueId)).toBeNull();
+    expect(await issueContextUsage(db, randomUUID(), issue)).toBeNull();
+    // Another assignee's session never shows through.
+    expect(await issueContextUsage(db, companyId, { id: issueId, assigneeAgentId: randomUUID() })).toBeNull();
+    expect(await issueContextUsage(db, companyId, { id: issueId, assigneeAgentId: null })).toBeNull();
+
+    // A newer run that starts a fresh session hides the old session's reading
+    // until the new session reports its own context.
+    const freshRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: freshRunId, companyId, agentId, scopeKind: "issue", issueId, status: "running",
+      createdAt: new Date("2026-11-05T11:00:00Z") });
+    await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 1, eventType: "turn.started",
+      payload: prp(freshRunId, "session-c", "turn.started", {}), createdAt: new Date("2026-11-05T11:00:01Z") });
+    expect(await issueContextUsage(db, companyId, issue)).toBeNull();
+    await db.insert(heartbeatRunEvents).values({ ...base, runId: freshRunId, seq: 2, eventType: "item.completed",
+      payload: prp(freshRunId, "session-c", "item.completed", usage(12_000)), createdAt: new Date("2026-11-05T11:00:02Z") });
+    expect(await issueContextUsage(db, companyId, issue)).toMatchObject({ sessionId: "session-c", usedTokens: 12_000, compactions: 0 });
   });
 });
