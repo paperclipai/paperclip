@@ -35,6 +35,19 @@ describe("unescapeIntrawordUnderscores", () => {
     expect(unescapeIntrawordUnderscores("`keep\\_this` and fix\\_this")).toBe("`keep\\_this` and fix_this");
   });
 
+  it("keeps a fence open across deeper quote markers and closes it with its container", () => {
+    // A top-level fence whose content has a quoted fence-like line stays code.
+    const topLevel = "```\n> ```\nkeep\\_this\n```\nfix\\_this";
+    expect(unescapeIntrawordUnderscores(topLevel)).toBe("```\n> ```\nkeep\\_this\n```\nfix_this");
+    // A quoted fence ends with its blockquote; a later bare fence opens new code.
+    const quoted = "> ```\n> keep\\_this\n\n```\nkeep\\_too\n```\nfix\\_this";
+    expect(unescapeIntrawordUnderscores(quoted)).toBe("> ```\n> keep\\_this\n\n```\nkeep\\_too\n```\nfix_this");
+  });
+
+  it("opens a code span after an escaped backslash", () => {
+    expect(unescapeIntrawordUnderscores("\\\\`snake\\_case` then fix\\_this")).toBe("\\\\`snake\\_case` then fix_this");
+  });
+
   it("treats escaped or unmatched backticks as text", () => {
     expect(unescapeIntrawordUnderscores("A literal \\` then snake\\_case")).toBe("A literal \\` then snake_case");
     expect(unescapeIntrawordUnderscores("An unmatched ` then snake\\_case")).toBe("An unmatched ` then snake_case");
