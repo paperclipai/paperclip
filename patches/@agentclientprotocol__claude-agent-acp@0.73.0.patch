@@ -1,8 +1,8 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a50..16b402e 100644
+index 0214a50..aa6c7b6 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2490,8 +2490,38 @@ export class ClaudeAcpAgent {
+@@ -2490,8 +2490,59 @@ export class ClaudeAcpAgent {
                                  break;
                              }
                              case "hook_started":
@@ -12,6 +12,26 @@ index 0214a50..16b402e 100644
 +                                // on session_info_update `_meta` (no title/updatedAt change).
 +                                // Output is bounded; the runner derives the outcome.
 +                                const bounded = (value) => typeof value === "string" ? value.slice(0, 4000) : undefined;
++                                // Read the hook's JSON decision from the full stdout before the
++                                // display text is bounded, so a long reason cannot hide a block.
++                                const hookDecision = (stdout) => {
++                                    if (typeof stdout !== "string" || !stdout.trim().startsWith("{")) return undefined;
++                                    let parsed;
++                                    try { parsed = JSON.parse(stdout); } catch { return undefined; }
++                                    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
++                                    const specific = parsed.hookSpecificOutput && typeof parsed.hookSpecificOutput === "object" ? parsed.hookSpecificOutput : {};
++                                    const decision = {
++                                        ...(typeof parsed.continue === "boolean" ? { continue: parsed.continue } : {}),
++                                        ...(typeof parsed.stopReason === "string" ? { stopReason: bounded(parsed.stopReason) } : {}),
++                                        ...(typeof parsed.decision === "string" ? { decision: bounded(parsed.decision) } : {}),
++                                        ...(typeof parsed.reason === "string" ? { reason: bounded(parsed.reason) } : {}),
++                                        ...(typeof parsed.systemMessage === "string" ? { systemMessage: bounded(parsed.systemMessage) } : {}),
++                                        ...(typeof specific.permissionDecision === "string" ? { permissionDecision: bounded(specific.permissionDecision) } : {}),
++                                        ...(typeof specific.permissionDecisionReason === "string" ? { permissionDecisionReason: bounded(specific.permissionDecisionReason) } : {}),
++                                        ...(typeof specific.additionalContext === "string" ? { additionalContext: bounded(specific.additionalContext) } : {}),
++                                    };
++                                    return Object.keys(decision).length > 0 ? decision : undefined;
++                                };
 +                                await sendUpdate({
 +                                    sessionId: message.session_id,
 +                                    update: {
@@ -29,6 +49,7 @@ index 0214a50..16b402e 100644
 +                                                        output: bounded(message.output),
 +                                                        stdout: bounded(message.stdout),
 +                                                        stderr: bounded(message.stderr),
++                                                        decision: hookDecision(message.stdout),
 +                                                    } : {}),
 +                                                },
 +                                            },
@@ -42,7 +63,7 @@ index 0214a50..16b402e 100644
                              case "files_persisted":
                                  break;
                              case "task_progress":
-@@ -2922,9 +2952,19 @@ export class ClaudeAcpAgent {
+@@ -2922,9 +2973,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -65,7 +86,7 @@ index 0214a50..16b402e 100644
                                      },
                                  });
                              }
-@@ -5311,14 +5351,22 @@ export class ClaudeAcpAgent {
+@@ -5311,14 +5372,22 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -89,7 +110,7 @@ index 0214a50..16b402e 100644
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5377,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5398,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),

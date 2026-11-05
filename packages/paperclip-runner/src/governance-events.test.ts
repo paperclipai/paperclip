@@ -207,6 +207,20 @@ describe("Claude hook events (claude-agent-acp session_info_update _meta)", () =
       .toMatchObject({ outcome: "context", message: "Staging is frozen until 17:00 UTC." });
   });
 
+  it("keeps a JSON denial whose stdout was bounded for display", () => {
+    const reason = "Edit 0043 instead. ".repeat(400);
+    const full = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
+    expect(full.length).toBeGreaterThan(4000);
+    const payload = response({
+      stdout: full.slice(0, 4000),
+      decision: { permissionDecision: "deny", permissionDecisionReason: reason.slice(0, 4000) },
+    }).payload;
+    expect(payload).toMatchObject({ status: "blocked", outcome: "blocked" });
+    expect(String(payload.message)).toMatch(/^Edit 0043 instead\./);
+    expect(response({ stdout: JSON.stringify({ continue: true }).slice(0, 5), decision: { continue: false, stopReason: "Budget reached." } }).payload)
+      .toMatchObject({ outcome: "stopped", message: "Budget reached." });
+  });
+
   it("reads other failures and quiet passes", () => {
     expect(response({ outcome: "error", exitCode: 1, stderr: "op: command not found" }).payload)
       .toMatchObject({ status: "failed", outcome: "failed", message: "op: command not found" });

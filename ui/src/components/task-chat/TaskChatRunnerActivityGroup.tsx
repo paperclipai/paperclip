@@ -225,7 +225,8 @@ function itemAutoReview(item: Activity): TaskChatAutoReview | undefined {
 }
 
 function ActivityDetails({ item }: { item: Activity }) {
-  const autoReview = itemAutoReview(item);
+  // Protocol rows render their review inside TaskChatProtocolActivityDetails.
+  const autoReview = item.kind === "tool" ? item.autoReview : undefined;
   return (
     <>
       <ActivityDetailsBody item={item} />

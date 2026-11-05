@@ -270,7 +270,23 @@ export function claudeHookPayload(hookValue: unknown): { started: boolean; paylo
   const toolName = matcher && matcher !== eventName ? clip(matcher, NAME_LIMIT) : null;
   const stdout = text(hook.stdout);
   const stderr = text(hook.stderr).trim();
-  const json = parsedHookJson(stdout);
+  // The adapter reads the decision from the complete stdout before it bounds
+  // display text; prefer that, since bounded JSON may no longer parse.
+  const forwarded = record(hook.decision);
+  const json = Object.keys(forwarded).length > 0
+    ? {
+        continue: forwarded.continue,
+        stopReason: forwarded.stopReason,
+        decision: forwarded.decision,
+        reason: forwarded.reason,
+        systemMessage: forwarded.systemMessage,
+        hookSpecificOutput: {
+          permissionDecision: forwarded.permissionDecision,
+          permissionDecisionReason: forwarded.permissionDecisionReason,
+          additionalContext: forwarded.additionalContext,
+        },
+      }
+    : parsedHookJson(stdout);
   const specific = record(json?.hookSpecificOutput);
   const exitCode = nonNegativeInteger(hook.exitCode);
   const feedbackEvent = CLAUDE_FEEDBACK_EVENTS.has(eventName);
