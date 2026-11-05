@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn matches_the_recorded_codex_0_160_session() {
         let recorded: Vec<Value> = serde_json::from_str(include_str!(
-            "../../../../src/__fixtures__/codex-0.160-hooks-auto-review.json"
+            "../../../../test-fixtures/governance/codex-0.160-hooks-auto-review.json"
         ))
         .unwrap();
         let mut blocked = 0;

@@ -236,7 +236,7 @@ describe("recorded Codex 0.160 session with hooks and auto-review", () => {
   it("maps every hook and review notification to a valid, distinct governance event", async () => {
     const { readFile } = await import("node:fs/promises");
     const recorded = JSON.parse(
-      await readFile(new URL("./__fixtures__/codex-0.160-hooks-auto-review.json", import.meta.url), "utf8"),
+      await readFile(new URL("../test-fixtures/governance/codex-0.160-hooks-auto-review.json", import.meta.url), "utf8"),
     ) as Array<{ method: string; params: unknown }>;
     const events = recorded
       .filter((entry) => entry.method.startsWith("hook/") || entry.method.startsWith("item/autoApprovalReview/"))
