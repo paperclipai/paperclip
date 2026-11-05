@@ -1,6 +1,6 @@
 import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
-import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "../remote-workspace-transport.js";
+import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -45,7 +45,7 @@ function workspaceSyncFailure(
     status: "failed" as const,
     exitCode: 1,
     stderr: cause ? `${code}\n${cause}\n` : `${code}\n`,
-    metadata: { workspaceSync: { code } },
+    metadata: { workspaceSync: cause ? { code, cause } : { code } },
   };
 }
 
@@ -192,11 +192,11 @@ export async function attemptNativeWorkspaceFinalization(input: {
             metadata: { remoteWorkspace: saved } };
         } catch (error) {
           await ownership.assertHeld();
-          // The code keeps the retry policy. A full sandbox disk is named on the
-          // operation, because no retry can save the workspace until space is freed.
-          const diskFull = error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
+          // The code keeps the retry policy. The redacted remote cause (for
+          // example a full sandbox disk or the failed capture step) is named on
+          // the operation; other error text stays off the record.
           return workspaceSyncFailure(classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
-            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed", diskFull ? REMOTE_WORKSPACE_SANDBOX_DISK_FULL : undefined);
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed", remoteWorkspaceFailureCause(error) ?? undefined);
         }
       }
       if (nativeWorkspaceSync) {

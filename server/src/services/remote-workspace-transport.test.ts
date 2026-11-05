@@ -393,7 +393,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() };
     execute.mockResolvedValueOnce(failure);
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
     execute.mockResolvedValueOnce({ ...failure, timedOut: true, stderr: gitOperation });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper \(configured timeout 300000ms\)$/);
@@ -435,7 +435,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       startedAt: new Date().toISOString(),
       stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH" });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
   });
 
   it.each(["split", "one-shot"] as const)("preserves a Git child disk failure with %s output without its private text", async outputMode => {
@@ -467,7 +467,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     execute.mockResolvedValueOnce({ exitCode: 1, stdout, stderr, timedOut: false, signal: null,
       pid: process.pid, startedAt: new Date().toISOString() });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
@@ -489,7 +489,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
             return restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(scratch, "restored"), archivePath,
               manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) });
           })();
-    await expect(request).rejects.toThrow(/^remote_workspace_operation_failed$/);
+    await expect(request).rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
     expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 2 : 1);
   });
 
@@ -510,6 +510,42 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace$/);
+  });
+
+  it.each(["split", "one-shot"] as const)("names the failing capture step without its private text with %s output", async outputMode => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    const bin = path.join(scratch, "controlled-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"),
+      "#!/bin/sh\nprintf '%s' 'fatal: SYNTHETIC_PRIVATE_GIT_PATH/secret.txt' >&2\nexit 128\n", { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` }, outputMode);
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe("remote_workspace_operation_failed: operation=capture exit=1; "
+      + "remote_workspace_capture_failed: stage=archive exit=128 program=git helper_exit=1");
+    expect(failure?.message).not.toContain("SYNTHETIC");
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+
+  it("names a remote command that ended by signal", async () => {
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: null as unknown as number, stdout: "", stderr: "", timedOut: false, signal: "SIGKILL",
+      pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=archive_helper signal=SIGKILL$/);
+  });
+
+  it.each([
+    "remote_workspace_capture_failed: stage=archive reason=SYNTHETIC/private/path",
+    "remote_workspace_capture_failed: stage=archive exit=128\nSYNTHETIC_PRIVATE",
+    "remote_workspace_capture_failed: stage=archive token=SYNTHETIC_PRIVATE",
+    "SYNTHETIC_PRIVATE remote_workspace_capture_failed: stage=archive exit=1",
+  ])("drops a sandbox cause outside the fixed grammar: %j", async stderr => {
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr, timedOut: false, signal: null,
+      pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=archive_helper exit=1$/);
   });
 
   it("captures and restores verified bytes with one-shot combined output", async () => {

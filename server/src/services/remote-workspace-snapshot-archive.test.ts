@@ -320,11 +320,11 @@ describe("portable remote workspace archives", () => {
     expect(await fs.readFile(archivePath, "utf8")).toBe("preexisting archive bytes\n");
     expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("retained source bytes\n");
   });
-  it("keeps an unrecognized real filesystem error private in the serialized capture helper", async () => {
+  it("names only the code of an unrecognized real filesystem error in the serialized capture helper", async () => {
     const helper = path.join(root, "archive.cjs"), archivePath = path.join(root, "snapshot.pcws");
     await fs.writeFile(helper, remoteWorkspaceArchiveScript());
     await expect(execute(process.execPath, [helper, "capture", path.join(root, "SYNTHETIC_PRIVATE_NAME".repeat(20)), archivePath], { env }))
-      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed" });
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_failed: code=ENAMETOOLONG syscall=lstat" });
     await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("preserves shallow repository boundaries and a nested managed checkout", async () => {
