@@ -538,8 +538,25 @@ describe("routine routes", () => {
     expect(mockRoutineService.update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "viewer", memberships: [{ companyId, membershipRole: "viewer", status: "active" }] },
+    { name: "inactive member", memberships: [{ companyId, membershipRole: "operator", status: "suspended" }] },
+    { name: "missing member", memberships: [] },
+  ])("hides responsibility editing from a $name even with tasks:assign", async ({ memberships }) => {
+    const app = await createApp({ type: "board", userId: "read-only-user", source: "session", isInstanceAdmin: false, companyIds: [companyId], memberships });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+
+    const detail = await request(app).get(`/api/routines/${routineId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it.each(["granted", "instance-admin", "local"])("allows responsibility changes for a %s operator", async (kind) => {
-    const app = await createApp({ type: "board", userId: "operator", source: kind === "local" ? "local_implicit" : "session", isInstanceAdmin: kind === "instance-admin", companyIds: [companyId] });
+    const app = await createApp({ type: "board", userId: "operator", source: kind === "local" ? "local_implicit" : "session", isInstanceAdmin: kind === "instance-admin", companyIds: [companyId], memberships: [{ companyId, membershipRole: kind === "granted" ? "operator" : "viewer", status: "active" }] });
     mockAccessService.canUser.mockResolvedValue(kind === "granted");
     mockRoutineService.getDetail.mockResolvedValue(routine);
     mockRoutineService.update.mockResolvedValue({ ...routine, responsibleUserId: "operator", previousResponsibleUserId: "actual-predecessor" });

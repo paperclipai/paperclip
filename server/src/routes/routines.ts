@@ -99,6 +99,11 @@ export function routineRoutes(
   async function canChangeResponsibleUser(req: Request, companyId: string) {
     if (req.actor.type !== "board") return false;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    // Match assertCompanyAccess's write restrictions even on this GET route.
+    if (Array.isArray(req.actor.memberships)) {
+      const membership = req.actor.memberships.find((item) => item.companyId === companyId);
+      if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") return false;
+    }
     return access.canUser(companyId, req.actor.userId, "tasks:assign");
   }
 
