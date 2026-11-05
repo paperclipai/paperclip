@@ -151,7 +151,7 @@ const support = await getEmbeddedPostgresTestSupport();
       ...definition, companyId: f.companyId, projectId: null, strategyType: "task_directory", cwd: f.workspace,
     }))).returning();
     const call = (tool: string, args: Record<string, unknown>) => f.authority.execute({ tool, arguments: args, callId: randomUUID() });
-    const listed = await call("list_workspaces", {}) as Array<{ id: string }>;
+    const { workspaces: listed } = await call("list_workspaces", {}) as { workspaces: Array<{ id: string }> };
     const candidates = new Set(rows.slice(0, 3).map(row => row.id));
     expect(listed.filter(row => rows.some(candidate => candidate.id === row.id)).map(row => row.id).sort()).toEqual([...candidates].sort());
     for (const row of rows) {
@@ -161,6 +161,44 @@ const support = await getEmbeddedPostgresTestSupport();
       if (candidates.has(row.id)) await expect(selection).resolves.toMatchObject({ kind: "scheduled" });
       else await expect(selection).rejects.toThrow("Workspace is unavailable or inaccessible");
     }
+  });
+  it("pages a large authorized workspace inventory without exceeding the Runner command bound", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const timestamp = new Date("2026-01-01T00:00:00Z");
+    const rows = await server.db.insert(executionWorkspaces).values(Array.from({ length: 2_000 }, (_, index) => ({
+      companyId: f.companyId, name: `Workspace ${index}`, mode: "shared_workspace", strategyType: "task_directory",
+      cwd: `/tmp/${"repository/".repeat(20)}${index}`, lastUsedAt: timestamp, createdAt: timestamp,
+    }))).returning({ id: executionWorkspaces.id });
+    await server.db.insert(executionWorkspaces).values({ companyId: f.companyId, name: "Archived", mode: "shared_workspace",
+      strategyType: "task_directory", cwd: f.workspace, status: "archived" });
+    const [privateTask] = await server.db.insert(issues).values({ companyId: f.companyId, title: "Private source",
+      visibility: "private", status: "backlog" }).returning({ id: issues.id });
+    await server.db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: privateTask.id,
+      name: "Private workspace", mode: "shared_workspace", strategyType: "task_directory", cwd: f.workspace });
+    const foreign = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    await server.db.insert(executionWorkspaces).values({ companyId: foreign.companyId, name: "Foreign", mode: "shared_workspace",
+      strategyType: "task_directory", cwd: foreign.workspace });
+    type Page = { workspaces: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null };
+    const list = (args: Record<string, unknown>) => f.authority.execute({ tool: "list_workspaces", arguments: args, callId: randomUUID() }) as Promise<Page>;
+    let page = await list({});
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(128 * 1024);
+    expect(page).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+    const seen = page.workspaces.map(workspace => workspace.id);
+    const first = page;
+    expect(await list({})).toEqual(first);
+    while (page.nextCursor) {
+      const cursor = page.nextCursor;
+      page = await list({ cursor, limit: 100 });
+      expect(page.nextCursor === null || page.nextCursor > cursor).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(128 * 1024);
+      expect(page.returnedCount).toBe(page.workspaces.length);
+      seen.push(...page.workspaces.map(workspace => workspace.id));
+    }
+    expect(page.hasMore).toBe(false);
+    expect(seen).toEqual(rows.map(row => row.id).sort());
+    expect(new Set(seen).size).toBe(rows.length);
+    await expect(list({ limit: 1_000 })).rejects.toThrow();
+    await expect(list({ cursor: "not-a-workspace-id" })).rejects.toThrow();
   });
   it("keeps source authorization on projectless task workspace inspection, selection, and preparation", async () => {
     const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });

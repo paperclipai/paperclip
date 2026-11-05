@@ -4,11 +4,24 @@ import { callTaskWorkspaceTool } from "../services/task-workspace-tools.js";
 afterEach(() => vi.unstubAllGlobals());
 const base = { apiUrl: "https://paperclip.example/api", token: "run-token", companyId: "company", issueId: "task" };
 describe("task workspace semantic transport", () => {
+  it("requests a bounded workspace page instead of returning the entire inventory", async () => {
+    const inventory = Array.from({ length: 8_000 }, (_, i) => ({ id: `workspace-${i}`, name: `Workspace ${i}`, cwd: `/tmp/${"repository/".repeat(20)}${i}` }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const requestedLimit = new URL(url).searchParams.get("limit");
+      return Response.json(requestedLimit ? inventory.slice(0, Number(requestedLimit)) : inventory);
+    }));
+    const page = await callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} });
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(128 * 1024);
+    expect(page).toMatchObject({ workspaces: inventory.slice(0, 50), returnedCount: 50, limit: 50,
+      hasMore: true, nextCursor: "workspace-49" });
+  });
   it("discovers task-selectable workspaces instead of legacy isolated reuse candidates", async () => {
     const fetcher = vi.fn(async () => Response.json([{ id: "shared", mode: "shared_workspace" }]));
     vi.stubGlobal("fetch", fetcher);
-    await expect(callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} })).resolves.toEqual([{ id: "shared", mode: "shared_workspace" }]);
-    expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/companies/company/execution-workspaces?summary=true&selectableForTask=true", expect.objectContaining({ method: "GET" })]);
+    await expect(callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} })).resolves.toEqual({
+      workspaces: [{ id: "shared", mode: "shared_workspace" }], limit: 50, returnedCount: 1, hasMore: false, nextCursor: null,
+    });
+    expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/companies/company/execution-workspaces?summary=true&selectableForTask=true&limit=51", expect.objectContaining({ method: "GET" })]);
   });
   it("uses the normal bound task routes without passing caller identities or interrupt requests", async () => {
     const fetcher = vi.fn(async () => Response.json({ kind: "scheduled", applies: "next_normal_admission" }));

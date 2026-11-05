@@ -1,4 +1,4 @@
-import { prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
+import { listTaskWorkspacesSchema, prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { executionWorkspaceRepositories, type Db } from "@paperclipai/db";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -35,9 +35,15 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   let route = `/issues/${input.issueId}/workspace`;
   let method = "GET";
   let body: unknown;
+  const page = input.name === "list_workspaces" ? listTaskWorkspacesSchema.parse(input.arguments) : null;
   switch (input.name) {
     case "get_workspace": break;
-    case "list_workspaces": route = `/companies/${input.companyId}/execution-workspaces?summary=true&selectableForTask=true`; break;
+    case "list_workspaces": {
+      const query = new URLSearchParams({ summary: "true", selectableForTask: "true", limit: String(page!.limit + 1) });
+      if (page!.cursor) query.set("cursor", page!.cursor);
+      route = `/companies/${input.companyId}/execution-workspaces?${query}`;
+      break;
+    }
     case "select_workspace": method = "PUT"; body = selectTaskWorkspaceSchema.parse(input.arguments); break;
     case "prepare_repository": method = "POST"; route += "/repositories"; body = prepareWorkspaceRepositorySchema.parse(input.arguments); break;
     default: throw badRequest("Unknown workspace tool");
@@ -45,6 +51,12 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${route}`, { method, headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Workspace tool failed (${response.status})`);
+  if (page) {
+    const workspaces = result.slice(0, page.limit);
+    const hasMore = result.length > page.limit;
+    return { workspaces, limit: page.limit, returnedCount: workspaces.length, hasMore,
+      nextCursor: hasMore ? workspaces.at(-1).id : null };
+  }
   if (input.name === "prepare_repository") {
     const { operationId, ...rest } = result;
     return { ...rest, ...(result.repository ? { repository: repositoryView(result.repository) } : {}), preparationId: operationId,

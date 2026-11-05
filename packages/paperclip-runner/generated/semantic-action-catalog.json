@@ -2839,21 +2839,67 @@
       "planning",
       "skill_test"
     ],
-    "description": "List authorized reusable workspaces. A project is optional; choosing a workspace does not assign a project.",
+    "description": "List authorized reusable workspaces in ascending workspace-ID order. Returns workspaces, limit, returnedCount, hasMore and nextCursor. Follow nextCursor until null before treating the inventory as complete. Each page checks current access; concurrent changes require a fresh scan. Choosing a workspace does not assign a project.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "cursor": {
+          "description": "The nextCursor from the previous page. Omit for the first page.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "required": [],
       "type": "object"
     },
     "operationId": "list_workspaces",
     "outputSchema": {
-      "items": {
-        "additionalProperties": true,
-        "type": "object"
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "nextCursor": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "returnedCount": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspaces": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
       },
-      "type": "array"
+      "required": [
+        "workspaces",
+        "limit",
+        "returnedCount",
+        "hasMore",
+        "nextCursor"
+      ],
+      "type": "object"
     },
     "placement": "optional",
     "requiredClaims": [],
