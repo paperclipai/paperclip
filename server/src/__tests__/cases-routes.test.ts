@@ -985,6 +985,18 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(detail.body.workIssue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
     expect(JSON.stringify(detail.body.workIssue)).not.toContain("Hidden case blocker");
     expect(JSON.stringify(detail.body.workIssue)).not.toContain(blocker!.id);
+
+    // Related-task links and the activity feed row draw from the same state.
+    await db.insert(caseIssueLinks).values({ companyId: company.id, caseId: record!.id, issueId: work!.id, role: "reference" });
+    const withLink = await request(app(boardActor)).get(`/api/cases/${record!.id}`).expect(200);
+    expect(withLink.body.issueLinks[0].issue).toMatchObject({ id: work!.id, blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+
+    await db.insert(caseEvents).values({ companyId: company.id, caseId: record!.id, kind: "issue_linked",
+      actorType: "system", payload: { issueId: work!.id } });
+    const events = await request(app(boardActor)).get(`/api/cases/${record!.id}/events`).expect(200);
+    const linked = events.body.find((event: { kind: string }) => event.kind === "issue_linked");
+    expect(linked.issue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+    expect(JSON.stringify(linked.issue)).not.toContain("Hidden case blocker");
   });
   it("enriches case pages and detail with current work in bounded batch queries", async () => {
     await enableCases();

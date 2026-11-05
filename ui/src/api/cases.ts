@@ -102,6 +102,8 @@ export interface CaseIssueLink {
     identifier: string;
     title: string;
     status: string;
+    /** Glyph-only blocker state; present for blocked tasks. */
+    blockerAttention?: IssueBlockerAttention;
   };
 }
 
@@ -185,6 +187,8 @@ export interface CaseAttributionIssue {
   identifier: string;
   title: string;
   status: string;
+  /** Glyph-only blocker state; present for blocked tasks. */
+  blockerAttention?: IssueBlockerAttention;
 }
 
 export interface CaseEvent {
