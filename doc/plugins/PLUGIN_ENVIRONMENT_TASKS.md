@@ -46,6 +46,18 @@ See [the schemas](../../packages/plugins/sdk/src/environment-tasks.ts) for all f
 | `stop` | `accepted` | Stop the task and its descendants. Fence a delayed submission. |
 | `complete` | `accepted` | Release task resources after Core saves required results. |
 
+For a refused `submit` with `resumeFrom`, a driver can throw an error with
+`status: 409`, `code: "SESSION_STATE_UNAVAILABLE"`, and `reason` set to
+`"unresolved_operation"` or `"source_state_unverified"`. The SDK worker and
+Core preserve only these closed diagnostic fields. They replace the provider
+message and omit provider identities and text. Read the validated RPC envelope
+with `readEnvironmentTaskErrorDiagnostic`.
+
+This diagnostic does not authorize a retry, replacement, cleanup or state
+change. Other task failures keep the existing generic error. An older SDK
+does not carry this diagnostic. Operation and call identities, when needed,
+must come from Core's own retained records.
+
 Each result must contain the task ID from the request. Core rejects a result
 with a different ID or result kind. A WSS URL must have no user information,
 query, or fragment. Return authentication in the secret headers.
