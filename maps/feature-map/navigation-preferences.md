@@ -102,8 +102,9 @@ switches. Inbox archive does not remove the task from recent history.
 
 ### Personal Coordinator workspace
 
-Settings → Experimental → Coordinator workspace opts the current person into the
-experimental shell; off restores classic. The server saves the choice by user across
+Coordinator is the default workspace for new people; existing people retain their
+workspace on upgrade. Settings → Experimental → Coordinator workspace can change
+the personal choice; off restores classic. The server saves it by user across
 companies, separate from instance feature flags. The local-trusted identity is shared
 Local Board, not evidence of multi-user isolation.
 Agent Chat remains an independent instance prerequisite. When it is off, the
