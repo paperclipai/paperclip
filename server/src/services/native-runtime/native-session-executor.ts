@@ -2,6 +2,7 @@ import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnost
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -352,6 +353,10 @@ type NativeSessionStartup = {
   executionLeaseRenewal?: NativeExecutionLeaseRenewal;
   /** A fresh claim whose preparation failed before any provider turn. */
   unstartedClaim?: { leaseOwner: string; attempt: number };
+  /** A provider session handle was published; a turn may have followed it. */
+  sessionPublished?: boolean;
+  /** Restart recovery reattaches a provider that may already have worked. */
+  providerWorkMayPrecede?: boolean;
   executionContext?: NativeExecutionContext;
   settled: Promise<void>;
   settle: () => void;
@@ -6752,10 +6757,12 @@ export function shouldRestoreNativeHarnessBackupIntoSandbox(input: {
   reusableLeaseConfigured: boolean | null | undefined;
   backupAvailable: boolean;
   migratedSessionContinuation?: boolean;
+  retiredSourceContinuation?: boolean;
 }): boolean {
   return (
     input.acquisitionOutcome === "created" &&
-    (input.reusableLeaseConfigured === false || input.migratedSessionContinuation === true) &&
+    (input.reusableLeaseConfigured === false || input.migratedSessionContinuation === true
+      || input.retiredSourceContinuation === true) &&
     input.backupAvailable
   );
 }
@@ -7325,15 +7332,7 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
-const PROVIDER_DURABLE_EVENT_TYPES = new Set([
-  "harness.ready",
-  "session.started",
-  "session.resumed",
-  "session.updated",
-  "turn.started",
-  "provider.event",
-  "provider.rpc_result",
-]);
+const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
 type NativeRecoveryMode =
   "bootstrap_retry" | "exact_checkpoint_resume" | "ambiguous_state";
@@ -7744,6 +7743,8 @@ export function cancelNativeSession(
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
     cancellationRequestId?: string;
+    /** Internal: the startup owner fenced this Stop before any provider turn. */
+    beforeProviderTurn?: boolean;
   },
 ): Promise<{
   dispatched: boolean;
@@ -7759,6 +7760,8 @@ export async function cancelNativeSession(
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
     cancellationRequestId?: string;
+    /** Internal: the startup owner fenced this Stop before any provider turn. */
+    beforeProviderTurn?: boolean;
   },
 ): Promise<
   | boolean
@@ -7784,7 +7787,8 @@ export async function cancelNativeSession(
 async function performNativeCancellation(
   runId: string,
   reason: string,
-  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean; cancellationRequestId?: string },
+  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean; cancellationRequestId?: string;
+    beforeProviderTurn?: boolean },
 ) {
   const runStop = (options?.scope ?? "run") === "run";
   let decision: NativeStatusDecision | null = null;
@@ -8103,6 +8107,11 @@ async function performNativeCancellation(
   const startup = runStop && !activeNativeSessions.has(runId) ? nativeSessionStartups.get(runId) : undefined;
   let settleStartupCancellation: (() => void) | undefined;
   let settleActiveCancellation: (() => void) | undefined;
+  // Proof for the acknowledgement: this Stop reached startup before it
+  // published a provider handle. Publication then fences that handle, so no
+  // provider turn can follow. A reattached provider may already have worked.
+  const beforeProviderTurn = runStop && (options?.beforeProviderTurn === true || Boolean(startup
+    && startup.sessionPublished !== true && startup.providerWorkMayPrecede !== true));
   if (startup) {
     startup.stopRequested = true;
     startup.executionContext?.abort(new Error("native_session_cancelled"));
@@ -8303,6 +8312,7 @@ async function performNativeCancellation(
                 decisionId,
                 acknowledgementAuditId,
                 acknowledgedAt: new Date().toISOString(),
+                ...(beforeProviderTurn ? { beforeProviderTurn: true } : {}),
               },
             },
             updatedAt: new Date(),
@@ -8484,6 +8494,7 @@ export async function executePaperclipNativeSession(input: {
   let settle!: () => void;
   const startup: NativeSessionStartup = {
     priorRestartDetach: nativeRunsDetachingForRestart.get(runId),
+    providerWorkMayPrecede: Boolean(input.restartRecovery),
     settled: new Promise<void>(resolve => { settle = resolve; }),
     settle: () => settle(),
     promise: new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; }),
@@ -10345,6 +10356,9 @@ async function executePaperclipNativeSessionWithinScope(
                 const active: ActiveNativeSession = { session, cancelRequested: false };
                 activeNativeSessions.set(input.execution.binding.runId, active);
                 const startup = nativeSessionStartups.get(input.execution.binding.runId);
+                const stopBeforeProviderTurn = startup?.stopRequested === true && startup.sessionPublished !== true
+                  && startup.providerWorkMayPrecede !== true;
+                if (startup) startup.sessionPublished = true;
                 startup?.resolve(active);
                 if (startup?.stopRequested) {
                   // Publication wakes the Stop caller; wait for its durable ACK
@@ -10363,7 +10377,8 @@ async function executePaperclipNativeSessionWithinScope(
                     )).limit(1);
                     const pendingStop = record(record(stopRun?.resultJson).nativeCancellation);
                     if (pendingStop.scope === "run" && pendingStop.dispatchState === "pending") {
-                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup", { db: input.db, scope: "run" });
+                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup",
+                        { db: input.db, scope: "run", beforeProviderTurn: stopBeforeProviderTurn });
                     }
                   } catch (error) {
                     // Best effort: the in-memory Stop below still fences this
@@ -14103,11 +14118,27 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
+  // A created lease may restore the backup when Paperclip destroyed its
+  // source sandbox and no provider work followed the checkpoint.
+  // The verified backup is reused by the restore, so files are hashed once.
+  let retiredSourceBackup: VerifiedHarnessBackup | null = null;
+  const retiredSourceBackupAuthorized = async (): Promise<boolean> => {
+    const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
+    const sessionId = nativeSessionKey(input.execution);
+    if (!backup || !sessionId) return false;
+    retiredSourceBackup = backup;
+    return retiredSourceAuthorizesNativeBackupRestore(input.db, {
+      companyId: input.execution.binding.companyId, currentRunId: input.execution.binding.runId,
+      normalizedSessionId: sessionId, manifest: backup.manifest,
+      manifestSha256: nativeHarnessBackupManifestSha256(readFileSync(resolve(backup.root, "manifest.json"))),
+    });
+  };
+
   const restoreVerifiedHarnessBackup = async () => {
     if (!remoteTarget || !remoteCommandRunner) {
       throw new Error("runner_harness_backup_unavailable");
     }
-    const backup = verifyNativeHarnessBackup({
+    const backup = retiredSourceBackup ?? verifyNativeHarnessBackup({
       root,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
@@ -14204,6 +14235,11 @@ async function createRunnerdBackendWithinSessionClaim(
                       "harness_state.bootstrap_claim",
                       claimUntouchedRemoteSession,
                     );
+                  const migratedSessionContinuation = sandboxLeaseAcquisition?.outcome === "created" && backupAvailable
+                    && remoteTarget.reusableLeaseConfigured === true && await canRestoreMigratedNativeSession(input.db, {
+                      ...input.execution.binding, workspaceId: input.execution.binding.executionWorkspaceId,
+                      sessionId: nativeSessionKey(input.execution), logicalCwd: input.execution.workspace.cwd, remoteCwd: remoteTarget.remoteCwd,
+                    });
                   const restoreIntoCreatedSandbox =
                     shouldRestoreNativeHarnessBackupIntoSandbox({
                       acquisitionOutcome:
@@ -14211,11 +14247,10 @@ async function createRunnerdBackendWithinSessionClaim(
                       reusableLeaseConfigured:
                         remoteTarget.reusableLeaseConfigured,
                       backupAvailable,
-                      migratedSessionContinuation: sandboxLeaseAcquisition?.outcome === "created" && backupAvailable
-                        && remoteTarget.reusableLeaseConfigured === true && await canRestoreMigratedNativeSession(input.db, {
-                          ...input.execution.binding, workspaceId: input.execution.binding.executionWorkspaceId,
-                          sessionId: nativeSessionKey(input.execution), logicalCwd: input.execution.workspace.cwd, remoteCwd: remoteTarget.remoteCwd,
-                        }),
+                      migratedSessionContinuation,
+                      // Migration already authorizes the restore; skip the second proof.
+                      retiredSourceContinuation: !migratedSessionContinuation && sandboxLeaseAcquisition?.outcome === "created"
+                        && backupAvailable && remoteTarget.reusableLeaseConfigured === true && await retiredSourceBackupAuthorized(),
                     });
                   await input.trace?.record({
                     name: "sandbox.lease.acquisition",

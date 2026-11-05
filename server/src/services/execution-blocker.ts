@@ -1,10 +1,10 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
-import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -126,13 +126,58 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
+// Runner startup lifecycle families: they open no turn. Every other event the
+// runner sourced counts as provider work, so a new or unlisted family keeps
+// the hold (fail closed). Server-side records without a source event (spans,
+// process identity, lifecycle) count only when they name turn or provider work.
+export const PROVIDER_STARTUP_EVENT_PREFIXES = ["harness.", "session.", "workspace.", "runtime.phase.",
+  "runtime.activity.", "provider.notice.", "auth.credentials.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
+  "mcp_app.resource.", "mcp_app.host_context.", "mcp_app.teardown", "mcp_app.failed"] as const;
+export const PROVIDER_STARTUP_EVENT_TYPES = ["run.attached", "run.detached"] as const;
+const SERVER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "run.result."] as const;
+const SERVER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
+
+const anyPrefix = (eventType: SQL, prefixes: readonly string[]) =>
+  sql.join(prefixes.map(prefix => sql`starts_with(${eventType}, ${prefix})`), sql` or `);
+const anyType = (eventType: SQL, types: readonly string[]) =>
+  sql`${eventType} in (${sql.join(types.map(type => sql`${type}`), sql`, `)})`;
+
+/** SQL truth for an event row (alias columns) that may prove provider turn work. */
+export function providerTurnWorkEventCondition(eventType: SQL, sourceEventId: SQL) {
+  return sql`((${sourceEventId} is not null and not (${anyType(eventType, PROVIDER_STARTUP_EVENT_TYPES)}
+      or ${anyPrefix(eventType, PROVIDER_STARTUP_EVENT_PREFIXES)}))
+    or ${anyType(eventType, SERVER_TURN_WORK_EVENT_TYPES)} or ${anyPrefix(eventType, SERVER_TURN_WORK_EVENT_PREFIXES)})`;
+}
+
+/**
+ * A Stop that the native startup owner fenced before it published a provider
+ * handle proves that no provider turn ran. The run's own durable record must
+ * agree: no turn, tool or provider event and no native result. `stopped` is
+ * the SQL alias of the stopped run.
+ */
+export function stoppedBeforeProviderTurnCondition() {
+  return sql`(stopped.status = 'cancelled' and stopped.runtime_mode = 'native'
+    and stopped.result_json->'nativeCancellation'->>'schema' = 'paperclip.native-cancellation.v1'
+    and stopped.result_json->'nativeCancellation'->>'runId' = stopped.id::text
+    and stopped.result_json->'nativeCancellation'->>'scope' = 'run'
+    and stopped.result_json->'nativeCancellation'->>'dispatchState' = 'acknowledged'
+    and stopped.result_json->'nativeCancellation'->'beforeProviderTurn' = 'true'::jsonb
+    and not exists (select 1 from ${heartbeatRunEvents} work
+      where work.company_id = stopped.company_id and work.run_id = stopped.id
+        and ${providerTurnWorkEventCondition(sql`work.event_type`, sql`work.source_event_id`)})
+    and not exists (select 1 from ${nativeRunResults} result
+      where result.company_id = stopped.company_id and result.run_id = stopped.id))`;
+}
+
 /**
  * A file-preservation hold binds a newer task owner only until automatic
  * recovery saved the stopped run's files. That owner's turn is a fresh
  * assignment, not a replay: the stopped run's unknown outcomes stay with its
- * own agent, which keeps the hold. The proof is the durable completed-recovery
- * receipt bound to this action, so later reuse of the workspace by the new
- * owner (new epoch, writer or snapshot) cannot re-arm the hold.
+ * own agent, which keeps the hold. A Stop fenced before any provider turn has
+ * no unknown outcome, so its hold releases for the same agent too. The proof is
+ * the durable completed-recovery receipt bound to this action, so later reuse
+ * of the workspace by the current owner (new epoch, writer or snapshot) cannot
+ * re-arm the hold.
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
@@ -150,11 +195,12 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
         and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
         and stopped.finished_at is not null
         and task.assignee_agent_id is not null
-        and task.assignee_agent_id <> stopped.agent_id
-        and not coalesce(task.status = 'in_review'
-          and task.execution_state->>'status' = 'pending'
-          and task.execution_state->'currentParticipant'->>'type' = 'agent'
-          and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))`,
+        and ((task.assignee_agent_id <> stopped.agent_id
+          and not coalesce(task.status = 'in_review'
+            and task.execution_state->>'status' = 'pending'
+            and task.execution_state->'currentParticipant'->>'type' = 'agent'
+            and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
+          or ${stoppedBeforeProviderTurnCondition()}))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
     // Copyback put the files back into the task workspace that the new owner
     // reuses. A snapshot-only save needs an explicit fresh-workspace request

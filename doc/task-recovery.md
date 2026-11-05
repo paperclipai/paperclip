@@ -163,6 +163,44 @@ verified snapshot. Upload operations have stable identities and manifests.
 Recovered snapshots attach separately with provenance; they never become an
 invented baseline for overwriting newer files.
 
+When that owned files-only export reports a full sandbox disk, recovery can
+reclaim a verified inactive native provider installation and retry the same save
+once. The failed source must have a terminal coordinator with no controller
+owner or resumable failure, and its Core-verified provider-pack admission must
+match the exact run, company, agent, workspace and lease. Unverified historical
+installations remain held for operator repair.
+
+Only the reserved provider-pack `node_modules` and `provider-assets` directories
+are eligible. The installation manifest, task files, Git history, sessions,
+checkpoints and action receipts stay intact. A read-only inspection supplies
+manifest and directory identities for a source-bound journal in Core's database.
+That journal commits before cache contents change. Where directory creation
+times are available, cleanup needs only reads and deletion, so it can start even
+when archive-helper writes fail for lack of space.
+
+On filesystems without creation times, deleting children changes the directory's
+fallback timestamp. Recovery first releases blocks by truncating only regular
+installation files with no additional hard links through verified file handles. It
+skips files without write permission and stops scanning as soon as marker space
+is available, including when an earlier eligible cache supplied that space. It
+then moves the cache to an operation-specific path and pins a small identity
+marker in the existing Core journal before recursive deletion. An interrupted
+cleanup can resume against that marker without accepting a new installation,
+a replacement staged directory or a copied marker. The emptied staged directory
+and its marker remain in reserved runtime storage as generation evidence; the
+canonical installation path stays absent so later installation rebuilds it.
+Neither task files nor sessions enter this staging path. Changed identities or
+symlinks keep the original export failure.
+
+Inspection, optional staging and deletion each have a bounded remote call. The
+block-release scan visits at most 8,192 entries across the eligible caches and
+stops once 256 KiB is available for the markers. If capacity cannot be read, it
+uses a bounded 256 KiB estimate of released blocks. Journal creation and
+cleanup record separate terminal operations; neither is a file-save receipt or
+a new background obligation. An uncertain acknowledgement never proves that
+files were saved. This adds no provider turn, recovery generation or retry budget,
+and the normal save and stop receipts still govern continuation.
+
 Known publication receipts and exact API mutation receipts carry forward.
 Uncertain API mutations and upstream tool mutations remain fenced across run
 replacement. Reads and independent work remain available. Generic upstream
