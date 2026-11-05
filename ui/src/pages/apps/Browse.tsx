@@ -154,6 +154,9 @@ const LEGACY_GOOGLE_CONNECTOR_SLUGS = new Set(
     .map((profile) => profile.appSlug)
     .filter((slug) => slug !== "google-workspace"),
 );
+// While the built-in connector is experimental, these native Google rows do not
+// claim the Google apps offered by MCP aggregators unless they hold an account.
+const BUILT_IN_GOOGLE_CONNECTOR_SLUGS = new Set([...LEGACY_GOOGLE_CONNECTOR_SLUGS, "google-workspace"]);
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
   const method = getAppStoreDefinition(slug)?.methods.find(
@@ -373,6 +376,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const connectorAvailability = useConnectorAvailability();
+  const googleWorkspaceConnectorEnabled = connectorAvailability.enabled(getConnectableAppDefinition("google-workspace"));
   const { setBreadcrumbs } = useBreadcrumbs();
   const { status: connectivityStatus } = useConnectivity();
   const [query, setQuery] = useState("");
@@ -773,12 +777,16 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
     // Native definitions take precedence even when temporarily hidden or unavailable.
     // Public metadata never creates an application, account, or installed status.
-    const nativeIdentities = new Set([...CONNECTABLE_APP_DEFINITIONS, ...(galleryQuery.data?.apps ?? [])].flatMap((app) =>
-      [appDefinitionName(app), appDefinitionSlug(app)].map(aggregatorAppIdentity)));
+    const yieldsToAggregators = (slug: string) => !googleWorkspaceConnectorEnabled
+      && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug) && !(rowsBySlug.get(slug)?.connections.length);
+    const nativeIdentities = new Set([...CONNECTABLE_APP_DEFINITIONS, ...(galleryQuery.data?.apps ?? [])]
+      .filter((app) => !yieldsToAggregators(appDefinitionSlug(app)))
+      .flatMap((app) => [appDefinitionName(app), appDefinitionSlug(app)].map(aggregatorAppIdentity)));
     for (const app of managedCatalog) {
       const snapshots = upstreamAppsBySlug.get(app.slug) ?? [];
       const aliases = new Set([app.name, app.slug, ...app.aliases].map(aggregatorAppIdentity));
-      const nativeRow = [...rowsBySlug.values()].find(row => aliases.has(aggregatorAppIdentity(row.slug)) || aliases.has(aggregatorAppIdentity(row.name)));
+      const nativeRow = [...rowsBySlug.values()].find(row => !yieldsToAggregators(row.slug)
+        && (aliases.has(aggregatorAppIdentity(row.slug)) || aliases.has(aggregatorAppIdentity(row.name))));
       if (nativeRow) { nativeRow.upstreamApps = [...(nativeRow.upstreamApps ?? []), ...snapshots]; nativeRow.upstreamCatalogApp = app; }
     }
     const aggregatorRows: ConnectorRowModel[] = managedCatalog.filter((app) =>
@@ -792,7 +800,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       }));
 
     return [...rowsBySlug.values(), ...customRows, ...aggregatorRows]
-      .filter((row) => !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
+      .filter((row) => row.aggregatorApp || !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
         || row.connections.length > 0
         || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
       .map((row) => ({
@@ -822,6 +830,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     connectionsQuery.data,
     gallery,
     galleryQuery.data,
+    googleWorkspaceConnectorEnabled,
     upstreamAppsBySlug,
   ]);
 

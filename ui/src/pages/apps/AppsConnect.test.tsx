@@ -1987,6 +1987,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
     async ({ slug, enrollmentReturn }) => {
       const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
+      experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
       const readMethod = definition.methods.find((method) => method.key === "paperclip-read" || method.key === "paperclip-workspace")!;
       mockSearch.value = enrollmentReturn
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
@@ -2090,6 +2091,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("selects Workspace service groups before creating a single connection", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
     mockSearch.value = "source=google-workspace&stage=setup";
     const workspace = getAppStoreDefinition("google-workspace")!;
     listGalleryMock.mockResolvedValue({ apps: [{
@@ -3074,18 +3076,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("keeps Gmail read-only selected when Finish setup resumes a declined Workspace draft", async () => {
+    experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
     const connectionId = "22222222-2222-4222-8222-222222222222";
     const workspace = getAppStoreDefinition("google-workspace")!;
     mockSearch.value = `source=google-workspace&resume=${connectionId}&oauth=denied`;
     listGalleryMock.mockResolvedValue({ apps: [{ ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true } }] });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-workspace", companyId: "company-1", status: "draft", metadata: { sourceTemplateKey: "google-workspace" } }] });
-    listConnectionsMock.mockResolvedValue({ connections: [{
+    const draft = {
       ...notionConnection(connectionId, "per_user", "draft"), companyId: "company-1", applicationId: "app-workspace",
       config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace", workspaceSetup: {
         version: 1, companyId: "company-1", connectionId, actorType: "user", actorId: "me", grantKind: "user", subjectId: "me",
         requestedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
       } },
-    }] });
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    getConnectionMock.mockResolvedValue(draft);
     listConnectionGrantsMock.mockResolvedValue({ currentUserId: "me", grants: [] });
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Try again"));

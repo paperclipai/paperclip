@@ -87,6 +87,8 @@ export interface InstanceExperimentalSettings {
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
   enablePaperclipNotebook: boolean;
+  /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
+  enableGoogleWorkspaceConnector: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
