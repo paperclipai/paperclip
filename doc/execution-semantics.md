@@ -458,6 +458,11 @@ Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
 continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
+A waiting run stays as one parked retry while the run that holds the workspace is
+live. It does not create another run record per check. The holder ending makes
+its waiters due immediately, and waiters for one workspace are admitted one at a
+time in arrival order. A parked retry is re-checked at most every five minutes as
+a fallback, and stops waiting on a holder that is silent past the one-hour cutoff.
 
 A remote task workspace stays held by its last writer run until that writer's
 save and sandbox release settle. This hold continues after the writer run ends.

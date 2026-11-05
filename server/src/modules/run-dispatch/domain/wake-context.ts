@@ -29,6 +29,46 @@ export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "rejected",
 ]);
 
+// A run silent for this long no longer counts as the shared-workspace holder
+// it was waiting behind. Kept here so the deferral gate and the parked-wait
+// check in this module's adapter read one value.
+export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
+// Fallback re-check for a parked workspace wait. The holder ending wakes the
+// waiter directly; this only bounds a missed wake.
+export const WORKSPACE_BUSY_PARKED_RECHECK_MS = 5 * 60 * 1000;
+export const WORKSPACE_BUSY_WAIT_KEY = "workspaceBusyWait";
+
+/** What a workspace-busy retry is waiting behind, recorded at deferral. */
+export type WorkspaceBusyWait = {
+  /** `execution:<id>` or `project:<id>`; waiters on one key are admitted in arrival order. */
+  key: string;
+  holderRunId: string;
+  /** ISO time of the first deferral for this key; carried across re-deferrals. */
+  waitingSince: string;
+};
+
+export function workspaceBusyWaitKey(input: {
+  executionWorkspaceId: string | null;
+  projectWorkspaceId: string | null;
+}): string | null {
+  if (input.executionWorkspaceId) return `execution:${input.executionWorkspaceId}`;
+  if (input.projectWorkspaceId) return `project:${input.projectWorkspaceId}`;
+  return null;
+}
+
+export function readWorkspaceBusyWait(
+  retryReason: string | null | undefined,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): WorkspaceBusyWait | null {
+  if (retryReason !== WORKSPACE_BUSY_RETRY_REASON) return null;
+  const wait = parseObject(parseObject(contextSnapshot)[WORKSPACE_BUSY_WAIT_KEY]);
+  const key = readNonEmptyString(wait.key);
+  const holderRunId = readNonEmptyString(wait.holderRunId);
+  const waitingSince = readNonEmptyString(wait.waitingSince);
+  if (!key || !holderRunId || !waitingSince || Number.isNaN(Date.parse(waitingSince))) return null;
+  return { key, holderRunId, waitingSince };
+}
+
 /**
  * True for a resource-wait retry whose original run did not
  * execute under assignee-ship (a comment or review-participant wake). Such a

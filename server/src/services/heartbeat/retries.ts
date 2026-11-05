@@ -59,6 +59,10 @@ import {
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+  WORKSPACE_BUSY_WAIT_KEY,
+  readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../../modules/run-dispatch/index.js";
@@ -152,8 +156,9 @@ export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 
 // Preserve the one-hour shared-workspace holder cutoff independently of the
 // informational output-silence warnings. Warning sooner must not let another
-// run overtake a quiet holder and mutate its shared workspace.
-export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
+// run overtake a quiet holder and mutate its shared workspace. Run dispatch
+// owns the value because its parked-wait check applies the same cutoff.
+export { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS };
 
 // Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
 // issue's runs out of the shared project workspace, and therefore out of
@@ -1511,6 +1516,18 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     deferral: WorkspaceBusyDeferral,
   ) {
     const now = new Date();
+    // Record what the retry waits behind, so run dispatch can keep it parked
+    // in place until the holder ends instead of re-dispatching it on a timer.
+    const runContext = parseObject(run.contextSnapshot);
+    const waitKey = workspaceBusyWaitKey(deferral);
+    const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
+    const workspaceBusyWait = waitKey
+      ? {
+          key: waitKey,
+          holderRunId: deferral.holder.runId,
+          waitingSince: priorWait?.key === waitKey ? priorWait.waitingSince : now.toISOString(),
+        }
+      : null;
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message,
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
@@ -1539,8 +1556,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       // so the retry promotion gate can tell a non-assignee wake — where an
       // assignee mismatch is the expected state — from a reassignment race.
       contextSnapshot: {
-        ...parseObject(run.contextSnapshot),
+        ...runContext,
         workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
+        [WORKSPACE_BUSY_WAIT_KEY]: workspaceBusyWait,
       },
     });
     if (!cancelWrite.updated) {
