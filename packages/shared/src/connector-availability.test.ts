@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getConnectableAppDefinition } from "./app-definitions.js";
-import { isConnectorFeatureEnabled } from "./connector-availability.js";
+import { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 import { appDefinitionSchema } from "./validators/app-definition.js";
 import { instanceExperimentalSettingsSchema } from "./validators/instance.js";
 
@@ -35,5 +35,37 @@ describe("connector availability", () => {
     for (const slug of ["gmail", "google-drive", "google-calendar", "google-docs", "google-sheets"]) {
       expect(getConnectableAppDefinition(slug)?.experimentalFeatureKey).toBeUndefined();
     }
+  });
+});
+
+describe("Slack tool connection guidance", () => {
+  // BUG-06: Slack's MCP server has no dynamic client registration, so this method needs a
+  // customer-created Slack app. Its guidance must say so and link to Slack's app settings.
+  it("describes the customer-created Slack app honestly and links to Slack app settings", () => {
+    const method = getConnectableAppDefinition("slack")!.methods.find((candidate) => candidate.key === "mcp-oauth")!;
+    expect(method.whenToUse).not.toMatch(/quickest/i);
+    expect(method.consoleLinks?.register).toBe("https://api.slack.com/apps");
+  });
+});
+
+describe("native connectors that need a customer-created OAuth app", () => {
+  it("flags Slack only while its chat setup is unavailable", () => {
+    const slack = getConnectableAppDefinition("slack")!;
+    expect(nativeConnectorRequiresCustomerOAuthApp(slack, {})).toBe(true);
+    expect(nativeConnectorRequiresCustomerOAuthApp(slack, { enableChatConnectors: true })).toBe(false);
+  });
+
+  it("does not flag connectors with a managed, dynamic-registration, or credential path", () => {
+    // Asana declares a Paperclip Cloud managed method, so it is never flagged,
+    // even while that method's broker profile is unavailable.
+    const asana = getConnectableAppDefinition("asana")!;
+    expect(nativeConnectorRequiresCustomerOAuthApp(asana, {})).toBe(false);
+    expect(nativeConnectorRequiresCustomerOAuthApp({ ...asana, ownershipAvailability: {
+      platform_shared: true, platform_provisioned: false, customer: true, dcr: true,
+    } }, {})).toBe(false);
+    for (const slug of ["notion", "linear", "github"]) {
+      expect(nativeConnectorRequiresCustomerOAuthApp(getConnectableAppDefinition(slug)!, {}), slug).toBe(false);
+    }
+    expect(nativeConnectorRequiresCustomerOAuthApp(null, {})).toBe(false);
   });
 });
