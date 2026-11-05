@@ -245,6 +245,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
       publicId: "f".repeat(43), provider: "slack", status: "archived", setup: { runtimeGeneration: 1 } as InternalSetupState });
     await db.transaction(tx => stageSlackCloudEnrollmentIntent(tx as unknown as typeof db, busyEndpointId, actorId));
     const [busyEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
+    const originalBusyIntent = structuredClone((busyEndpoint!.setup as InternalSetupState).slackCloudIntent!);
     let acquired!: () => void;
     const acquiredPromise = new Promise<void>(resolve => { acquired = resolve; });
     const releasePromise = new Promise<void>(resolve => { releaseEnrollmentLease = resolve; });
@@ -256,7 +257,12 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     const beforeRedelivery = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
     expect(beforeRedelivery).toHaveLength(1);
     const [retainedBusy] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
-    expect((retainedBusy!.setup as InternalSetupState).slackCloudIntent).toMatchObject({ active: false, attempts: 0 });
+    const busyIntent = (retainedBusy!.setup as InternalSetupState).slackCloudIntent!;
+    expect(busyIntent).toEqual({ ...originalBusyIntent, attempts: 1, failureCode: "credential_lease_busy", nextAttemptAt: expect.any(String) });
+    const originalRetryAt = Date.parse(busyIntent.nextAttemptAt!);
+    expect(Number.isFinite(originalRetryAt)).toBe(true);
+    expect(originalRetryAt).toBeGreaterThan(Date.now());
+    expect(originalRetryAt).toBeLessThanOrEqual(Date.now() + 5_000);
     expect(eventOwner.nextPollAt()).not.toBeNull();
     expect(eventOwner.nextPollAt()!).toBeGreaterThan(Date.now());
     expect(eventOwner.nextPollAt()!).toBeLessThanOrEqual(Date.now() + 5_000);
@@ -267,9 +273,15 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     expect(expired.rowCount).toBe(1);
     expect((await eventOwner.pollOnce({ forDelivery: true })).processed).toBe(1);
     expect(captured.map(value => value.id)).toEqual([actualReceiptId, actualReceiptId]);
+    const [beforeRetry] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
+    if (Date.now() < originalRetryAt) expect((beforeRetry!.setup as InternalSetupState).slackCloudIntent).toEqual(busyIntent);
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, originalRetryAt - Date.now())));
+    await eventOwner.pollOnce();
     const [settledBusy] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
     expect((settledBusy!.setup as InternalSetupState).slackCloudIntent).toBeUndefined();
     expect((settledBusy!.setup as InternalSetupState).slackCloudRetiredGeneration).toBe(1);
+    expect((settledBusy!.setup as InternalSetupState).slackCloudRetiredGeneration).toBe(originalBusyIntent.runtimeGeneration);
+    expect(captured.map(value => value.id)).toEqual([actualReceiptId, actualReceiptId]);
 
     expect(captured[1]!.createdAt).toBe(captured[0]!.createdAt); expect(captured[1]!.payload).toEqual(captured[0]!.payload);
     expect(sdkCallbacks).toHaveLength(2); expect(sdkCallbacks[0]!.message.id).toBe(sdkCallbacks[1]!.message.id);

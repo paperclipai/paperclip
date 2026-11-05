@@ -9,7 +9,7 @@ import { activityLog, agentRuntimeState, agentTaskSessions, agentWakeupRequests,
   chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
   companySecrets, companySkills, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, toolApplications, toolConnections,
   closeCheckpointDb, closeFileStorageDb, closeLivenessDb, createDb } from "@paperclipai/db";
-import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { databaseWorkPending, reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -288,8 +288,19 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const generation: unknown = change === "malformed-generation" ? { invalid: true }
         : Number(before.runtimeGeneration) + (change === "generation" ? 1 : 0);
       const busy = conflict("Synthetic owner credential lane is busy", { code: "chat_endpoint_credentials_busy" });
-      const requests = cloud.calls.length, signals: string[] = [];
-      const stopSignals = subscribeDatabaseWork(db, DELIVERY_QUEUES.connectionEvents, event => { if (event === "intent") signals.push(event); });
+      const requests = cloud.calls.length;
+      const pendingBefore = databaseWorkPending(db, DELIVERY_QUEUES.connectionEvents), inheritedSignals: string[] = [];
+      const stopInherited = subscribeDatabaseWork(db, DELIVERY_QUEUES.connectionEvents, event => { inheritedSignals.push(event); });
+      try {
+        console.info(JSON.stringify({ slackRetrySignalProbe: "subscription", endpointId, pendingBefore, immediateSignals: [...inheritedSignals] }));
+        expect(inheritedSignals).toEqual(pendingBefore ? ["intent"] : []);
+        await reconcileDatabaseWork(db, DELIVERY_QUEUES.connectionEvents);
+        const pendingAfter = databaseWorkPending(db, DELIVERY_QUEUES.connectionEvents);
+        console.info(JSON.stringify({ slackRetrySignalProbe: "reconciled", endpointId, pendingBefore, pendingAfter, inheritedSignals: [...inheritedSignals] }));
+        expect(pendingAfter).toBe(false);
+      } finally { stopInherited(); }
+      const signals: string[] = [];
+      const stopSignals = subscribeDatabaseWork(db, DELIVERY_QUEUES.connectionEvents, event => { signals.push(event); });
       const unregister = registerSlackCloudEnrollmentOwner(db, async id => {
         expect(id).toBe(endpointId);
         await db.update(chatEndpoints).set({ setup: sql`jsonb_set(jsonb_set(${chatEndpoints.setup}, '{slackCloudIntent}', ${JSON.stringify(successor)}::jsonb), '{runtimeGeneration}', ${JSON.stringify(generation)}::jsonb)` })
