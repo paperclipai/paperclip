@@ -8,6 +8,16 @@ import { identityDefinition, identityObservation, observeIdentity, openStandingC
 import { CHAT_OPENCODE_MODEL } from "../chat-runtime-profile.js";
 import { readHireModelChoice, validHireModelChoice } from "./identity-hire-model-choice.js";
 
+function namesSelectedModel(body: string, model: string, catalog: unknown): boolean {
+  if (!Array.isArray(catalog) || !catalog.includes(model)) return false;
+  const shortId = model.split("/").at(-1)!;
+  const uniqueShortId = catalog.filter(id => typeof id === "string" && id.split("/").at(-1) === shortId).length === 1;
+  const identifiers = body.match(/[A-Za-z0-9][A-Za-z0-9_./:@~-]*/g) ?? [];
+  return identifiers.some(value => {
+    const id = value.replace(/[.:]+$/, "");
+    return id === model || uniqueShortId && id === shortId;
+  });
+}
 function hasBoundRevisionHistory(o: IdentityObservation, approval: Approval | undefined): boolean {
   const comment = o.state.revisionHistoryComment as Entity | undefined;
   const link = o.state.revisionHistoryLink as RenderedConversationLink | undefined;
@@ -15,7 +25,7 @@ function hasBoundRevisionHistory(o: IdentityObservation, approval: Approval | un
   if (!approval || !comment || !link || typeof sourceId !== "string" || o.runs.length !== 1 || o.humanQueries.length !== 1
     || comment.companyId !== o.companyId || comment.issueId !== sourceId || comment.authorAgentId !== o.leadId || comment.authorUserId
     || typeof comment.body !== "string" || typeof o.state.cheaperModel !== "string"
-    || !comment.body.includes(o.state.cheaperModel)) return false;
+    || !namesSelectedModel(comment.body, o.state.cheaperModel, o.state.eligibleModels)) return false;
   const run = o.runs[0]!;
   if (run.id !== comment.createdByRunId || run.companyId !== o.companyId || run.agentId !== o.leadId || run.runtimeMode !== "native"
     || run.status !== "succeeded" || run.resultJson?.finalizationPhase !== "committed" || run.nativeIssueId !== sourceId
@@ -82,7 +92,7 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
   return { sourceIssueId: source.id, originalApproval, originalHistoryCommentId: history.id, originalModel, cheaperModel, humanId: session.user.id,
     eligibleModels: models.map(row => row.id), modelChoice, beforeAgentCount: (await ctx.input.api.get<unknown[]>(`/api/companies/${fixtures.company.id}/agents`)).length };
 }, gradeHireRevision, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v4", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/questions-and-approvals.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v5", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/questions-and-approvals.yaml"],
   async act(ctx, state) {
     const remaining = () => remainingIdentityObservationBudget(ctx);
     remaining(); await waitForReply(ctx, ctx.observationDeadlineAt); remaining();

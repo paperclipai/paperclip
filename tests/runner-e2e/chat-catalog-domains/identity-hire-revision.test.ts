@@ -32,6 +32,31 @@ describe("formal hire remains a proposal after cost revision", () => {
   it("accepts retained original history and the exact bound native revision reply without an extra approval comment", () => {
     expect(gradeHireRevision(validChatRevision()).passed).toBe(true);
   });
+  it.each(["deepseek-v4.1-flash-1017", "openrouter/deepseek/deepseek-v4.1-flash-1017"])("resolves the exact displayed model identifier %s against the saved catalog", model => {
+    const o = validChatRevision();
+    const body = `Updated the proposed hire to \`${model}\` (was \`deepseek-v4-pro\`) and resubmitted it. The [pending approval](/approvals/approval) needs your review before the hire proceeds.`;
+    o.reply = body;
+    o.comments[0]!.body = body;
+    (o.state.revisionHistoryComment as { body: string }).body = body;
+    expect(gradeHireRevision(o).passed).toBe(true);
+    for (const wrong of ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017:batch", "other/deepseek/deepseek-v4.1-flash-1017"]) {
+      const invalid = structuredClone(o), changed = body.replace(model, wrong);
+      invalid.reply = changed;
+      invalid.comments[0]!.body = changed;
+      (invalid.state.revisionHistoryComment as { body: string }).body = changed;
+      expect(gradeHireRevision(invalid).passed).toBe(false);
+    }
+    const noLink = structuredClone(o); noLink.renderedLinkEvidence = [];
+    expect(gradeHireRevision(noLink).passed).toBe(false);
+    const wrongProposal = structuredClone(o);
+    (wrongProposal.state.currentApproval as { payload: { adapterConfig: { model: string } } }).payload.adapterConfig.model = "openrouter/deepseek/deepseek-v4.1-flash";
+    expect(gradeHireRevision(wrongProposal).passed).toBe(false);
+    if (!model.includes("/")) {
+      const ambiguous = structuredClone(o);
+      (ambiguous.state.eligibleModels as string[]).push("other/deepseek/" + model);
+      expect(gradeHireRevision(ambiguous).passed).toBe(false);
+    }
+  });
   it("accepts a generic linked chat message only when the owned approval note supplies model-specific history", () => {
     const o = validChatRevision(), body = "Revised and resubmitted for approval. [Pending proposal](/approvals/approval).";
     o.state.approvalComments = valid().state.approvalComments;
