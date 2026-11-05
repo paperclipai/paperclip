@@ -162,3 +162,31 @@ after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,
 or advertise hosted parking support. The host-control consumer must separately
 validate the exact Runner identity and acknowledged sequence cut.
+
+### Hosted park and reclaim loop
+
+A trusted Launcher may pass a connected Unix stream at fd 4 and start durable
+listener mode with `--host-control-fd 4`. The descriptor is close-on-exec before
+provider startup. The private channel accepts the `park`, `claim`, and `retire`
+requests defined in the host-control codec; it cannot execute PRP commands.
+
+`park` requires the exact six-field authority, acknowledged command/event cut,
+no unfinished transition or cleanup, and the provider eligibility proof above.
+The Runner drops its controller connection and credentials, retains its provider
+and journals, and blocks on host control without provider polling. Ordinary
+reconnect grace does not expire a parked Runner. The configured process lifetime
+still applies. Mount ownership stays with Launcher.
+
+`claim` names the accepted park request and supplies a fresh bootstrap ticket.
+It resumes authenticated PRP under the retained authority; ordinary `run.attach`
+must still establish the next authority before new work. Replaying the same
+claim returns its acknowledgement without consuming another ticket. A parked
+retirement names the park request. Cancelling a claim additionally requires its
+claim ID, the unchanged authority and sequence cut, and provider quiescence.
+Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
+suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+
+This native loop does not advertise hosted parking support: Launcher retention,
+Core orchestration, provider-specific qualification, and live VM sleep/wake
+verification are required before rollout. Providers without an eligibility
+implementation remain ineligible.
