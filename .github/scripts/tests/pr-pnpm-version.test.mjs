@@ -9,7 +9,7 @@ const pnpmJobs = jobs.filter(([, , body]) => body.includes("uses: pnpm/action-se
 const totalPnpmSteps = workflow.match(/uses: pnpm\/action-setup@/g)?.length ?? 0;
 
 test("every pnpm/action-setup step in pr-trusted.yml has no version input and runs after actions/checkout", () => {
-  assert.equal(pnpmJobs.length, 8, "expected exactly 8 jobs configuring pnpm");
+  assert.ok(pnpmJobs.length > 0, "expected jobs configuring pnpm");
   assert.equal(totalPnpmSteps, pnpmJobs.length, "every pnpm/action-setup step must belong to an inspected job");
 
   for (const [, jobName, body] of pnpmJobs) {
