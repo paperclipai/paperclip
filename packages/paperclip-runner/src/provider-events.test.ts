@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CODEX_THREAD_ITEM_CLASSIFICATION,
+  claudePlanProposalEvent,
   PROVIDER_EVENT_FAMILIES,
   canonicalProviderEventsFromAcpxRuntimeEvent,
   canonicalProviderEventsFromCodex,
@@ -117,7 +118,7 @@ describe("provider-neutral events", () => {
     expect(Object.values(CODEX_THREAD_ITEM_CLASSIFICATION)).not.toContain(
       "unclassified",
     );
-    expect(CODEX_THREAD_ITEM_CLASSIFICATION.plan).toBe("existing_transcript");
+    expect(CODEX_THREAD_ITEM_CLASSIFICATION.plan).toBe("plan");
   });
 
   it("negotiates every declared family and preserves explicit unsupported states", () => {
@@ -350,16 +351,86 @@ describe("provider-neutral events", () => {
     });
   });
 
-  it("treats Codex proposed-plan text as transcript content, not a checklist", () => {
+  it("maps the Codex proposed-plan item to plan.proposed, not a checklist", () => {
+    expect(
+      canonicalProviderEventsFromCodex("item/started", {
+        item: { id: "proposed-plan-1", type: "plan", text: "" },
+      }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "proposed-plan-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "proposed-plan-1",
+          status: "streaming",
+          markdown: "",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
     expect(
       canonicalProviderEventsFromCodex("item/completed", {
         item: {
           id: "proposed-plan-1",
           type: "plan",
-          text: "# Proposed implementation\n\nShip it.",
+          text: "<proposed_plan>\n# Proposed implementation\n\nShip it.\n</proposed_plan>",
         },
       }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "proposed-plan-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "proposed-plan-1",
+          status: "completed",
+          markdown: "# Proposed implementation\n\nShip it.",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
+  });
+
+  it("reads a <proposed_plan> block in a completed Codex message as a proposal", () => {
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-1", type: "agentMessage", text: "Plan below.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>" },
+      }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "msg-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "msg-1",
+          status: "completed",
+          markdown: "# Fix\n1. Ship",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-2", type: "agentMessage", text: "No plan here." },
+      }),
     ).toEqual([]);
+  });
+
+  it("maps a captured Claude ExitPlanMode plan to a completed proposal", () => {
+    expect(
+      claudePlanProposalEvent({ toolCallId: "toolu_01", markdown: "# Plan\n\n1. Fix it" }),
+    ).toEqual({
+      eventType: "plan.proposed",
+      itemId: "toolu_01",
+      payload: {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "toolu_01",
+        status: "completed",
+        markdown: "# Plan\n\n1. Fix it",
+        source: "claude_exit_plan_mode",
+      },
+    });
   });
 
   it("uses an empty native plan as a stable clearing snapshot", () => {

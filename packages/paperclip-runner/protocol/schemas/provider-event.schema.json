@@ -4,6 +4,7 @@
   "title": "Provider-neutral runner activity payload",
   "oneOf": [
     { "$ref": "#/$defs/plan" },
+    { "$ref": "#/$defs/planProposal" },
     { "$ref": "#/$defs/toolExecution" },
     { "$ref": "#/$defs/research" },
     { "$ref": "#/$defs/delegation" },
@@ -39,6 +40,19 @@
         "complete": { "type": "boolean" },
         "syncStatus": { "description": "Legacy compatibility field. Within-turn checklist snapshots use not_applicable.", "enum": ["streaming", "pending", "synchronized", "conflict", "not_applicable"] },
         "documentRevision": { "description": "Legacy compatibility field. Within-turn checklist snapshots use null.", "type": ["integer", "null"], "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "planProposal": {
+      "type": "object",
+      "description": "A provider-authored proposed plan document awaiting human approval (Codex plan item, Claude ExitPlanMode). Paperclip may synchronize a completed proposal into the issue's durable Plan document; it is distinct from the within-turn plan.updated checklist.",
+      "required": ["schema", "proposalId", "status", "markdown", "source"],
+      "properties": {
+        "schema": { "const": "paperclip.plan.proposed.v1" },
+        "proposalId": { "$ref": "#/$defs/id" },
+        "status": { "enum": ["streaming", "completed"] },
+        "markdown": { "type": "string", "maxLength": 60000 },
+        "source": { "enum": ["codex_plan_item", "claude_exit_plan_mode"] }
       },
       "additionalProperties": false
     },

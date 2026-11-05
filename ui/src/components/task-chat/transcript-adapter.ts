@@ -276,6 +276,7 @@ const PROVIDER_DETAIL_KEYS: Record<
   readonly string[]
 > = {
   plan: ["revision", "syncStatus", "documentRevision", "complete"],
+  plan_proposal: ["status", "source"],
   tool_execution: [
     "transport",
     "operation",
@@ -332,6 +333,7 @@ function providerActivityKey(
 ): string {
   const idKeys = [
     "planId",
+    "proposalId",
     "executionId",
     "researchId",
     "delegationId",
@@ -456,7 +458,9 @@ function providerActivityItem(
   const rawOutput =
     entry.family === "tool_execution"
       ? stringValue(entry.payload.output)
-      : undefined;
+      : entry.family === "plan_proposal"
+        ? stringValue(entry.payload.markdown)
+        : undefined;
   const outputTruncated =
     entry.payload.outputTruncated === true ||
     Boolean(rawOutput && rawOutput.length > PROTOCOL_OUTPUT_MAX);
@@ -1779,6 +1783,15 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      item.family === "plan_proposal"
+    ) {
+      // A proposed plan is a deliverable, so it gets its own row instead of
+      // folding into the collapsed activity phase.
       current = null;
       rows.push(item);
     } else if (

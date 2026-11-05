@@ -142,17 +142,23 @@ function createTransportBackedNativeSessionBackend(
     );
   }
 
-  const constraints = [
-    ...(supportsCollaborativePlanning &&
+  const planMode = supportsCollaborativePlanning &&
     "executionMode" in input &&
-    input.executionMode === "plan"
+    input.executionMode === "plan";
+  const claudeAcpx = input.provider.kind === "acpx" && input.provider.agent === "claude";
+  const constraints = [
+    ...(planMode
       ? [
           "Use native plan collaboration mode and do not modify workspace files.",
           "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
-          "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
-          "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+          ...planProposalConstraints(input.provider.kind, claudeAcpx),
         ]
-      : []),
+      : claudeAcpx
+        ? [
+            // Agents may opt into a plan approval gate on Standard tasks too.
+            "If the task asks for a plan first, or the change is risky enough that the user should agree on the approach, you may use EnterPlanMode and then ExitPlanMode with the complete plan. Paperclip saves it as the task's Plan document, asks the user to approve it and ends this turn; continue after approval.",
+          ]
+        : []),
     ...nativeTaskConstraints(input),
   ];
 
@@ -276,4 +282,28 @@ export function createCodexNativeSessionBackend(
     throw new Error("Codex native backend requires provider kind codex");
   }
   return createTransportBackedNativeSessionBackend(input, options);
+}
+
+/**
+ * How a planning run hands its proposal to Paperclip. The harness's own
+ * proposed-plan surface becomes the task's Plan document and approval gate, so
+ * the proposal must land before the completion report.
+ */
+function planProposalConstraints(providerKind: string, claudeAcpx: boolean): string[] {
+  if (claudeAcpx) {
+    return [
+      "Claude Code is in plan mode. When the plan is ready, call ExitPlanMode with the complete plan as your last action. Paperclip saves it as the task's Plan document, asks the user to approve it and ends this turn.",
+      "Do not write the plan with document tools and do not call the semantic completion tool before ExitPlanMode.",
+    ];
+  }
+  if (providerKind === "codex") {
+    return [
+      "Present the complete plan once, in a message, as a single <proposed_plan>...</proposed_plan> block. Paperclip saves that block as the task's Plan document and asks the user to approve it, so do not write the plan with document tools.",
+      "Present the plan before calling the semantic completion tool, then keep the final response to a short note that the plan is waiting for approval.",
+    ];
+  }
+  return [
+    "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
+    "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+  ];
 }

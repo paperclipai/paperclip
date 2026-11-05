@@ -52,9 +52,10 @@ export const CODEX_THREAD_ITEM_CLASSIFICATION = {
   userMessage: "existing_transcript",
   hookPrompt: "hook",
   agentMessage: "existing_transcript",
-  // Codex's `plan` ThreadItem is proposed-plan document text. The live
-  // execution checklist is a separate `turn/plan/updated` notification.
-  plan: "existing_transcript",
+  // Codex's `plan` ThreadItem is proposed-plan document text (canonical
+  // `plan.proposed`). The live execution checklist is a separate
+  // `turn/plan/updated` notification (canonical `plan.updated`).
+  plan: "plan",
   reasoning: "existing_reasoning",
   commandExecution: "tool_execution",
   fileChange: "existing_workspace_change",
@@ -82,6 +83,7 @@ export const CANONICAL_PROVIDER_EVENT_TYPES = [
   "auth.credentials.updated",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -593,6 +595,48 @@ function turnPlanPayload(
   };
 }
 
+// Matches the provider-event schema; keeps the event under the 256 KiB payload cap.
+const PLAN_PROPOSAL_MAX_MARKDOWN = 60_000;
+
+/**
+ * A provider-authored proposed plan document. Unlike the `plan.updated`
+ * checklist, a completed proposal is the candidate text for the issue's
+ * durable Plan document and its approval gate.
+ */
+export function planProposalPayload(
+  proposalId: string,
+  status: "streaming" | "completed",
+  markdown: string,
+  source: "codex_plan_item" | "claude_exit_plan_mode",
+): Record<string, unknown> {
+  return {
+    schema: "paperclip.plan.proposed.v1",
+    proposalId,
+    status,
+    markdown: unwrapProposedPlan(markdown).slice(0, PLAN_PROPOSAL_MAX_MARKDOWN),
+    source,
+  };
+}
+
+/** Claude Code's ExitPlanMode plan, captured at its permission request. */
+export function claudePlanProposalEvent(proposal: {
+  toolCallId: string;
+  markdown: string;
+}): CanonicalProviderEvent {
+  const itemId = safeId(proposal.toolCallId, "claude-plan-proposal");
+  return {
+    eventType: "plan.proposed",
+    itemId,
+    payload: planProposalPayload(itemId, "completed", proposal.markdown, "claude_exit_plan_mode"),
+  };
+}
+
+/** Codex wraps plan-mode output in `<proposed_plan>` tags; keep only the document. */
+function unwrapProposedPlan(markdown: string): string {
+  const match = markdown.match(/<proposed_plan>\s*([\s\S]*?)\s*(?:<\/proposed_plan>|$)/i);
+  return (match?.[1] ?? markdown).trim();
+}
+
 function researchSources(
   item: Record<string, unknown>,
   researchId: string,
@@ -657,6 +701,27 @@ export function canonicalProviderEventsFromCodex(
         eventType: "plan.updated",
         payload: turnPlanPayload(params),
         itemId: turnPlanId,
+      },
+    ];
+  }
+  // Codex plan mode turns a `<proposed_plan>` block into its own plan item;
+  // agents can also write the block in an ordinary message to ask for plan
+  // approval, so read it there as well.
+  if (completed && type === "agentMessage" && /<proposed_plan>/i.test(text(item.text))) {
+    const payload = planProposalPayload(itemId, "completed", text(item.text), "codex_plan_item");
+    return payload.markdown ? [{ eventType: "plan.proposed", payload, itemId }] : [];
+  }
+  if ((method === "item/started" || completed) && type === "plan") {
+    return [
+      {
+        eventType: "plan.proposed",
+        payload: planProposalPayload(
+          itemId,
+          completed ? "completed" : "streaming",
+          completed ? text(item.text) : "",
+          "codex_plan_item",
+        ),
+        itemId,
       },
     ];
   }

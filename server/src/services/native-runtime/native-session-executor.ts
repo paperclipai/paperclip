@@ -1602,25 +1602,44 @@ export async function synchronizeCompletedProviderPlan(input: {
     payload: Record<string, unknown>;
   };
 }): Promise<PlanSynchronization | null> {
-  if (
-    input.event.eventType !== "plan.updated" ||
-    input.event.payload.complete !== true
-  )
-    return null;
-  if (
-    !("executionMode" in input.execution) ||
-    input.execution.executionMode !== "plan"
-  )
-    return null;
-  const planningContext = input.execution.planningContext;
-  if (!planningContext) return null;
-  const planId =
-    typeof input.event.payload.planId === "string"
+  const planMode =
+    "executionMode" in input.execution &&
+    input.execution.executionMode === "plan";
+  // A harness's own proposed-plan document (Codex plan item, Claude
+  // ExitPlanMode) asks for approval in any work mode: in Planning it is the
+  // planning deliverable, and in Standard the agent opted to stop and ask.
+  // A within-turn checklist only stands in for the plan in Planning mode.
+  const proposal =
+    input.event.eventType === "plan.proposed" &&
+    input.event.payload.status === "completed";
+  const completedChecklist =
+    input.event.eventType === "plan.updated" &&
+    input.event.payload.complete === true;
+  if (!proposal && !(completedChecklist && planMode)) return null;
+  const planningContext = planMode
+    ? input.execution.planningContext
+    : null;
+  if (planMode && !planningContext) return null;
+  const baseRevisionId = planningContext
+    ? planningContext.baseRevisionId
+    : ((
+        await documentService(input.db).getIssueDocumentByKey(
+          input.execution.binding.issueId,
+          "plan",
+        )
+      )?.latestRevisionId ?? null);
+  const planId = proposal
+    ? typeof input.event.payload.proposalId === "string"
+      ? input.event.payload.proposalId
+      : ""
+    : typeof input.event.payload.planId === "string"
       ? input.event.payload.planId
       : "";
-  const providerRevision = Number.isSafeInteger(input.event.payload.revision)
-    ? Number(input.event.payload.revision)
-    : 0;
+  const providerRevision = proposal
+    ? 1
+    : Number.isSafeInteger(input.event.payload.revision)
+      ? Number(input.event.payload.revision)
+      : 0;
   const body = providerPlanMarkdown(input.event.payload);
   const digest = createHash("sha256").update(body).digest("hex");
   if (!planId || providerRevision < 1 || !body) {
@@ -1629,7 +1648,7 @@ export async function synchronizeCompletedProviderPlan(input: {
       planId,
       providerRevision,
       status: "invalid",
-      baseRevisionId: planningContext.baseRevisionId,
+      baseRevisionId: baseRevisionId,
       digest,
       documentRevision: null,
       currentRevisionId: null,
@@ -1692,7 +1711,7 @@ export async function synchronizeCompletedProviderPlan(input: {
         title: "Plan",
         format: "markdown",
         body,
-        baseRevisionId: planningContext.baseRevisionId,
+        baseRevisionId: baseRevisionId,
         changeSummary: provenance,
         createdByAgentId: input.execution.binding.agentId,
         createdByRunId: input.execution.binding.runId,
@@ -1713,7 +1732,7 @@ export async function synchronizeCompletedProviderPlan(input: {
       planId,
       providerRevision,
       status: "conflict",
-      baseRevisionId: planningContext.baseRevisionId,
+      baseRevisionId: baseRevisionId,
       digest,
       documentRevision: latest?.latestRevisionNumber ?? null,
       currentRevisionId: latest?.latestRevisionId ?? null,
@@ -1730,7 +1749,7 @@ export async function synchronizeCompletedProviderPlan(input: {
       planId,
       providerRevision,
       status: "conflict",
-      baseRevisionId: planningContext.baseRevisionId,
+      baseRevisionId: baseRevisionId,
       digest,
       documentRevision: current?.latestRevisionNumber ?? null,
       currentRevisionId: current?.latestRevisionId ?? null,
@@ -1738,7 +1757,6 @@ export async function synchronizeCompletedProviderPlan(input: {
     };
   }
   let confirmationId: string;
-  let confirmationPending = false;
   try {
     const confirmation = await issueThreadInteractionService(input.db).create(
       {
@@ -1778,62 +1796,29 @@ export async function synchronizeCompletedProviderPlan(input: {
       },
     );
     confirmationId = confirmation.id;
-    confirmationPending = confirmation.status === "pending";
   } catch {
     return {
       eventId: input.event.sourceEventId,
       planId,
       providerRevision,
       status: "approval_failed",
-      baseRevisionId: planningContext.baseRevisionId,
+      baseRevisionId: baseRevisionId,
       digest,
       documentRevision: revision.revisionNumber,
       currentRevisionId: revision.id,
       confirmationId: null,
     };
   }
-  if (confirmationPending) {
-    try {
-      const currentIssue = await input.db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(eq(issues.id, input.execution.binding.issueId))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (currentIssue && currentIssue.status !== "in_review") {
-        await issueService(input.db).update(input.execution.binding.issueId, {
-          status: "in_review",
-          actorAgentId: input.execution.binding.agentId,
-        });
-      }
-    } catch {
-      const settledIssue = await input.db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(eq(issues.id, input.execution.binding.issueId))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (settledIssue?.status !== "in_review") {
-        return {
-          eventId: input.event.sourceEventId,
-          planId,
-          providerRevision,
-          status: "approval_failed",
-          baseRevisionId: planningContext.baseRevisionId,
-          digest,
-          documentRevision: revision.revisionNumber,
-          currentRevisionId: revision.id,
-          confirmationId,
-        };
-      }
-    }
-  }
+  // Synchronization runs while the native run still owns the task. Changing
+  // the task status here would revoke the run's execution lease; the pending
+  // confirmation is a governance gate that the run finalizer turns into the
+  // review wait.
   return {
     eventId: input.event.sourceEventId,
     planId,
     providerRevision,
     status,
-    baseRevisionId: planningContext.baseRevisionId,
+    baseRevisionId: baseRevisionId,
     digest,
     documentRevision: revision.revisionNumber,
     currentRevisionId: revision.id,

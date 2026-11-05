@@ -169,6 +169,75 @@ describe("native plan presentation", () => {
   });
 });
 
+describe("native proposed-plan presentation", () => {
+  it("streams Codex plan-item deltas into one live proposal and settles on the completed document", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "plan-item-1", { kind: "plan", channel: "detail", text: "" }),
+      itemEvent(2, "item.delta", "plan-item-1", { kind: "plan", channel: "detail", text: "<proposed_plan>\n# Stop duplicates\n" }),
+      itemEvent(3, "item.delta", "plan-item-1", { kind: "plan", channel: "detail", text: "\n1. Add a unique index" }),
+      event(4, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "plan-item-1",
+        status: "completed",
+        markdown: "# Stop duplicates\n\n1. Add a unique index\n2. Upsert",
+        source: "codex_plan_item",
+      }),
+    ]);
+    const proposals = transcript.filter((entry) => entry.kind === "provider_activity" && entry.family === "plan_proposal");
+    expect(proposals).toEqual([
+      expect.objectContaining({ status: "running", payload: expect.objectContaining({ markdown: "# Stop duplicates" }) }),
+      expect.objectContaining({ status: "running", payload: expect.objectContaining({ markdown: "# Stop duplicates\n\n1. Add a unique index" }) }),
+      expect.objectContaining({ status: "completed", summary: "Proposed a plan" }),
+    ]);
+
+    const live = transcriptToTaskChatItems(transcript.slice(0, -1), { runId: RUN_ID, agentName: "Codex", running: true })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan_proposal");
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ status: "running", output: "# Stop duplicates\n\n1. Add a unique index" });
+
+    const settled = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan_proposal");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ status: "completed", output: "# Stop duplicates\n\n1. Add a unique index\n2. Upsert" });
+  });
+
+  it("shows a Codex message's <proposed_plan> block only through the proposal card", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "msg-1", {
+        kind: "agentMessage",
+        channel: "final",
+        text: "The plan is ready for your approval.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>",
+      }),
+      event(2, "plan.proposed", {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "msg-1",
+        status: "completed",
+        markdown: "# Fix\n1. Ship",
+        source: "codex_plan_item",
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "The plan is ready for your approval." }),
+      expect.objectContaining({ kind: "provider_activity", family: "plan_proposal", status: "completed" }),
+    ]);
+  });
+
+  it("keeps a Claude ExitPlanMode proposal out of the turn checklist", () => {
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
+      schema: "paperclip.plan.proposed.v1",
+      proposalId: "toolu_plan",
+      status: "completed",
+      markdown: "# Plan\n\n1. Ship it",
+      source: "claude_exit_plan_mode",
+    })]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "plan_proposal", status: "completed" }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    expect(items.some((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan")).toBe(false);
+  });
+});
+
 describe("nativeRunEventsToTranscript", () => {
   describe("accepted response-wake authority", () => {
     function fixture() {

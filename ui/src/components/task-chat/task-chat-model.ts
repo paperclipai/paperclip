@@ -34,6 +34,7 @@ export type { PaperclipQuestionResponse, PaperclipQuestionSet };
 
 export type TaskChatProviderActivityFamily =
   | "plan"
+  | "plan_proposal"
   | "tool_execution"
   | "research"
   | "delegation"

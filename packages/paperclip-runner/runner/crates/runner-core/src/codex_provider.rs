@@ -451,6 +451,24 @@ pub struct CodexProviderConfig {
     pub conversation_mode: Option<String>,
 }
 
+/// Codex's native plan collaboration mode for a read-only Codex run. The
+/// preset keeps Codex's built-in plan-mode instructions (`developer_instructions`
+/// null) and the run's own model and effort.
+fn codex_plan_collaboration_mode(config: &CodexProviderConfig, effort: Option<&Value>) -> Option<Value> {
+    if config.provider != "codex" || !config.read_only {
+        return None;
+    }
+    let model = config.model.as_deref().map(str::trim).filter(|model| !model.is_empty())?;
+    Some(json!({
+        "mode": "plan",
+        "settings": {
+            "model": model,
+            "reasoning_effort": effort.cloned().unwrap_or(Value::Null),
+            "developer_instructions": Value::Null,
+        },
+    }))
+}
+
 /// Explicit per-turn skill selection. The controller resolves assigned skill
 /// names to paths on the provider filesystem before submitting the command.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -2028,6 +2046,12 @@ impl CodexProvider {
             );
         } else {
             turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        // A read-only (Planning) Codex run uses Codex's native plan
+        // collaboration mode, so a finished proposal arrives as Codex's own
+        // `plan` item for Paperclip's Plan document and approval gate.
+        if let Some(collaboration_mode) = codex_plan_collaboration_mode(&self.config, effort) {
+            turn_params_object.insert("collaborationMode".to_owned(), collaboration_mode);
         }
         let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
@@ -4510,6 +4534,35 @@ fn codex_question_response(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn read_only_codex_turns_use_native_plan_collaboration_mode() {
+        let mut config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "fixture".to_owned(),
+            command: PathBuf::from("/bin/sh"),
+            args: vec![],
+            cwd: "/tmp".to_owned(),
+            model: Some("gpt-5.6-sol".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+            read_only: true,
+            include_skill_instructions: None,
+            conversation_mode: None,
+        };
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, Some(&json!("high"))),
+            Some(json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})),
+        );
+        config.read_only = false;
+        assert_eq!(super::codex_plan_collaboration_mode(&config, None), None);
+        config.read_only = true;
+        config.provider = "opencode".to_owned();
+        assert_eq!(super::codex_plan_collaboration_mode(&config, None), None);
+    }
     use super::*;
 
     #[test]

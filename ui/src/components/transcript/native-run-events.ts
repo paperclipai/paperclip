@@ -89,6 +89,35 @@ function isItemIdentityEvent(eventType: string): boolean {
     || eventType === "item.completed";
 }
 
+/** Codex plan mode wraps its document in `<proposed_plan>` tags while streaming. */
+function proposedPlanMarkdown(value: string): string {
+  return value.replace(/<\/?proposed_plan>/gi, "").trim();
+}
+
+function withoutProposedPlanBlock(value: string): string {
+  return value.replace(/<proposed_plan>[\s\S]*?(?:<\/proposed_plan>|$)/gi, "").trim();
+}
+
+function planProposalEntry(
+  ts: string,
+  eventType: string,
+  proposalId: string,
+  markdown: string,
+  completed: boolean,
+  payload: Record<string, unknown>,
+): TranscriptEntry {
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "plan_proposal",
+    eventType,
+    status: completed ? "completed" : "running",
+    title: "Plan",
+    summary: completed ? "Proposed a plan" : "Writing a plan",
+    payload: { ...payload, proposalId, markdown, status: completed ? "completed" : "streaming" },
+  };
+}
+
 const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 const RUN_TERMINAL_SCHEMA = "paperclip.prp.terminal.v1";
@@ -710,6 +739,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   }
 
   const itemIdentityById = new Map<string, ItemIdentity>();
+  const proposalMarkdownById = new Map<string, string>();
+  const completedProposalIds = new Set<string>();
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -733,7 +764,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     const itemKind = itemIdentity.kind;
 
     if (event.eventType === "item.delta" && isAssistantItemKind(itemKind)) {
-      const value = normalizedItemText(payload);
+      const value = normalizedItemText(payload)?.replace(/<\/?proposed_plan>/gi, "");
       if (!value || !itemId) continue;
       // Once the loss-resistant completion is present, prefer its full text.
       // Before that point the deltas still provide the live streaming view.
@@ -744,7 +775,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
-      const value = normalizedItemText(payload);
+      // A `<proposed_plan>` block is shown by its plan proposal card instead.
+      const value = withoutProposedPlanBlock(normalizedItemText(payload) ?? "");
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
@@ -861,6 +893,28 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         summary: text(payload.explanation)?.trim() || "Plan",
         payload,
       });
+      continue;
+    }
+
+    // A proposed plan document (Codex plan item, Claude ExitPlanMode) is the
+    // candidate for the task's Plan document, not the turn checklist.
+    if (event.eventType === "plan.proposed" && payload.schema === "paperclip.plan.proposed.v1" && text(payload.proposalId)) {
+      const proposalId = text(payload.proposalId)!;
+      const completed = payload.status === "completed";
+      const markdown = proposedPlanMarkdown(text(payload.markdown) ?? proposalMarkdownById.get(proposalId) ?? "");
+      if (completed) completedProposalIds.add(proposalId);
+      proposalMarkdownById.set(proposalId, markdown);
+      entries.push(planProposalEntry(ts, event.eventType, proposalId, markdown, completed, payload));
+      continue;
+    }
+
+    // Codex streams the proposed plan as plan-item deltas before the
+    // completed plan.proposed event carries the whole document.
+    if (event.eventType === "item.delta" && itemKind === "plan" && itemId) {
+      if (completedProposalIds.has(itemId)) continue;
+      const accumulated = (proposalMarkdownById.get(itemId) ?? "") + (normalizedItemText(payload) ?? "");
+      proposalMarkdownById.set(itemId, accumulated);
+      entries.push(planProposalEntry(ts, "plan.proposed", itemId, proposedPlanMarkdown(accumulated), false, {}));
       continue;
     }
 

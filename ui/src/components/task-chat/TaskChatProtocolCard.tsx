@@ -47,6 +47,7 @@ import type {
 import { QuestionForm, QuestionResponseSummary } from "./QuestionForm";
 import { TaskChatComposerTakeoverHeader, TaskChatRequestHistoryContext } from "./TaskChatComposerTakeoverContext";
 import { RichWorkProductCard } from "./RichWorkProductCard";
+import { planPreviewContent, TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactFileRow, ArtifactRow, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromDocumentSummary, subjectFromWorkProduct, workProductStateBadge } from "@/components/artifacts/v1";
 
@@ -64,6 +65,7 @@ export interface TaskChatProtocolCardProps {
 
 const FAMILY_ICON = {
   plan: GitBranch,
+  plan_proposal: FileText,
   tool_execution: TerminalSquare,
   research: FileText,
   delegation: Bot,
@@ -254,11 +256,30 @@ function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
   );
 }
 
+/**
+ * A harness's proposed plan. While it streams it is the live plan card; once
+ * complete, the synchronized Plan document and its approval card carry it, so
+ * the turn keeps only a one-line record.
+ */
+function PlanProposalCard({ item }: { item: TaskChatProviderActivityItem }) {
+  if (item.status === "running") {
+    return <TaskChatPlanPreviewCard source={{ kind: "live", activity: item }} testId="task-chat-plan-proposal" />;
+  }
+  const title = item.output ? planPreviewContent(item.output).title : "Plan";
+  return (
+    <div className="flex items-center gap-2 px-1 py-1 text-sm text-muted-foreground" data-testid="task-chat-plan-proposal">
+      <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
+      <span className="min-w-0 truncate">Proposed a plan · <span className="text-foreground">{title}</span></span>
+    </div>
+  );
+}
+
 function ProviderActivityCard({
   item,
 }: {
   item: TaskChatProviderActivityItem;
 }) {
+  if (item.family === "plan_proposal") return <PlanProposalCard item={item} />;
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
     item.details.length > 0 ||

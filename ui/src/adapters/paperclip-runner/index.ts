@@ -693,7 +693,8 @@ function parsePrpEvent(
   const failure = piRuntimeFailureKey(event, payload);
   if (failure !== null && failure === state.previousPiRuntimeFailure) return [];
   state.previousPiRuntimeFailure = failure;
-  const family = eventType.startsWith("plan.") ? "plan"
+  const family = eventType === "plan.proposed" ? "plan_proposal"
+    : eventType.startsWith("plan.") ? "plan"
     : eventType.startsWith("tool.execution.") ? "tool_execution"
       : eventType.startsWith("research.") ? "research"
         : eventType.startsWith("delegation.") ? "delegation"
@@ -709,11 +710,11 @@ function parsePrpEvent(
                             : eventType.startsWith("provider.notice.") ? "provider_notice" : null;
   if (family !== null) {
     const rawStatus = text(payload.status);
-    const status = (family === "plan" && payload.complete === false) || rawStatus === "running" || rawStatus === "pending" || eventType.endsWith("started") || eventType.endsWith("progressed") ? "running"
+    const status = (family === "plan" && payload.complete === false) || rawStatus === "streaming" || rawStatus === "running" || rawStatus === "pending" || eventType.endsWith("started") || eventType.endsWith("progressed") ? "running"
       : rawStatus === "failed" || rawStatus === "denied" ? "failed"
         : rawStatus === "interrupted" || rawStatus === "cancelled" ? "interrupted"
           : (family === "plan" && payload.complete === true) || eventType.endsWith("completed") || rawStatus === "completed" ? "completed" : "informational";
-    const title = ({ plan: "Plan", tool_execution: "Tool execution", research: "Research", delegation: "Delegation", model_identity: "Model", context: "Context", artifact: "Artifact", review: "Review mode", hook: "Hook", memory: "Memory citation", safety: "Safety review", terminal: "Terminal input", wait: "Intentional wait", provider_notice: "Provider notice" } as const)[family];
+    const title = ({ plan: "Plan", plan_proposal: "Plan", tool_execution: "Tool execution", research: "Research", delegation: "Delegation", model_identity: "Model", context: "Context", artifact: "Artifact", review: "Review mode", hook: "Hook", memory: "Memory citation", safety: "Safety review", terminal: "Terminal input", wait: "Intentional wait", provider_notice: "Provider notice" } as const)[family];
     const summary = family === "model_identity"
       ? text(payload.summary, text(payload.effectiveModel, text(payload.requestedModel, text(payload.provider, eventType))))
       : text(payload.summary, text(payload.name, text(payload.query, eventType)));
