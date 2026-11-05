@@ -155,7 +155,7 @@ export function truthfulTimelineAccount(input: {
   // repair account. No intervening sentence or earlier/unrelated result joins.
   const adjacentVerification = new RegExp(`^\\s*(?:(?:the|a|an)\\s+|${escape(repairWorker)}['’]s\\s+)?${commandSubject}\\s+${successModifiers}(?:${repairSuccess.source})(?:\\s+with\\s+exit(?:\\s+(?:code|status))?\\s*[:=]?\\s*0)?\\s*[.!]?\\s*$`, "i");
   const contextualCommandLead = new RegExp(`^\\s*(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s+${successModifiers}$`, "i");
-  const coordinatedCommand = new RegExp(`(?:,\\s*(?:and\\s+)?|\\band\\s+)(?:re-?ran|ran|executed|performed)\\s+(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s*[.!]?\\s*$`, "i");
+  const coordinatedCommand = new RegExp(`(?:,\\s*(?:and\\s+)?|\\band\\s+)(?:${repairModifier}\\s+){0,3}(?:re-?ran|ran|executed|performed)\\s+(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s*[.!]?\\s*$`, "i");
   const repairObjectTail = new RegExp(`^(?:[ \\t]+${commandModifier}){0,6}\\s*[.!]?\\s*$`, "i");
   const passiveRepairSubject = new RegExp(`^\\s*(?:${commandModifier}[ \\t]+){1,6}$`, "i");
   const deniedRepairObject = /^\s*(?:[a-z]+ly\s+){0,2}(?:(?:no|none|neither|nothing)\b|zero(?=\s|[.!?]|$))/i;
@@ -174,8 +174,10 @@ export function truthfulTimelineAccount(input: {
     const assertedRepair = /^\s*(?:(?:then|later|finally)\s+)?$/i.test(lead)
       || passiveRepair && passiveRepairSubject.test(lead);
     const nextClause = clauses[clauseIndex + 1];
-    const sameWorkerParagraph = owner === repairWorker && nextClause?.owner === repairWorker
-      && paragraphStart === nextClause.paragraphStart;
+    const explicitRepairSubject = new RegExp(`^\\s*${escape(repairWorker)}\\b`, "i").test(text)
+      && !namesOtherActor(text, repairWorker) && !mentions(text, firstWorker);
+    const sameWorkerParagraph = paragraphStart === nextClause?.paragraphStart
+      && (owner === repairWorker && nextClause.owner === repairWorker || explicitRepairSubject);
     const nextCommand = next && sameWorkerParagraph && coordinatedCommand.test(text.slice(end))
       ? next.replace(/^\s*it\b/i, "check") : next;
     const contextualOutcome = nextCommand && repairSuccess.exec(nextCommand);
