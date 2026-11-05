@@ -6,7 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
 import { activityLog, agentRuntimeState, agentTaskSessions, agentWakeupRequests, agents, applyPendingMigrations, authUsers,
-  chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
+  chatDeliveries, chatEndpoints, chatExternalPrincipals, companySecretBindings, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
   companySecrets, companySkills, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, toolApplications, toolConnections,
   closeCheckpointDb, closeFileStorageDb, closeLivenessDb, createDb } from "@paperclipai/db";
 import { databaseWorkPending, reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
@@ -15,6 +15,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createSlackCloudConnectorFixture } from "./helpers/slack-cloud-connector-fixture.js";
 import { chatChannelService } from "../services/chat-channels.js";
+import { toolAccessService } from "../services/tool-access.js";
+import { secretService } from "../services/secrets.js";
 import { ChatRuntime } from "../services/chat-runtime.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
@@ -349,5 +351,83 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(await setup(endpointId)).toEqual(before);
       expect(cloud.calls).toHaveLength(requests);
     } finally { transaction.mockRestore(); unregister(); }
+  }, 60_000);
+
+  it("public tool removal retains Slack retirement custody through broker outage and ordinary owner recovery", async () => {
+    const endpointId = await createEndpoint("TOOLREMOVE"); await confirm(endpointId); await activate(endpointId); await confirm(endpointId);
+    const originalEndpoint = await row(endpointId), originalSetup = await setup(endpointId);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, originalEndpoint.connectionId));
+    const signingRef = connection!.credentialSecretRefs.find(ref => ref.configPath === "credentials.signingSecret");
+    if (!signingRef) throw new Error("Normal Slack configure did not persist its signing credential binding");
+    const credentialOwner = { consumerType: "tool_connection" as const, consumerId: connection!.id,
+      configPath: "credentials.signingSecret", actorType: "system" as const };
+    await expect(secretService(db).resolveSecretValue(companyId, signingRef.secretId, "latest", credentialOwner)).resolves.toBe(secret);
+    cloud.setUnavailable(true);
+    const requests = vi.mocked(cloud.request).mock.calls.length;
+    const tools = toolAccessService(db);
+    const removed = await tools.archiveConnection(connection!.id, companyId, { actorType: "user", actorId });
+    expect(removed.connection).toMatchObject({ id: connection!.id, status: "archived", enabled: false });
+    const archived = await row(endpointId);
+    expect(archived.status).toBe("archived");
+    const [revoked] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(revoked!.credentialSecretRefs).toEqual([]);
+    expect(revoked!.credentialRefs).toEqual([]);
+    expect(await db.select().from(companySecretBindings).where(and(eq(companySecretBindings.companyId, companyId),
+      eq(companySecretBindings.targetType, "tool_connection"), eq(companySecretBindings.targetId, connection!.id)))).toEqual([]);
+    await expect(secretService(db).resolveSecretValue(companyId, signingRef.secretId, "latest", credentialOwner)).rejects.toThrow();
+    expect(vi.mocked(cloud.request).mock.calls).toHaveLength(requests);
+    const intent = (await setup(endpointId)).slackCloudIntent;
+    expect(intent).toMatchObject({ version: 1, active: false, companyId, endpointId, connectionId: connection!.id,
+      publicId: originalEndpoint.publicId, runtimeGeneration: Number(originalSetup.runtimeGeneration),
+      subject: originalSetup.slackCloudSubject, instanceId: originalSetup.slackCloudInstanceId, attempts: 0 });
+    expect(JSON.stringify(intent)).not.toContain(secret);
+    await tools.archiveConnection(connection!.id, companyId, { actorType: "user", actorId });
+    expect((await setup(endpointId)).slackCloudIntent).toEqual(intent);
+    const owner = githubConnectionEventService(db, { connector: cloud.connector });
+    await expect(owner.pollOnce({ forDelivery: true })).rejects.toMatchObject({ status: 503 });
+    const retry = (await setup(endpointId)).slackCloudIntent!;
+    expect(retry).toMatchObject({ ...intent, attempts: 1, failureCode: "broker_unavailable", nextAttemptAt: expect.any(String) });
+    const retryAt = Date.parse(retry.nextAttemptAt!);
+    expect(retryAt).toBeGreaterThan(Date.now());
+    cloud.setUnavailable(false); cloud.install();
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now())));
+    await owner.pollOnce();
+    expect((await setup(endpointId)).slackCloudIntent).toBeUndefined();
+    expect((await setup(endpointId)).slackCloudRetiredGeneration).toBe(Number(originalSetup.runtimeGeneration));
+    expect(cloud.calls.filter(call => call.operation === "slack-events" && call.enrollment?.active === false
+      && call.enrollment.endpointId === endpointId)).toHaveLength(1);
+    expect(callbacks).toEqual([]);
+  }, 60_000);
+
+  it("public tool removal rolls back both archive writes without dropping current Slack custody or credentials", async () => {
+    const endpointId = await createEndpoint("TOOLROLLBACK"); await confirm(endpointId); await activate(endpointId); await confirm(endpointId);
+    const before = await row(endpointId);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, before.connectionId));
+    const failure = new Error("Synthetic removal transaction rollback"), requests = vi.mocked(cloud.request).mock.calls.length;
+    const realTransaction = db.transaction.bind(db);
+    const transaction = vi.spyOn(db, "transaction").mockImplementationOnce(async work => realTransaction(async tx => {
+      await work(tx);
+      const [archivedEndpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
+      const [archivedConnection] = await tx.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(archivedEndpoint!.status).toBe("archived");
+      expect(archivedConnection).toMatchObject({ status: "archived", enabled: false });
+      throw failure;
+    }));
+    try {
+      await expect(toolAccessService(db).archiveConnection(connection!.id, companyId, { actorType: "user", actorId })).rejects.toBe(failure);
+      expect(await row(endpointId)).toMatchObject({ status: before.status, setup: before.setup });
+      const [after] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(after).toMatchObject({ status: connection!.status, enabled: connection!.enabled,
+        credentialSecretRefs: connection!.credentialSecretRefs, credentialRefs: connection!.credentialRefs });
+      expect(vi.mocked(cloud.request).mock.calls).toHaveLength(requests);
+    } finally { transaction.mockRestore(); }
+  }, 60_000);
+
+  it("public tool removal refuses a foreign company before Slack archival or retirement staging", async () => {
+    const endpointId = await createEndpoint("TOOLFOREIGN"); await confirm(endpointId);
+    const before = await row(endpointId), requests = vi.mocked(cloud.request).mock.calls.length;
+    await expect(toolAccessService(db).archiveConnection(before.connectionId, randomUUID(), { actorType: "user", actorId })).rejects.toMatchObject({ status: 404 });
+    expect(await row(endpointId)).toEqual(before);
+    expect(vi.mocked(cloud.request).mock.calls).toHaveLength(requests);
   }, 60_000);
 });

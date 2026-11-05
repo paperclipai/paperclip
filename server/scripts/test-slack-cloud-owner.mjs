@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const patterns = { "--fairness-only": "two due registrations", "--malformed-only": "malformed sealed Slack receipt",
+const patterns = { "--tool-removal-only": "public tool removal retains Slack retirement", "--fairness-only": "two due registrations", "--malformed-only": "malformed sealed Slack receipt",
   "--wiring-only": "normal configure stages SQL intent", "--cas-only": "real SQL refuses an enrollment response" };
 const args = process.argv.slice(2);
 if (!process.version.startsWith("v24.")) throw new Error("Slack owner fixture requires the current Node24 executable");
