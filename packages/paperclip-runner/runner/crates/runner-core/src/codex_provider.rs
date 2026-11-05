@@ -456,24 +456,33 @@ pub struct CodexProviderConfig {
 /// null) and the run's own model and effort.
 fn codex_plan_collaboration_mode(
     config: &CodexProviderConfig,
+    observed_model: Option<&str>,
     effort: Option<&Value>,
-) -> Option<Value> {
+) -> Result<Option<Value>, LocalRunnerError> {
     if config.provider != "codex" || !config.read_only {
-        return None;
+        return Ok(None);
     }
+    // A model-less launch uses the model Codex reported for the thread. A
+    // planning run must never silently fall back to default mode.
     let model = config
         .model
         .as_deref()
+        .or(observed_model)
         .map(str::trim)
-        .filter(|model| !model.is_empty())?;
-    Some(json!({
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            LocalRunnerError::invalid(
+                "planning_mode_unsupported: Codex reported no model for native plan collaboration mode",
+            )
+        })?;
+    Ok(Some(json!({
         "mode": "plan",
         "settings": {
             "model": model,
             "reasoning_effort": effort.cloned().unwrap_or(Value::Null),
             "developer_instructions": Value::Null,
         },
-    }))
+    })))
 }
 
 /// Explicit per-turn skill selection. The controller resolves assigned skill
@@ -2063,7 +2072,9 @@ impl CodexProvider {
         // A read-only (Planning) Codex run uses Codex's native plan
         // collaboration mode, so a finished proposal arrives as Codex's own
         // `plan` item for Paperclip's Plan document and approval gate.
-        if let Some(collaboration_mode) = codex_plan_collaboration_mode(&self.config, effort) {
+        if let Some(collaboration_mode) =
+            codex_plan_collaboration_mode(&self.config, self.observed_model.as_deref(), effort)?
+        {
             turn_params_object.insert("collaborationMode".to_owned(), collaboration_mode);
         }
         let result = match self.request_classified("turn/start", turn_params) {
@@ -4589,16 +4600,32 @@ mod tests {
             conversation_mode: None,
         };
         assert_eq!(
-            super::codex_plan_collaboration_mode(&config, Some(&json!("high"))),
+            super::codex_plan_collaboration_mode(&config, None, Some(&json!("high"))).unwrap(),
             Some(
                 json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})
             ),
         );
+        // A model-less launch uses the model Codex reported for the thread.
+        config.model = None;
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, Some("gpt-5.6-luna"), None).unwrap(),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-luna", "reasoning_effort": null, "developer_instructions": null}})
+            ),
+        );
+        // With no model at all, planning fails loudly instead of running in default mode.
+        assert!(super::codex_plan_collaboration_mode(&config, None, None).is_err());
         config.read_only = false;
-        assert_eq!(super::codex_plan_collaboration_mode(&config, None), None);
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
         config.read_only = true;
         config.provider = "opencode".to_owned();
-        assert_eq!(super::codex_plan_collaboration_mode(&config, None), None);
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
     }
     use super::*;
 

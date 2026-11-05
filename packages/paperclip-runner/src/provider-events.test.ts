@@ -416,6 +416,22 @@ describe("provider-neutral events", () => {
         item: { id: "msg-2", type: "agentMessage", text: "No plan here." },
       }),
     ).toEqual([]);
+    // Quoting or documenting the tag, or a non-final message, is not a proposal.
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-3", type: "agentMessage", text: "Use this format:\n```\n<proposed_plan>\n# Plan\n</proposed_plan>\n```" },
+      }),
+    ).toEqual([]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-4", type: "agentMessage", text: "Inline <proposed_plan>x</proposed_plan> mention." },
+      }),
+    ).toEqual([]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-5", type: "agentMessage", phase: "commentary", text: "<proposed_plan>\n# Plan\n</proposed_plan>" },
+      }),
+    ).toEqual([]);
   });
 
   it("maps a captured Claude ExitPlanMode plan to a completed proposal", () => {

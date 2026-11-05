@@ -718,6 +718,34 @@ export function planProposalPayload(
   };
 }
 
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+export function splitProposedPlanBlock(value: string): { plan: string | null; rest: string } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (start < 0 && marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+      };
+    }
+  }
+  return { plan: null, rest: value };
+}
+
 /** Claude Code's ExitPlanMode plan, captured at its permission request. */
 export function claudePlanProposalEvent(proposal: {
   toolCallId: string;
@@ -808,9 +836,11 @@ export function canonicalProviderEventsFromCodex(
   // Codex plan mode turns a `<proposed_plan>` block into its own plan item;
   // agents can also write the block in an ordinary message to ask for plan
   // approval, so read it there as well.
-  if (completed && type === "agentMessage" && /<proposed_plan>/i.test(text(item.text))) {
-    const payload = planProposalPayload(itemId, "completed", text(item.text), "codex_plan_item");
-    return payload.markdown ? [{ eventType: "plan.proposed", payload, itemId }] : [];
+  if (completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
+    const { plan } = splitProposedPlanBlock(text(item.text));
+    if (plan) {
+      return [{ eventType: "plan.proposed", payload: planProposalPayload(itemId, "completed", plan, "codex_plan_item"), itemId }];
+    }
   }
   if ((method === "item/started" || completed) && type === "plan") {
     return [

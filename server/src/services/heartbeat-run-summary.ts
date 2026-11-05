@@ -29,6 +29,34 @@ function readNumericField(record: Record<string, unknown>, key: string) {
   return key in record ? (record[key] ?? null) : undefined;
 }
 
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (start < 0 && marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+      };
+    }
+  }
+  return { plan: null, rest: value };
+}
+
 function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value : null;
@@ -247,9 +275,7 @@ export function readCompletedAssistantMessageCandidate(input: {
   // A harness's `<proposed_plan>` block becomes the task's Plan document and
   // approval card; the posted reply keeps only the surrounding prose.
   const text = readCommentText(
-    typeof payload.text === "string"
-      ? payload.text.replace(/<proposed_plan>[\s\S]*?(?:<\/proposed_plan>|$)/gi, "").trim()
-      : payload.text,
+    typeof payload.text === "string" ? splitProposedPlanBlock(payload.text).rest : payload.text,
   );
   if (!text) return null;
   return {

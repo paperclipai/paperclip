@@ -96,8 +96,36 @@ function proposedPlanMarkdown(value: string): string {
   return value.replace(/<\/?proposed_plan>/gi, "").trim();
 }
 
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (start < 0 && marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+      };
+    }
+  }
+  return { plan: null, rest: value };
+}
+
 function withoutProposedPlanBlock(value: string): string {
-  return value.replace(/<proposed_plan>[\s\S]*?(?:<\/proposed_plan>|$)/gi, "").trim();
+  return splitProposedPlanBlock(value).rest;
 }
 
 function planProposalEntry(
@@ -895,7 +923,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     const itemKind = itemIdentity.kind;
 
     if (event.eventType === "item.delta" && isAssistantItemKind(itemKind)) {
-      const value = normalizedItemText(payload)?.replace(/<\/?proposed_plan>/gi, "");
+      const value = normalizedItemText(payload);
       if (!value || !itemId) continue;
       // Once the loss-resistant completion is present, prefer its full text.
       // Before that point the deltas still provide the live streaming view.
