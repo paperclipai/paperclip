@@ -74,12 +74,28 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
         message: redactCodexDiagnostic(String(error)),
       });
       state.expirePendingInputRequestsAfterProviderLoss();
+      // The terminal error is what the run shows. Keep the redacted cause on it:
+      // the stream can close because of host-side runner supervision, not only
+      // the provider, and a bare "failed closed" hides which one it was.
       state.failProtocol(
         "notification_transport_failed",
-        "Provider notification transport failed closed.",
+        notificationTransportFailureMessage(error),
       );
     }
   }
+
+const NOTIFICATION_TRANSPORT_CAUSE_LIMIT = 1_000;
+
+function notificationTransportFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  // Redact before bounding so truncation cannot split a credential pattern.
+  const cause = redactCodexDiagnostic(raw).replace(/\s+/g, " ").trim();
+  if (!cause) return "Notification transport failed closed.";
+  const bounded = cause.length > NOTIFICATION_TRANSPORT_CAUSE_LIMIT
+    ? `${cause.slice(0, NOTIFICATION_TRANSPORT_CAUSE_LIMIT)}…`
+    : cause;
+  return `Notification transport failed closed: ${bounded}`;
+}
 
 async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     const sourceSequenceBefore = state.sourceSequence;
