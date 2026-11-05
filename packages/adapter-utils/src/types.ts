@@ -607,6 +607,7 @@ export interface ServerAdapterModule {
 
 export type ProviderActivityFamily =
   | "plan"
+  | "plan_proposal"
   | "tool_execution"
   | "research"
   | "delegation"

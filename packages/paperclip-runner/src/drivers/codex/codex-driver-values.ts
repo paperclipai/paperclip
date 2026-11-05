@@ -36,7 +36,9 @@ export function record(value: unknown): Record<string, unknown> {
  * so the compatibility Codex facade must preserve the item as activity
  * without trying to infer a second result from its text.
  */
-export const RUNNERD_CANONICAL_ITEM = Symbol(
+// Registered by name so dependency-free modules (provider-events) can test
+// it without importing the Codex driver graph.
+export const RUNNERD_CANONICAL_ITEM = Symbol.for(
   "paperclip.runnerd.canonical-item",
 );
 

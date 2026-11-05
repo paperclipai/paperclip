@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { RUNNERD_CANONICAL_ITEM } from "./drivers/codex/codex-driver-values.js";
 import {
   CODEX_THREAD_ITEM_CLASSIFICATION,
+  claudePlanProposalEvent,
   PROVIDER_EVENT_FAMILIES,
   canonicalProviderEventsFromAcpxRuntimeEvent,
   canonicalProviderEventsFromCodex,
@@ -202,7 +204,7 @@ describe("provider-neutral events", () => {
     expect(Object.values(CODEX_THREAD_ITEM_CLASSIFICATION)).not.toContain(
       "unclassified",
     );
-    expect(CODEX_THREAD_ITEM_CLASSIFICATION.plan).toBe("existing_transcript");
+    expect(CODEX_THREAD_ITEM_CLASSIFICATION.plan).toBe("plan");
   });
 
   it("negotiates every declared family and preserves explicit unsupported states", () => {
@@ -435,16 +437,131 @@ describe("provider-neutral events", () => {
     });
   });
 
-  it("treats Codex proposed-plan text as transcript content, not a checklist", () => {
+  it("maps the Codex proposed-plan item to plan.proposed, not a checklist", () => {
+    expect(
+      canonicalProviderEventsFromCodex("item/started", {
+        item: { id: "proposed-plan-1", type: "plan", text: "" },
+      }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "proposed-plan-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "proposed-plan-1",
+          status: "streaming",
+          markdown: "",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
     expect(
       canonicalProviderEventsFromCodex("item/completed", {
         item: {
           id: "proposed-plan-1",
           type: "plan",
-          text: "# Proposed implementation\n\nShip it.",
+          text: "<proposed_plan>\n# Proposed implementation\n\nShip it.\n</proposed_plan>",
         },
       }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "proposed-plan-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "proposed-plan-1",
+          status: "completed",
+          markdown: "# Proposed implementation\n\nShip it.",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
+  });
+
+  it("reads a <proposed_plan> block in a completed Codex message as a proposal", () => {
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-1", type: "agentMessage", text: "Plan below.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>" },
+      }),
+    ).toEqual([
+      {
+        eventType: "plan.proposed",
+        itemId: "msg-1",
+        payload: {
+          schema: "paperclip.plan.proposed.v1",
+          proposalId: "msg-1",
+          status: "completed",
+          markdown: "# Fix\n1. Ship",
+          source: "codex_plan_item",
+        },
+      },
+    ]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-2", type: "agentMessage", text: "No plan here." },
+      }),
     ).toEqual([]);
+    // Quoting or documenting the tag, or a non-final message, is not a proposal.
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-3", type: "agentMessage", text: "Use this format:\n```\n<proposed_plan>\n# Plan\n</proposed_plan>\n```" },
+      }),
+    ).toEqual([]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-4", type: "agentMessage", text: "Inline <proposed_plan>x</proposed_plan> mention." },
+      }),
+    ).toEqual([]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-5", type: "agentMessage", phase: "commentary", text: "<proposed_plan>\n# Plan\n</proposed_plan>" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("leaves runnerd-forwarded items to the proposal Rust already emitted", () => {
+    const item = { id: "plan-1", type: "plan", text: "<proposed_plan>\n# Cut\n", [RUNNERD_CANONICAL_ITEM]: true };
+    expect(canonicalProviderEventsFromCodex("item/completed", { item })).toEqual([]);
+    const message = {
+      id: "msg-1", type: "agentMessage", phase: "final_answer",
+      text: "<proposed_plan>\n# Plan\n</proposed_plan>", [RUNNERD_CANONICAL_ITEM]: true,
+    };
+    expect(canonicalProviderEventsFromCodex("item/completed", { item: message })).toEqual([]);
+  });
+
+  it("keeps a plan whole when it contains a fenced closing-tag example", () => {
+    const body = "# Plan\n\n1. Document the format:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-9", type: "agentMessage", text: `Ready.\n<proposed_plan>\n${body}\n</proposed_plan>` },
+      })[0]?.payload.markdown,
+    ).toBe(body);
+  });
+
+  it("keeps literal proposed_plan tags inside a plan body", () => {
+    const body = "# Plan\n\n1. Teach the format: `<proposed_plan>example</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+    expect(claudePlanProposalEvent({ toolCallId: "toolu_1", markdown: body }).payload.markdown).toBe(body);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "plan-2", type: "plan", text: `<proposed_plan>\n${body}\n</proposed_plan>` },
+      })[0]?.payload.markdown,
+    ).toBe(body);
+  });
+
+  it("maps a captured Claude ExitPlanMode plan to a completed proposal", () => {
+    expect(
+      claudePlanProposalEvent({ toolCallId: "toolu_01", markdown: "# Plan\n\n1. Fix it" }),
+    ).toEqual({
+      eventType: "plan.proposed",
+      itemId: "toolu_01",
+      payload: {
+        schema: "paperclip.plan.proposed.v1",
+        proposalId: "toolu_01",
+        status: "completed",
+        markdown: "# Plan\n\n1. Fix it",
+        source: "claude_exit_plan_mode",
+      },
+    });
   });
 
   it("uses an empty native plan as a stable clearing snapshot", () => {

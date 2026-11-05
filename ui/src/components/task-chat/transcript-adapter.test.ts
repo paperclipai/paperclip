@@ -1214,6 +1214,51 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ).toBeUndefined();
   });
 
+  it("keeps authored prose from a yielded turn but not its wait stub", () => {
+    const result = {
+      id: "result",
+      kind: "protocol",
+      surface: "run_result",
+      disposition: "yielded",
+      summary: "Waiting for user answers on the interview card.",
+      objectiveSatisfied: false,
+      verification: [],
+      remainingWork: [],
+      blocker: null,
+      artifacts: [],
+    } satisfies TaskChatItem;
+    const reply = {
+      id: "reply",
+      kind: "message",
+      author: "agent",
+      text: "I've posted a question card that asks four things.\n- what you do\n- what done looks like",
+      channel: "final",
+      streaming: false,
+    } satisfies TaskChatItem;
+    expect(paperclipRunnerFinalResponse([reply, result])).toBe(reply);
+    expect(paperclipRunnerFinalResponse([reply], { yielded: true })).toBe(reply);
+    // A provider may echo the wait stub after its authored reply.
+    expect(
+      paperclipRunnerFinalResponse([
+        reply,
+        { ...reply, id: "stub", text: result.summary },
+        result,
+      ]),
+    ).toBe(reply);
+    expect(
+      paperclipRunnerFinalResponse(
+        [{ ...reply, text: "Waiting for Which tools should the storefront use?." }],
+        { yielded: true },
+      ),
+    ).toBeUndefined();
+    expect(
+      paperclipRunnerFinalResponse([{ ...reply, text: result.summary }], {
+        yielded: true,
+        waitSummary: result.summary,
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps a saved plan at its write_document boundary", () => {
     const plan: TaskChatPlanDocumentItem = {
       id: "plan-doc:revision-1",
