@@ -1,3 +1,4 @@
+import { isTransientAcpxTurnFailure } from "@paperclipai/adapter-utils/acpx-engine/recovery-classification";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -89,6 +90,7 @@ import {
   routines,
   workAssessments,
   workspaceOperations,
+  routineRuns,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -533,6 +535,19 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "timeout",
   // The host lost run ownership before dispatch; no provider work began.
   CONTROLLER_LEASE_LOST_FAILURE_CODE,
+  // ACPX engine phase failures are the adapter-level equivalent of `adapter_failed`:
+  // the ACP session or turn died on the transport (dropped socket, backend killed
+  // mid-turn, provider tokens exhausted), not because the issue lost its execution
+  // path. Without these the ACPX adapters fall into the `default` bucket, get a
+  // single retry, and are escalated to `blocked` on the first infrastructure blip.
+  // `acpx_session_config_failed` stays out: it also reports a runtime without
+  // config controls or a rejected option, which a retry cannot repair.
+  // `acpx_turn_failed` is transient only for transport failures; see
+  // `isTransientAcpxTurnFailure`.
+  "acpx_session_init_failed",
+  "acpx_turn_failed",
+  "acpx_backend_unavailable",
+  "acpx_timeout",
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -576,9 +591,41 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
-const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+// Retry budget for transient infrastructure failures. Deployments whose adapters sit
+// behind flaky upstreams need more headroom than the built-in default; overriding the
+// budget must not be an all-or-nothing `HEARTBEAT_SCHEDULER_ENABLED=false`. Floored at
+// 1 attempt so a misconfigured value cannot disable continuation recovery entirely.
+// Non-finite or non-integer values are rejected in favour of the default (3) so that
+// Infinity or a fractional count cannot produce an unbounded or subtly wrong budget.
+// A large finite value is capped rather than rejected: the retry history that feeds
+// `consecutive` is a bounded window, so an attempt budget beyond it would never be
+// reached and the issue would retry forever instead of escalating.
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS_CAP = 10;
+// The backoff ceilings keep a mistyped value (extra zeros, seconds written as
+// milliseconds) from parking an issue for months.
+const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
+function parseTransientMaxAttempts(raw: string | undefined): number {
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && Number.isInteger(parsed) && parsed >= 1) {
+    return Math.min(parsed, CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS_CAP);
+  }
+  return 3;
+}
+function parseTransientBackoffMs(raw: string | undefined): number {
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed >= 1_000) {
+    return Math.min(parsed, CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_CAP_MS);
+  }
+  return 60_000;
+}
+export const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = parseTransientMaxAttempts(
+  process.env.RECOVERY_TRANSIENT_CONTINUATION_MAX_ATTEMPTS,
+);
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
-const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+export const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = parseTransientBackoffMs(
+  process.env.RECOVERY_TRANSIENT_CONTINUATION_BACKOFF_MS,
+);
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -695,7 +742,11 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+  if (
+    errorCode &&
+    TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode) &&
+    (errorCode !== "acpx_turn_failed" || isTransientAcpxTurnFailure(latestRun))
+  ) {
     return {
       kind: "transient_infra",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
@@ -811,6 +862,12 @@ function isStrandedIssueRecoveryIssue(
   issue: Pick<RecoveryIssue, "originKind">,
 ) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
+}
+
+const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
+
+function isRoutineExecutionIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
+  return issue.originKind === ROUTINE_EXECUTION_ORIGIN_KIND;
 }
 
 /**
@@ -3972,6 +4029,98 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  async function closeRoutineExecutionAfterTransientInfraFailure(input: {
+    issue: RecoveryIssue;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+  }, tx: DbTransaction, publications: ActivityPublication[], postCommitActions: IssuePostCommitAction[]) {
+    // Routine execution issues are one-shot scheduled firings, not standing work.
+    // There is no retry budget to exhaust: retrying a routine execution issue would
+    // only duplicate the firing, while the next scheduled run already supersedes
+    // the miss. Cancel immediately so dead cards do not accumulate in the queue.
+    const errorCode = readNonEmptyString(input.latestRun?.errorCode);
+    const causeCopy = errorCode ? ` (\`${errorCode}\`)` : "";
+    const failureReason =
+      `Routine execution lost its live execution path to a transient infrastructure failure${causeCopy}.` +
+      " The next scheduled firing supersedes this miss.";
+
+    // Escalation already holds the issue lock. Reuse its transaction so the issue,
+    // routine run, comment and activity commit together without a second connection
+    // waiting for the same lock.
+    // Lock and compare the execution identity as well as status. A replacement
+    // wake can attach a newer run while leaving the issue `in_progress`; a
+    // status-only update would then cancel live work based on the stale failed
+    // run. Any changed checkout/execution pointer makes this recovery attempt
+    // leave the current path untouched.
+    const locked = await issuesSvc.getByIdForUpdate(input.issue.id, tx);
+    if (!locked) return null;
+    if (
+      locked.status !== input.previousStatus ||
+      locked.checkoutRunId !== input.issue.checkoutRunId ||
+      locked.executionRunId !== input.issue.executionRunId
+    ) {
+      return locked;
+    }
+    const updatedIssue = await issueService(tx as unknown as Db).update(input.issue.id, {
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    }, tx, publications, postCommitActions);
+    if (!updatedIssue) return null;
+
+    if (input.issue.originRunId) {
+      await tx
+        .update(routineRuns)
+        .set({
+          status: "failed",
+          failureReason,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(routineRuns.id, input.issue.originRunId),
+            notInArray(routineRuns.status, ["completed", "failed"]),
+          ),
+        );
+    }
+    const updated = updatedIssue;
+
+    await issueService(tx as unknown as Db).addComment(
+      input.issue.id,
+      `${failureReason} Paperclip cancelled this firing instead of blocking it: there is no ` +
+        "blocker for a recovery owner to clear, and the next scheduled firing supersedes the miss.",
+      {},
+      { authorType: "system" },
+      tx,
+    );
+
+    await logActivity(tx as unknown as Db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "cancelled",
+        previousStatus: input.previousStatus,
+        source: "recovery.close_routine_execution_transient_infra_failure",
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: errorCode,
+        routineRunId: input.issue.originRunId ?? null,
+      },
+    }, publications);
+
+    return updated;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
@@ -4042,10 +4191,25 @@ export function recoveryService(
       }, { tx, publications, postCommitActions });
     }
 
-    const recoveryCause = resolveStrandedRecoveryCause(
-      input.latestRun,
-      input.recoveryCause,
-    );
+    // A routine execution issue is one scheduled firing, not standing work. When its
+    // run is lost to infrastructure there is nothing for a recovery owner to unblock:
+    // the next scheduled firing supersedes the miss. Blocking it instead parks a
+    // permanently dead card that list queries hide by default, so the misses pile up
+    // invisibly. Close the firing and mark the routine run failed with the cause.
+    if (
+      !input.recoveryCause &&
+      isRoutineExecutionIssue(input.issue) &&
+      classifyContinuationFailure(input.latestRun).kind === "transient_infra"
+    ) {
+      const closed = await closeRoutineExecutionAfterTransientInfraFailure({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+      }, tx, publications, postCommitActions);
+      if (closed) return closed;
+    }
+
+    const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
@@ -5651,9 +5815,10 @@ export function recoveryService(
 
           if (classification.baseBackoffMs > 0 && latestFinishedAt) {
             const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay =
-              classification.baseBackoffMs *
-              Math.pow(2, Math.max(0, consecutive - 1));
+            const requiredDelay = Math.min(
+              classification.baseBackoffMs * Math.pow(2, Math.max(0, consecutive - 1)),
+              CONTINUATION_RECOVERY_TRANSIENT_MAX_BACKOFF_MS,
+            );
             if (elapsed < requiredDelay) {
               opts?.onDeferredDeadline?.(latestFinishedAt.getTime() + requiredDelay);
               result.skipped += 1;

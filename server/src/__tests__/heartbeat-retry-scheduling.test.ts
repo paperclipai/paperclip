@@ -1,3 +1,4 @@
+import { CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS, CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS } from "../services/recovery/service.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -58,7 +59,6 @@ vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -673,7 +673,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled.outcome).toBe("scheduled");
     if (scheduled.outcome !== "scheduled") return;
 
-    const expectedDueAt = new Date(now.getTime() + BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[0]);
+    const expectedDueAt = new Date(now.getTime() + CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS);
     expect(scheduled.attempt).toBe(1);
     expect(scheduled.dueAt.toISOString()).toBe(expectedDueAt.toISOString());
 
@@ -781,7 +781,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   });
 
   it.each(["silent", "comments-and-tools"])("ACCT-02 exhausted infrastructure retries remain exhausted after %s and restart", async variant => {
-    const f = await seedMaxTurnFixture({ scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length });
+    const f = await seedMaxTurnFixture({ scheduledRetryAttempt: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS });
     await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure",
       resultJson: { summary: variant === "silent" ? "" : "All done. Keep going. Making progress.",
         toolCallCount: variant === "silent" ? 0 : 1000,
@@ -1959,7 +1959,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       errorCode: "adapter_failed",
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
-      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      scheduledRetryAttempt: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
       scheduledRetryReason: "transient_failure",
       contextSnapshot: {
         wakeReason: "transient_failure_retry",
@@ -1975,8 +1975,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
     expect(exhausted).toEqual({
       outcome: "retry_exhausted",
-      attempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1,
-      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      attempt: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS + 1,
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
     });
 
     const runCount = await db
@@ -1999,8 +1999,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(exhaustionEvent?.message).toContain("Bounded retry exhausted");
     expect(exhaustionEvent?.payload).toMatchObject({
       retryReason: "transient_failure",
-      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
-      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      scheduledRetryAttempt: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
     });
 
     const onLiveEvent = vi.fn();
