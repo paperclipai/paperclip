@@ -112,8 +112,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
-          if git diff --quiet -- pnpm-lock.yaml; then
-            echo "Lockfile unchanged, nothing to do."
+          # A verified Dependabot lockfile that already resolves changes only
+          # the reporting-lock proof. Commit that proof too.
+          if git diff --quiet -- pnpm-lock.yaml tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch; then
+            echo "Lockfile and reporting-lock proof unchanged, nothing to do."
             echo "pr_url=" >> "$GITHUB_OUTPUT"
             echo "head_sha=" >> "$GITHUB_OUTPUT"
             exit 0
