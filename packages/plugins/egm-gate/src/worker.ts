@@ -57,17 +57,25 @@ async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: str
   }
   if (!issue) return { ok: false, reason: "la issue no existe" };
 
-  const reads = await Promise.allSettled([
-    ctx.issues.listComments(issueId, companyId),
-    ctx.issues.listAttachments(issueId, companyId),
-    ctx.issues.documents.get(issueId, "plan", companyId),
-    projectRepo(ctx, issue.projectId ?? null, companyId),
-  ]);
+  // Una lectura puede fallar por unReasons transitorio (timeout, DB ocupada). Se
+  // reintenta: si tras los intentos sigue fallando, el gate NO toca el estado
+  // (no puede afirmar que no hay entrega), pero deja el motivo anotado.
+  let reads: PromiseSettledResult<unknown>[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    reads = await Promise.allSettled([
+      ctx.issues.listComments(issueId, companyId),
+      ctx.issues.listAttachments(issueId, companyId),
+      ctx.issues.documents.get(issueId, "plan", companyId),
+      projectRepo(ctx, issue.projectId ?? null, companyId),
+    ]);
+    if (!reads.some((r) => r.status === "rejected")) break;
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+  }
   const failed = reads.filter((r) => r.status === "rejected");
   if (failed.length > 0) {
     return {
       ok: false,
-      reason: `lectura fallida (${failed.length}): no se puede afirmar que no hay evidencia`,
+      reason: `lectura fallida tras 3 intentos (${failed.length}): no se puede afirmar que no hay evidencia`,
     };
   }
   const [comments, attachments, plan, expectedRepo] = reads.map((r) => (r as PromiseFulfilledResult<unknown>).value) as [
@@ -174,11 +182,21 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
   // `todo`, que siempre es una transicion valida.
   const target = config.reopenAsInReview ? "in_review" : "todo";
   let reopenedAs = target;
+  let moved = true;
   try {
     await ctx.issues.update(issueId, { status: target }, companyId);
   } catch (error) {
     reopenedAs = "todo";
-    await ctx.issues.update(issueId, { status: "todo" }, companyId).catch(() => undefined);
+    try {
+      await ctx.issues.update(issueId, { status: "todo" }, companyId);
+    } catch (fallbackError) {
+      moved = false;
+      ctx.logger.error("gate: no se pudo devolver la issue a revision ni a todo", {
+        issueId,
+        identifier: snapshot.identifier,
+        error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+      });
+    }
     ctx.logger.warn("gate: no se pudo volver a in_review, se deja en todo", {
       issueId,
       identifier: snapshot.identifier,
@@ -188,14 +206,17 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
   await writeRecord(ctx, companyId, issueId, { at: new Date().toISOString(), count });
   await ctx.activity.log({
     companyId,
-    message: `gate EGM: ${snapshot.identifier} volvió a revisión (sin evidencia de entrega)`,
+    message: moved
+      ? `gate EGM: ${snapshot.identifier} volvió a revisión (sin evidencia de entrega)`
+      : `gate EGM: ${snapshot.identifier} NO se pudo devolver a revisión (sin evidencia de entrega)`,
     entityType: "issue",
     entityId: issueId,
     metadata: {
       identifier: snapshot.identifier,
       count,
       missing: evaluation.missing,
-      reopenedAs,
+      reopenedAs: moved ? reopenedAs : null,
+      moved,
     },
   });
   ctx.logger.warn("gate: cierre sin evidencia", {

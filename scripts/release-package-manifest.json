@@ -167,7 +167,7 @@
   {
     "dir": "packages/plugins/egm-gate",
     "name": "@paperclipai/plugin-egm-gate",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "ui",
