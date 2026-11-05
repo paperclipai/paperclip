@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getConnectableAppDefinition } from "./app-definitions.js";
 import { isConnectorFeatureEnabled } from "./connector-availability.js";
 import { appDefinitionSchema } from "./validators/app-definition.js";
+import { instanceExperimentalSettingsSchema } from "./validators/instance.js";
 
 describe("connector availability", () => {
   const ordinary = getConnectableAppDefinition("notion")!;
@@ -23,5 +24,16 @@ describe("connector availability", () => {
     expect(notebook.experimentalFeatureKey).toBe("enablePaperclipNotebook");
     expect(isConnectorFeatureEnabled(notebook, {})).toBe(false);
     expect(isConnectorFeatureEnabled(notebook, { enablePaperclipNotebook: true })).toBe(true);
+  });
+
+  it("gates only the built-in Google Workspace connector, default off, while verification is pending", () => {
+    const workspace = getConnectableAppDefinition("google-workspace")!;
+    expect(workspace.experimentalFeatureKey).toBe("enableGoogleWorkspaceConnector");
+    expect(isConnectorFeatureEnabled(workspace, instanceExperimentalSettingsSchema.parse({}))).toBe(false);
+    expect(isConnectorFeatureEnabled(workspace, { enableGoogleWorkspaceConnector: true })).toBe(true);
+    // Saved per-service Google connections keep working; only the unified entry is gated.
+    for (const slug of ["gmail", "google-drive", "google-calendar", "google-docs", "google-sheets"]) {
+      expect(getConnectableAppDefinition(slug)?.experimentalFeatureKey).toBeUndefined();
+    }
   });
 });
