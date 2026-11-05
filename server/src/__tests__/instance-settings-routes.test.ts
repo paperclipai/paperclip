@@ -366,11 +366,12 @@ describe("instance settings routes", () => {
 
   it("refuses an instance default that gives inheriting agents an unprepared plugin", async () => {
     const app = await createApp(localAdminActor());
-    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(Object.assign(new Error("need setup first"), { status: 409 }));
+    const { conflict } = await import("../errors.js");
+    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(conflict("need setup first"));
     const res = await request(app)
       .patch("/api/instance/settings")
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
-    expect(res.status).not.toBe(200);
+    expect(res.status).toBe(409);
     expect(mockAssertAgentsReadyForEnvironmentChange.mock.lastCall?.at(3)).toEqual({ inheritsDefault: true });
     expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
