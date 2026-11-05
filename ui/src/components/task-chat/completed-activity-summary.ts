@@ -80,6 +80,15 @@ export function completedActivitySummary(items: Activity[]) {
           notices.push({ summary, severity: providerNoticeSeverity(item), icon: p.icon, order });
           continue;
         }
+        if (item.surface === "provider_activity" && item.family === "verification" && item.status === "failed") {
+          // A failed check stays visible even when the compact label truncates.
+          add("Check failed", p.icon, -1);
+          continue;
+        }
+        if (item.surface === "provider_activity" && item.eventType === "model.route.changed") {
+          add("Switched models", p.icon, order);
+          continue;
+        }
         const family =
           item.surface === "provider_activity" ? item.family : item.surface;
         const label =
@@ -97,6 +106,7 @@ export function completedActivitySummary(items: Activity[]) {
               safety: "Reviewed safety",
               terminal: "Ran commands",
               wait: "Waited",
+              verification: "Ran checks",
               workspace_change: "Worked on files",
               workspace_file: "Referenced files",
               resource: "Added resources",
