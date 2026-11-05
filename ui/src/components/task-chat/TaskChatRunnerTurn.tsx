@@ -1,5 +1,3 @@
-import { TaskChatStatusNotice } from "./TaskChatStatusNotice";
-import { isStatusNotice } from "./status-notice-presentation";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -284,10 +282,6 @@ export function TaskChatRunnerTurn({
                       : "task-chat-plan-preview"
                   }
                 />
-              ) : row.kind === "protocol" &&
-                row.surface === "provider_activity" &&
-                isStatusNotice(row) ? (
-                <TaskChatStatusNotice item={row} resolved={row.resolved} />
               ) : row.kind === "protocol" ? (
                 <TaskChatProtocolCard
                   item={row}

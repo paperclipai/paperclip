@@ -1023,12 +1023,16 @@ function codexErrorNotice(
     .map((value) => redactCodexDiagnostic(text(value).trim()))
     .find(Boolean)
     ?.slice(0, 4000);
+  // Codex reports stream retries as "Reconnecting... {attempt}/{max}" with
+  // the actual cause in additionalDetails.
+  const attempt = /^Reconnecting\.\.\.\s*(\d+)\s*\/\s*(\d+)$/.exec(summary ?? "");
+  const additional = redactCodexDiagnostic(text(error.additionalDetails).trim()).slice(0, 4000);
+  const chipSummary = attempt && additional ? additional : summary;
   const details = [
+    ...(attempt ? [{ name: "Attempt", value: attempt[1] }, { name: "Max attempts", value: attempt[2] }] : []),
     ...(infoKind ? [{ name: "Reason", value: infoKind.slice(0, 160) }] : []),
     ...(httpStatus !== null ? [{ name: "HTTP status", value: String(httpStatus) }] : []),
-    ...(text(error.additionalDetails).trim()
-      ? [{ name: "Additional details", value: redactCodexDiagnostic(text(error.additionalDetails).trim()).slice(0, 4000) }]
-      : []),
+    ...(additional && additional !== chipSummary ? [{ name: "Additional details", value: additional }] : []),
   ];
   const turnId = text(params.turnId);
   return {
@@ -1045,7 +1049,7 @@ function codexErrorNotice(
       scope: "turn",
       recoverable: willRetry,
       userActionable: false,
-      summary: summary || "Provider notice",
+      summary: chipSummary || "Provider notice",
       ...(details.length > 0 ? { details } : {}),
     },
     itemId,

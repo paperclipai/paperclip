@@ -91,11 +91,12 @@ describe("provider-neutral events", () => {
       severity: "warning",
       category: "provider_retry",
       recoverable: true,
-      summary: "Reconnecting... 2/5",
+      summary: "stream closed before response.completed",
       details: [
+        { name: "Attempt", value: "2" },
+        { name: "Max attempts", value: "5" },
         { name: "Reason", value: "responseStreamDisconnected" },
         { name: "HTTP status", value: "502" },
-        { name: "Additional details", value: "stream closed before response.completed" },
       ],
     });
     expect(validatePrpEvent(envelope(retry)).ok).toBe(true);

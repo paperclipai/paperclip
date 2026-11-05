@@ -1059,24 +1059,9 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
       entries: sanitizeAcpxPlanEntries(record(event).entries),
     };
   }
+  const statusNotice = claudeStatusBannerNotice(event);
+  if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {
-    const banner = initializedAgent === "claude" && event.stream !== "thought"
-      ? classifyClaudeStatusBanner(event.text, typeof event.messageId === "string" && event.messageId ? event.messageId : null)
-      : null;
-    if (banner) {
-      // Harness lifecycle text is a status notice, never part of the answer.
-      if (banner.phase === "running") claudeCompactionCount += 1;
-      return {
-        type: "provider_notice",
-        severity: banner.severity,
-        category: banner.category,
-        summary: banner.summary,
-        ...(banner.category === "context_compaction" ? { noticeKey: `compaction-${claudeCompactionCount}` } : {}),
-        ...(banner.phase || banner.details.length > 0
-          ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
-          : {}),
-      };
-    }
     return {
       type: event.stream === "thought" ? "thinking" : "text_delta",
       text: boundedOptionalText(event.text, "", 64 * 1024),
@@ -1189,6 +1174,24 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
     type: "provider_notice",
     category: `unclassified_acp_${safeCode(record(event).type, "unknown")}`,
     summary: "The qualified ACP agent emitted an unclassified runtime update.",
+  };
+}
+
+/** Claude harness lifecycle text becomes a status notice, never part of the answer. */
+function claudeStatusBannerNotice(event: AcpRuntimeEvent): Record<string, unknown> | null {
+  if (initializedAgent !== "claude" || event.type !== "text_delta" || event.stream === "thought") return null;
+  const banner = classifyClaudeStatusBanner(event.text, typeof event.messageId === "string" && event.messageId ? event.messageId : null);
+  if (!banner) return null;
+  if (banner.phase === "running") claudeCompactionCount += 1;
+  return {
+    type: "provider_notice",
+    severity: banner.severity,
+    category: banner.category,
+    summary: banner.summary,
+    ...(banner.category === "context_compaction" ? { noticeKey: `compaction-${claudeCompactionCount}` } : {}),
+    ...(banner.phase || banner.details.length > 0
+      ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+      : {}),
   };
 }
 
