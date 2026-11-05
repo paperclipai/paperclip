@@ -153,6 +153,25 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  it("projects a saved GitHub permission error without rewriting its diagnostic record", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("GitHub access repair");
+    const errorMessage = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Create repository?",
+        toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "github.create_repository",
+          toolDisplayName: "Create repository", appDisplayName: "GitHub", connectionId: randomUUID(), applicationId: randomUUID(),
+          risk: "write", previewMarkdown: "Create a private prototype repository", argumentsSummaryJson: "{}",
+          argumentsHash: "hash", expiresAt: new Date().toISOString() } },
+      result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "failed",
+        errorCode: "tool_error", errorMessage, updatedAt: new Date().toISOString() } },
+    }).returning();
+    expect(await interactionsSvc.getById(row!.id)).toMatchObject({ result: { toolAction: {
+      errorCode: "github_access_denied", errorMessage,
+    } } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, row!.id)))[0]?.result)
+      .toMatchObject({ toolAction: { errorCode: "tool_error", errorMessage } });
+  });
+
   async function attachPlanDocument(companyId: string, issueId: string) {
     const documentId = randomUUID();
     const revisionId = randomUUID();

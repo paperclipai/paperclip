@@ -85,6 +85,14 @@ export function readControllerLeaseLoss(value: unknown): LegacyControllerLeaseLo
   return loss;
 }
 
+/** A queue admission wait has no provider attempt to retry. Historical rows can
+ * carry unknown cancellation provenance, so use the queue's original receipt. */
+export function isQueuedDependencyWait(run: Pick<Run, "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "runtimeMode" | "startedAt">>): boolean {
+  return run.status === "cancelled" && run.runtimeMode === "legacy" && run.startedAt === null &&
+    run.errorCode === "issue_dependencies_blocked" && run.resultJson?.stopReason === run.errorCode &&
+    run.resultJson?.timeoutSource === "dependency_gate";
+}
+
 /** Preserve recorded stop intent when adapter completion replaces resultJson. */
 export function cancellationResultJson(run: Run, status: string, patch?: Run["resultJson"], errorCode?: string | null, error?: string | null): Run["resultJson"] {
   if (status !== "cancelled" && status !== "interrupted") return patch ?? run.resultJson;
@@ -93,7 +101,9 @@ export function cancellationResultJson(run: Run, status: string, patch?: Run["re
   let cancellation = previous?.expected ? previous : readRunCancellation(patch) ?? previous;
   const code = errorCode ?? run.errorCode;
   if (!cancellation) {
-    if (code === "server_shutdown_interrupted") {
+    if (isQueuedDependencyWait({ ...run, status, errorCode: code, resultJson: result })) {
+      cancellation = requestedRunCancellation(result, "Waiting for task dependencies to resolve");
+    } else if (code === "server_shutdown_interrupted") {
       cancellation = { source: "shutdown", expected: true, initiator: { type: "system" },
         reason: "Server shutdown interrupted execution", recordedAt: new Date().toISOString() };
     } else if (result.cancelledByActorType || result.cancelledByUserId || result.interruptedByActorType || result.queuedCommentInterruptQueueId) {

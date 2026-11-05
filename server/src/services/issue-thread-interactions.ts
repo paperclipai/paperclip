@@ -5,6 +5,7 @@ import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { projectGitHubActionResult } from "./tool-access/github-access-errors.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
@@ -759,17 +760,19 @@ function hydrateInteraction(
           row,
         ),
       } satisfies AskUserQuestionsInteraction;
-    case "request_confirmation":
+    case "request_confirmation": {
+      const payload = requestConfirmationPayloadSchema.parse(row.payload);
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: parseStoredInteractionResult(
+        payload,
+        result: projectGitHubActionResult(payload, parseStoredInteractionResult(
           requestConfirmationResultSchema,
           row.result,
           row,
-        ),
+        )),
       } satisfies RequestConfirmationInteraction;
+    }
     case "request_checkbox_confirmation":
       return {
         ...base,

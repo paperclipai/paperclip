@@ -130,6 +130,14 @@ installation-health failure, not as token expiry.
 
 ## Repository access
 
+GitHub can return `403 Resource not accessible by integration` inside an MCP tool
+error even when the connection itself is healthy. A failed tool approval shows
+**GitHub access needed** and **Manage GitHub access**, which opens that connection's
+Permissions page. Check the connected account and the App's access to the intended
+account and repository there. The original provider error remains in the action's
+error details and diagnostic record. Paperclip does not replay the write or hide
+other working tools. Saved GitHub approval errors receive the same presentation.
+
 OAuth completion verifies `/user`, every page of `/user/installations`, and every
 page of each installation's accessible repositories. Setup remains incomplete
 until at least one installation and repository are available. Paperclip stores
