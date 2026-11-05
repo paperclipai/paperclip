@@ -73,7 +73,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
         owner: { id: actor, email: `${id}@example.test` },
         stack: { stackId, accountGroupId: `account-${stackId}`, stackSlug: stackId, displayName: "Transition", kind: "demo", primaryHost: `${stackId}.example.test`, region: "us-east-1" },
         versionPlan: { appVersion: "fixture", schemaVersion: "fixture", rolloutTrack: "stable" },
-        sleepPolicy: { desiredState: "awake" }, primaryCompany: { paperclipCompanyId: companyId, displayName: "Transition", defaultBudgetCents: 0 },
+        sleepPolicy: { desiredState: "awake" }, primaryCompany: { paperclipCompanyId: index === 0 ? companyId : randomUUID(), displayName: "Transition", defaultBudgetCents: 0 },
       });
       await store.putCloudStackInstance({ id: stackId, kind: "cloud_stack", companyStackId: stackId, ownerUserId: actor, environment: "test",
         signPublicKey: keys[index]!.sign.publicKey.export({ format: "jwk" }).x!, sealPublicKey: keys[index]!.seal.publicKey.export({ format: "jwk" }).x!,
