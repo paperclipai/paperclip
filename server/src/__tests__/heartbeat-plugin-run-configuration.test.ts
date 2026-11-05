@@ -4,12 +4,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues, pluginCompanySettings, plugins } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues, pluginCompanySettings, pluginConfig, plugins } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1, PluginPrepareAgentRunRequest, PluginPrepareAgentRunResult } from "@paperclipai/shared";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+
+const managedCompanies = vi.hoisted(() => new Set<string>());
+vi.mock("../services/managed-plugin-worker-env.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/managed-plugin-worker-env.js")>(),
+  managedPluginEnabledCompanies: () => [...managedCompanies],
+}));
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -50,7 +56,7 @@ describePostgres("plugin run configuration through adapter dispatch", () => {
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
     });
   }, 30_000);
-  afterEach(() => { prepare.mockReset(); });
+  afterEach(() => { prepare.mockReset(); managedCompanies.clear(); });
   afterAll(async () => {
     await heartbeat?.drainActiveRunExecutions();
     unregisterServerAdapter(adapterType);
@@ -60,12 +66,13 @@ describePostgres("plugin run configuration through adapter dispatch", () => {
     if (home) await rm(home, { recursive: true, force: true });
   });
 
-  async function seed(issueOverrides: Record<string, unknown> | null = null) {
+  async function seed(issueOverrides: Record<string, unknown> | null = null, optIn = true) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const userId = `run-config-user-${companyId}`;
     await db.insert(authUsers).values({ id: userId, name: "Run config user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Run configuration fixture", issuePrefix: `R${companyId.slice(0, 6)}` });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    if (optIn) await db.insert(pluginConfig).values({ pluginId, companyId, configJson: {} });
     await db.insert(agents).values({ id: agentId, companyId, name: "Configured agent", adapterType, status: "idle",
       adapterConfig: { model: "agent-model", modelReasoningEffort: "high" } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix a typo", description: "One word in the README.", status: "todo",
@@ -121,6 +128,42 @@ describePostgres("plugin run configuration through adapter dispatch", () => {
     expect(finished.contextSnapshot?.pluginRunConfiguration).toEqual({ runId: finished.id, adapterConfig: {}, decisions: [] });
     const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, finished.id), eq(heartbeatRunEvents.eventType, "plugin_run_configuration")));
     expect(events).toHaveLength(0);
+  });
+
+  it("does not call a plugin for a company without configuration when another company has it", async () => {
+    const configured = await seed();
+    const other = await seed(null, false);
+    prepare.mockResolvedValue({ adapterConfig: { model: "plugin-model" } });
+    const { finished, input } = await run(other);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(input?.config).toMatchObject({ model: "agent-model" });
+    expect(finished.contextSnapshot?.pluginRunConfiguration).toBeUndefined();
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, finished.id), eq(heartbeatRunEvents.eventType, "plugin_run_configuration")));
+    expect(events).toHaveLength(0);
+    const { input: configuredInput } = await run(configured);
+    expect(configuredInput?.config).toMatchObject({ model: "plugin-model" });
+  });
+
+  it("calls a managed plugin only for companies in its enabled list", async () => {
+    const included = await seed(null, false);
+    const excluded = await seed(null, false);
+    managedCompanies.add(included.companyId);
+    prepare.mockResolvedValue({ adapterConfig: { model: "plugin-model" } });
+    const { input: excludedInput } = await run(excluded);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(excludedInput?.config).toMatchObject({ model: "agent-model" });
+    const { input: includedInput } = await run(included);
+    expect(includedInput?.config).toMatchObject({ model: "plugin-model" });
+  });
+
+  it("does not call a managed plugin that the company disabled", async () => {
+    const f = await seed(null, false);
+    managedCompanies.add(f.companyId);
+    await db.insert(pluginCompanySettings).values({ companyId: f.companyId, pluginId, enabled: false });
+    prepare.mockResolvedValue({ adapterConfig: { model: "plugin-model" } });
+    const { input } = await run(f);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(input?.config).toMatchObject({ model: "agent-model" });
   });
 
   it("does not call a plugin that is disabled for the company", async () => {

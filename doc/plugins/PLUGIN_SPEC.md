@@ -713,8 +713,11 @@ commands or workspace settings through this hook.
 
 Rules:
 
-- The host calls only `ready` plugins that are enabled for the company, run a
-  worker and implement the hook.
+- The host calls only `ready` plugins that run a worker, implement the hook and
+  are not disabled for the company.
+- The company must opt in. The plugin must have a `plugin_config` row for the
+  company, or the company must be in the managed `enabledCompanies` list of the
+  plugin. Without this, the host does not call the plugin for that company.
 - The host calls the plugins in parallel with a 1500 ms timeout each.
 - An error, a timeout or an invalid result has no effect. The run continues with
   the configuration it would have had without the plugin.

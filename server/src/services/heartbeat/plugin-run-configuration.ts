@@ -1,11 +1,12 @@
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
-import { heartbeatRuns, pluginCompanySettings, plugins, type Db } from "@paperclipai/db";
+import { heartbeatRuns, pluginCompanySettings, pluginConfig, plugins, type Db } from "@paperclipai/db";
 import {
   PLUGIN_RUN_ADAPTER_CONFIG_KEYS, PLUGIN_RUN_CONFIGURATION_CAPABILITY, pickPluginRunAdapterConfig, pluginPrepareAgentRunResultSchema,
   type PluginPrepareAgentRunRequest, type PluginRunAdapterConfig,
 } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
+import { managedPluginEnabledCompanies } from "../managed-plugin-worker-env.js";
 import type { parseIssueAssigneeAdapterOverrides } from "../execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
@@ -48,16 +49,19 @@ export interface PluginRunConfigurationInput {
 }
 
 export async function listPluginRunConfigurators(db: Db, companyId: string): Promise<PluginRunConfigurator[]> {
-  const rows = await db.select({ id: plugins.id, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson })
+  const rows = await db.select({ id: plugins.id, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson, configId: pluginConfig.id })
     .from(plugins)
     .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, companyId)))
+    .leftJoin(pluginConfig, and(eq(pluginConfig.pluginId, plugins.id), eq(pluginConfig.companyId, companyId)))
     .where(and(
       eq(plugins.status, "ready"),
       sql`${plugins.manifestJson} -> 'capabilities' @> ${JSON.stringify([PLUGIN_RUN_CONFIGURATION_CAPABILITY])}::jsonb`,
       or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true)),
     ))
     .orderBy(asc(plugins.installOrder), asc(plugins.id));
-  return rows.map((row) => ({ id: row.id, pluginKey: row.pluginKey, capabilities: row.manifestJson.capabilities }));
+  return rows
+    .filter((row) => row.configId !== null || managedPluginEnabledCompanies(row.pluginKey).includes(companyId))
+    .map((row) => ({ id: row.id, pluginKey: row.pluginKey, capabilities: row.manifestJson.capabilities }));
 }
 
 export async function requestPluginRunConfiguration(
