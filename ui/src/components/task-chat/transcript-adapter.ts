@@ -5,6 +5,7 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
 import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
@@ -939,10 +940,15 @@ export function transcriptToTaskChatItems(
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.
-        if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
+        if (entry.family === "provider_notice" && !isStatusNoticePayload(entry.payload) &&
+          (entry.payload.userActionable !== true ||
           ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
             .includes(String(entry.payload.category)))) break;
-        const key = `provider:${providerActivityKey(entry)}`;
+        // Each retry keeps its own position, so work between two retries in
+        // one turn cannot make the later retry look recovered.
+        const key = entry.family === "provider_notice" && entry.payload.category === "provider_retry"
+          ? `provider:${providerActivityKey(entry)}:${i}`
+          : `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
         if (existingIndex == null) {
@@ -1361,8 +1367,17 @@ export function paperclipRunnerActivityItems(
  * terminal receipt at the request's first-seen position.
  */
 export function paperclipRunnerTimelineItems(
-  parsed: readonly TaskChatItem[],
+  allParsed: readonly TaskChatItem[],
 ): TaskChatItem[] {
+  // Decide retry recovery on the full transcript: the final answer that
+  // proves recovery is filtered out of the display rows below.
+  const parsed = allParsed.map((item, index) =>
+    item.kind === "protocol" && item.surface === "provider_activity" &&
+      statusNoticeCategory(item) === "provider_retry" && !item.resolved &&
+      allParsed.slice(index + 1).some(statusNoticeResolvesRetry)
+      ? { ...item, resolved: true }
+      : item,
+  );
   const activityIds = new Set(
     paperclipRunnerActivityItems(parsed).map((item) => item.id),
   );
@@ -1956,6 +1971,37 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      isStatusNotice(item)
+    ) {
+      // Harness status notices sit between activity as their own chips, so
+      // a retry or compaction is visible without opening a phase.
+      const later = parsed.slice(parsed.indexOf(item) + 1);
+      const retry = statusNoticeCategory(item) === "provider_retry";
+      // A fatal error that ends the retries already tells the whole story.
+      if (retry && later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && isFatalProviderError(next))) continue;
+      // Consecutive retries with no work between them show only the latest.
+      const nextSignal = later.find((next) => statusNoticeResolvesRetry(next) ||
+        (next.kind === "protocol" && next.surface === "provider_activity" && statusNoticeCategory(next) === "provider_retry"));
+      if (retry && nextSignal?.kind === "protocol" && nextSignal.surface === "provider_activity" &&
+        statusNoticeCategory(nextSignal) === "provider_retry") continue;
+      // A completed compaction with a canonical context.compacted divider
+      // after it is shown by that divider alone.
+      if (statusNoticeCategory(item) === "context_compaction" &&
+        item.details.find((detail) => detail.label === "Phase")?.value === "completed" &&
+        later.some(isCompactionDivider)) continue;
+      current = null;
+      // A compaction still "running" when the turn has ended was cut short.
+      const stoppedCompaction = !running && statusNoticeCategory(item) === "context_compaction" &&
+        item.details.find((detail) => detail.label === "Phase")?.value === "running";
+      const resolved = retry && (item.resolved === true || later.some(statusNoticeResolvesRetry));
+      // A retry with no later work in a turn that has ended never recovered.
+      const stoppedRetry = retry && !resolved && !running;
+      rows.push(resolved
+        ? { ...item, resolved: true }
+        : stoppedCompaction || stoppedRetry ? { ...item, status: "interrupted" } : item);
+    } else if (
       item.kind === "tool" ||
       item.kind === "usage" ||
       item.kind === "thinking" ||
@@ -1974,6 +2020,36 @@ export function buildTurnTimelineRows(
   }
   if (running && current && meaningful.includes(current)) current.active = true;
   return meaningful;
+}
+
+/**
+ * A canonical context.compacted item: a context provider activity, or the
+ * context-meter divider marker (variant compared as text so this works
+ * before and after that variant joins the marker union).
+ */
+function isCompactionDivider(item: TaskChatItem): boolean {
+  if (item.kind === "protocol") return item.surface === "provider_activity" && item.family === "context";
+  return item.kind === "marker" && (item.variant as string) === "context_compacted";
+}
+
+/** Real provider progress after a retry notice shows the retry succeeded. */
+function statusNoticeResolvesRetry(item: TaskChatItem): boolean {
+  // Only new provider work proves recovery. Run results, terminal records,
+  // markers and usage also appear when a user stops a reconnecting run.
+  switch (item.kind) {
+    case "message":
+      return item.author === "agent" && item.text.trim().length > 0;
+    case "thinking":
+      return item.lines.some((line) => line.trim().length > 0);
+    case "tool":
+      return true;
+    case "protocol":
+      // Workspace cards are re-positioned to the end of the turn, so their
+      // place says nothing about when the work happened.
+      return item.surface === "provider_activity" && !isStatusNotice(item);
+    default:
+      return false;
+  }
 }
 
 /** Segment parsed transcript rows at assistant/request boundaries. */

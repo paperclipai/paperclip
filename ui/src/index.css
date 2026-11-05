@@ -447,6 +447,8 @@
   --motion-diff-reveal: var(--motion-duration-base);
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
+  /* Harness status chip fading to a receipt once a retry recovers. */
+  --motion-status-notice-fade: var(--motion-duration-deliberate);
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
@@ -568,6 +570,12 @@
   --tc-mode-agent: var(--status-task-backlog);
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
+
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
 
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker

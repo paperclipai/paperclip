@@ -2074,7 +2074,10 @@ backup. Paperclip restores that backup into the new sandbox only when all of
 these are true: the backup's source lease is expired or failed with a provider
 `destroyed` termination receipt, the source lease's backup stamp names this
 exact backup manifest, and no provider event for the session was recorded after
-the backup completed. Any other state is ambiguous. The run then fails closed
+the backup completed. Normal warm handoffs can leave multiple lease records
+for that allocation. Restore requires one final owner and the existing matching
+predecessor/successor receipts for every earlier owner. Unrelated, live, or
+incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
 A per-turn sandbox turn can finish through recovery without a Runner

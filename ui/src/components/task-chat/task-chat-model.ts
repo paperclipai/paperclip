@@ -414,6 +414,8 @@ export interface TaskChatProviderActivityItem {
   /** First and latest provider event times coalesced into this activity. */
   startedAtMs?: number;
   updatedAtMs?: number;
+  /** A retry status notice the turn has moved past. */
+  resolved?: boolean;
   /** When the provider first reported this activity (ISO timestamp). */
   startedAt?: string;
 }
