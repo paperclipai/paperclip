@@ -785,7 +785,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     for (const app of managedCatalog) {
       const snapshots = upstreamAppsBySlug.get(app.slug) ?? [];
       const aliases = new Set([app.name, app.slug, ...app.aliases].map(aggregatorAppIdentity));
-      const nativeRow = [...rowsBySlug.values()].find(row => !yieldsToAggregators(row.slug) && aliases.has(aggregatorAppIdentity(row.slug)) || aliases.has(aggregatorAppIdentity(row.name)));
+      const nativeRow = [...rowsBySlug.values()].find(row => !yieldsToAggregators(row.slug)
+        && (aliases.has(aggregatorAppIdentity(row.slug)) || aliases.has(aggregatorAppIdentity(row.name))));
       if (nativeRow) { nativeRow.upstreamApps = [...(nativeRow.upstreamApps ?? []), ...snapshots]; nativeRow.upstreamCatalogApp = app; }
     }
     const aggregatorRows: ConnectorRowModel[] = managedCatalog.filter((app) =>

@@ -896,6 +896,23 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
   });
 
+  it("shows an existing aggregator Google account once, on the aggregator row, while the built-in connector is off", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(googleAggregatorApp("Google Calendar", "googlecalendar"));
+    listGalleryMock.mockResolvedValue({ apps: [...googleSlugs.map(getAppStoreDefinition), getAppStoreDefinition("composio")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } })] });
+    const snapshot = { connectionId: "conn-notion", toolkit: "googlecalendar", status: "connected", checkedAt: new Date().toISOString(),
+      accounts: [{ id: "ca-calendar", alias: "Work calendar", status: "ACTIVE", isDefault: true }] };
+    listComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+    refreshComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+    await renderBrowse();
+
+    expect(container.querySelector('[data-app-slug="google-calendar"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="googlecalendar"]')?.textContent).toContain("Work calendar");
+    expect(container.textContent?.split("Work calendar").length).toBe(2);
+  });
+
   it("keeps aggregator Google apps folded into the built-in connector when it is enabled", async () => {
     experimentalMock.mockResolvedValue({ enableGoogleWorkspaceConnector: true });
     aggregatorCatalogMock.push(googleAggregatorApp("Gmail", "gmail"), googleAggregatorApp("Google Calendar", "googlecalendar"));
