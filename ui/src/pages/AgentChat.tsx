@@ -44,8 +44,6 @@ export function AgentChat() {
   const chat = useQuery({
     queryKey: chatKey,
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
-    // Navigation already reads these authorized, per-person conversations.
-    // Keep the source timestamp so an old list still refreshes in background.
     initialData: () => enabled && agent && session.isSuccess
       ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
         ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)

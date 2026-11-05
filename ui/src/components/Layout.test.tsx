@@ -6,8 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
 
-// Compatibility layout cases deliberately opt into Classic. Default-workspace
-// selection and switching also have a real-browser regression.
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),

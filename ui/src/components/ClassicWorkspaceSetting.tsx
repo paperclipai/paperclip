@@ -30,7 +30,6 @@ export function ClassicWorkspaceSetting() {
           aria-describedby="classic-workspace-description"
           onCheckedChange={(classicEnabled) => {
             if (!selectedCompany) return;
-            // The hook exposes the error for the account that attempted the save.
             void workspace.setEnabled(selectedCompany.id, !classicEnabled).catch(() => {});
           }}
         />

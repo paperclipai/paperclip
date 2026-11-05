@@ -99,9 +99,6 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const liveIssueIds = new Set(
     (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
   );
-  // Chat leads Work with its own agent rail in the streamlined shell.
-  // Combined Inbox + Task List makes Inbox a Tasks view and moves its badge.
-  // Workspace navigation remains available independently of Chat.
   const chatRail = agentChatEnabled && streamlinedUiEnabled;
   // The merged Tasks page only exists in the streamlined shell, so the legacy
   // shell keeps its Inbox row even with the flag on.

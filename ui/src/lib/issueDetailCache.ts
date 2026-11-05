@@ -148,7 +148,6 @@ export function seedIssueDetailProjections(
   }
 }
 
-/** The compact read is the default thread's first-paint contract. */
 export function getIssueCoreQueryOptions(queryClient: QueryClient, issueRef: string) {
   return {
     queryKey: [...queryKeys.issues.detail(issueRef), "core"] as const,
@@ -225,8 +224,6 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
   });
 }
 
-/** Warm the exact compact reads mounted by the default task surface. Full
- * enrichment and older history stay with their consumers after navigation. */
 export function prefetchIssueDetailForNavigation(
   queryClient: QueryClient,
   issueRef: string,

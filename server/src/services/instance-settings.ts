@@ -267,7 +267,6 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
-      // Agent Chat graduated; retain the stored key only for compatibility.
       enableAgentChat: true,
       enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
       enableArtifactsV1: parsed.data.enableArtifactsV1 ?? true,

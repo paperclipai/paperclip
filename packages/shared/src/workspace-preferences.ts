@@ -3,7 +3,6 @@ import { z } from "zod";
 /** Instance-personal presentation preference. Never changes company capabilities. */
 export interface WorkspacePreference {
   userId: string;
-  /** Standard workspace unless the person explicitly opts into Classic. */
   coordinatorWorkspaceEnabled: boolean;
   updatedAt: string | null;
 }
