@@ -17,6 +17,7 @@ import {
   setupProviderKeys,
 } from "@/lib/agent-setup-fields";
 import { testAgentSetup } from "@/lib/test-agent-setup";
+import { preserveLocalSetupRuntimeConfig } from "@/lib/agent-setup-runtime-config";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify-claude-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
@@ -314,11 +315,11 @@ function Setup({
   const managedOnly = experimental.data?.enableManagedSandboxOnly === true;
   let environmentId: string | null = null;
   let environmentError: string | null = null;
-  try {
-    environmentId = nativeCursorCloud ? null : forced.forced
+  function resolveSetupEnvironmentId(agentDefaultEnvironmentId: string | null) {
+    return nativeCursorCloud ? null : forced.forced
       ? (forced.kubernetesEnvironment?.id ?? null)
       : resolveAdapterTestEnvironmentId({
-          agentDefaultEnvironmentId: environmentOverride || null,
+          agentDefaultEnvironmentId,
           instanceDefaultEnvironmentId:
             settings.data?.defaultEnvironmentId ?? null,
           localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(
@@ -330,6 +331,9 @@ function Setup({
           ),
           visibleEnvironmentIds: (envs.data ?? []).map((env) => env.id),
         });
+  }
+  try {
+    environmentId = resolveSetupEnvironmentId(environmentOverride || null);
   } catch (cause) {
     environmentError =
       describeError(cause).body;
@@ -465,6 +469,7 @@ function Setup({
     nextConnection = connection,
     binding = selectedBinding,
     setupRunner?: AgentRunner,
+    selectedEnvironment = environmentOverride,
   ): Record<string, unknown> {
     const values = {
       ...defaultCreateValues,
@@ -545,7 +550,21 @@ function Setup({
           : {}),
       };
     }
-    return config;
+    const selectedEnvironmentId = resolveSetupEnvironmentId(selectedEnvironment || null);
+    let savedEnvironmentId: string | null | undefined;
+    try {
+      savedEnvironmentId = created ? resolveSetupEnvironmentId(created.defaultEnvironmentId ?? null) : undefined;
+    } catch {
+      savedEnvironmentId = undefined;
+    }
+    return preserveLocalSetupRuntimeConfig(config, {
+      adapterType: requestAdapterType,
+      runner: runner === "auto" ? setupRunner ?? defaultRunner ?? "legacy" : runner,
+      environmentId: selectedEnvironmentId,
+      savedEnvironmentId,
+      aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
+      saved: created,
+    });
   }
   function preparedConfig(nextConnection = connection, setupRunner?: AgentRunner) {
     if (nativeCursorCloud && !model.trim()) throw new Error("Enter the exact Cursor Cloud model ID.");
@@ -658,7 +677,7 @@ function Setup({
     if (pendingAntigravity) return;
     if (!created || completed) return;
     const binding = runtimeAiBinding ?? nextConnection?.aiConnection;
-    const config = testedConfig ?? buildConfig(nextConnection);
+    const config = testedConfig ?? buildConfig(nextConnection, selectedBinding, undefined, selectedEnvironment);
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
     let submitted = false;
     const rememberCredentials = () => {
