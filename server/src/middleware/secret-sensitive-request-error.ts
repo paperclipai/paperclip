@@ -11,9 +11,12 @@ const ROUTE_PATTERN = /^[A-Za-z0-9_/:.*?(){}-]{1,200}$/;
 // PostgreSQL SQLSTATE: five upper-case alphanumerics with at least one digit.
 const SQLSTATE_PATTERN = /^(?=.*\d)[0-9A-Z]{5}$/;
 // One V8 frame whose function name and location contain only code-shaped
-// characters. Frames that do not match are dropped, never truncated.
-const STACK_FRAME_PATTERN =
-  /^at (?:(?:async |new )?[A-Za-z0-9_$.<>[\]]{1,120} \((?:file:\/\/)?(?:node:)?[A-Za-z0-9_./@+-]{1,300}:\d{1,7}:\d{1,7}\)|(?:file:\/\/)?(?:node:)?[A-Za-z0-9_./@+-]{1,300}:\d{1,7}:\d{1,7})$/;
+// characters. Locations may contain spaces and Windows drive or UNC paths.
+// Frames that do not match are dropped, never truncated.
+const FRAME_LOCATION = String.raw`(?:file:\/\/\/?)?(?:node:)?(?:[A-Za-z]:[\\/])?[A-Za-z0-9_./\\@%+ -]{1,300}:\d{1,7}:\d{1,7}`;
+const STACK_FRAME_PATTERN = new RegExp(
+  String.raw`^at (?:(?:async |new )?[A-Za-z0-9_$.<>[\]]{1,120} \(${FRAME_LOCATION}\)|${FRAME_LOCATION})$`,
+);
 
 export type SecretSensitiveErrorKind =
   | "http_error"
@@ -108,8 +111,10 @@ function normalizeRoutePattern(routePath: unknown): string | null {
 }
 
 /**
- * Keep the original throw site without its message. The first stack line
- * repeats `name: message`, so only lines that are a well-formed frame survive.
+ * Keep the original throw site without its message. V8 starts `stack` with the
+ * `name: message` header, and that header can span several lines. Frames are
+ * read only after the exact header is removed; if the header cannot be
+ * identified, no frame is kept.
  */
 function originFramesOf(error: unknown): string[] {
   if (!(error instanceof Error)) return [];
@@ -121,12 +126,41 @@ function originFramesOf(error: unknown): string[] {
     return [];
   }
   if (typeof stack !== "string") return [];
+  const header = stackHeaderOf(error);
+  if (header === null || !stack.startsWith(`${header}\n`)) return [];
   const frames: string[] = [];
-  for (const line of stack.split("\n")) {
+  for (const line of stack.slice(header.length + 1).split("\n")) {
     const frame = line.trim();
     if (!STACK_FRAME_PATTERN.test(frame)) continue;
     frames.push(frame);
     if (frames.length === MAX_ORIGIN_FRAMES) break;
   }
   return frames;
+}
+
+/**
+ * The header V8 writes when it formats `stack`, built like
+ * `Error.prototype.toString`. Getters and non-string values return `null`.
+ */
+function stackHeaderOf(error: Error): string | null {
+  const name = dataPropertyOf(error, "name");
+  const message = dataPropertyOf(error, "message");
+  if (name === null || message === null) return null;
+  const resolvedName = name === undefined ? "Error" : name;
+  const resolvedMessage = message === undefined ? "" : message;
+  if (resolvedName === "") return resolvedMessage;
+  if (resolvedMessage === "") return resolvedName;
+  return `${resolvedName}: ${resolvedMessage}`;
+}
+
+/** Look up a string data property on the object or its prototypes without calling getters. */
+function dataPropertyOf(target: object, key: string): string | undefined | null {
+  for (let current: object | null = target; current; current = Object.getPrototypeOf(current)) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    if (!descriptor) continue;
+    if (!("value" in descriptor)) return null;
+    if (descriptor.value === undefined) return undefined;
+    return typeof descriptor.value === "string" ? descriptor.value : null;
+  }
+  return undefined;
 }

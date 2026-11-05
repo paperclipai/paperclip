@@ -82,8 +82,8 @@ describe("SecretSensitiveRequestError", () => {
     expect(new SecretSensitiveRequestError(getterCode, facts).diagnostics.errnoCode).toBeNull();
   });
 
-  it("keeps well-formed original stack frames and drops message and injected lines", () => {
-    const original = new Error("x");
+  it("keeps well-formed original stack frames and drops the message and injected lines", () => {
+    const original = new Error("provider echoed canary-token\nsecond message line canary-token");
     original.stack = [
       "Error: provider echoed canary-token",
       "second message line canary-token",
@@ -98,6 +98,51 @@ describe("SecretSensitiveRequestError", () => {
       "at SlackSetup.verify (/app/server/dist-runtime/server.mjs:120:7)",
       "at /app/node_modules/.pnpm/router@2.2.0/node_modules/router/lib/layer.js:152:17",
       "at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
+    ]);
+  });
+
+  it("drops frame-shaped lines inside a multiline message", () => {
+    const original = Object.assign(
+      new Error("provider failed\n    at canaryToken (/app/a.js:1:1)\n    at /canary-token/b.js:2:2"),
+      { name: "ProviderError" },
+    );
+
+    const frames = new SecretSensitiveRequestError(original, facts).diagnostics.originFrames;
+
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0]).toContain("secret-sensitive-request-error.test.ts");
+    expect(JSON.stringify(frames)).not.toMatch(/canary/i);
+  });
+
+  it("keeps no frame when the message header cannot be identified", () => {
+    const changed = new Error("first canary-token\n    at canaryToken (/app/a.js:1:1)");
+    void changed.stack;
+    changed.message = "replaced";
+    const replaced = new Error("x");
+    replaced.stack = "    at canaryToken (/app/a.js:1:1)\n    at f (/app/b.js:2:2)";
+    const getterName = new Error("x");
+    Object.defineProperty(getterName, "name", { get: () => "Error" });
+
+    for (const original of [changed, replaced, getterName]) {
+      expect(new SecretSensitiveRequestError(original, facts).diagnostics.originFrames).toEqual([]);
+    }
+  });
+
+  it("keeps frames whose paths contain spaces or Windows drives", () => {
+    const original = new Error("x");
+    original.stack = [
+      "Error: x",
+      "    at verify (/home/Jane Doe/paperclip/server.js:10:2)",
+      "    at C:\\Users\\Jane Doe\\paperclip\\server\\dist\\index.js:3:4",
+      "    at Layer.handle (file:///C:/Users/Jane%20Doe/paperclip/layer.js:5:6)",
+      "    at Router.handle (\\\\build-host\\share\\router.js:7:8)",
+    ].join("\n");
+
+    expect(new SecretSensitiveRequestError(original, facts).diagnostics.originFrames).toEqual([
+      "at verify (/home/Jane Doe/paperclip/server.js:10:2)",
+      "at C:\\Users\\Jane Doe\\paperclip\\server\\dist\\index.js:3:4",
+      "at Layer.handle (file:///C:/Users/Jane%20Doe/paperclip/layer.js:5:6)",
+      "at Router.handle (\\\\build-host\\share\\router.js:7:8)",
     ]);
   });
 
