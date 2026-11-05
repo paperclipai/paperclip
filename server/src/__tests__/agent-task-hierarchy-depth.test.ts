@@ -350,6 +350,25 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(kept?.parentAdjusted).toMatchObject({ applied: false, effectiveParent: { id: otherRootId } });
   });
 
+  it("does not expose a private origin on a task its readers may see", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const openParentId = await seedIssue(companyId);
+    const privateTaskId = randomUUID();
+    await seedIssue(companyId, { id: privateTaskId, visibility: "private", privacyRootIssueId: privateTaskId });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", issueId: privateTaskId });
+
+    const created = await issueService(db).create(companyId, {
+      title: "Open work filed from a private task", parentId: openParentId, createdByAgentId: agentId, actorRunId: runId,
+    });
+
+    expect(created.visibility).toBe("open");
+    expect(created.originIssueId).toBeNull();
+    // The audit link stays server-side through the run, checked for access on read.
+    expect(created.originRunId).toBe(runId);
+    expect((await resolveIssueCreationSource(db, created))?.sourceIssue.id).toBe(privateTaskId);
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();

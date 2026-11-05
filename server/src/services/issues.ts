@@ -10740,6 +10740,23 @@ export function issueService(db: Db) {
           issueData.projectId = personalProject.id;
         }
 
+        // origin_issue_id is exposed on the task, so record it only when every
+        // reader of the task may also see the origin: an open origin, or one in
+        // the same private subtree. Otherwise leave it null; createdFrom then
+        // falls back to the run-based source, which checks access on read.
+        let originIssueId: string | null = runSourceIssueId ?? handoffSource?.id ?? privacyParentIssueId;
+        if (originIssueId) {
+          const [origin] = await tx.select({
+            visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId, projectId: issues.projectId,
+          }).from(issues).where(and(eq(issues.id, originIssueId), eq(issues.companyId, companyId)));
+          const originPrivate = !origin || origin.visibility === "private" || Boolean(origin.privacyRootIssueId) ||
+            (origin.projectId ? await tx.select({ id: projects.id }).from(projects)
+              .where(and(eq(projects.id, origin.projectId), eq(projects.visibility, "private"))).limit(1)
+              .then((rows) => rows.length > 0) : false);
+          const sameSubtree = visibility === "private" && Boolean(privacyRootIssueId) &&
+            privacyRootIssueId === (origin?.privacyRootIssueId ?? originIssueId);
+          if (originPrivate && !sameSubtree) originIssueId = null;
+        }
         const values = {
           ...issueData,
           workspaceSelection: workspaceIntent,
@@ -10749,7 +10766,7 @@ export function issueService(db: Db) {
           // Audit-only provenance; never read for hierarchy or authorization.
           // Audit-only provenance: the task whose work created this one. A run
           // working on task A that files work under task B originates from A.
-          originIssueId: runSourceIssueId ?? handoffSource?.id ?? privacyParentIssueId,
+          originIssueId,
           titleNeedsGeneration,
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
