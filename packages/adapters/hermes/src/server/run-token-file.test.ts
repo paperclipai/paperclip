@@ -46,7 +46,7 @@ function makeCtx(authToken?: string) {
 }
 
 const tokenPathFrom = (prompt: string) => {
-  const match = prompt.match(/\$\(cat (\/[^)\s]+)\)/);
+  const match = prompt.match(/\$\(cat '(\/[^']+)'\)/);
   if (!match) throw new Error("token path not in prompt");
   return match[1];
 };
@@ -86,10 +86,69 @@ describe("startRunTokenFile", () => {
     expect(await exists(path.dirname(tokenFile.path))).toBe(false);
   });
 
+  it("does not restore into a directory that is not private", async () => {
+    const tokenFile = await startRunTokenFile("token-a", { restoreIntervalMs: 5 });
+    try {
+      await fs.rm(tokenFile.path);
+      await fs.chmod(path.dirname(tokenFile.path), 0o755);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(await exists(tokenFile.path)).toBe(false);
+    } finally {
+      await tokenFile.stop();
+    }
+  });
+
+  it("does not write through a file that exists", async () => {
+    const tokenFile = await startRunTokenFile("token-a", { restoreIntervalMs: 5 });
+    try {
+      await fs.writeFile(tokenFile.path, "other");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(await fs.readFile(tokenFile.path, "utf8")).toBe("other");
+    } finally {
+      await tokenFile.stop();
+    }
+  });
+
+  it("waits for an active restore before it removes the directory", async () => {
+    const tokenFile = await startRunTokenFile("token-a", { restoreIntervalMs: 1 });
+    const originalWrite = fs.writeFile;
+    let started = false;
+    const spy = vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+      started = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return originalWrite(...args);
+    });
+    try {
+      await fs.rm(tokenFile.path);
+      await waitFor(async () => started);
+      await tokenFile.stop();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(await exists(path.dirname(tokenFile.path))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("removes the directory when the first write fails", async () => {
+    const spy = vi.spyOn(fs, "writeFile").mockRejectedValueOnce(new Error("disk full"));
+    try {
+      await expect(startRunTokenFile("token-a")).rejects.toThrow("disk full");
+      const file = String(spy.mock.calls[0][0]);
+      expect(await exists(path.dirname(file))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("names the path and not the token in the guidance", () => {
     const guidance = buildRunTokenGuidance("/tmp/run/token");
-    expect(guidance).toContain("$(cat /tmp/run/token)");
+    expect(guidance).toContain("$(cat '/tmp/run/token')");
     expect(guidance).toContain("/api/agents/me/secrets");
+  });
+
+  it("quotes paths with spaces and single quotes", () => {
+    const guidance = buildRunTokenGuidance("/tmp/my run/it's/token");
+    expect(guidance).toContain(`$(cat '/tmp/my run/it'\\''s/token')`);
   });
 });
 
