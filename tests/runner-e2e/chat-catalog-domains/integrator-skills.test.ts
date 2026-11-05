@@ -115,3 +115,47 @@ it("preserves the full viewport requirement beside cached production and comma-q
 it("keeps a required viewport check beside a protective prohibition of horizontal scrolling", () => {
  expect(preservesWebsiteChecklist(`${websiteChecklist.join("\n")} Do not allow horizontal scrolling at the 375px viewport.`)).toBe(true);
 });
+
+
+function authoredSelfUse() {
+  const o = valid("skills.author-skill"), key = "company/review";
+  const activity: Array<Record<string, unknown>> = [
+    { ...o.activity[0], companyId: "company", entityType: "company_skill", actorType: "agent", runId: "run" },
+    { id: "assign", companyId: "company", action: "agent.skills_synced", entityType: "agent", entityId: "ceo", actorType: "agent", agentId: "ceo", runId: "run",
+      details: { assignmentMode: "add", mode: "ephemeral", desiredSkills: [key], desiredSkillEntries: [{ key, versionId: null }] } },
+  ];
+  return { ...o, activity, runs: o.runs.map(run => ({ ...run, companyId: "company" })),
+    skills: [{ ...o.skills[0]!, key, usedByAgents: [{ id: "ceo", name: "CEO", desired: true, versionId: null as string | null }] }],
+    reply: "Created the reusable review skill. Attached to the CEO agent; it will materialize on the next run." };
+}
+it("admits explicit current-run author-only self-use without treating adapter materialization as assignment lifetime", () => {
+  expect(gradeIntegratorSkills(authoredSelfUse()).passed).toBe(true);
+  const pinned = authoredSelfUse(); pinned.skills[0]!.usedByAgents[0]!.versionId = "revision";
+  (pinned.activity[1]!.details as { desiredSkillEntries: Array<{ versionId: string | null }> }).desiredSkillEntries[0]!.versionId = "revision";
+  expect(gradeIntegratorSkills(pinned).passed).toBe(true);
+  expect(gradeIntegratorSkills(valid("skills.author-skill")).passed).toBe(true);
+});
+it.each(["other agent", "extra agent", "missing audit", "wrong run", "wrong actor", "unattributed audit", "foreign audit", "wrong creation run", "wrong skill", "wrong version", "replace assignments", "not desired", "unreported binding", "global policy", "global claim"])("rejects self-use with %s", invalid => {
+  const o = authoredSelfUse(), sync = o.activity[1]!, details = sync.details as Record<string, unknown>;
+  if (invalid === "other agent") o.skills[0]!.usedByAgents[0]!.id = "other";
+  if (invalid === "extra agent") o.skills[0]!.usedByAgents.push({ id: "other", name: "Other", desired: true, versionId: null });
+  if (invalid === "missing audit") o.activity.pop();
+  if (invalid === "wrong run") sync.runId = "foreign";
+  if (invalid === "wrong actor") sync.agentId = "other";
+  if (invalid === "unattributed audit") sync.actorType = "user";
+  if (invalid === "foreign audit") o.activity.push({ ...sync, id: "foreign", entityId: "other" });
+  if (invalid === "wrong creation run") o.activity[0]!.runId = "foreign";
+  if (invalid === "wrong skill") details.desiredSkillEntries = [{ key: "company/other", versionId: null }];
+  if (invalid === "wrong version") details.desiredSkillEntries = [{ key: "company/review", versionId: "foreign" }];
+  if (invalid === "replace assignments") details.assignmentMode = "replace";
+  if (invalid === "not desired") o.skills[0]!.usedByAgents[0]!.desired = false;
+  if (invalid === "unreported binding") o.reply = "Created the reusable review skill.";
+  if (invalid === "global policy") o.activity.push({ id: "policy", action: "company.skill_policy_replaced", runId: "run", agentId: "ceo" });
+  if (invalid === "global claim") o.reply += " Enabled this skill for everyone.";
+  expect(gradeIntegratorSkills(o).passed).toBe(false);
+});
+it("rejects global policy changes even without any final agent assignment", () => {
+  const o = valid("skills.author-skill");
+  const activity = [...o.activity, { id: "policy", action: "company.skill_policy_reset", entityId: "company", agentId: "ceo" }];
+  expect(gradeIntegratorSkills({ ...o, activity }).passed).toBe(false);
+});
