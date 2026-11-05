@@ -3830,7 +3830,10 @@ execution lease renewal until its required warm checkpoint, session close and
 instruction collection have joined. It then stops and joins renewal and releases
 only that claim. A checkpoint or collection failure keeps its initiating error
 while the same fenced release runs; a changed controller or owner is never
-cleared. Restart detachment retains its existing recovery owner. Renewal exists
+cleared. Restart detachment retains its existing recovery owner and its typed
+outcome takes precedence over checkpoint, collection or renewal-stop errors.
+Only closed cleanup-failure flags accompany that outcome; raw secondary errors
+are not attached. Renewal exists
 only for this active obligation and stops on normal completion or unwinding; it
 does not create an idle worker or another recovery budget.
 Recovery also preserves the implicit isolated-home default when binding admitted

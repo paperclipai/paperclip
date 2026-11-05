@@ -328,9 +328,12 @@ class NativePostResultFailureError extends Error {
 }
 
 export class NativeControllerDetachedForRestartError extends Error {
-  constructor() {
+  readonly diagnostic?: Readonly<{ stage: "post_result_cleanup"; postExecutionCleanupFailed: boolean; renewalStopFailed: boolean }>;
+
+  constructor(diagnostic?: { stage: "post_result_cleanup"; postExecutionCleanupFailed: boolean; renewalStopFailed: boolean }) {
     super("native_controller_detached_for_restart");
     this.name = "NativeControllerDetachedForRestartError";
+    if (diagnostic) this.diagnostic = Object.freeze(diagnostic);
   }
 }
 
@@ -11141,6 +11144,7 @@ async function executePaperclipNativeSessionWithinScope(
     }
   }
   let postExecutionFailed = false;
+  let postExecutionCleanupFailed = false;
   try {
     if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
       const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
@@ -11196,10 +11200,17 @@ async function executePaperclipNativeSessionWithinScope(
     }
   } catch (error) {
     postExecutionFailed = true;
+    postExecutionCleanupFailed = !(error instanceof NativeControllerDetachedForRestartError);
     throw error;
   } finally {
+    let renewalStopFailed = false;
     try {
-      await leaseRenewal.stop();
+      try {
+        await leaseRenewal.stop();
+      } catch (error) {
+        renewalStopFailed = true;
+        throw error;
+      }
       if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
         throw new NativeControllerDetachedForRestartError();
       }
@@ -11235,10 +11246,12 @@ async function executePaperclipNativeSessionWithinScope(
       }));
       if (!released) throw new Error("native_session_lease_lost");
     } catch (error) {
-      if (!postExecutionFailed) throw error;
-      if (!(error instanceof NativeControllerDetachedForRestartError)) {
-        logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
+      if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+        throw new NativeControllerDetachedForRestartError({ stage: "post_result_cleanup",
+          postExecutionCleanupFailed, renewalStopFailed });
       }
+      if (!postExecutionFailed) throw error;
+      logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
   const finalization: NativeFinalizationResult = {

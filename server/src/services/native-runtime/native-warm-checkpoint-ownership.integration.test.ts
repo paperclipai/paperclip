@@ -52,7 +52,7 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
   beforeAll(async () => { root = await mkdtemp(join(tmpdir(), "warm-checkpoint-owner-")); });
   afterAll(async () => { state.storage = null; await rm(root, { recursive: true, force: true }); });
 
-  it.each(["normal", "delayed", "instruction_error", "fresh_successor", "wrong_boot", "superseded_owner", "detach_during_close"])("keeps the producing coordinator claim until the managed failed-turn close joins: %s", async scenario => {
+  it.each(["normal", "delayed", "instruction_error", "fresh_successor", "wrong_boot", "superseded_owner", "detach_during_close", "detach_during_instruction_error", "detach_during_instruction_error_and_renewal_loss"])("keeps the producing coordinator claim until the managed failed-turn close joins: %s", async scenario => {
     let fixture: Omit<Awaited<ReturnType<typeof environment.seedRun>>, "runId"> & { runId: string } = await environment.seedRun(`WARM-CHECKPOINT-OWNER-${scenario}`);
     const { companyId, agentId } = environment.current;
     const [contract] = await fixture.db.select().from(completionContracts).where(eq(completionContracts.issueId, fixture.issueId));
@@ -80,8 +80,10 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
     state.transport = transport;
     const closeFailures: string[] = [];
     const ownersAtClose: Array<{ phase: string; leaseOwner: string | null; resultId: string | null; leaseExpiresAt: Date | null }> = [];
-    const initiatingError = new Error("fixture instruction checkpoint failed");
+    const initiatingError = new Error("fixture instruction checkpoint failed private-canary-N45");
     const invalidated = scenario === "wrong_boot" || scenario === "superseded_owner";
+    const renewalLoss = scenario === "detach_during_instruction_error_and_renewal_loss";
+    const instructionErrorWithDetach = scenario.startsWith("detach_during_instruction_error");
     let originalBoot: string | null = null;
     let replacementOwner: string | null = null;
     let enteredClose!: () => void, releaseClose!: () => void;
@@ -148,6 +150,7 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
             ? { exitCode: 0, timedOut: false, stdout: `${process.platform === "darwin" ? "Darwin" : "Linux"}\n${process.arch === "arm64" ? "arm64" : "x86_64"}\n`, stderr: "" }
             : { exitCode: 1, timedOut: false, stdout: "", stderr: "" }, syncIn: async () => {} } } as never,
         instructionWorkingCopy: { runId: fixture.runId, root, checkpointWarm: async () => {
+          if (instructionErrorWithDetach) { enteredClose(); await closeGate; throw initiatingError; }
           if (scenario === "instruction_error") throw initiatingError;
           if (invalidated) {
             const [current] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
@@ -164,16 +167,29 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
     let running: ReturnType<typeof runCurrent> | undefined;
     try {
       running = runCurrent();
-      if (scenario === "detach_during_close") {
-        await closeEntered;
+      if (scenario.startsWith("detach_during_")) {
+        await Promise.race([closeEntered, running.then(() => { throw new Error("fixture checkpoint was not reached"); })]);
         expect(renewalStopped).toBe(false);
+        const [beforeDetach] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
         const detach = await detachNativeSessionsForRestart([fixture.runId]);
         expect(detach).toEqual({ detachedRunIds: [fixture.runId], inactiveRunIds: [], unsupportedRunIds: [], pendingRunIds: [] });
         expect(detached).toHaveBeenCalledOnce();
         const [held] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
-        expect(held).toMatchObject({ phase: "workspace_finalizing", leaseOwner: ownersAtClose[0].leaseOwner, resultId: ownersAtClose[0].resultId });
+        expect(held).toMatchObject({ phase: "workspace_finalizing", leaseOwner: beforeDetach.leaseOwner, resultId: beforeDetach.resultId });
+        if (renewalLoss) {
+          originalBoot = held.controllerBootId;
+          replacementOwner = randomUUID();
+          await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: replacementOwner,
+            controllerGeneration: held.controllerGeneration + 1 }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+          await expect.poll(() => renewal.mock.results[0].value.remainingMs(), { timeout: 25_000, interval: 250 }).toBe(0);
+        }
         releaseClose();
         await expect(running).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+        const failure = await running.catch(error => error);
+        expect(failure).toMatchObject({ diagnostic: { stage: "post_result_cleanup",
+          postExecutionCleanupFailed: instructionErrorWithDetach, renewalStopFailed: renewalLoss } });
+        expect(failure).not.toHaveProperty("cause");
+        expect(JSON.stringify(failure)).not.toContain("private-canary-N45");
       } else if (invalidated) await expect(running).rejects.toThrow("native_session_lease_lost");
       else if (scenario === "instruction_error") await expect(running).rejects.toBe(initiatingError);
       else {
@@ -189,9 +205,9 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
       expect(renewalStopped).toBe(true);
       const [released] = await fixture.db.select({ leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
-      expect(released.leaseOwner).toBe(invalidated ? replacementOwner : scenario === "detach_during_close" ? ownersAtClose[0].leaseOwner : null);
+      expect(released.leaseOwner).toBe(invalidated || renewalLoss ? replacementOwner : scenario.startsWith("detach_during_") ? ownersAtClose[0].leaseOwner : null);
       expect(state.execute).toHaveBeenCalledTimes(1);
-      if (scenario === "detach_during_close") {
+      if (scenario.startsWith("detach_during_")) {
         const rows = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, fixture.issueId));
         expect(rows).toHaveLength(1);
         expect(rows[0].resultJson).not.toHaveProperty("nativeCancellation");
@@ -228,7 +244,7 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
     } finally {
       releaseClose();
       await running?.catch(() => undefined);
-      if (invalidated) await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: originalBoot, phase: "committed",
+      if (invalidated || renewalLoss) await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: originalBoot, phase: "committed",
         leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, fixture.runId));
       await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "fixture cleanup" });
       renewal.mockRestore();
