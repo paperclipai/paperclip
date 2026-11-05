@@ -56,7 +56,7 @@ export function gradeWorkTimeline(value: unknown) {
       && day >= monday.toISOString().slice(0, 10) && day <= today;
   });
   c.add("ordered-and-truthful-account", worker.id === first.agentId && repairWorker.id === second.agentId && dateClaimsInWindow && truthfulTimelineAccount({ reply: o.reply,
-    firstWorker: typeof worker.name === "string" ? worker.name : "", repairWorker: typeof repairWorker.name === "string" ? repairWorker.name : "",
+    taskIdentifier: typeof t.identifier === "string" ? t.identifier : undefined, firstWorker: typeof worker.name === "string" ? worker.name : "", repairWorker: typeof repairWorker.name === "string" ? repairWorker.name : "",
     personName: typeof o.state.personName === "string" ? o.state.personName : undefined }), "The reply attributes and orders the actual command failure/pause, saved reassignment to the different repair worker and successful repair, keeps explicit ISO dates within the current-week observation window, and does not invent a failed native run.");
   c.add("inspectable-major-milestones", hasLink(o, "issues", t) && hasLink(o, "issues", prep), "Both actual launch work items are linked for inspection.");
   const hidden = entity(o.state, "hiddenTask");
@@ -92,7 +92,7 @@ function timeline(): ChatCatalogCase {
     const state = { worker, repairWorker, project: p, task: second.t, prepTask, hiddenTask, firstRun, secondRun, blockedTask: first.t, blockedEventId: blockedEvent.id, handoffEventId: handoff.id, doneEventId: done.id, timezone, today, zoneLabel, personId: session.user.id, personName: session.user.name };
     await ctx.input.evidence("chat-catalog-real-launch-timeline.json", { ...state, verification: verifier.receipts, events }); return state;
   }, gradeWorkTimeline);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v8", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v9", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/internal-timeline-narrative.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts", "../../server/src/services/work-timeline.ts"],
     async observe(ctx, state): Promise<Timeline> { return { ...await observeInternal(ctx, state), verification: structuredClone(verifier?.receipts ?? []), timelineEvents: await ctx.input.api.get(`/api/issues/${entity(state, "task").id}/activity`), hiddenStatus: await agentStatus(ctx, ctx.input.fixtures.agent.id, `/api/issues/${entity(state, "hiddenTask").id}`) }; },
     async verifyResult(ctx, state, value) { await base.verifyResult(ctx, state, value); const source = ctx.input.page.url(); try { await ctx.input.page.goto(new URL(`/${ctx.input.fixtures.company.issuePrefix}/issues/${entity(state, "prepTask").identifier}`, ctx.input.api.baseURL).href); await expect(ctx.input.page.getByRole("heading", { name: entity(state, "prepTask").title!, exact: true })).toBeVisible(); } finally { await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); } },
