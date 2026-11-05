@@ -259,8 +259,13 @@ export type CancelRunOptions = {
 export function localRunCancelIsSelfAcknowledging(input: {
   adapterType: string | null | undefined;
   hasLiveProcess: boolean;
+  runtimeMode?: string | null;
 }): boolean {
   if (input.hasLiveProcess) return false;
+  // Los runs nativos tienen su propio camino de acuse (recibo de terminacion del
+  // proveedor, ver `completeTerminatedRemoteNativeSessionCleanup`): esta rama es
+  // solo para ejecuciones locales.
+  if (input.runtimeMode === "native") return false;
   const adapterType = typeof input.adapterType === "string" ? input.adapterType : "";
   return adapterType.endsWith("_local");
 }
@@ -1143,34 +1148,35 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                       // A scheduler placeholder has no process to acknowledge.
                       // Preserve its normal release policy instead of treating
                       // it as an operator stop of provider work.
-                      ...(processCancellationSettlement && agent && (
-                        (running && (
+                      ...(agent && (
+                        (processCancellationSettlement && running && (
                           (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
                           (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
                         ))
-                        ? mergeRunStopMetadataForAgent(agent, "cancelled", {
-                            resultJson: {
-                              ...resultJson,
-                              executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
-                            },
-                            errorCode, errorMessage: reason,
-                          })
-                        : localRunCancelIsSelfAcknowledging({
-                            adapterType: agent.adapterType,
-                            hasLiveProcess: Boolean(running),
-                          })
                           ? mergeRunStopMetadataForAgent(agent, "cancelled", {
                               resultJson: {
                                 ...resultJson,
-                                executionCancellation: {
-                                  state: "acknowledged",
-                                  acknowledgedAt: finishedAt.toISOString(),
-                                  proof: "no_live_host_process",
-                                },
+                                executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
                               },
-                            errorCode, errorMessage: reason,
+                              errorCode, errorMessage: reason,
                             })
-                          : {})),
+                          : localRunCancelIsSelfAcknowledging({
+                              adapterType: agent.adapterType,
+                              hasLiveProcess: Boolean(running),
+                              runtimeMode: run.runtimeMode,
+                            })
+                            ? mergeRunStopMetadataForAgent(agent, "cancelled", {
+                                resultJson: {
+                                  ...resultJson,
+                                  executionCancellation: {
+                                    state: "acknowledged",
+                                    acknowledgedAt: finishedAt.toISOString(),
+                                    proof: "no_live_host_process",
+                                  },
+                                },
+                                errorCode, errorMessage: reason,
+                              })
+                            : {})),
                       // The native cancellation helper may have advanced a durable
                       // pending intent to its acknowledged state after `run` was
                       // first read. Never let that stale snapshot overwrite the

@@ -196,6 +196,33 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
     return run;
   }
 
+  it("acknowledges a local cancellation with no live process (the issue must not stay stranded)", async () => {
+    const { company, agent } = await fixture();
+    // Un run local sin entrada de proceso: el proceso ya no existe (se fue el
+    // host, o lo pausaron a mitad). Sin acuse, `executionCancellation` queda en
+    // "requested" para siempre y la cola difiere todo mensaje futuro del issue
+    // con `process_identity_missing`.
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      status: "running",
+      runtimeMode: "legacy",
+      runtimeModeResolvedAt: new Date(),
+    }).returning();
+    expect(runningProcesses.has(run.id)).toBe(false);
+
+    const deps = callbacks(db);
+    await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Stop");
+
+    const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(persisted.status).toBe("cancelled");
+    const cancellation = (persisted.resultJson as Record<string, unknown> | null)?.executionCancellation as
+      | { state?: string; proof?: string }
+      | undefined;
+    expect(cancellation?.state).toBe("acknowledged");
+    expect(cancellation?.proof).toBe("no_live_host_process");
+  });
+
   it("reports a missing run without entering cancellation", async () => {
     const deps = callbacks(db);
     await expect(createHeartbeatRunControl(db, deps).cancelRunInternal(randomUUID())).rejects.toThrow("Heartbeat run not found");

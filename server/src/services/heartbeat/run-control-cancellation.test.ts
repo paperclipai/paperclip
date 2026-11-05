@@ -24,6 +24,11 @@ describe("cancelacion de un run local sin proceso vivo", () => {
     expect(localRunCancelIsSelfAcknowledging({ adapterType: "hermes_local", hasLiveProcess: false })).toBe(true);
   });
 
+  it("no reconoce la cancelacion de un run nativo (tiene su propio acuse)", () => {
+    expect(localRunCancelIsSelfAcknowledging({ adapterType: "opencode_local", hasLiveProcess: false, runtimeMode: "native" })).toBe(false);
+    expect(localRunCancelIsSelfAcknowledging({ adapterType: "opencode_local", hasLiveProcess: false, runtimeMode: "legacy" })).toBe(true);
+  });
+
   it("no reconoce la cancelacion sin adaptador conocido", () => {
     expect(localRunCancelIsSelfAcknowledging({ adapterType: undefined, hasLiveProcess: false })).toBe(false);
     expect(localRunCancelIsSelfAcknowledging({ adapterType: null, hasLiveProcess: false })).toBe(false);
