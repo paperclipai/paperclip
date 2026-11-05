@@ -11,7 +11,115 @@ function valid(): IdentityObservation {
       originalModel: "openrouter/deepseek/deepseek-v4-pro", cheaperModel: "openrouter/deepseek/deepseek-v4.1-flash-1017", eligibleModels: ["openrouter/deepseek/deepseek-v4-pro", "openrouter/deepseek/deepseek-v4.1-flash-1017"], originalOtherFieldsPreserved: true, humanId: "alex", originalHistoryCommentId: "history", beforeAgentCount: 1, pendingProposalVisible: true, revisedModelVisible: true,
       approvalComments: [{ id: "history", authorUserId: "alex", body: "Original openrouter/deepseek/deepseek-v4-pro, board selected openrouter/deepseek/deepseek-v4.1-flash-1017" }, { id: "revision-comment", authorAgentId: "ceo", body: "Revised to openrouter/deepseek/deepseek-v4.1-flash-1017 and resubmitted for approval." }] } };
 }
+function validChatRevision(): IdentityObservation {
+  const o = valid(), query = "Change the proposed hire to the cheaper model and send it back for approval.";
+  o.state.approvalComments = (o.state.approvalComments as unknown[]).slice(0, 1);
+  o.state.sourceIssueId = "source";
+  o.reply = "Updated the proposed hire to the cheaper model `openrouter/deepseek/deepseek-v4.1-flash-1017` (was `deepseek-v4-pro`) and resubmitted it. It's awaiting your review at [the pending approval](/approvals/approval) — it must be approved before the hire proceeds.";
+  o.humanQueries = [query];
+  o.runs = [{ id: "native", companyId: "acorn", agentId: "ceo", status: "succeeded", runtimeMode: "native", nativeIssueId: "source",
+    resultJson: { finalizationPhase: "committed" }, contextSnapshot: { source: "issue.comment", issueId: "source", commentId: "human",
+      paperclipWake: { comments: [{ id: "human", issueId: "source", body: query, author: { type: "user", id: "alex" } }] } } }];
+  const comment = { id: "bound-reply", companyId: "acorn", issueId: "source", authorAgentId: "ceo", authorUserId: null, createdByRunId: "native", body: o.reply };
+  o.comments = [structuredClone(comment)];
+  o.state.revisionHistoryComment = structuredClone(comment);
+  Object.assign(o.company, { issuePrefix: "ACORN" });
+  o.renderedLinkEvidence = [{ threadTestId: "task-chat-thread", source: "reply", href: "/approvals/approval", conversationId: "source", anchorCommentId: "bound-reply", commentId: "bound-reply" }];
+  o.state.revisionHistoryLink = structuredClone(o.renderedLinkEvidence[0]);
+  return o;
+}
 describe("formal hire remains a proposal after cost revision", () => {
+  it("accepts retained original history and the exact bound native revision reply without an extra approval comment", () => {
+    expect(gradeHireRevision(validChatRevision()).passed).toBe(true);
+  });
+  it.each(["deepseek-v4.1-flash-1017", "openrouter/deepseek/deepseek-v4.1-flash-1017"])("resolves the exact displayed model identifier %s against the saved catalog", model => {
+    const o = validChatRevision();
+    const body = `Updated the proposed hire to \`${model}\` (was \`deepseek-v4-pro\`) and resubmitted it. The [pending approval](/approvals/approval) needs your review before the hire proceeds.`;
+    o.reply = body;
+    o.comments[0]!.body = body;
+    (o.state.revisionHistoryComment as { body: string }).body = body;
+    expect(gradeHireRevision(o).passed).toBe(true);
+    for (const wrong of ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017:batch", "other/deepseek/deepseek-v4.1-flash-1017"]) {
+      const invalid = structuredClone(o), changed = body.replace(model, wrong);
+      invalid.reply = changed;
+      invalid.comments[0]!.body = changed;
+      (invalid.state.revisionHistoryComment as { body: string }).body = changed;
+      expect(gradeHireRevision(invalid).passed).toBe(false);
+    }
+    const noLink = structuredClone(o); noLink.renderedLinkEvidence = [];
+    expect(gradeHireRevision(noLink).passed).toBe(false);
+    const wrongProposal = structuredClone(o);
+    (wrongProposal.state.currentApproval as { payload: { adapterConfig: { model: string } } }).payload.adapterConfig.model = "openrouter/deepseek/deepseek-v4.1-flash";
+    expect(gradeHireRevision(wrongProposal).passed).toBe(false);
+    if (!model.includes("/")) {
+      const ambiguous = structuredClone(o);
+      (ambiguous.state.eligibleModels as string[]).push("other/deepseek/" + model);
+      expect(gradeHireRevision(ambiguous).passed).toBe(false);
+    }
+  });
+  it("accepts a generic linked chat message only when the owned approval note supplies model-specific history", () => {
+    const o = validChatRevision(), body = "Revised and resubmitted for approval. [Pending proposal](/approvals/approval).";
+    o.state.approvalComments = valid().state.approvalComments;
+    o.reply = body;
+    o.comments[0]!.body = body;
+    (o.state.revisionHistoryComment as { body: string }).body = body;
+    expect(gradeHireRevision(o).passed).toBe(true);
+    const missing = structuredClone(o);
+    missing.state.approvalComments = (missing.state.approvalComments as unknown[]).slice(0, 1);
+    expect(gradeHireRevision(missing).passed).toBe(false);
+    const foreign = structuredClone(o);
+    (foreign.state.approvalComments as Array<{ authorAgentId?: string }>)[1]!.authorAgentId = "other";
+    expect(gradeHireRevision(foreign).passed).toBe(false);
+  });
+  it("accepts a bound revision reply alongside progress from the same run", () => {
+    const o = validChatRevision();
+    const progress = { ...structuredClone(o.comments[0]!), id: "progress", body: "I am checking the revised proposal." };
+    o.comments.unshift(progress);
+    o.reply = o.comments.map(row => row.body).join("\n\n");
+    expect(gradeHireRevision(o).passed).toBe(true);
+  });
+  it("accepts an earlier bound revision note when the final message only asks for board review", () => {
+    const o = validChatRevision();
+    o.comments.push({ ...structuredClone(o.comments[0]!), id: "final", body: "It remains pending board approval." });
+    o.reply = o.comments.map(row => row.body).join("\n\n");
+    expect(gradeHireRevision(o).passed).toBe(true);
+  });
+  it("keeps captured comment and link receipts separate from independently observed evidence", () => {
+    const o = validChatRevision();
+    expect(o.state.revisionHistoryComment).not.toBe(o.comments[0]);
+    expect(o.state.revisionHistoryLink).not.toBe(o.renderedLinkEvidence![0]);
+    const observed = structuredClone({ comments: o.comments, links: o.renderedLinkEvidence });
+    (o.state.revisionHistoryComment as { body: string }).body = "Changed captured receipt only";
+    (o.state.revisionHistoryLink as { href: string }).href = "/ACORN/approvals/approval";
+    expect({ comments: o.comments, links: o.renderedLinkEvidence }).toEqual(observed);
+    expect(gradeHireRevision(o).passed).toBe(false);
+  });
+  it.each([
+    ["unobserved captured message", (o: IdentityObservation) => { o.comments = []; }],
+    ["unbound prose", (o: IdentityObservation) => { delete o.state.revisionHistoryComment; }],
+    ["wrong comment company", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { companyId: string }).companyId = "other"; }],
+    ["wrong comment source", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { issueId: string }).issueId = "other"; }],
+    ["wrong comment actor", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { authorAgentId: string }).authorAgentId = "other"; }],
+    ["wrong originating run", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { createdByRunId: string }).createdByRunId = "other"; }],
+    ["wrong model in reply", (o: IdentityObservation) => { o.reply = o.reply.replace(String(o.state.cheaperModel), "other-model"); (o.state.revisionHistoryComment as { body: string }).body = o.reply; }],
+    ["uncommitted run", (o: IdentityObservation) => { o.runs[0]!.resultJson = { finalizationPhase: "pending" }; }],
+    ["foreign run company", (o: IdentityObservation) => { o.runs[0]!.companyId = "other"; }],
+    ["foreign run actor", (o: IdentityObservation) => { o.runs[0]!.agentId = "other"; }],
+    ["foreign run source", (o: IdentityObservation) => { o.runs[0]!.nativeIssueId = "other"; }],
+    ["wrong human wake", (o: IdentityObservation) => { o.runs[0]!.contextSnapshot!.commentId = "other"; }],
+    ["unobserved rendered link", (o: IdentityObservation) => { o.renderedLinkEvidence = []; }],
+    ["different canonical receipt href", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "/ACORN/approvals/approval"; }],
+    ["wrong captured link source", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { source: string }).source = "project-created-card"; }],
+    ["wrong captured link conversation", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { conversationId: string }).conversationId = "other"; }],
+    ["wrong captured link comment", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { commentId: string }).commentId = "other"; }],
+    ["changed captured message", (o: IdentityObservation) => { (o.state.revisionHistoryComment as { body: string }).body += " Unobserved receipt text"; }],
+    ["wrong proposal link", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "/approvals/other"; }],
+    ["foreign link origin", (o: IdentityObservation) => { (o.state.revisionHistoryLink as { href: string }).href = "https://other.test/approvals/approval"; }],
+    ["missing original history", (o: IdentityObservation) => { o.state.approvalComments = []; }],
+    ["duplicate resubmit", (o: IdentityObservation) => { o.activity.push({ ...o.activity[1]!, id: "duplicate" }); }],
+    ["approved proposal", (o: IdentityObservation) => { (o.state.currentApproval as { status: string }).status = "approved"; }],
+    ["created employee", (o: IdentityObservation) => { o.agents.push({ id: "new-hire" }); }],
+  ] as const)("rejects bound chat history with %s", (_name, mutate) => { const o = validChatRevision(); mutate(o); expect(gradeHireRevision(o).passed).toBe(false); });
   it("requires actual model choice, attributed history and a still pending proposal", () => { expect(gradeHireRevision(valid()).passed).toBe(true); expect(gradeHireRevision(undefined).passed).toBe(false); });
   it("rejects treating requested revision as approval or activating the hire", () => { const o = valid(); (o.state.currentApproval as { status: string }).status = "approved"; expect(gradeHireRevision(o).passed).toBe(false); const wrong = valid(); wrong.agents.push({ id: "new-hire" }); expect(gradeHireRevision(wrong).passed).toBe(false); });
   it("rejects changing only prose while retaining the expensive config", () => { const o = valid(); (o.state.currentApproval as { payload: { adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: string } } }).payload.adapterConfig.model = "openrouter/deepseek/deepseek-v4-pro"; expect(gradeHireRevision(o).passed).toBe(false); });
