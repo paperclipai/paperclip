@@ -153,6 +153,11 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
           await writeFile(path.join(evidence!, 'two-cycle-receipt.json'), JSON.stringify({ cycles, requests, s3: s3.snapshot(),
             boundary: 'Actual app index/routes/source owner and signed Cloud gate/controller/Postgres alarms; controlled localhost Git/S3/process stop only; no Railway/Neon claim' }, null, 2));
         }
+        } catch (error) {
+          await writeFile(path.join(evidence!, 'primary-failure-before-cleanup.json'), JSON.stringify({
+            error: error instanceof Error ? error.stack : String(error), bridgeOutput: bridge?.output, serverOutput: server?.output,
+          }, null, 2));
+          throw error;
         } finally {
           try { const current = bridge; bridge = undefined; await current?.close(); }
           finally { const current = server; server = undefined; await current?.stop(); }

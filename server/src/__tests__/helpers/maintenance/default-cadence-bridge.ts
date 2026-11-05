@@ -34,7 +34,11 @@ export async function startDefaultCadenceBridge(options: {
       return;
     }
     const request = pending.get(message.id); pending.delete(message.id);
-    if (message.error) request?.reject(new Error(message.error)); else request?.resolve(message.result);
+    if (message.error) {
+      output += `\nCloud RPC failure: ${message.error}`;
+      console.error(`[default-cadence-bridge] ${message.error}`);
+      request?.reject(new Error(message.error));
+    } else request?.resolve(message.result);
   });
   child.once('error', readyReject);
   const exited = new Promise<void>(resolve => child.once('exit', () => {
@@ -54,7 +58,7 @@ export async function startDefaultCadenceBridge(options: {
     try { return await bounded(response, 210_000); } finally { pending.delete(requestId); }
   }
   return { rpc, pid: child.pid, get output() { return output; }, async close() {
-    try { if (child.exitCode === null && child.connected) await rpc('close'); }
-    finally { child.disconnect(); await bounded(exited, 10_000).catch(async error => { child.kill('SIGKILL'); await exited; throw error; }); }
+    try { if (child.exitCode === null && child.connected) { await rpc('close'); console.info(`[default-cadence-bridge] close acknowledged pid=${child.pid}`); } }
+    finally { console.info(`[default-cadence-bridge] disconnect pid=${child.pid} exit=${child.exitCode} signal=${child.signalCode}`); child.disconnect(); await bounded(exited, 10_000).catch(async error => { child.kill('SIGKILL'); await exited; throw error; }); }
   } };
 }
