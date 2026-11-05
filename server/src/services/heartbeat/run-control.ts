@@ -256,18 +256,45 @@ export type CancelRunOptions = {
  * `_local`; los remotos (`*_cloud`, `*_gateway`) no aplican porque ahí el
  * proveedor puede seguir vivo sin proceso en este host.
  */
+function defaultIsProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * ¿Se puede acusar esta cancelación local sin prueba de parada del proveedor?
+ *
+ * - Un adaptador `*_local` ejecuta el trabajo en un proceso de este host: si no
+ *   hay identidad de proceso PERSISTIDA, no hay nadie trabajando por fuera y la
+ *   cancelación la inició el propio control plane.
+ * - Si HAY identidad persistida (pid o process group), hay que PROBAR que el
+ *   proceso terminó antes de acusar: un hijo vivo sin entrada en el mapa en
+ *   memoria (por ejemplo, tras un reinicio del server) sigue trabajando, y
+ *   acusarlo escondería esa incertidumbre en vez de dejarla pendiente.
+ * - Los runs nativos y los proveedores remotos quedan fuera: tienen su propio
+ *   camino de acuse (recibo de terminacion del proveedor).
+ */
 export function localRunCancelIsSelfAcknowledging(input: {
   adapterType: string | null | undefined;
-  hasLiveProcess: boolean;
   runtimeMode?: string | null;
+  /** Identidad de proceso persistida del run (no el mapa en memoria). */
+  processPid?: number | null;
+  /** Guardado con signo negativo (ver `processStopped(-run.processGroupId)`). */
+  processGroupId?: number | null;
+  /** Inyectable para tests. */
+  isProcessAlive?: (pid: number) => boolean;
 }): boolean {
-  if (input.hasLiveProcess) return false;
-  // Los runs nativos tienen su propio camino de acuse (recibo de terminacion del
-  // proveedor, ver `completeTerminatedRemoteNativeSessionCleanup`): esta rama es
-  // solo para ejecuciones locales.
   if (input.runtimeMode === "native") return false;
   const adapterType = typeof input.adapterType === "string" ? input.adapterType : "";
-  return adapterType.endsWith("_local");
+  if (!adapterType.endsWith("_local")) return false;
+  const alive = input.isProcessAlive ?? defaultIsProcessAlive;
+  if (typeof input.processPid === "number" && input.processPid > 0 && alive(input.processPid)) return false;
+  if (typeof input.processGroupId === "number" && input.processGroupId !== 0 && alive(-input.processGroupId)) return false;
+  return true;
 }
 
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
@@ -1162,8 +1189,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                             })
                           : localRunCancelIsSelfAcknowledging({
                               adapterType: agent.adapterType,
-                              hasLiveProcess: Boolean(running),
                               runtimeMode: run.runtimeMode,
+                              processPid: run.processPid ?? null,
+                              processGroupId: run.processGroupId ?? null,
                             })
                             ? mergeRunStopMetadataForAgent(agent, "cancelled", {
                                 resultJson: {

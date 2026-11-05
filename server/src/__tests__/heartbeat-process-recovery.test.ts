@@ -2279,6 +2279,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryRuns).toHaveLength(0);
   });
 
+  it("acknowledges a local Stop whose process is already gone, so the issue is not stranded", async () => {
+    // Un run local sin identidad de proceso persistida: el hijo ya no existe (se
+    // fue el host, o lo pausaron a mitad). Sin acuse, `executionCancellation`
+    // queda en "requested" para siempre y la cola difiere todo mensaje futuro
+    // del issue con `process_identity_missing`.
+    const { agentId, runId } = await seedRunFixture({ adapterType: "codex_local", runStatus: "running" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.cancelRun(runId, "Operator Stop");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.status).toBe("cancelled");
+    expect(run.resultJson?.executionCancellation?.state).toBe("acknowledged");
+    expect(run.resultJson?.executionCancellation?.proof).toBe("no_live_host_process");
+  });
+
+  it("keeps a local Stop pending while the persisted process is still alive", async () => {
+    // El mapa en memoria puede estar vacio (reinicio del server) mientras el hijo
+    // sigue vivo: la prueba de parada sale de la identidad PERSISTIDA.
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    try {
+      const { runId } = await seedRunFixture({ adapterType: "codex_local", runStatus: "running", processPid: child.pid! });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.cancelRun(runId, "Operator Stop");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run.resultJson?.executionCancellation?.state).not.toBe("acknowledged");
+      expect(isPidAlive(child.pid!)).toBe(true);
+    } finally {
+      child.kill("SIGTERM");
+      await waitForPidExit(child.pid!);
+    }
+  });
+
   it("does not relabel a lost process run when its agent changes to a conversation adapter", async () => {
     const { companyId, agentId, runId } = await seedRunFixture({ adapterType: "process", processPid: 99999999 });
     await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, agentId));
