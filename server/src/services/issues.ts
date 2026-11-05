@@ -2612,7 +2612,7 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
         and exists (
           select 1 from heartbeat_runs terminal_run
           where terminal_run.id = (case when latest_blocker_operation.started_at is not null then latest_blocker_operation.heartbeat_run_id else blocker_workspace_facts.heartbeat_run_id end)
-            and terminal_run.status in ('succeeded', 'failed', 'cancelled', 'timed_out')
+            and terminal_run.status in ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out')
         )
       )
   )`;

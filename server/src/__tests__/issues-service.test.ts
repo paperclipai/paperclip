@@ -4763,7 +4763,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     },
   );
 
-  it("releases dependents once the done blocker's last workspace run is terminal without a workspace_finalize", async () => {
+  it.each(["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const)("releases dependents once the done blocker's last workspace run is %s without a workspace_finalize", async (terminalStatus) => {
     const {
       companyId,
       executionWorkspaceId,
@@ -4796,7 +4796,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
 
     await db
       .update(heartbeatRuns)
-      .set({ status: "succeeded" })
+      .set({ status: terminalStatus })
       .where(eq(heartbeatRuns.id, runId));
 
     await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
