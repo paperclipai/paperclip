@@ -619,6 +619,7 @@ export type ProviderActivityFamily =
   | "safety"
   | "terminal"
   | "wait"
+  | "verification"
   | "provider_notice";
 
 export type ProviderActivityStatus =
