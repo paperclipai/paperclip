@@ -55,7 +55,7 @@ describe("pending agent roster display", () => {
     return agent;
   }
 
-  const editButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("Edit connection & model"))!;
+  const editButton = () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Bulk actions"] button')].find(b => b.textContent?.includes("Edit connection & model"))!;
 
   it("loads complete current agents before opening bulk edits from a restored roster", async () => {
     const display = renderEditable();
@@ -101,7 +101,7 @@ describe("pending agent roster display", () => {
       api.get.mockReturnValue(new Promise<Agent>((resolve, fail) => { finish = resolve; reject = fail; }));
       await act(async () => editButton().click());
       expect(api.get).toHaveBeenCalledTimes(1);
-      await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+      await act(async () => document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
       await act(async () => {
         if (outcome === "success") finish(display);
         else reject(new TypeError("Failed to fetch"));
