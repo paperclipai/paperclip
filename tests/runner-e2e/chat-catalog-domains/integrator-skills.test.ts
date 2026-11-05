@@ -78,3 +78,8 @@ it("preserves required mobile checks beside protective nonoverflow instructions 
  expect(preservesWebsiteChecklist(`${original.replace(websiteChecklist[3]!, `Testing the landing page at a 375 pixel viewport without horizontal scrolling is optional.`)}\n- ${protection}`)).toBe(false);
  expect(preservesWebsiteChecklist(original.replace(websiteChecklist[3]!, `Do not perform the 375px review. ${websiteChecklist[3]!}`))).toBe(false);
 });
+
+it("rejects negated use of the required viewport instead of treating nonoverflow alone as the check", () => {
+ const markdown = websiteChecklist.join("\n").replace(websiteChecklist[3]!, "Do not use a viewport 375px wide; there must be no horizontal overflow.");
+ expect(preservesWebsiteChecklist(markdown)).toBe(false);
+});

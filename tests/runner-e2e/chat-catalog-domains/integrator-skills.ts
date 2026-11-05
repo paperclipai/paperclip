@@ -17,12 +17,16 @@ function websiteChecklistChecks(markdown: string): boolean[] {
   // separate checks isolated so an unrelated earlier width cannot ground it.
   const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
   const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
-  const mobileWaiver = /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not)\s+(?:check|test|verify|confirm|assess|measure|review|perform|run|execute|conduct|include|carry\s+out)\b/i;
+  const mobileWaiver = (text: string) => /\b(?:skip|omit|ignore|need not|not required|optional)\b/i.test(text)
+    || text.split(/[.!?;\n]+/).some(clause => [...clause.matchAll(/\b(?:don't|do not)\s+/gi)].some(negation => {
+      const action = clause.slice(negation.index + negation[0].length).trimStart();
+      return !/^overflow\b/i.test(action) && /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.test(action);
+    }));
   const instruction = (requirements: RegExp[]) => instructions.some(text => requirements.every(pattern => pattern.test(text)) && !forbidden.test(text));
   return [instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i]),
     instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i]),
     instruction([/\b(?:text|foreground)\b/i, /\bcontrast\b/i, /\bWCAG(?:\s+2\.\d)?\s+(?:level\s+)?AA\b/i, /\b(?:check|verify|ensure|measure|assess|meet|meets|satisfy)\b/i]),
-    blocks.some(text => !mobileWaiver.test(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)))];
+    blocks.some(text => !mobileWaiver(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)))];
 }
 export function preservesWebsiteChecklist(markdown: string): boolean {
   return websiteChecklistChecks(markdown).every(Boolean);
