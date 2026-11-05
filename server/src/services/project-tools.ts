@@ -52,7 +52,10 @@ export async function callProjectTool(input: {
       parentId: typeof args.parentTaskId === "string" && args.parentTaskId
         ? args.parentTaskId
         : (input.conversation ? null : input.issueId),
-      status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
+      // Same rule as the native tool: backlog is honored and never wakes an
+      // agent; otherwise unresolved blockers make the task blocked.
+      status: args.status === "backlog" ? "backlog"
+        : Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });
