@@ -76,6 +76,10 @@ const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
+export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
+  return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -269,6 +273,7 @@ export class SemanticToolNotDispatchedError extends Error {
 export interface DurablePrpControlPlaneOptions {
   stateDirectory: string;
   identity: DurableRecoveryIdentity;
+  authorityRunId?: string;
   expectedRunnerVersion: string;
   expectedRunnerDigest: string;
   /** Complete caller-owned admission before consuming a credential or releasing commands. */
@@ -2011,6 +2016,7 @@ export class DurablePrpControlPlane {
   #port: number | null = null;
   #semanticInputMode: "dispatch" | "retain_only";
   #semanticInputSourceRunId: string | null;
+  readonly #authorityRunId: () => string | undefined;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
@@ -2065,7 +2071,9 @@ export class DurablePrpControlPlane {
         "Warm run transition requires its exact approved runner artifact.",
       );
     }
-    this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
+    this.#authorityRunId = () => options.authorityRunId;
+    this.#semanticInputMode = options.authorityRunId !== undefined && options.authorityRunId !== options.identity.runId
+      ? "retain_only" : options.semanticInputMode ?? "dispatch";
     this.#semanticInputSourceRunId = this.#semanticInputMode === "retain_only" ? options.identity.runId : null;
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
@@ -2217,8 +2225,14 @@ export class DurablePrpControlPlane {
     );
   }
 
+  #retainsSourceInputs(): boolean {
+    const owner = this.#authorityRunId();
+    return this.#semanticInputMode === "retain_only" || (owner !== undefined && owner !== this.#identity.runId);
+  }
+
   enableSemanticInputDispatch(identity: DurableRecoveryIdentity): void {
-    if (canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition
+    if ((this.#authorityRunId() !== undefined && this.#authorityRunId() !== identity.runId)
+      || canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition
       || this.#identity.runId === this.#semanticInputSourceRunId
       || this.activeRunnerConnectionCount() !== 1 || !this.semanticToolResultsSettled()) {
       throw new Error("native_runner_source_attachment_pending");
@@ -2228,7 +2242,7 @@ export class DurablePrpControlPlane {
   }
 
   async recoverPendingSemanticInputs(): Promise<void> {
-    if (this.#semanticInputMode === "retain_only" || !this.#recoverSemanticToolInput) return;
+    if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
@@ -2479,6 +2493,10 @@ export class DurablePrpControlPlane {
     ) {
       throw new Error("Durable PRP run identity rotation is invalid.");
     }
+    if (this.#authorityRunId() !== undefined && this.#authorityRunId() !== this.#identity.runId) {
+      this.#semanticInputMode = "retain_only";
+      this.#semanticInputSourceRunId ??= this.#identity.runId;
+    }
     this.disconnectActiveRunner();
     const leases = Object.fromEntries(
       Object.entries(this.#store.state.leases).map(([key, lease]) => [
@@ -2699,6 +2717,17 @@ export class DurablePrpControlPlane {
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
     this.#store.assertWritable();
+    const authorityRunId = this.#authorityRunId();
+    const retainedSource = this.#semanticInputSourceRunId ?? this.#identity.runId;
+    const prior = commandId ? this.#getCommand(commandId) : undefined;
+    if (authorityRunId !== undefined && retainedSource !== authorityRunId
+      && !isRunnerRecoveryMaintenanceCommand(type)
+      && !(type === "run.attach" && isRecord(payload.paperclipNextAuthority)
+        && isRecord(payload.paperclipNextAuthority.identity)
+        && payload.paperclipNextAuthority.identity.runId === authorityRunId)
+      && !(prior && prior.status !== "pending" && prior.type === type && canonicalJson(prior.payload) === canonicalJson(payload))) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
     const staged = this.#store.state.stagedRunAttachment;
     const retireStaged = stagedTargetActivated(this.#store.state) && (type === "turn.start"
       || (this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
@@ -3986,7 +4015,7 @@ export class DurablePrpControlPlane {
       eventType === "semantic_tool.input" || eventType === "mcp_app.tool_input";
     if (
       isSemanticInput &&
-      ((this.#onSemanticToolInput === undefined && this.#semanticInputMode !== "retain_only") ||
+      ((this.#onSemanticToolInput === undefined && !this.#retainsSourceInputs()) ||
         semantic?.phase !== "input" ||
         typeof semantic.callId !== "string" ||
         typeof semantic.operationId !== "string" ||
@@ -4126,7 +4155,7 @@ export class DurablePrpControlPlane {
     }
     if (!isCurrentOwner()) return;
 
-    const liveCall = this.#semanticInputMode !== "retain_only" && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+    const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
       ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
           sourceEventId, sourceEventType: eventType,
@@ -4346,7 +4375,6 @@ function runnerEnvironment(
 }
 
 export function spawnRunner(options: {
-  recoveryPurpose?: "source_reconcile";
   connectUrl?: string;
   connection?: RunnerProcessConnection;
   stateDirectory: string;
@@ -4429,7 +4457,6 @@ export function spawnRunner(options: {
           connection.listenPath,
         ];
   const args = [
-    ...(options.recoveryPurpose === "source_reconcile" ? ["--source-reconcile"] : []),
     ...connectionArgs,
     "--state-dir",
     options.stateDirectory,
@@ -4535,7 +4562,6 @@ export function spawnRunner(options: {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
         nativeRunner: {
-          recoveryPurpose: options.recoveryPurpose,
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,
           maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,

@@ -117,7 +117,6 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
-    source_reconciliation: bool,
 }
 
 impl NativeProviderCommandExecutor {
@@ -130,13 +129,7 @@ impl NativeProviderCommandExecutor {
             selected: None,
             recovery_checked: false,
             credentials,
-            source_reconciliation: false,
         }
-    }
-
-    pub fn for_source_reconciliation(mut self) -> Self {
-        self.source_reconciliation = true;
-        self
     }
 
     fn select_recovery(&mut self) -> Result<(), DurableRunnerError> {
@@ -285,65 +278,20 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
-    fn admit_command(
+    fn observe_recovery_state(
         &mut self,
         state: &crate::durable::DurableState,
-        command: &Command,
     ) -> Result<(), DurableRunnerError> {
-        if self.source_reconciliation
-            && command.command_type == "run.attach"
-            && !state.processed_commands.contains_key(&command.command_id)
-            && (command.payload.get("paperclipNextAuthority").is_none()
-                || !state.outbox.is_empty()
-                || state.acked_source_seq != state.highest_source_seq()
-                || state.pending_terminal_delivery.is_some()
-                || state.pending_provider_cleanup.is_some()
-                || state.warm_transition.is_some())
-        {
-            return Err(DurableRunnerError::invalid(
-                "source attachment requires settled authority",
-            ));
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        if let Some(SelectedExecutor::LocalFacade(executor)) = self.selected.as_mut() {
+            executor.observe_recovery_state(state)?;
         }
         Ok(())
     }
-    fn admit_recovery_state(
-        &mut self,
-        state: &crate::durable::DurableState,
-    ) -> Result<(), DurableRunnerError> {
-        if !self.source_reconciliation {
-            return Ok(());
-        }
-        if !(matches!(
-            state.lifecycle.as_str(),
-            "ready" | "suspended" | "recoverable_failure"
-        ) || (state.lifecycle == "stopped"
-            && (state.pending_terminal_delivery.is_some()
-                || state.pending_provider_cleanup.is_some())))
-            || state.warm_transition.is_some()
-            || state.processed_commands.values().any(|command| {
-                matches!(command.status.as_str(), "pending" | "indeterminate")
-                    && !matches!(
-                        command.command_type.as_str(),
-                        "session.snapshot"
-                            | "runner.drain"
-                            | "runner.suspend"
-                            | "runner.shutdown"
-                            | "turn.stop"
-                    )
-            })
-        {
-            return Err(DurableRunnerError::invalid(
-                "source reconciliation has uncertain command authority",
-            ));
-        }
-        self.select_recovery()?;
-        match self.selected.as_mut() {
-            Some(SelectedExecutor::LocalFacade(executor)) => executor.admit_source_reconciliation(),
-            _ => Err(DurableRunnerError::invalid(
-                "source reconciliation requires retained Codex state",
-            )),
-        }
-    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected
@@ -365,21 +313,6 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         Ok(self.credentials.pending().into_iter().collect())
     }
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
-        if self.source_reconciliation
-            && !matches!(
-                command.command_type.as_str(),
-                "session.snapshot"
-                    | "runner.drain"
-                    | "runner.suspend"
-                    | "runner.shutdown"
-                    | "turn.stop"
-                    | "run.attach"
-            )
-        {
-            return Err(DurableRunnerError::invalid(
-                "source reconciliation cannot admit execution",
-            ));
-        }
         self.select_recovery()?;
         if self.selected.is_none()
             && matches!(command.command_type.as_str(), "run.prepare" | "run.attach")
@@ -454,7 +387,6 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
-        self.source_reconciliation = false;
         self.config = config.clone();
         if let Some(executor) = self.selected.as_mut() {
             executor.rotate_authority(config);

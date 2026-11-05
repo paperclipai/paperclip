@@ -308,15 +308,7 @@ pub enum TerminalDeliveryReconciliation {
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
-    fn admit_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
-        Ok(())
-    }
-
-    fn admit_command(
-        &mut self,
-        _state: &DurableState,
-        _command: &Command,
-    ) -> Result<(), DurableRunnerError> {
+    fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
         Ok(())
     }
 
@@ -467,13 +459,15 @@ pub fn run_durable_runner<E: CommandExecutor>(
     }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
-    executor.admit_recovery_state(&state)?;
     if state.lifecycle == "revoked"
         || (state.lifecycle == "stopped"
             && state.pending_terminal_delivery.is_none()
             && state.pending_provider_cleanup.is_none())
     {
         return Ok(());
+    }
+    if recovered {
+        executor.observe_recovery_state(&state)?;
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -1875,7 +1869,6 @@ fn process_command<E: CommandExecutor>(
     executor: &mut E,
     command: &Command,
 ) -> Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError> {
-    executor.admit_command(state, command)?;
     if let Some(pending) = state.pending_provider_cleanup.as_ref() {
         let fresh_stop =
             command.command_type == "turn.stop" && command.controller_seq > pending.controller_seq;

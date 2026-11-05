@@ -101,134 +101,175 @@ fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
 }
 
 #[test]
-fn source_reconciliation_rejects_unsafe_frozen_state_before_provider_start() {
-    let directory = temporary_directory("source-reconciliation-guard");
-    let (config, source) = dormant_source_fixture(&directory);
-    for mutation in [
-        "active",
-        "ambiguous",
-        "active-goal",
-        "working-goal",
-        "pending-tool",
-        "uncertain-command",
-    ] {
-        let mut provider = source.clone();
-        let mut runner = DurableStateStore::new(&directory)
+fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
+    for fault in ["active", "goal"] {
+        let directory = temporary_directory("dormant-live-recovery");
+        let (config, _) = dormant_source_fixture(&directory);
+        let path = directory.join("fake-state.json");
+        let mut live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        if fault == "active" {
+            live["activeTurnId"] = json!("unexpected-provider-turn");
+        } else {
+            live["goal"] = json!({"objective":"Unexpected autonomous work", "status":"active"});
+        }
+        fs::write(&path, serde_json::to_vec(&live).unwrap()).unwrap();
+        let runner = DurableStateStore::new(&directory)
             .unwrap()
             .load_or_create(&config)
             .unwrap()
             .0;
-        runner.lifecycle = "ready".to_owned();
-        match mutation {
-            "active" => {
-                provider["activeProviderTurnId"] = json!("unsettled-turn");
-                provider["lifecycle"] = json!("turn_active");
-            }
-            "ambiguous" => provider["ambiguousTurnStartPending"] = json!(true),
-            "active-goal" | "working-goal" => {
-                provider["goal"] = json!({"objective":"Continue", "status":if mutation == "active-goal" {"active"} else {"paused"}, "tokenBudget":null,"tokensUsed":0,"elapsedSeconds":0,"iterations":0,"createdAt":null,"updatedAt":null,"workingNow":mutation == "working-goal"})
-            }
-            "pending-tool" => {
-                let mut bridge = ProviderToolBridge::default();
-                bridge.prepare(task_context_tool_set()).unwrap();
-                bridge
-                    .begin_call(
-                        "pending-source-call".to_owned(),
-                        "get_task_context".to_owned(),
-                        json!({}),
-                    )
-                    .unwrap();
-                provider["toolBridge"] = serde_json::to_value(bridge).unwrap();
-            }
-            "uncertain-command" => {
-                runner
-                    .begin_command(&command(
-                        "uncertain",
-                        1,
-                        "turn.start",
-                        json!({"text":"unknown effect"}),
-                    ))
-                    .unwrap();
-            }
-            _ => unreachable!(),
+        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        recovered.observe_recovery_state(&runner).unwrap();
+        assert_eq!(call_count(&directory, "process-start"), 1);
+        let error = recovered
+            .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("saved dormant Codex"),
+            "{fault}: {error}"
+        );
+        assert_eq!(call_count(&directory, "process-start"), 2);
+        drop(recovered);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn ordinary_recovery_preserves_pending_same_run_goal_effects() {
+    for status in ["pending", "indeterminate"] {
+        let directory = temporary_directory("pending-goal-recovery");
+        let (config, _) = dormant_source_fixture(&directory);
+        let path = directory.join("fake-state.json");
+        let mut live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        live["goal"] = json!({"objective":"Already authorized same-run goal", "status":"active"});
+        fs::write(&path, serde_json::to_vec(&live).unwrap()).unwrap();
+        let store = DurableStateStore::new(&directory).unwrap();
+        let mut runner = store.load_or_create(&config).unwrap().0;
+        runner
+            .begin_command(&command(
+                "goal-in-flight",
+                1,
+                "session.goal.set",
+                json!({"objective":"Already authorized same-run goal", "status":"active"}),
+            ))
+            .unwrap();
+        if status == "indeterminate" {
+            store.save(&runner).unwrap();
+            runner = store.load_or_create(&config).unwrap().0;
         }
-        if matches!(mutation, "active" | "ambiguous") {
-            provider["completedTurnAuthoritative"] = json!(false);
-            provider["completedTurnProcessGeneration"] = Value::Null;
-            provider["completedProviderTurnId"] = Value::Null;
-        }
+        assert_eq!(runner.processed_commands["goal-in-flight"].status, status);
+        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+        recovered.observe_recovery_state(&runner).unwrap();
+        recovered
+            .execute(&command("snapshot", 2, "session.snapshot", json!({})))
+            .unwrap();
+        let goal = recovered
+            .execute(&command("goal-read", 3, "session.goal.get", json!({})))
+            .unwrap();
+        assert_eq!(goal.result["goal"]["status"], "active");
+        assert_eq!(call_count(&directory, "turn/start"), 1);
+        recovered.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn ordinary_recovery_restores_prepared_only_for_a_journal_bound_session() {
+    for proof in [
+        "same-session",
+        "attached-session",
+        "rotated-empty-journal",
+        "foreign-session",
+        "prepare-before-crash",
+        "fresh-journal",
+    ] {
+        let directory = temporary_directory("prepared-journal-recovery");
+        let (config, mut provider) = dormant_source_fixture(&directory);
+        provider["lifecycle"] = json!("prepared");
+        provider["completedTurnAuthoritative"] = json!(false);
+        provider["completedTurnProcessGeneration"] = Value::Null;
+        provider["completedProviderTurnId"] = Value::Null;
         fs::write(
             directory.join("codex-provider-state.json"),
             serde_json::to_vec(&provider).unwrap(),
         )
         .unwrap();
-        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config)
-            .for_source_reconciliation();
-        let error = recovered
-            .admit_recovery_state(&runner)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("source reconciliation"),
-            "{mutation}: {error}"
+        let mut context = config.clone();
+        if !matches!(proof, "same-session" | "attached-session") {
+            context.run_id = "new-run".to_owned();
+        }
+        let store = DurableStateStore::new(&directory).unwrap();
+        let mut runner = store.load_or_create(&context).unwrap().0;
+        let binding = command(
+            "binding",
+            1,
+            if proof == "prepare-before-crash" {
+                "run.prepare"
+            } else if proof == "attached-session" {
+                "run.attach"
+            } else {
+                "session.open"
+            },
+            json!({}),
         );
+        // Warm authority rotation starts an empty journal; it does not retain the old attachment.
+        if proof != "rotated-empty-journal" {
+            runner.begin_command(&binding).unwrap();
+            runner.complete_command(&binding, json!({"status":"resumed", "providerSessionId":
+                if proof == "foreign-session" { json!("foreign-thread") } else { provider["threadId"].clone() }})).unwrap();
+        }
+        store.save(&runner).unwrap();
+        // Simulate the second crash too: a new B journal now exists, but preparation never opened A.
+        let (runner, recovered) = store.load_or_create(&context).unwrap();
+        assert!(recovered);
+        let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &context);
+        if proof != "fresh-journal" {
+            executor.observe_recovery_state(&runner).unwrap();
+        }
+        executor
+            .execute(&command("snapshot", 2, "session.snapshot", json!({})))
+            .unwrap();
+        let expected_starts = if matches!(proof, "same-session" | "attached-session") {
+            2
+        } else {
+            1
+        };
         assert_eq!(
             call_count(&directory, "process-start"),
-            1,
-            "{mutation} launched a provider"
+            expected_starts,
+            "{proof}"
         );
+        executor
+            .execute(&command("stop", 3, "turn.stop", json!({})))
+            .unwrap();
+        executor
+            .execute(&command("drain", 4, "runner.drain", json!({})))
+            .unwrap();
+        assert_eq!(
+            call_count(&directory, "process-start"),
+            expected_starts,
+            "{proof}"
+        );
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
-    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn source_reconciliation_retains_events_and_only_rotation_releases_execution() {
-    let directory = temporary_directory("source-reconciliation-release");
-    let (config, source) = dormant_source_fixture(&directory);
+fn ordinary_recovery_preserves_command_replay_and_collision_checks() {
+    let directory = temporary_directory("recovery-command-replay");
+    let config = durable_config(&directory);
     let mut runner = DurableStateStore::new(&directory)
         .unwrap()
         .load_or_create(&config)
         .unwrap()
         .0;
-    runner.lifecycle = "recoverable_failure".to_owned();
-    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config)
-        .for_source_reconciliation();
-    recovered.admit_recovery_state(&runner).unwrap();
-    for kind in [
-        "turn.start",
-        "turn.steer",
-        "session.goal.set",
-        "request.resolve",
-        "semantic_tool.result",
-        "run.prepare",
-    ] {
-        assert!(
-            recovered
-                .execute(&command("denied", 4, kind, json!({})))
-                .is_err(),
-            "{kind}"
-        );
-    }
-    assert_eq!(call_count(&directory, "process-start"), 1);
-    let attach = command(
-        "attach",
-        5,
+    let recorded = command(
+        "recorded-attach",
+        1,
         "run.attach",
         json!({"paperclipNextAuthority":{}}),
     );
-    runner
-        .enqueue_event(
-            &config,
-            "runner.diagnostic",
-            EventPriority::P0,
-            json!({"message":"retained source event"}),
-        )
-        .unwrap();
-    assert!(recovered.admit_command(&runner, &attach).is_err());
-    runner.apply_ack(runner.highest_source_seq(), 3).unwrap();
-    recovered.admit_command(&runner, &attach).unwrap();
-    let mut recorded = attach.clone();
-    recorded.controller_seq = runner.last_controller_command_seq + 1;
     assert!(matches!(
         runner.begin_command(&recorded).unwrap(),
         CommandDisposition::Execute
@@ -241,55 +282,32 @@ fn source_reconciliation_retains_events_and_only_rotation_releases_execution() {
             &config,
             "runner.diagnostic",
             EventPriority::P0,
-            json!({"message":"attachment audit still awaiting ACK"}),
+            json!({"message":"unacknowledged fact"}),
         )
         .unwrap();
-    recovered.admit_command(&runner, &recorded).unwrap();
     assert!(
         matches!(runner.begin_command(&recorded).unwrap(), CommandDisposition::Replay(result) if result.status == "completed")
     );
     let mut collision = recorded.clone();
     collision.payload["changed"] = json!(true);
-    recovered.admit_command(&runner, &collision).unwrap();
     assert!(runner
         .begin_command(&collision)
         .unwrap_err()
         .to_string()
         .contains("different command data"));
-    let mut fresh = recorded.clone();
-    fresh.command_id = "fresh-attach".to_owned();
-    fresh.controller_seq += 1;
-    assert!(recovered.admit_command(&runner, &fresh).is_err());
-    assert!(recovered
-        .execute(&command("still-denied", 6, "turn.start", json!({})))
-        .is_err());
-    assert_eq!(
-        recovered.reconcile_terminal_delivery().unwrap(),
-        TerminalDeliveryReconciliation::ProviderCleanupPending
+    let pending = command(
+        "pending-goal",
+        2,
+        "session.goal.set",
+        json!({"objective":"Original effect"}),
     );
-    assert_eq!(call_count(&directory, "process-start"), 1);
-    assert_eq!(
-        serde_json::from_slice::<Value>(
-            &fs::read(directory.join("codex-provider-state.json")).unwrap()
-        )
-        .unwrap(),
-        source
+    assert!(matches!(
+        runner.begin_command(&pending).unwrap(),
+        CommandDisposition::Execute
+    ));
+    assert!(
+        matches!(runner.begin_command(&pending).unwrap(), CommandDisposition::Replay(result) if result.status == "pending")
     );
-    let mut next = config.clone();
-    next.run_id = "next-run".to_owned();
-    next.turn_id = "next-turn".to_owned();
-    next.item_id = "next-item".to_owned();
-    recovered.rotate_authority(&next);
-    recovered
-        .execute(&command(
-            "allowed",
-            1,
-            "turn.start",
-            json!({"text":"Continue after durable authority rotation."}),
-        ))
-        .unwrap();
-    assert_eq!(call_count(&directory, "turn/start"), 2);
-    recovered.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -407,7 +425,12 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
 
 fn command(id: &str, sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
-        schema: "paperclip.prp.command.v1".to_owned(),
+        schema: if command_type.starts_with("session.goal.") {
+            "paperclip.prp.command.v2"
+        } else {
+            "paperclip.prp.command.v1"
+        }
+        .to_owned(),
         command_id: id.to_owned(),
         controller_seq: sequence,
         command_type: command_type.to_owned(),

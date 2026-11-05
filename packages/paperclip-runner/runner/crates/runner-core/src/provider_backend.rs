@@ -1856,7 +1856,8 @@ pub struct CodexCommandExecutor {
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
-    source_reconciliation: bool,
+    recovery_pending_effects: Option<usize>,
+    recovered_prepared_session_owned: bool,
 }
 
 impl CodexCommandExecutor {
@@ -1872,7 +1873,8 @@ impl CodexCommandExecutor {
             cursor_cloud_launch_profile: None,
             startup_command: None,
             startup_evidence_error: None,
-            source_reconciliation: false,
+            recovery_pending_effects: None,
+            recovered_prepared_session_owned: false,
         }
     }
 
@@ -1884,31 +1886,26 @@ impl CodexCommandExecutor {
         executor
     }
 
-    pub(crate) fn admit_source_reconciliation(&mut self) -> Result<(), DurableRunnerError> {
+    pub(crate) fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
         self.load_state_without_provider()?;
-        let state = self.state.as_ref().ok_or_else(|| {
-            DurableRunnerError::invalid("source reconciliation requires retained Codex state")
-        })?;
-        if state.config.provider != "codex"
-            || state.thread_id.is_none()
-            || !(state.lifecycle == "prepared"
-                || (matches!(state.lifecycle.as_str(), "session_open" | "provider_exited")
-                    && state.completed_turn_authoritative))
-            || state.active_provider_turn_id.is_some()
-            || state.ambiguous_turn_start_pending
-            || state.startup_attempt.is_some()
-            || state.receipt_limit_interrupt_pending
-            || state
-                .goal
-                .as_ref()
-                .is_some_and(|goal| goal.status == "active" || goal.working_now)
-            || state.tool_bridge.pending_calls().next().is_some()
-        {
-            return Err(DurableRunnerError::invalid(
-                "source reconciliation requires dormant Codex state",
-            ));
-        }
-        self.source_reconciliation = true;
+        self.recovery_pending_effects = Some(state.recovery_pending_effects());
+        // A recovered journal alone does not bind retained prepared files to this run.
+        self.recovered_prepared_session_owned = self.state.as_ref().is_some_and(|provider| {
+            provider.thread_id.as_ref().is_some_and(|thread_id| {
+                state.processed_commands.values().any(|command| {
+                    command.status == "completed"
+                        && matches!(command.command_type.as_str(), "session.open" | "run.attach")
+                        && matches!(
+                            command.result["status"].as_str(),
+                            Some("started" | "resumed")
+                        )
+                        && command.result["providerSessionId"].as_str() == Some(thread_id.as_str())
+                })
+            })
+        });
         Ok(())
     }
 
@@ -2247,12 +2244,29 @@ impl CodexCommandExecutor {
             || !(matches!(
                 state.lifecycle.as_str(),
                 "session_open" | "turn_active" | "provider_exited"
-            ) || (self.source_reconciliation
+            ) || (state.config.provider == "codex"
+                && self.recovered_prepared_session_owned
                 && !self.restore_checked
-                && state.lifecycle == "prepared"))
+                && state.lifecycle == "prepared"
+                && state.thread_id.is_some()))
         {
             return Ok(());
         }
+        let expected_dormant = state.config.provider == "codex"
+            && self
+                .recovery_pending_effects
+                .as_ref()
+                .is_some_and(|count| *count == 0)
+            && (state.lifecycle == "prepared" || state.completed_turn_authoritative)
+            && state.active_provider_turn_id.is_none()
+            && !state.ambiguous_turn_start_pending
+            && state.startup_attempt.is_none()
+            && !state.receipt_limit_interrupt_pending
+            && state.tool_bridge.pending_calls().next().is_none()
+            && state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal.status != "active" && !goal.working_now);
         let provider_label = state.config.provider.clone();
         let provider_name = facade_provider_name(&provider_label);
         let provider_had_exited = state.lifecycle == "provider_exited";
@@ -2338,28 +2352,37 @@ impl CodexCommandExecutor {
                 return Ok(());
             }
             let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
-            if self.source_reconciliation && recovered_active_turn_id.is_some() {
+            if expected_dormant && recovered_active_turn_id.is_some() {
                 return Err(DurableRunnerError::invalid(
-                    "source reconciliation resumed unexpected active work",
+                    "saved dormant Codex session resumed unexpected active work",
                 ));
             }
-            if self.source_reconciliation {
+            if expected_dormant {
                 let live_goal = provider.get_goal().map_err(|error| {
                     DurableRunnerError::invalid(format!(
-                        "source reconciliation goal probe failed: {error}"
+                        "dormant recovery goal probe failed: {error}"
                     ))
                 })?;
-                let goal = normalize_codex_goal(&live_goal, false);
-                if goal.as_ref().is_some_and(|goal| goal.status == "active")
+                let goal = normalize_codex_goal(
+                    &live_goal,
+                    live_goal.get("workingNow").and_then(Value::as_bool) == Some(true)
+                        || live_goal
+                            .pointer("/goal/workingNow")
+                            .and_then(Value::as_bool)
+                            == Some(true),
+                );
+                if goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.status == "active" || goal.working_now)
                     || (live_goal.get("goal") != Some(&Value::Null) && goal.is_none())
                 {
                     return Err(DurableRunnerError::invalid(
-                        "source reconciliation resumed an active or unknown goal",
+                        "saved dormant Codex session resumed an active or unknown goal",
                     ));
                 }
                 let live_thread = provider.read_thread().map_err(|error| {
                     DurableRunnerError::invalid(format!(
-                        "source reconciliation thread probe failed: {error}"
+                        "dormant recovery thread probe failed: {error}"
                     ))
                 })?;
                 if live_thread
@@ -2368,7 +2391,7 @@ impl CodexCommandExecutor {
                     != Some("idle")
                 {
                     return Err(DurableRunnerError::invalid(
-                        "source reconciliation resumed unexpected active work",
+                        "saved dormant Codex session resumed unexpected active work",
                     ));
                 }
             }
@@ -2676,6 +2699,7 @@ impl CodexCommandExecutor {
         {
             self.fail_started_provider(&mut provider);
         } else {
+            self.recovery_pending_effects = None;
             self.provider = Some(provider);
         }
         admission
@@ -5361,7 +5385,7 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
-        self.source_reconciliation = false;
+        self.recovery_pending_effects = None;
         self.event_identity = Some(ProviderEventIdentity::from_config(config));
     }
 

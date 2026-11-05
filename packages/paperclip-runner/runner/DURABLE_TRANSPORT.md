@@ -65,40 +65,31 @@ P0 reserve is an explicit unrecoverable condition.
 
 ## Current boundary
 
-`sourceRecoveryVersion: 1` in build metadata admits `--source-reconcile` for
-durable Codex recovery. The process owner must first fence the stopped source
-execution and retain its exact six-field authority and provider home. Runner
-checks the existing journals before provider startup: active or ambiguous turns,
-active/working goals, pending tools/startup, uncertain business commands and
-unfinished authority transitions remain blocked. Retained event suffixes and
-known terminal cleanup stay under the source authority for reconciliation.
+`recoveryIntegrityVersion: 1` in build metadata attests ordinary Codex
+recovery integrity checks. There is no separate native recovery mode;
+`--source-reconcile` is rejected. Recovered dormant provider state with no
+uncertain effectful command must still be dormant after restoration. An
+unexpected live turn or active goal fails closed. Same-run active recovery and
+indeterminate command replay retain their existing behavior. A retained prepared
+session is restored initially only when this identity's successful `session.open`
+or `run.attach` journal result names the same provider thread; missing or
+compacted proof preserves the ordinary prepared-session behavior.
 
-The restricted controller permits snapshots, drain and cleanup; it retains
-semantic inputs without dispatching business tools. Read-only history and
-resume facades require the retained thread identity; the resume facade publishes
-existing state without another provider resume. Successful live goal and
-idle-thread probes precede provider admission. Unsupported or conflicting live
-state fails closed. Existing authenticated `run.attach` releases execution only
-after source obligations settle and authority rotation is durable. Core then
-confirms target authentication and persists its checkpoint before enabling tool
-dispatch and new turns. This protocol does not establish vendor rollout fsync
-or host-level physical process retirement by itself.
+A process owner may reconcile a completed predecessor under its exact six-field
+authority before ordinary authenticated `run.attach`. The selected execution
+driver's `sourceRecoveryVersion: 1` attests stopped ownership and strict dormant
+prelaunch admission; binary integrity metadata alone does not provide that proof.
+The authenticated `authorityRunId` remains the current controller owner while
+retained events and accounting stay attributed to the predecessor. Existing
+retain-only controls prevent business dispatch and fresh work until attachment,
+authentication and checkpoint persistence complete. History reads require the
+retained thread identity; the resume facade publishes existing state without
+another provider resume.
 
-If controller-local launch preparation is absent, the trusted caller can supply
-`sourceReconciliationLaunch: { requirements }` with the frozen source inputs.
-The current execution owner prepares this launch afresh. The source launch does
-not overwrite the ordinary source configuration or populate its preparation
-cache. This option requires source mode, exact source identity and a preparer.
-The process owner can also adopt its exact existing source-mode incarnation
-with this option. It must verify that incarnation before adoption. A fresh
-preparation authorizes the source incarnation instead of its older ordinary
-configuration; it does not spawn another process or release the source gate.
-
-Durable mode is selected only when `paperclip-runnerd` receives
-`--connect-url`. Its executor accepts a Codex app-server descriptor and bound
-completion contract through `run.prepare`, owns the provider process group,
-resumes the persisted Codex thread after runner restart, and translates
-provider notifications to PRP events. The server supplies the bootstrap ticket
-only through the child environment, stores the process identity for bounded
-cancellation, and waits for the durable result and terminal pair. The existing
-local fake-runner mode remains unchanged.
+If controller-local preparation is absent, `recoveryLaunch: { requirements }`
+supplies frozen source facts to a fresh authorized preparation. It neither
+replaces the ordinary source configuration nor populates its cache. It requires
+exact source identity and a preparer. A process owner may use the same data to
+adopt its verified existing incarnation without spawning another process. These
+checks do not establish vendor restore inertness, rollout fsync or physical
+process retirement; paired provider qualification remains necessary.

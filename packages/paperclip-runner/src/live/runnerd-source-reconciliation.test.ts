@@ -18,7 +18,7 @@ const read = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const absent = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
 const kill = (pid: number | null) => { if (pid) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
 
-async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"], nativeSource = false) {
+async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"], nativeSource = false, homeMode: "isolated" | "preconfigured" = "isolated") {
   const root = await mkdtemp(join(tmpdir(), "runner-source-reconciliation-"));
   const home = join(root, "empty-codex-home"); await mkdir(home);
   const report = join(root, "completion.json");
@@ -29,7 +29,8 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(root, "--call-log", join(root, "calls"), "--record-process-start", "--durable-turn-ids", ...(nativeSource ? ["--terminal-result-file", report] : [])),
-    stateDirectory: root, sourceCodexHome: home, prpIdentity: identity,
+    stateDirectory: root, sourceCodexHome: home, prpIdentity: identity, homeMode,
+    ...(homeMode === "preconfigured" ? { environment: { ...process.env, HOME: home, CODEX_HOME: home } } : {}),
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
     ...(registration ? { controlPlaneRegistration: registration } : {}),
   };
@@ -88,19 +89,19 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
     await vi.waitFor(() => { expect(absent(evidence.runnerPid!)).toBe(true); expect(absent(evidence.codexPid!)).toBe(true); });
     expect((await read(runnerFile)).lifecycle).toBe("ready");
     const recover = (overrides: Partial<CapabilityRunnerdCodexTransportOptions> = {}) => {
-      const bundle = createCapabilityRunnerdCodexTransport({ ...options, recoveryPurpose: "source_reconcile", resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId }, onRecoveryAccountingEvent: async () => {}, ...overrides });
+      const bundle = createCapabilityRunnerdCodexTransport({ ...options, sourceRecoveryVersion: 1, resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId }, onRecoveryAccountingEvent: async () => {}, ...overrides, get authorityRunId() { return overrides.authorityRunId ?? "run-target"; } });
       bundles.push(bundle); return bundle;
     };
     return { root, options, identity, thread, runnerFile, providerFile, coreFile, calls, complete, settled, recover, dispose, nativeIdentity, execution, nativeSnapshot };
   } catch (error) { await dispose(); throw error; }
 }
 
-it("recovers the real native backend before attaching the next run", async () => {
-  const f = await sourceFixture(undefined, true);
+it.each(["isolated", "preconfigured"] as const)("recovers the real native backend before attaching the next run with %s home", async homeMode => {
+  const f = await sourceFixture(undefined, true, homeMode);
   try {
     expect(f.nativeSnapshot!.sessionId).toBe(f.thread.id);
-    const source = f.recover();
-    await expect(source.transport.request("thread/resume", { threadId: f.thread.id })).rejects.toThrow("source_attachment_pending");
+    let owner = "run-target";
+    const source = f.recover({ ...(homeMode === "isolated" ? { environment: { ...process.env, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" } } : {}), get authorityRunId() { return owner; } });
     await expect(source.transport.request("thread/read", { threadId: "foreign-thread" })).rejects.toThrow("history_identity_mismatch");
     const recovered = await createNativeSessionBackend(f.execution, { codexTransportFactory: () => source.transport,
       environment: { PAPERCLIP_WORKSPACE_CWD: f.root }, dynamicTools: [] }).recoverSession!(f.nativeSnapshot!, { signal: new AbortController().signal });
@@ -111,20 +112,24 @@ it("recovers the real native backend before attaching the next run", async () =>
     await expect(source.transport.request("thread/turns/list", { threadId: "foreign-thread" })).rejects.toThrow("history_identity_mismatch");
     await expect(recovered.session!.startTurn({ message: { role: "user", text: "Not yet authorized" } })).rejects.toThrow();
     expect(await f.calls("turn/start")).toBe(1);
-    await recovered.session!.attachRun!({ identity: { ...f.nativeIdentity, runId: "run-target" } });
-    expect(source.evidence().runnerPid).toBe(before.runnerPid);
-    await recovered.session!.startTurn({ message: { role: "user", text: "Continue under the next run." } });
-    let completed = false;
-    for await (const event of recovered.session!.events()) {
-      if (event.eventType === "turn.completed" && event.runId === "run-target") { completed = true; break; }
+    await expect(source.transport.request("thread/goal/set", { objective: "Unowned source work", status: "active" })).rejects.toThrow("source_attachment_pending");
+    expect((await read(f.coreFile)).commands.some((command: { type: string }) => command.type === "session.goal.set")).toBe(false);
+    for (const runId of ["run-target", "run-warm-third"]) {
+      owner = runId;
+      await recovered.session!.attachRun!({ identity: { ...f.nativeIdentity, runId } });
+      expect(source.evidence().runnerPid).toBe(before.runnerPid);
+      await recovered.session!.startTurn({ message: { role: "user", text: "Continue under the current run." } });
+      let completed = false;
+      for await (const event of recovered.session!.events()) {
+        if (event.eventType === "turn.completed" && event.runId === runId) { completed = true; break; }
+      }
+      expect(completed).toBe(true); await f.settled();
+      const snapshot = await recovered.session!.snapshot();
+      expect(snapshot.sessionId).toBe(f.thread.id);
+      expect(snapshot.terminal).toMatchObject({ runTerminalState: "succeeded" });
+      expect(snapshot.semanticResult?.reportedWorkDisposition).toBe("done");
     }
-    expect(completed).toBe(true);
-    await f.settled();
-    const snapshot = await recovered.session!.snapshot();
-    expect(snapshot.sessionId).toBe(f.thread.id);
-    expect(snapshot.terminal).toMatchObject({ runTerminalState: "succeeded" });
-    expect(snapshot.semanticResult?.reportedWorkDisposition).toBe("done");
-    expect(await f.calls("turn/start")).toBe(2); expect(await f.calls("process-start")).toBe(2);
+    expect(await f.calls("turn/start")).toBe(3); expect(await f.calls("process-start")).toBe(2);
     expect(await f.calls("thread/resume")).toBe(1);
     await recovered.session!.close({ reason: "test complete" });
   } finally { await f.dispose(); }
@@ -142,8 +147,8 @@ it.each(["attach", "prepared-attach", "suspend"] as const)("reconciles killed so
     const resumed = fixture.recover();
     expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
     await fixture.settled(mode !== "prepared-attach");
-    for (const method of ["turn/start", "turn/steer", "thread/goal/set", "thread/start"]) {
-      await expect(resumed.transport.request(method, {})).rejects.toThrow("source_attachment_pending");
+    for (const method of ["turn/start", "turn/steer", "thread/goal/set"]) {
+      await expect(resumed.transport.request(method, method === "turn/steer" ? { input: [{ type: "text", text: "Unowned" }] } : {})).rejects.toThrow("source_attachment_pending");
     }
     expect(await fixture.calls("turn/start")).toBe(1);
     const target = { ...fixture.identity, runId: "run-target", turnId: "turn-target", itemId: "item-target" };
@@ -197,13 +202,13 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
         codexHome: join(fixture.root, "codex-home"), codexCommand: fakeCodex, providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "" }) }));
     expect((await prepare(requirements)).provider).toEqual(provider); prepare.mockClear();
     const binary = fixture.options.runnerBinary;
-    const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1,
-      sourceReconciliationLaunch: { requirements }, prepareLaunch: prepare,
+    const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1, authorityRunId: "prepared-target",
+      recoveryLaunch: { requirements }, prepareLaunch: prepare,
       runnerArtifact: { version: "0.3.0", digest: `sha256:${createHash("sha256").update(await readFile(binary)).digest("hex")}` },
       controlPlaneRegistration: registration,
       runnerProcessLauncher: spec => {
-        expect(spec.nativeRunner).toHaveProperty("recoveryPurpose", "source_reconcile");
-        expect(spec.args).toContain("--source-reconcile");
+        expect(spec.nativeRunner).not.toHaveProperty("recoveryPurpose");
+        expect(spec.args).not.toContain("--source-reconcile");
         const child = spawn(binary, [...spec.args], { env: spec.environment, stdio: "ignore", detached: process.platform !== "win32" });
         return { child, completion: new Promise((resolve, reject) => {
           child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
@@ -225,7 +230,6 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
       const launch = vi.fn(() => { throw new Error("duplicate source process"); });
       const adoption = { pid: evidence.runnerPid, processGroupId: evidence.runnerPid, startedAt,
         isAlive: () => !absent(evidence.runnerPid!), signal: () => false };
-      expect(() => fixture.recover({ adoptExistingRunner: adoption })).toThrow("source_reconciliation_requires_retained_source");
       resumed = fixture.recover({ ...sourceOptions, runnerProcessLauncher: launch, authorizeRunnerAdoption: authorizeOldConfiguration,
         adoptExistingRunner: adoption });
       if (mode === "adopt-denied") {
@@ -252,31 +256,20 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
     expect(await fixture.calls("turn/start")).toBe(2); expect(await fixture.calls("process-start")).toBe(2);
     await resumed.transport.close();
     expect((await read(fixture.runnerFile)).lifecycle).toBe("suspended");
-    expect(() => fixture.recover({ sourceReconciliationLaunch: { requirements: { ...requirements, identity: { ...fixture.identity, runId: "foreign-source" } } }, prepareLaunch: prepare })).toThrow("source_launch_requirements_invalid");
-    expect(() => fixture.recover({ recoveryPurpose: "execution", sourceReconciliationLaunch: { requirements }, prepareLaunch: prepare })).toThrow("source_launch_requirements_invalid");
+    expect(() => fixture.recover({ recoveryLaunch: { requirements: { ...requirements, identity: { ...fixture.identity, runId: "foreign-source" } } }, prepareLaunch: prepare })).toThrow("recovery_launch_requirements_invalid");
+    expect(() => fixture.recover({ recoveryLaunch: { requirements }, prepareLaunch: undefined })).toThrow("recovery_launch_requirements_invalid");
   } finally { await cleanup(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 }, 30_000);
 
-it.each(["active", "ambiguous", "goal", "live-goal"] as const)("rejects unsafe %s source without admitting execution", async state => {
+it("rejects unexpected live goal after ordinary dormant recovery", async () => {
   const fixture = await sourceFixture();
   try {
-    const provider = await read(fixture.providerFile);
-    const goal = { objective: "Continue independently", status: "active", tokenBudget: null, tokensUsed: 0, elapsedSeconds: 0, iterations: 0, createdAt: null, updatedAt: null, workingNow: false };
-    if (state === "live-goal") {
-      const file = join(fixture.root, "fake-codex-state.json");
-      const actual = await read(file); actual.goal = goal;
-      await writeFile(file, JSON.stringify(actual));
-    } else if (state === "goal") provider.goal = goal;
-    else {
-      provider.completedTurnAuthoritative = false; provider.completedTurnProcessGeneration = null; provider.completedProviderTurnId = null;
-      if (state === "active") { provider.activeProviderTurnId = "unsettled-turn"; provider.lifecycle = "turn_active"; }
-      else provider.ambiguousTurnStartPending = true;
-    }
-    await writeFile(fixture.providerFile, JSON.stringify(provider));
-    const resumed = fixture.recover();
-    await expect(resumed.transport.request("thread/read", {})).rejects.toThrow(state === "live-goal" ? "source reconciliation resumed an active or unknown goal" : "source reconciliation requires dormant Codex state");
-    expect(await fixture.calls("process-start")).toBe(state === "live-goal" ? 2 : 1);
-    expect(await fixture.calls("turn/start")).toBe(1);
+    const file = join(fixture.root, "fake-codex-state.json");
+    const actual = await read(file);
+    actual.goal = { objective: "Unexpected autonomous work", status: "active", tokenBudget: null, tokensUsed: 0, elapsedSeconds: 0, iterations: 0, createdAt: null, updatedAt: null, workingNow: false };
+    await writeFile(file, JSON.stringify(actual));
+    await expect(fixture.recover().transport.request("thread/read", {})).rejects.toThrow("saved dormant Codex session resumed an active or unknown goal");
+    expect(await fixture.calls("process-start")).toBe(2); expect(await fixture.calls("turn/start")).toBe(1);
   } finally { await fixture.dispose(); }
 }, 30_000);
 

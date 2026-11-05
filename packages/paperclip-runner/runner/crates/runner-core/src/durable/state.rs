@@ -359,6 +359,24 @@ pub struct DurableState {
 }
 
 impl DurableState {
+    pub(crate) fn recovery_pending_effects(&self) -> usize {
+        self.processed_commands
+            .values()
+            .filter(|command| {
+                matches!(command.status.as_str(), "pending" | "indeterminate")
+                    && !matches!(
+                        command.command_type.as_str(),
+                        "session.snapshot"
+                            | "session.goal.get"
+                            | "runner.drain"
+                            | "runner.suspend"
+                            | "runner.shutdown"
+                            | "turn.stop"
+                    )
+            })
+            .count()
+    }
+
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
             identity_output: IdentityOutputBuffer::default(),

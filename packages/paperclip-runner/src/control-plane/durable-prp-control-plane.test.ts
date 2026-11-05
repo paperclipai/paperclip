@@ -59,6 +59,26 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
+it("admits only source maintenance while the authenticated owner differs", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-authority-admission-"));
+  let owner = identity.runId;
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+    get authorityRunId() { return owner; } });
+  try {
+    const prior = core.queueCommand("turn.start", { text: "Owned same-run work" }, "same-run-command");
+    expect(prior.type).toBe("turn.start");
+    owner = "new-owner";
+    const count = core.store.state.commands.length;
+    for (const type of ["turn.start", "session.goal.set", "semantic_tool.result", "session.open"]) {
+      expect(() => core.queueCommand(type, {})).toThrow("source_attachment_pending");
+    }
+    expect(core.store.state.commands).toHaveLength(count);
+    expect(core.queueCommand("session.snapshot").type).toBe("session.snapshot");
+    expect(core.queueCommand("turn.stop").type).toBe("turn.stop");
+    expect(() => core.enableSemanticInputDispatch(identity)).toThrow("source_attachment_pending");
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 it("recognizes a complete unclaimed bootstrap through cold checkpoint restoration", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-unclaimed-bootstrap-"));
   const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
