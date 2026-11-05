@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
@@ -164,6 +165,8 @@ let host: AcpxRuntimeHost | null = null;
 let activeHostCleanup: Promise<void> | null = null;
 let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
+/** Claude compaction banners seen by this sidecar; pairs start and end notices. */
+let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
@@ -1057,6 +1060,23 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
     };
   }
   if (event.type === "text_delta") {
+    const banner = initializedAgent === "claude" && event.stream !== "thought"
+      ? classifyClaudeStatusBanner(event.text, typeof event.messageId === "string" && event.messageId ? event.messageId : null)
+      : null;
+    if (banner) {
+      // Harness lifecycle text is a status notice, never part of the answer.
+      if (banner.phase === "running") claudeCompactionCount += 1;
+      return {
+        type: "provider_notice",
+        severity: banner.severity,
+        category: banner.category,
+        summary: banner.summary,
+        ...(banner.category === "context_compaction" ? { noticeKey: `compaction-${claudeCompactionCount}` } : {}),
+        ...(banner.phase || banner.details.length > 0
+          ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+          : {}),
+      };
+    }
     return {
       type: event.stream === "thought" ? "thinking" : "text_delta",
       text: boundedOptionalText(event.text, "", 64 * 1024),

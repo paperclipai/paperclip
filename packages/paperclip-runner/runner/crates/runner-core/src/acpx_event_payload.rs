@@ -539,6 +539,19 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         "provider_notice" => {
             bounded_nonempty_text(payload, "category", 160, "provider notice category")?;
             bounded_nonempty_text(payload, "summary", 4_000, "provider notice summary")?;
+            bounded_optional_text(payload, "severity", 16, "provider notice severity")?;
+            bounded_optional_text(payload, "noticeKey", 160, "provider notice key")?;
+            if let Some(details) = optional_array(payload, "details", "provider notice details")? {
+                if details.len() > 64 {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX provider notice details exceed their bound",
+                    ));
+                }
+                for detail in details {
+                    bounded_nonempty_text(detail, "name", 160, "provider notice detail name")?;
+                    bounded_optional_text(detail, "value", 4_000, "provider notice detail value")?;
+                }
+            }
             AcpxRuntimeEventKind::ProviderNotice
         }
         "error" => {

@@ -608,6 +608,63 @@ fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
     }
 }
 
+/// Codex app-server `error` carries a `TurnError` under `error` plus
+/// `willRetry`. A retried error is a transient status notice; only a final
+/// error is fatal. Older shapes kept the text at the top level.
+fn codex_error_notice(params: &Value) -> Value {
+    let error = params.get("error").unwrap_or(&Value::Null);
+    let will_retry = params.get("willRetry").and_then(Value::as_bool) == Some(true);
+    let info = error.get("codexErrorInfo");
+    let info_kind = match info {
+        Some(Value::String(kind)) => kind.clone(),
+        Some(Value::Object(map)) => map.keys().next().cloned().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let http_status = info
+        .and_then(|value| value.get(&info_kind))
+        .and_then(|value| value.get("httpStatusCode"))
+        .and_then(Value::as_u64);
+    let summary = [
+        string(error.get("message")),
+        string(params.get("summary")),
+        string(params.get("message")),
+        string(params.get("details")),
+    ]
+    .into_iter()
+    .find(|value| !value.trim().is_empty())
+    .unwrap_or("Provider notice");
+    let mut details = Vec::new();
+    if !info_kind.is_empty() {
+        details.push(json!({"name": "Reason", "value": bounded_text(&info_kind, 160)}));
+    }
+    if let Some(status) = http_status {
+        details.push(json!({"name": "HTTP status", "value": status.to_string()}));
+    }
+    let additional = string(error.get("additionalDetails"));
+    if !additional.trim().is_empty() {
+        details.push(json!({"name": "Additional details", "value": bounded_text(additional.trim(), MAX_TEXT_CHARS)}));
+    }
+    let turn_id = string(params.get("turnId"));
+    let mut notice = json!({
+        "schema": "paperclip.provider.notice.v1",
+        // Retries within one turn update one chip; the final error is its own row.
+        "noticeId": stable_id(
+            &format!("codex-error-{}-{}", if will_retry { "retry" } else { "final" }, turn_id),
+            "codex-notice",
+        ),
+        "severity": if will_retry { "warning" } else { "error" },
+        "category": if will_retry { "provider_retry" } else { "error" },
+        "scope": "turn",
+        "recoverable": will_retry,
+        "userActionable": false,
+        "summary": bounded_text(summary.trim(), MAX_TEXT_CHARS),
+    });
+    if !details.is_empty() {
+        notice["details"] = Value::Array(details);
+    }
+    notice
+}
+
 fn string(value: Option<&Value>) -> &str {
     value.and_then(Value::as_str).unwrap_or("")
 }
@@ -876,7 +933,13 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             )
         }
-        "error" | "warning" | "deprecationNotice" | "configWarning" => push(
+        "error" => push(
+            &mut events,
+            "provider.notice.recorded",
+            EventPriority::P0,
+            codex_error_notice(params),
+        ),
+        "warning" | "deprecationNotice" | "configWarning" => push(
             &mut events,
             "provider.notice.recorded",
             EventPriority::P0,
@@ -1079,13 +1142,39 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::ToolCall => {
             normalize_acpx_tool_call(payload, &item_id, tool_operation.unwrap_or("unknown"))
         }
-        AcpxRuntimeEventKind::ProviderNotice => vec![acpx_notice(
-            &item_id,
-            string(payload.get("severity")),
-            string(payload.get("category")),
-            string(payload.get("summary")),
-            false,
-        )],
+        AcpxRuntimeEventKind::ProviderNotice => {
+            // A provider-supplied key pairs lifecycle notices (compaction start
+            // and end) into one notice within the turn.
+            let notice_id = match string(payload.get("noticeKey")) {
+                "" => item_id.clone(),
+                key => stable_id(&format!("{turn_id}:{key}"), fallback_item_id),
+            };
+            let mut event = acpx_notice(
+                &notice_id,
+                string(payload.get("severity")),
+                string(payload.get("category")),
+                string(payload.get("summary")),
+                false,
+            );
+            if let Some(details) = payload.get("details").and_then(Value::as_array) {
+                let details: Vec<Value> = details
+                    .iter()
+                    .take(64)
+                    .filter_map(|detail| {
+                        let name = detail.get("name").and_then(Value::as_str)?;
+                        let value = detail.get("value").and_then(Value::as_str)?;
+                        (!name.trim().is_empty()).then(|| json!({
+                            "name": bounded_text(name, 160),
+                            "value": bounded_text(value, MAX_TEXT_CHARS),
+                        }))
+                    })
+                    .collect();
+                if !details.is_empty() {
+                    event.payload["details"] = Value::Array(details);
+                }
+            }
+            vec![event]
+        }
         AcpxRuntimeEventKind::Error => vec![acpx_notice(
             &item_id,
             "error",
@@ -1614,6 +1703,37 @@ mod tests {
             .event_type,
             "provider.notice.recorded"
         );
+    }
+
+    #[test]
+    fn maps_codex_turn_error_text_retries_and_error_info() {
+        let retry = normalize_codex_notification(
+            "error",
+            &json!({
+                "turnId": "turn-1", "willRetry": true,
+                "error": {
+                    "message": "Reconnecting... 2/5",
+                    "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 502}},
+                    "additionalDetails": "stream closed before response.completed"
+                }
+            }),
+        );
+        let notice = &retry[0].payload;
+        assert_eq!(notice["summary"], "Reconnecting... 2/5");
+        assert_eq!(notice["category"], "provider_retry");
+        assert_eq!(notice["severity"], "warning");
+        assert_eq!(notice["recoverable"], true);
+        assert_eq!(notice["details"][0], json!({"name": "Reason", "value": "responseStreamDisconnected"}));
+        assert_eq!(notice["details"][1], json!({"name": "HTTP status", "value": "502"}));
+        let fatal = normalize_codex_notification(
+            "error",
+            &json!({"turnId": "turn-1", "willRetry": false,
+                "error": {"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}}),
+        );
+        assert_eq!(fatal[0].payload["category"], "error");
+        assert_eq!(fatal[0].payload["recoverable"], false);
+        assert_eq!(fatal[0].payload["summary"], "You've hit your usage limit.");
+        assert_ne!(fatal[0].payload["noticeId"], notice["noticeId"]);
     }
 
     #[test]
