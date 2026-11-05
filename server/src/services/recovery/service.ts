@@ -4118,7 +4118,15 @@ export function recoveryService(
     if (episode) {
       if (!latestRun) return "skipped";
       const decision = await decidePersistedLegacyContinuation(current, latestRun.id, state, episode);
-      if (decision.kind === "skip") return "skipped";
+      if (decision.kind === "skip") {
+        if (decision.reason === "durable_wait" && state.hasDurableWaitingPath) {
+          await resolveDispositionRepairActionAsCovered(
+            current,
+            `durable_path_restored:${state.durablePathReason ?? "unknown"}`,
+          );
+        }
+        return "skipped";
+      }
       state.fingerprint = legacyDispositionFingerprint(current.companyId, current.id, latestRun.agentId, episode.id);
     }
     if (state.hasActiveExecutionPath) return "skipped";
