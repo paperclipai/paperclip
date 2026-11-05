@@ -3687,6 +3687,61 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(grant!.credentialSecretRefs).toEqual([{ secretId: token.id, configPath: "oauth.access_token" }]);
   });
 
+  it("supersedes an in-flight OAuth refresh when a remote connection's credentials change", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote lease ${randomUUID()}`,
+      key: `remote.lease.${randomUUID()}`,
+      value: "lease-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Refreshing remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+    });
+    await db.update(connectionGrants)
+      .set({ providerTenant: { oauth: { strategy: "direct_oauth", refreshLease: { id: "in-flight", expiresAt: "2999-01-01T00:00:00.000Z" } } } })
+      .where(eq(connectionGrants.connectionId, connection.id));
+
+    await service.updateConnection(connection.id, {
+      credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
+    });
+
+    const [grant] = await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant!.providerTenant?.oauth?.refreshLease).toBeUndefined();
+    expect(grant!.providerTenant?.oauth?.strategy).toBe("direct_oauth");
+  });
+
+  it("saves a remote connection's credentials when the organization grant holds JSON null metadata", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote null ${randomUUID()}`,
+      key: `remote.null.${randomUUID()}`,
+      value: "null-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Null tenant remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+    });
+    await db.execute(sql`update connection_grants set provider_tenant = 'null'::jsonb where connection_id = ${connection.id}`);
+
+    await service.updateConnection(connection.id, {
+      credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
+    });
+
+    const [grant] = await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["headers.X-Key"]);
+  });
+
   it("leaves a revoked organization grant alone when a remote connection's credentials change", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

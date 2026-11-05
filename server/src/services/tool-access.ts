@@ -4707,6 +4707,7 @@ export function toolAccessService(
                       ...grant.credentialSecretRefs.filter((ref) => !connectionOwnedPaths.has(ref.configPath)),
                       ...nextRefs,
                     ],
+                    providerTenant: sql`case when jsonb_typeof(${connectionGrants.providerTenant}) = 'object' then ${connectionGrants.providerTenant} #- '{oauth,refreshLease}' else ${connectionGrants.providerTenant} end`,
                     updatedAt: new Date(),
                   })
                   .where(eq(connectionGrants.id, grant.id));
