@@ -13,7 +13,7 @@ describe("transcript probe", () => {
       const config = path.join(root, "config");
       await fs.mkdir(real);
       await fs.symlink(real, link);
-      const encoded = real.replace(/[^a-zA-Z0-9-]/g, "-");
+      const encoded = (await fs.realpath(real)).replace(/[^a-zA-Z0-9-]/g, "-");
       await fs.mkdir(path.join(config, "projects", encoded), { recursive: true });
       await fs.writeFile(path.join(config, "projects", encoded, "session.jsonl"), "{}");
       expect(await probeClaudeTranscript({ configDir: config, cwd: link, sessionId: "session" })).toBe(true);
