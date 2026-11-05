@@ -569,9 +569,16 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
 
   it.each(["superseded", "released"] as const)("settles a %s bootstrap retry that lost its task lock instead of re-checking forever", async lock => {
     const f = await failedRemoteRun("remote");
-    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
-    await f.db.update(nativeRunFinalizations).set({ failureDetail: { ...owner.failureDetail, recoveryMode: "bootstrap_retry" } })
-      .where(eq(nativeRunFinalizations.runId, f.runId));
+    // A bootstrap retry follows a pre-provider failure: no checkpoint, provider session or provider events.
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const { sessionCheckpoint: _checkpoint, ...profile } = run.runnerProfileJson ?? {};
+    await f.db.update(heartbeatRuns).set({ errorCode: "provider_session_open_rejected", runnerProfileJson: profile })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await f.db.delete(nativeRunnerCheckpoints)
+      .where(and(eq(nativeRunnerCheckpoints.companyId, f.companyId), eq(nativeRunnerCheckpoints.runId, f.runId)));
+    await f.db.update(nativeRunFinalizations).set({ failureCode: "provider_session_open_rejected", failureDetail: {
+      recoveryMode: "bootstrap_retry", providerSessionEstablished: false, checkpointExists: false, providerEventsExist: false,
+    } }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (lock === "superseded") {
       const [newer] = await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
         status: "running", createdAt: new Date(Date.now() + 1_000) }).returning({ id: heartbeatRuns.id });
