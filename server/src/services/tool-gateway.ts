@@ -1501,7 +1501,15 @@ export function createToolGatewayService(
                 ? or(
                     inArray(toolApplications.id, scope.applicationIds),
                     inArray(toolCatalogEntries.connectionId, scope.connectionIds),
-                    inArray(toolCatalogEntries.id, scope.catalogEntryIds),
+                    inArray(
+                      toolCatalogEntries.connectionId,
+                      tx.select({ connectionId: toolCatalogEntries.connectionId })
+                        .from(toolCatalogEntries)
+                        .where(and(
+                          eq(toolCatalogEntries.companyId, companyId),
+                          inArray(toolCatalogEntries.id, scope.catalogEntryIds),
+                        )),
+                    ),
                   )
                 : undefined,
             ),
@@ -1573,7 +1581,7 @@ export function createToolGatewayService(
       new Map(),
     );
 
-    return eligibleRows.map(
+    const descriptors: ToolGatewayDescriptor[] = eligibleRows.map(
       ({ catalogEntry, connection, application }, index) => {
         if (
           connection.transport !== "mcp_remote" &&
@@ -1650,6 +1658,13 @@ export function createToolGatewayService(
         };
       },
     );
+    if (!scope) return descriptors;
+    return descriptors.filter((_, index) => {
+      const { application, connection, catalogEntry } = eligibleRows[index]!;
+      return scope.applicationIds.includes(application.id)
+        || scope.connectionIds.includes(connection.id)
+        || scope.catalogEntryIds.includes(catalogEntry.id);
+    });
   }
 
   async function connectedMcpToolsForConnection(
@@ -3280,6 +3295,13 @@ export function createToolGatewayService(
           tool.providerType !== "paperclip_plugin"),
     );
     const decisionCache = createToolAccessDecisionCache();
+    if (discoveryScope) {
+      await policyService.primeListingCatalogEntries({
+        cache: decisionCache,
+        companyId: session.companyId,
+        catalogEntryIds: connectionTools.flatMap((tool) => tool.catalogEntryId ? [tool.catalogEntryId] : []),
+      });
+    }
     const decisions = await measureRunPhase("connectors.discovery.policy", () => decideToolsForListing(
       tools,
       (tool) => policyInputForTool({ session, tool }),

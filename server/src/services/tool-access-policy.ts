@@ -970,9 +970,17 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     // takes the direct query, so a cached and an uncached decision agree.
     if (!cache || !CANONICAL_UUID_RE.test(catalogEntryId)) return readEntry();
     // A listing decides the active catalog tools of the company, so a batch
-    // reads those entries once and looks each one up in memory. Any other
-    // entry takes the direct query.
-    const entriesById = await cachedRead(cache, `active-catalog-tools:${companyId}`, async () => {
+    // reads those entries once and looks each one up in memory. A scoped
+    // listing reads only its own entries (primeListingCatalogEntries). Any
+    // other entry takes the direct query.
+    const entriesById = await cachedRead(cache, `active-catalog-tools:${companyId}`, readActiveCatalogTools(companyId));
+    const entry = entriesById.get(catalogEntryId);
+    if (!entry) return readEntry();
+    return entry.companyId === companyId ? entry : null;
+  }
+
+  function readActiveCatalogTools(companyId: string, catalogEntryIds?: string[]) {
+    return async () => {
       const entries = await db
         .select(catalogEntryContextColumns)
         .from(toolCatalogEntries)
@@ -981,12 +989,23 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
           eq(toolCatalogEntries.entryKind, "tool"),
           eq(toolCatalogEntries.status, "active"),
           isNull(toolCatalogEntries.quarantinedAt),
+          catalogEntryIds ? inArray(toolCatalogEntries.id, catalogEntryIds) : undefined,
         ));
       return new Map(entries.map((entry) => [entry.id, entry]));
-    });
-    const entry = entriesById.get(catalogEntryId);
-    if (!entry) return readEntry();
-    return entry.companyId === companyId ? entry : null;
+    };
+  }
+
+  /**
+   * Fills a listing cache with only the given catalog entries, for a listing
+   * that decides only those tools. An entry outside them takes the direct
+   * query, so the decision does not change.
+   */
+  async function primeListingCatalogEntries(input: {
+    cache: ToolAccessDecisionCache;
+    companyId: string;
+    catalogEntryIds: string[];
+  }): Promise<void> {
+    await cachedRead(input.cache, `active-catalog-tools:${input.companyId}`, readActiveCatalogTools(input.companyId, input.catalogEntryIds));
   }
 
   async function loadContext(input: ToolAccessDecisionInput, cache?: ToolAccessDecisionCache): Promise<
@@ -2339,6 +2358,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     decide,
     admitInvocation,
     namedGatewayDiscoveryScope,
+    primeListingCatalogEntries,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,

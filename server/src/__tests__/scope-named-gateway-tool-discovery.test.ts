@@ -20,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const evaluatedTools = vi.hoisted(() => [] as string[]);
+const listingCaches = vi.hoisted(() => new Set<Map<string, Promise<unknown>>>());
 vi.mock("../services/tool-access-policy.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/tool-access-policy.js")>();
   return {
@@ -28,9 +29,10 @@ vi.mock("../services/tool-access-policy.js", async (importOriginal) => {
       const service = actual.toolAccessPolicyService(db);
       return {
         ...service,
-        decide: (input: ToolAccessDecisionInput) => {
+        decide: (input: ToolAccessDecisionInput, options?: Parameters<typeof service.decide>[1]) => {
           evaluatedTools.push(input.request.upstreamToolName ?? input.request.toolName);
-          return service.decide(input);
+          if (options?.cache) listingCaches.add(options.cache);
+          return service.decide(input, options);
         },
       };
     },
@@ -95,6 +97,7 @@ describePostgres("named gateway tool discovery scope", () => {
 
   beforeEach(() => {
     evaluatedTools.length = 0;
+    listingCaches.clear();
   });
 
   afterAll(async () => {
@@ -144,6 +147,51 @@ describePostgres("named gateway tool discovery scope", () => {
     expect(tools).toEqual(expect.arrayContaining(["alpha_read", "alpha_write"]));
     expect(tools.some((name) => /^(beta|gamma)_/.test(name))).toBe(false);
     expect(evaluatedTools.filter((name) => /^(beta|gamma)_/.test(name))).toEqual([]);
+  });
+
+  it("reads only the included catalog entries into the listing cache", async () => {
+    const { companyId, alpha, listTools } = await seedGateway();
+
+    await listTools();
+
+    const caches = [...listingCaches];
+    expect(caches).toHaveLength(1);
+    const entries = await caches[0]!.get(`active-catalog-tools:${companyId}`) as Map<string, unknown>;
+    expect([...entries.keys()].sort()).toEqual(alpha.catalogEntries.map((entry) => entry.id).sort());
+  });
+
+  it("lists a collision-suffixed tool under the name a call resolves", async () => {
+    const [company] = await db.insert(companies).values({
+      name: `Gateway ${randomUUID()}`,
+      issuePrefix: `G${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    }).returning();
+    const companyId = company!.id;
+    const files = await createRemoteMcpConnection(db, companyId, `files${randomUUID().slice(0, 8)}`, ["read-file", "read_file"]);
+    const readFile = files.catalogEntries.find((entry) => entry.toolName === "read-file")!;
+    const profile = await toolAccessService(db).createProfile(companyId, {
+      profileKey: `read-file-${randomUUID()}`,
+      name: "Read file only",
+      status: "active",
+      defaultAction: "deny",
+      entries: [{ selectorType: "catalog_entry", effect: "include", catalogEntryId: readFile.id }],
+    });
+    const gatewayService = createToolGatewayService(db, { toolActionSigningSecret: "test-tool-action-signing-secret" });
+    const gateway = await gatewayService.createNamedGateway({
+      companyId,
+      body: { name: "Files gateway", profileId: profile.id, defaultProfileMode: "gateway_only" },
+    });
+    const token = await gatewayService.createNamedGatewayToken({
+      companyId,
+      gatewayId: gateway.id,
+      body: { name: "Files", clientLabel: "Files client", ownerNote: "Collision name test token.", allowedActions: ["tools/list", "tools/call"] },
+    });
+
+    const listed = (await gatewayService.listToolsForNamedGateway({ gatewayId: gateway.id, bearerToken: token.token }))
+      .filter((tool) => tool.connectionId === files.connection.id);
+    expect(listed.map((tool) => tool.upstreamToolName)).toEqual(["read-file"]);
+
+    const call = gatewayService.executeTool({ sessionToken: token.token, gatewayId: gateway.id, tool: listed[0]!.name, parameters: {} });
+    await expect(call).rejects.toThrow("Organization authorization is required");
   });
 
   it("evaluates only the tools of an application the profile includes", async () => {
