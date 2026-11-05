@@ -100,3 +100,18 @@ it("rejects a universal execution restriction despite a separately stated viewpo
 it("keeps a quantified noncurrent artifact restriction separate from a universal review waiver", () => {
  expect(preservesWebsiteChecklist(`${websiteChecklist.join("\n")}; do not perform the check on any cached build.`)).toBe(true);
 });
+
+it("rejects necessity waivers bound to the required viewport check", () => {
+ for (const waiver of ["The 375px viewport check without horizontal scrolling is unnecessary.", "The 375px viewport check without horizontal scrolling is not necessary.", "There is no requirement to test a 375px viewport without horizontal scrolling."])
+  expect(preservesWebsiteChecklist(websiteChecklist.slice(0, 3).join("\n") + "\n" + waiver)).toBe(false);
+});
+it("preserves the full viewport requirement beside cached production and comma-qualified restrictions", () => {
+ const original=websiteChecklist.join("\n");
+ expect(preservesWebsiteChecklist(`${original}; do not perform the check on a cached production build.`)).toBe(true);
+ expect(preservesWebsiteChecklist(`${original.slice(0,-1)}, but do not perform the check on a cached build.`)).toBe(true);
+ expect(preservesWebsiteChecklist(`${original}, not on any cached build using any browser.`)).toBe(true);
+});
+
+it("keeps a required viewport check beside a protective prohibition of horizontal scrolling", () => {
+ expect(preservesWebsiteChecklist(`${websiteChecklist.join("\n")} Do not allow horizontal scrolling at the 375px viewport.`)).toBe(true);
+});

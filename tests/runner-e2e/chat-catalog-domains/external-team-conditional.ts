@@ -193,13 +193,21 @@ function negatedTeamRecovery(before: string): boolean {
   return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before);
 }
 function truthfulTeamRecovery(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
-  return namedTeamSkillClauses(reply, skill).some(clause => [...clause.matchAll(/\b(?:installed|available|resolved|recovered)\b/gi)].some(match =>
-    !negatedTeamRecovery(clause.slice(0, match.index))))
+  const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
+  return namedTeamSkillClauses(reply, skill).some(clause => {
+    const namedAt = names.map(name => clause.toLowerCase().indexOf(name)).filter(index => index >= 0);
+    const firstName = namedAt.length ? Math.min(...namedAt) : -1;
+    return [...clause.matchAll(/\b(?:installed|available|resolved|recovered)\b/gi)].some(match => {
+      const targetAfter = clause.slice(match.index + match[0].length).replace(/^\s+(?:the\s+)?[*_`]*/i, "").toLowerCase();
+      return (firstName < 0 || match.index >= firstName || match[0].toLowerCase() === "installed" && names.some(name => targetAfter.startsWith(name)))
+        && !negatedTeamRecovery(clause.slice(0, match.index));
+    });
+  })
     && !claimsRecoveredSkillMissing(reply, skill);
 }
 function claimsRecoveredSkillMissing(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
   return namedTeamSkillClauses(reply, skill, true).some(clause =>
-    [...clause.matchAll(/\b(?:not (?:(?:successfully|fully|completely)\s+){0,2}installed|uninstalled|missing|unavailable|blocked)\b/gi)].some(match => {
+    [...clause.matchAll(/\b(?:not (?:(?:successfully|fully|completely)\s+){0,2}(?:installed|available|usable)|uninstalled|missing|unavailable|blocked)\b/gi)].some(match => {
       const before = clause.slice(0, match.index);
       return !/\b(?:was|were|had been)\s+(?:(?:previously|initially|formerly|earlier|still)\s+){0,2}$/i.test(before)
         && (match[0].toLowerCase().startsWith("not ") || /\b(?:is|are|remains?|still)\s+(?:currently\s+)?$/i.test(before));
@@ -272,7 +280,7 @@ export function truthfulTeamPartial(
   });
   const subjects = [skill.slug, skill.slug.replaceAll("-", " "), skill.name]
     .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const currentRecovery = new RegExp("(?:\\b(?:" + subjects + ")[*_`]*|^(?:it|(?:this|that) skill))\\s+(?:skill\\s+)?(?:is|has been)\\s+(?:(?:now|already|currently)\\s+)?(?:installed|available|resolved|recovered)\\b", "i");
+  const currentRecovery = new RegExp("(?:\\b(?:" + subjects + ")[*_`]*|^(?:it|(?:this|that) skill))\\s+(?:skill\\s+)?(?:(?:is|has been)\\s+)?(?:(?:now|already|currently)\\s+)?(?:installed|available|resolved|recovered)\\b", "i");
   const installedObject = new RegExp("\\binstalled\\s+(?:the\\s+)?[*_`]*(?:" + subjects + ")\\b", "gi");
   return reported && !falseFull && !namedTeamSkillClauses(reply, skill, true).some(clause =>
     currentRecovery.test(clause) || [...clause.matchAll(installedObject)].some(claim => !negatedTeamRecovery(clause.slice(0, claim.index))));

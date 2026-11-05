@@ -296,3 +296,21 @@ it("distinguishes the actual preserved local skill name from a contained catalog
  o.phaseReplies[0]!.body+=" Launch Checklist is now installed under another slug.";
  expect(gradeTeamConditions(o,"initial").passed).toBe(false);
 });
+
+it("rejects present unavailability of a verified recovered skill", () => {
+ for (const state of ["available", "usable"]) {
+  const r=recovered(); r.o.phaseReplies[1]!.body=`Launch Checklist is still not ${state}.`;
+  expect(gradeTeamConditions(r.o).passed).toBe(false);
+ }
+});
+it("rejects possessed and bare installation claims while the required catalog skill remains missing", () => {
+ for(const claim of ["We have Launch Checklist installed.", "Launch Checklist installed under another slug."]) {
+  const o=valid();o.phaseReplies[0]!.body="The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. "+claim;
+  expect(gradeTeamConditions(o,"initial").passed).toBe(false);
+ }
+});
+
+it("does not treat an earlier team installation as recovery of a named skill reported historically uninstalled", () => {
+ const r=recovered();r.o.phaseReplies[0]!.body="The existing CTO was preserved and the imported role is CTO 2. The team installed successfully, but Launch Checklist was not installed.";
+ expect(gradeTeamConditions(r.o,"initial").passed).toBe(false);
+});
