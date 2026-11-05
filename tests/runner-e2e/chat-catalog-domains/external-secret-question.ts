@@ -17,7 +17,7 @@ export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, st
   if (!qs || qs.questions.length !== 1) return;
   const q = qs.questions[0]!;
   if (!q.required || (mode
-    ? q.answerMode !== "text" || !!q.options?.length || !!q.customAnswer?.enabled || q.initialText !== undefined
+    ? q.answerMode !== "text" || !!q.options?.length || !!q.customAnswer?.enabled || (q.initialText !== undefined && (mode !== "company-saved-secret-name" || (q.initialText !== "" && !/^[a-zA-Z0-9_.-]{1,120}$/.test(q.initialText))))
       || (mode === "company-environment-name" && (q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
       || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < "DEPLOYMENT_API_KEY".length))
     : q.answerMode !== "single_select" || !q.options?.length)) return;

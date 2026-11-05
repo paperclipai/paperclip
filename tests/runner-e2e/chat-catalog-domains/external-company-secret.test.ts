@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 import { chatCatalogHumanHistoryMatches,verifyChatCatalogHumanQuestionAnswer } from "../chat-catalog-contract.js";
 import { describe,expect,it,vi } from "vitest";
@@ -179,6 +180,13 @@ it("requires native saved-name binding and exact metadata-only question accounti
  const nativeRuns=[{id:"first",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-04T13:00:00Z",contextSnapshot:{issueId:"source",commentId:"human"}},{id:"second",companyId:"company",agentId:"ceo",status:"succeeded",runtimeMode:"native",startedAt:"2026-11-04T13:41:00Z",contextSnapshot:{issueId:"source",interactionId:"question"}}];
  const evidence={expected,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:[row],companySecrets:o.secrets,activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_answered",actorType:"user",actorId:"person",details:{interactionId:"question",interactionKind:"ask_user_questions",interactionStatus:"answered",answeredQuestionCount:1}}],runs:nativeRuns};
  expect(verifyChatCatalogHumanQuestionAnswer(evidence)).toBeDefined();
+ for(const initialText of ["deployment_api_key", "", "not metadata value"]){
+  const changed=structuredClone(row);changed.payload.questionSet!.questions[0]!.initialText=initialText;
+  const next={...expected,companySavedSecretNameAnswer:{...expected.companySavedSecretNameAnswer!,payloadHash:createHash("sha256").update(JSON.stringify(changed.payload)).digest("hex")}};
+  expect(!!verifyChatCatalogHumanQuestionAnswer({...evidence,expected:next,interactions:[changed]})).toBe(initialText!=="not metadata value");
+  expect(verifyChatCatalogHumanQuestionAnswer({...evidence,interactions:[changed]})).toBeUndefined();
+ }
+
  for(const createdAt of ["2026-11-04T13:33:00Z","2026-11-04T12:59:00Z"])
   expect(verifyChatCatalogHumanQuestionAnswer({...evidence,companySecrets:[{...o.secrets[0]!,createdAt}]})).toBeUndefined();
  for(const prompt of ["Which name did you use for the saved deployment secret?","What alias identifies the deployment credential you created?"]){
