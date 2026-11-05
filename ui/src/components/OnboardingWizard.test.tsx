@@ -2903,6 +2903,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => primary.click());
         await act(async () => document.querySelector('[data-testid="onboarding-wizard"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
         expect(open).toHaveBeenCalledTimes(1);
+        await act(async () => link.click());
+        expect(open).toHaveBeenNthCalledWith(2, link.href, "_blank", "noreferrer,noopener");
+        expect(primary.textContent?.trim()).toBe("Waiting for code…");
+        expect(primary.disabled).toBe(true);
         if (adapterType === "claude_local") expect((document.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement).disabled).toBe(false);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
         expect(adapterType === "claude_local" ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);

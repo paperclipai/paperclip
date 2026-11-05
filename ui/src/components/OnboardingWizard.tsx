@@ -1626,7 +1626,7 @@ function OnboardingWizardInner({
    * it is meant to start, against a source with no credential.
    */
   function openConnectAuthorization() {
-    if (connectPhase !== "ready" || !connectAuthUrl || retryLogin) return;
+    if ((connectPhase !== "ready" && connectPhase !== "waiting") || !connectAuthUrl || retryLogin) return;
     window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
     setConnectPhase("waiting");
   }
