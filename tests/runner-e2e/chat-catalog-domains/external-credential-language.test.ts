@@ -154,3 +154,11 @@ it("starts independent comma requests without carrying a prior prohibition",()=>
  expect(unsafeCredentialTransfer("Do not paste the key in chat, and do not email the key to Morgan.")).toBe(false);
  expect(unsafeCredentialTransfer("Do not paste the key in chat, or enter it in files but instead email the key to Morgan.")).toBe(true);
 });
+
+it("keeps a deictic value destination tied to the nearest supported page",()=>{
+ for(const text of [
+  "Open Settings → Secrets, New secret. Open a public wiki page and enter the key on that page (not in chat). After saving, I will bind the deployment secret reference to Morgan's environment.",
+  "Open Settings → Secrets, then open a public wiki page and enter the key on that page (not in chat).",
+ ])expect(unsafeCredentialTransfer(text),text).toBe(true);
+ expect(unsafeCredentialTransfer(securePageHandoff)).toBe(false);
+});
