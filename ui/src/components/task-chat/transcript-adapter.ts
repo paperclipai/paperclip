@@ -1794,6 +1794,11 @@ export function buildTurnTimelineRows(
       const retry = statusNoticeCategory(item) === "provider_retry";
       // A fatal error that ends the retries already tells the whole story.
       if (retry && later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && isFatalProviderError(next))) continue;
+      // A completed compaction with a canonical context.compacted divider
+      // after it is shown by that divider alone.
+      if (statusNoticeCategory(item) === "context_compaction" &&
+        item.details.find((detail) => detail.label === "Phase")?.value === "completed" &&
+        later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && next.family === "context")) continue;
       current = null;
       rows.push(retry && later.some(statusNoticeResolvesRetry) ? { ...item, resolved: true } : item);
     } else if (

@@ -2908,4 +2908,13 @@ describe("harness status notices", () => {
     expect(protocols).toHaveLength(1);
     expect(protocols[0]).toMatchObject({ summary: "You've hit your usage limit." });
   });
+
+  it("lets a context.compacted divider replace the completed compaction chip", () => {
+    const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
+    const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };
+    const rows = (entries: TranscriptEntry[]) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(entries, { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity" && row.family === "provider_notice");
+    expect(rows([read, compacted])).toHaveLength(1);
+    expect(rows([read, compacted, divider])).toHaveLength(0);
+  });
 });
