@@ -1,12 +1,10 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
+import { updateGoalSchema, type UpdateGoal } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type GoalReader = Pick<Db, "select">;
-type GoalUpdate = Partial<Pick<typeof goals.$inferInsert,
-  "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
->>;
 
 async function assertParentCompany(
   db: GoalReader,
@@ -80,25 +78,22 @@ export function goalService(db: Db) {
           .then((rows) => rows[0]);
       }),
 
-    update: (id: string, data: GoalUpdate) =>
+    update: (id: string, data: UpdateGoal) =>
       db.transaction(async (tx) => {
         const [existing] = await tx.select({ companyId: goals.companyId }).from(goals)
           .where(eq(goals.id, id)).for("no key update");
         if (!existing) return null;
+        // Plugin RPC bypasses the HTTP validator, so enforce the same PATCH
+        // contract here before reading or persisting its raw fields.
+        const parsed = updateGoalSchema.safeParse(data);
+        if (!parsed.success) {
+          throw unprocessable("Invalid goal update", parsed.error.issues);
+        }
         const requestedCompanyId = (data as Record<string, unknown>).companyId;
         if (requestedCompanyId !== undefined && requestedCompanyId !== existing.companyId) {
           throw unprocessable("Goal company cannot be changed");
         }
-        // Plugin RPC patches are untyped at runtime. Only the documented
-        // update fields may reach SQL; neither ID nor company is mutable.
-        const patch = {
-          title: data.title,
-          description: data.description,
-          level: data.level,
-          status: data.status,
-          parentId: data.parentId,
-          ownerAgentId: data.ownerAgentId,
-        };
+        const patch = parsed.data;
         await assertParentCompany(tx, existing.companyId, patch.parentId);
         return tx
           .update(goals)

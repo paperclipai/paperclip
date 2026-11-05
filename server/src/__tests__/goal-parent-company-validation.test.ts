@@ -9,6 +9,7 @@ import { HttpError } from "../errors.js";
 import { goalService } from "../services/goals.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { createPluginEventBus } from "../services/plugin-event-bus.js";
+import { createHostClientHandlers } from "../../../packages/plugins/sdk/src/host-client-factory.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -21,7 +22,7 @@ describeDatabase("goal parent company validation", () => {
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-goal-parent-company-");
-    db = createDb(database.connectionString);
+    db = createDb(database.connectionString, { maxConnections: 6 });
   }, 20_000);
   afterEach(async () => {
     await db.delete(goals);
@@ -146,6 +147,30 @@ describeDatabase("goal parent company validation", () => {
     }
   });
 
+  it.each([
+    { name: "null", patch: null },
+    { name: "missing", patch: undefined },
+    { name: "array", patch: [] },
+    { name: "string", patch: "invalid" },
+    { name: "null-title", patch: { title: null } },
+    { name: "non-GUID-parent", patch: { parentId: 17 } },
+  ])("rejects a malformed plugin patch $name without writing", async ({ patch }) => {
+    const companyId = await company();
+    const service = goalService(db);
+    const goal = await service.create(companyId, { title: "Original" });
+    const host = buildHostServices(db, "goal-test-plugin", "goal-test", createPluginEventBus());
+    const handlers = createHostClientHandlers({ pluginId: "goal-test", capabilities: ["goals.update"], services: host });
+    try {
+      const failure = await handlers["goals.update"]({ companyId, goalId: goal.id, patch: patch as any },
+        { invocationScope: { companyId } }).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(HttpError);
+      expect((failure as HttpError).status).toBe(422);
+      expect(await service.getById(goal.id)).toMatchObject({ title: "Original", updatedAt: goal.updatedAt });
+    } finally {
+      host.dispose();
+    }
+  });
+
   it("keeps the checked parent alive through a concurrent child creation", async () => {
     const companyId = await company();
     const service = goalService(db);
@@ -167,27 +192,32 @@ describeDatabase("goal parent company validation", () => {
       ready(owner.pid);
       await released;
     });
-    const gatePid = await gateReady;
-    const creation = service.create(companyId, { title: "Child", parentId: parent.id });
-    // The insert's advisory wait proves its parent check has completed.
-    await expect.poll(async () => {
-      const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_locks
-        where locktype = 'advisory' and not granted and ${gatePid} = any(pg_blocking_pids(pid))`);
-      return waiting.count;
-    }, { timeout: 5_000 }).toBe(1);
-    let deletionPid!: number;
-    let deletionReady!: () => void;
-    let deletionSettled = false;
-    const deletionStarted = new Promise<void>((resolve) => { deletionReady = resolve; });
-    const deletion = db.transaction(async (tx) => {
-      const [owner] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
-      deletionPid = owner.pid;
-      deletionReady();
-      await tx.delete(goals).where(eq(goals.id, parent.id));
-    }).finally(() => { deletionSettled = true; });
-    const results = Promise.allSettled([creation, deletion]);
+    let creation: Promise<unknown> | undefined;
+    let deletion: Promise<unknown> | undefined;
     try {
-      await deletionStarted;
+      const gatePid = await Promise.race([gateReady, gate]);
+      if (gatePid === undefined) throw new Error("Insert gate ended before it was ready");
+      creation = service.create(companyId, { title: "Child", parentId: parent.id });
+      void creation.catch(() => {});
+      // The insert's advisory wait proves its parent check has completed.
+      await expect.poll(async () => {
+        const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_locks
+          where locktype = 'advisory' and not granted and ${gatePid} = any(pg_blocking_pids(pid))`);
+        return waiting.count;
+      }, { timeout: 5_000 }).toBe(1);
+      let deletionPid!: number;
+      let deletionReady!: () => void;
+      let deletionSettled = false;
+      const deletionStarted = new Promise<void>((resolve) => { deletionReady = resolve; });
+      deletion = db.transaction(async (tx) => {
+        const [owner] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        deletionPid = owner.pid;
+        deletionReady();
+        await tx.delete(goals).where(eq(goals.id, parent.id));
+      }).finally(() => { deletionSettled = true; });
+      void deletion.catch(() => {});
+      const results = Promise.allSettled([creation, deletion]);
+      await Promise.race([deletionStarted, deletion]);
       await expect.poll(async () => {
         const [state] = await db.execute<{ blocked: boolean }>(sql`select cardinality(pg_blocking_pids(${deletionPid})) > 0 as blocked`);
         return deletionSettled || state.blocked;
@@ -202,8 +232,7 @@ describeDatabase("goal parent company validation", () => {
         .toEqual({ deleteWasBlocked: true, createError: null, deleteError: "23503" });
     } finally {
       release();
-      await gate;
-      await results;
+      await Promise.allSettled([gate, ...(creation ? [creation] : []), ...(deletion ? [deletion] : [])]);
       await db.execute(sql`drop trigger goal_parent_insert_gate on goals`);
       await db.execute(sql`drop function goal_parent_insert_gate()`);
     }
@@ -233,12 +262,14 @@ describeDatabase("goal parent company validation", () => {
       ready(owner.pid);
       await released;
     });
-    const ownerPid = await gateReady;
-    const edits = Promise.allSettled([
-      service.update(first.id, { parentId: second.id }),
-      service.update(second.id, { parentId: first.id }),
-    ]);
+    let edits: Promise<PromiseSettledResult<unknown>[]> | undefined;
     try {
+      const ownerPid = await Promise.race([gateReady, gate]);
+      if (ownerPid === undefined) throw new Error("Update gate ended before it was ready");
+      edits = Promise.allSettled([
+        service.update(first.id, { parentId: second.id }),
+        service.update(second.id, { parentId: first.id }),
+      ]);
       await expect.poll(async () => {
         const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count
           from pg_locks where locktype = 'advisory' and not granted
@@ -255,8 +286,7 @@ describeDatabase("goal parent company validation", () => {
       expect(await service.getById(second.id)).toMatchObject({ parentId: first.id });
     } finally {
       release();
-      await gate;
-      await edits;
+      await Promise.allSettled([gate, ...(edits ? [edits] : [])]);
       await db.execute(sql`drop trigger goal_parent_test_gate on goals`);
       await db.execute(sql`drop function goal_parent_test_gate()`);
     }
