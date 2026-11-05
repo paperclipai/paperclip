@@ -6211,6 +6211,24 @@ rl.on("line", (line) => {
       expect(bothTransports.status).toBe(200);
     });
 
+    it("uses the session header over a valid session bearer when both are sent", async () => {
+      const company = await createCompany(db);
+      const { agent, issue, project, run } = await createSessionFixture(company.id);
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const app = createGatewayRouteApp(db, gateway, undefined, { withActorMiddleware: true });
+      const sessionInput = { companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id, projectId: project.id };
+      const headerSession = await gateway.createSession(sessionInput);
+      const bearerSession = await gateway.createSession(sessionInput);
+      await gateway.revokeSession({ companyId: company.id, sessionId: headerSession.id });
+
+      const response = await request(app)
+        .get("/api/tool-gateway/tools")
+        .set("x-paperclip-tool-gateway-token", headerSession.token)
+        .set("Authorization", `Bearer ${bearerSession.token}`);
+
+      expect(response.status).toBe(401);
+    });
+
     it("rejects revoked, cross-session, unknown, and malformed session bearers", async () => {
       const company = await createCompany(db);
       const { agent, issue, project, run } = await createSessionFixture(company.id);
