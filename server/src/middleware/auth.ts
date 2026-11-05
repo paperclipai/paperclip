@@ -249,9 +249,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // Public MCP gateway protocol requests carry a pcgw_* bearer that is
     // validated by the gateway service itself. Do not interpret that bearer as
     // a board key or agent JWT here: doing so rejects the MCP handshake before
-    // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
-    // the normal actor authentication path below.
+    // the protocol route can verify its run-scoped credential.
     if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
