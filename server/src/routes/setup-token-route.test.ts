@@ -366,25 +366,49 @@ interface AppHandle {
   logLines: string[];
 }
 
+// The route graph is large and Vitest charges its first, cold compile to whichever test
+// builds the first app. Resolve it once here, so the cold import is paid in the hook with
+// its own budget instead of inside a test that only has the 15 s testTimeout.
+interface RouteGraph {
+  agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+  errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+  pino: typeof import("pino")["pino"];
+  pinoHttp: typeof import("pino-http")["pinoHttp"];
+  redactSensitive: typeof import("../middleware/redact-sensitive.js")["redactSensitive"];
+}
+
+let routeGraph: RouteGraph | null = null;
+
+async function resolveRouteGraph(): Promise<RouteGraph> {
+  if (!routeGraph) {
+    const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
+      await Promise.all([
+        vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+        vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+        vi.importActual<typeof import("pino")>("pino"),
+        vi.importActual<typeof import("pino-http")>("pino-http"),
+        vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+          "../middleware/redact-sensitive.js",
+        ),
+      ]);
+    routeGraph = {
+      agentRoutes,
+      errorHandler,
+      pino: pinoModule.pino,
+      pinoHttp: pinoHttpModule.pinoHttp,
+      redactSensitive: redactModule.redactSensitive,
+    };
+  }
+  return routeGraph;
+}
+
 async function createApp(opts: {
   deploymentMode?: "local_trusted" | "authenticated";
   confidentialProxyAllowlist?: string[];
   confidentialEdgeTlsTerminated?: boolean;
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
-  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
-    await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("pino")>("pino"),
-      vi.importActual<typeof import("pino-http")>("pino-http"),
-      vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
-        "../middleware/redact-sensitive.js",
-      ),
-    ]);
-  const { pino } = pinoModule;
-  const { pinoHttp } = pinoHttpModule;
-  const { redactSensitive } = redactModule;
+  const { agentRoutes, errorHandler, pino, pinoHttp, redactSensitive } = await resolveRouteGraph();
 
   // Capture every request-log line into an array. The custom properties mirror
   // the production request logger: on a 4xx or 5xx response it logs the request
@@ -469,6 +493,13 @@ beforeAll(() => {
   vi.resetModules();
   registerModuleMocks();
 });
+
+// Runs after the hook above, so the mocks are registered before the import resolves. The cold
+// route-graph compile was measured near the suite's 30 s hookTimeout on a loaded host, so this
+// hook takes a budget of its own instead of leaving that cost to the first test's 15 s.
+beforeAll(async () => {
+  await resolveRouteGraph();
+}, 120_000);
 
 beforeEach(() => {
   vi.clearAllMocks();

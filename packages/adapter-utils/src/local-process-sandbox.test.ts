@@ -10,6 +10,7 @@ import {
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
   parseLocalProcessSandboxExtraPaths,
+  resolveSystemPathAliases,
 } from "./local-process-sandbox.js";
 import { runChildProcess } from "./server-utils.js";
 
@@ -74,6 +75,46 @@ describe("local process sandbox", () => {
         networkTrustedUrls: ["file:///not-a-network-target"],
       },
     })).rejects.toThrow("valid networkAllowlist hostname or HTTP(S) networkTrustedUrl");
+  });
+
+  it("mirrors merged-/usr symlinks and leaves real system directories to the bind", async () => {
+    const merged: Record<string, string> = { "/bin": "usr/bin", "/sbin": "usr/sbin", "/lib": "usr/lib", "/lib64": "usr/lib64" };
+    await expect(resolveSystemPathAliases(async (candidate) => {
+      if (candidate in merged) return merged[candidate];
+      throw Object.assign(new Error("EINVAL"), { code: "EINVAL" });
+    })).resolves.toEqual([
+      { path: "/bin", target: "usr/bin" },
+      { path: "/sbin", target: "usr/sbin" },
+      { path: "/lib", target: "usr/lib" },
+      { path: "/lib64", target: "usr/lib64" },
+    ]);
+    // Split /usr (real directories) and a missing /lib64: nothing is aliased.
+    await expect(resolveSystemPathAliases(async () => {
+      throw Object.assign(new Error("EINVAL"), { code: "EINVAL" });
+    })).resolves.toEqual([]);
+  });
+
+  it.runIf(process.platform === "linux")("never binds a host path that the sandbox recreates as a symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-merged-usr-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+
+    for (const alias of await resolveSystemPathAliases()) {
+      const symlinkAt = target.args.findIndex((arg, index) =>
+        arg === "--symlink" && target.args[index + 1] === alias.target && target.args[index + 2] === alias.path);
+      expect(symlinkAt).toBeGreaterThanOrEqual(0);
+      const bound = target.args.some((arg, index) =>
+        (arg === "--ro-bind" || arg === "--bind") && target.args[index + 1] === alias.path && target.args[index + 2] === alias.path);
+      expect(bound).toBe(false);
+    }
   });
 
   it.runIf(process.platform === "linux")("builds a fresh-root bubblewrap command with workspace access", async () => {
