@@ -13,6 +13,7 @@ import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function MyIssues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
@@ -79,7 +80,7 @@ export function MyIssues() {
               title={issue.title}
               to={`/issues/${issue.identifier ?? issue.id}`}
               leading={
-                <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
+                <StatusIcon {...taskStatusIconProps(issue)} />
               }
               trailing={
                 <span className="text-xs text-muted-foreground">

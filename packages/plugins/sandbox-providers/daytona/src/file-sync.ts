@@ -418,6 +418,31 @@ async function countHostFiles(root: string, exclude?: string[]): Promise<number>
   return total;
 }
 
+// Fatal causes first: tar can warn about a vanished file before the error that
+// stopped it. Daytona's executeCommand result already includes stderr.
+const SANDBOX_ERRNO_MESSAGES: ReadonlyArray<readonly [string, string]> = [
+  ["ENOSPC", "No space left on device"],
+  ["EIO", "Input/output error"],
+  ["ENAMETOOLONG", "File name too long"],
+  ["EACCES", "Permission denied"],
+  ["EPERM", "Operation not permitted"],
+  ["ENOTDIR", "Not a directory"],
+  ["EISDIR", "Is a directory"],
+  ["ENOENT", "No such file or directory"],
+];
+
+/**
+ * Map the strerror suffix of a failed command's output to an allowlisted errno.
+ * Reads only a bounded tail in memory; the output text itself is never recorded.
+ */
+function sandboxCommandErrorCode(output: string): string | undefined {
+  const lines = output.slice(-16 * 1024).split(/\r?\n/).map((line) => line.trimEnd());
+  for (const [code, message] of SANDBOX_ERRNO_MESSAGES) {
+    if (lines.some((line) => line.endsWith(`: ${message}`))) return code;
+  }
+  return undefined;
+}
+
 /**
  * Run one sandbox command and return its stdout on success. Throws the same
  * shaped error as {@link assertSandboxCommandOk} on a non-zero exit. Used by
@@ -434,7 +459,7 @@ async function assertSandboxCommandOkWithOutput(
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.result ?? result.artifacts?.stdout ?? "").toString().trim();
     throw recordEnvironmentSyncError(new Error(`Daytona ${label} command failed (exit ${result.exitCode ?? "unknown"})${detail ? `: ${detail}` : ""}`), {
-      transferFailureKind: "command_failed", exitCode: result.exitCode,
+      transferFailureKind: "command_failed", exitCode: result.exitCode, errorCode: sandboxCommandErrorCode(detail),
     });
   }
   return (result.result ?? result.artifacts?.stdout ?? "").toString();

@@ -30,6 +30,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { createCodexTaskEnvelope } from "../../contracts/codex.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../../configured-environment.js";
 import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import {
@@ -153,6 +154,126 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("forwards configured bindings to the provider shell and redacts their values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-configured-env-"));
+    roots.push(root);
+    const bindings = { PROBE_PLAIN: "fixture-plain-binding", PROBE_SECRET: 'fixture-"quoted"\\path\nmultiline-binding' };
+    const command = join(root, "probe-opencode.mjs");
+    await writeFile(command, [
+      "#!/usr/bin/env node",
+      'import { execFileSync } from "node:child_process";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      'const lengths = execFileSync("/bin/sh", ["-c", \'printf "%s,%s" "${#PROBE_PLAIN}" "${#PROBE_SECRET}"\'], { encoding: "utf8" });',
+      'await writeFile(join(process.env.XDG_DATA_HOME, "shell-probe.json"), JSON.stringify({ lengths, keys: JSON.parse(process.env.PAPERCLIP_CONFIGURED_ENV_KEYS ?? "[]") }));',
+      'process.stderr.write(`plain binding: ${process.env.PROBE_PLAIN}\\nresolved binding: ${process.env.PROBE_SECRET}\\n`);',
+      `await import(${JSON.stringify(fixture)});`,
+    ].join("\n"), { mode: 0o755 });
+    const diagnostics: string[] = [];
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        PATH: process.env.PATH,
+        ...configuredEnvironmentProjection({
+          ...bindings,
+          OPENCODE_CONFIG: "/untrusted/opencode.json",
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"*":"allow"}}',
+          OPENCODE_CONFIG_DIR: "/untrusted/opencode",
+          OPENCODE_PERMISSION: '{"*":"allow"}',
+          OPENCODE_DISABLE_PROJECT_CONFIG: "false",
+          XDG_CONFIG_HOME: "/untrusted/config",
+          XDG_DATA_HOME: "/untrusted/data",
+          XDG_CACHE_HOME: "/untrusted/cache",
+          XDG_STATE_HOME: "/untrusted/state",
+        }),
+        DATABASE_URL: "unbound-host-database",
+        PAPERCLIP_API_KEY: "controller-key",
+        NODE_OPTIONS: "--require=/untrusted/bootstrap.js",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+      },
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    const session = await driver.openSession({ runId: "bindings", normalizedSessionId: "bindings", workingDirectory: root });
+    let persisted = "";
+    try {
+      const probe = JSON.parse(await readFile(join(root, "bindings", "data", "shell-probe.json"), "utf8"));
+      expect(probe).toEqual({ lengths: `${bindings.PROBE_PLAIN.length},${bindings.PROBE_SECRET.length}`, keys: Object.keys(bindings).sort() });
+      const child = JSON.parse(await readFile(join(root, "bindings", "data", "fake-environment.json"), "utf8"));
+      expect(child.keys).toEqual(expect.arrayContaining(Object.keys(bindings)));
+      for (const key of ["DATABASE_URL", "PAPERCLIP_API_KEY", "NODE_OPTIONS", "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION", "XDG_STATE_HOME"]) {
+        expect(child.keys).not.toContain(key);
+      }
+      expect(child.projectConfigDisabled).toBe("true");
+      await session.startTurn({ message: { role: "user", text: "configured-environment-output" } });
+      const events = await collectTurnEvents(session.events());
+      expect(events.at(-1)?.eventType).toBe("turn.completed");
+      persisted = JSON.stringify(await session.snapshot())
+        + await readFile(join(root, "bindings", "config", "opencode", "opencode.json"), "utf8");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    const trace = await readFile(tracePath, "utf8");
+    const frames = trace.trim().split("\n").map(line => JSON.parse(line))
+      .filter(entry => entry.kind === "frame")
+      .map(entry => Buffer.from(entry.rawBase64, "base64").toString("utf8"));
+    expect(frames.find(frame => frame.includes("part-configured-binding-output"))).toContain('"output":"[REDACTED]"');
+    persisted += trace + frames.join("\n");
+    expect(diagnostics.join("\n")).toContain("plain binding: [REDACTED]");
+    expect(diagnostics.join("\n")).toContain("resolved binding: [REDACTED]");
+    for (const value of Object.values(bindings)) {
+      expect(diagnostics.join("\n")).not.toContain(value);
+      expect(persisted).not.toContain(value);
+      expect(persisted).not.toContain(JSON.stringify(value).slice(1, -1));
+    }
+  });
+
+  it("preserves empty arrays in traces when all configured bindings are runtime-owned", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-empty-projection-"));
+    roots.push(root);
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH, PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+        ...configuredEnvironmentProjection({ OPENCODE_CONFIG_CONTENT: "{}" }) },
+    });
+    const session = await driver.openSession({ runId: "empty", normalizedSessionId: "empty", workingDirectory: root });
+    try {
+      expect(await session.read()).toMatchObject({ messages: [] });
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    const entries = (await readFile(tracePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const frame = entries.find(entry => entry.kind === "frame" && entry.direction === "provider_to_client"
+      && entry.nativeMethod === "GET /session/ses_fake_1/message 200");
+    expect(frame).toBeDefined();
+    expect(Buffer.from(frame.rawBase64, "base64").toString("utf8")).toBe("[]");
+  });
+
+  it.each([false, true])("ignores an ambient configured-environment projection (explicit environment: %s)", async explicit => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-ambient-env-"));
+    roots.push(root);
+    vi.stubEnv(CONFIGURED_ENVIRONMENT_KEYS, '["PROBE_SECRET"]');
+    vi.stubEnv("PROBE_SECRET", "ambient-binding-must-not-cross");
+    try {
+      const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        ...(explicit ? { environment: { PATH: process.env.PATH } } : {}) });
+      const session = await driver.openSession({ runId: "ambient", normalizedSessionId: "ambient", workingDirectory: root });
+      try {
+        const child = JSON.parse(await readFile(join(root, "ambient", "data", "fake-environment.json"), "utf8"));
+        expect(child.keys).not.toContain("PROBE_SECRET");
+        expect(child.keys).not.toContain(CONFIGURED_ENVIRONMENT_KEYS);
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));

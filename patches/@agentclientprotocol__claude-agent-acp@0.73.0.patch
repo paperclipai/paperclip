@@ -1,8 +1,65 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index 0214a50..73f0c16 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2494,7 +2494,33 @@
-                             case "hook_response":
+@@ -2490,11 +2490,88 @@ export class ClaudeAcpAgent {
+                                 break;
+                             }
+                             case "hook_started":
++                            case "hook_response": {
++                                // Paperclip patch: forward hook lifecycle so automatic hook
++                                // decisions stay auditable. ACP has no hook update, so it rides
++                                // on session_info_update `_meta` (no title/updatedAt change).
++                                // Output is bounded; the runner derives the outcome.
++                                const bounded = (value) => typeof value === "string" ? value.slice(0, 4000) : undefined;
++                                // Read the hook's JSON decision from the full stdout before the
++                                // display text is bounded, so a long reason cannot hide a block.
++                                const hookDecision = (stdout) => {
++                                    if (typeof stdout !== "string" || !stdout.trim().startsWith("{")) return undefined;
++                                    let parsed;
++                                    try { parsed = JSON.parse(stdout); } catch { return undefined; }
++                                    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
++                                    const specific = parsed.hookSpecificOutput && typeof parsed.hookSpecificOutput === "object" ? parsed.hookSpecificOutput : {};
++                                    const decision = {
++                                        ...(typeof parsed.continue === "boolean" ? { continue: parsed.continue } : {}),
++                                        ...(typeof parsed.stopReason === "string" ? { stopReason: bounded(parsed.stopReason) } : {}),
++                                        ...(typeof parsed.decision === "string" ? { decision: bounded(parsed.decision) } : {}),
++                                        ...(typeof parsed.reason === "string" ? { reason: bounded(parsed.reason) } : {}),
++                                        ...(typeof parsed.systemMessage === "string" ? { systemMessage: bounded(parsed.systemMessage) } : {}),
++                                        ...(typeof specific.permissionDecision === "string" ? { permissionDecision: bounded(specific.permissionDecision) } : {}),
++                                        ...(typeof specific.permissionDecisionReason === "string" ? { permissionDecisionReason: bounded(specific.permissionDecisionReason) } : {}),
++                                        ...(typeof specific.additionalContext === "string" ? { additionalContext: bounded(specific.additionalContext) } : {}),
++                                    };
++                                    return Object.keys(decision).length > 0 ? decision : undefined;
++                                };
++                                await sendUpdate({
++                                    sessionId: message.session_id,
++                                    update: {
++                                        sessionUpdate: "session_info_update",
++                                        _meta: {
++                                            claudeCode: {
++                                                hook: {
++                                                    phase: message.subtype === "hook_started" ? "started" : "completed",
++                                                    hookId: message.hook_id,
++                                                    hookName: message.hook_name,
++                                                    hookEvent: message.hook_event,
++                                                    ...(message.subtype === "hook_response" ? {
++                                                        outcome: message.outcome,
++                                                        ...(typeof message.exit_code === "number" ? { exitCode: message.exit_code } : {}),
++                                                        output: bounded(message.output),
++                                                        stdout: bounded(message.stdout),
++                                                        stderr: bounded(message.stderr),
++                                                        decision: hookDecision(message.stdout),
++                                                    } : {}),
++                                                },
++                                            },
++                                        },
++                                    },
++                                });
++                                break;
++                            }
+                             case "hook_progress":
+-                            case "hook_response":
                              case "files_persisted":
                                  break;
 -                            case "task_progress":
@@ -36,7 +93,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                  await asyncTasks.taskProgress({
                                      task_id: message.task_id,
                                      description: message.description,
-@@ -2503,6 +2529,7 @@
+@@ -2503,6 +2580,7 @@ export class ClaudeAcpAgent {
                                      usage: message.usage,
                                  });
                                  break;
@@ -44,7 +101,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                              case "task_started":
                                  // For subagent tasks `task_id` is the subagent's agent id (the
                                  // SDK keys its task registry by agent id) and `tool_use_id` is
-@@ -2550,6 +2577,7 @@
+@@ -2550,6 +2628,7 @@ export class ClaudeAcpAgent {
                              case "task_notification":
                                  // The task settled — no further tool calls can originate
                                  // from it, so its registry entry can be dropped.
@@ -52,7 +109,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                  await subagents.finishTask(message.task_id, message.status, sendUpdate, message.tool_use_id);
                                  await asyncTasks.taskNotification({
                                      task_id: message.task_id,
-@@ -2571,6 +2599,7 @@
+@@ -2571,6 +2650,7 @@ export class ClaudeAcpAgent {
                                  if (message.patch.status === "completed" ||
                                      message.patch.status === "failed" ||
                                      message.patch.status === "killed") {
@@ -60,7 +117,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      await subagents.finishTask(message.task_id, message.patch.status, sendUpdate);
                                      session.liveBackgroundTasks.delete(message.task_id);
                                  }
-@@ -2922,9 +2951,19 @@
+@@ -2922,9 +3002,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -83,7 +140,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      },
                                  });
                              }
-@@ -4506,6 +4545,48 @@
+@@ -4506,6 +4596,48 @@ export class ClaudeAcpAgent {
       *  `$/cancel_request`, and our local abort race settles even if the client
       *  ignores it. A `cancelled` outcome, request rejection, and local abort all
       *  surface the same "Tool use aborted" the callers already expect. */
@@ -132,7 +189,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
      async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
          if (signal.aborted)
              throw new Error("Tool use aborted");
-@@ -5311,6 +5392,12 @@
+@@ -5311,14 +5443,24 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -145,8 +202,10 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5405,9 @@
+             cwd: params.cwd,
              includePartialMessages: true,
++            // Paperclip patch: emit hook_started/hook_response for every hook event.
++            includeHookEvents: true,
              forwardSubagentText,
              mcpServers: {
 -                ...(userProvidedOptions?.mcpServers || {}),
@@ -156,7 +215,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5418,16 @@
+@@ -5329,6 +5471,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
@@ -174,9 +233,10 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
 diff --git a/dist/settings.js b/dist/settings.js
+index fff1f03..2d98307 100644
 --- a/dist/settings.js
 +++ b/dist/settings.js
-@@ -88,6 +88,12 @@
+@@ -88,6 +88,12 @@ export class SettingsManager {
      async loadAllSettings() {
          try {
              const resolved = await resolveSettings({ cwd: this.cwd });
