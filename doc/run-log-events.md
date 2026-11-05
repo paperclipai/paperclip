@@ -371,6 +371,16 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+Explicit continuation writes `native.stopped_conversation_verified` after it
+verifies the retained worker and provider processes stopped. Its payload binds
+the requesting `runId`, retained `ownerRunId`, native session, runner instance,
+process IDs, retained-state fingerprint, successor run, Retry receipt, and local
+workspace identity. The owner can be a preceding terminal
+run when the requesting attempt failed before launch with the same process
+identity. The server checks host-bound process birth and independent provider
+receipts before retiring cleanup ownership. The event does not settle uncertain
+actions or authorize replay of the old session.
+
 ## Verified Local Codex Replacement Evidence
 
 The server writes `native.stopped_text_turn_verified` in the same transaction

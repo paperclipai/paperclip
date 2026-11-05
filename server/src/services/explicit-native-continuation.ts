@@ -496,7 +496,8 @@ export async function admitExplicitNativeContinuation(input: {
       companyId, runId: String(stopped.evidence.runId), agentId,
       eventType: "native.stopped_conversation_verified", stream: "system", level: "info",
       message: "The old runner and provider stopped. New user input will use a fresh session; prior action outcomes remain recorded.",
-      payload: stopped.evidence,
+      payload: { ...stopped.evidence, successorRunId: input.successorRunId,
+        ...(input.taskRetryRequestId ? { taskRetryRequestId: input.taskRetryRequestId } : {}) },
     });
   }
   const authorization = { ...continuation, actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
