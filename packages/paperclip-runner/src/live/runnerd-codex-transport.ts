@@ -4396,7 +4396,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
       activationStarted = true;
       core.rotateRunIdentity(desired, runAttachTemplate);
-      if (core.store.state.stagedRunAttachment && registration?.connection?.mode === "listen" && this.options.readRunnerState) {
+      if (core.store.state.stagedRunAttachment && this.options.readRunnerState
+        && (registration?.connection?.mode === "listen" || registration?.connection?.mode === "external")) {
         const deadline = Math.min(Date.now() + (this.options.runnerReconnectGraceMs ?? 5_000), this.#sourceAttachmentDeadline ?? Infinity);
         const artifact = this.options.runnerArtifact ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
         for (;;) {
@@ -5613,7 +5614,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_runner_source_reconciliation_requires_exact_authority");
     }
     if (lostPredecessor && (!["codex", "acpx"].includes(this.options.provider ?? "codex") || this.options.acpxCandidateAdmission)) throw new Error("native_runner_recovery_integrity_unsupported");
-    const recoveryCapability = this.options.provider === "acpx" ? this.options.acpxSourceRecoveryVersion : this.options.sourceRecoveryVersion;
+    const recoveryCapability = this.options.provider === "acpx" ? this.options.acpxSourceRecoveryVersion : this.options.codexSourceRecoveryVersion;
     if (lostPredecessor && recoveryCapability !== 1) {
       throw new Error("native_runner_recovery_integrity_unsupported");
     }
@@ -5697,7 +5698,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? new URL(connection.connectUrl)
           : null;
       if (
-        (connection.mode !== "connect" && !(connection.mode === "listen" && staged
+        (connection.mode !== "connect" && !((connection.mode === "listen" || connection.mode === "external" && this.options.readRunnerState) && staged
           && this.options.adoptExistingRunner && this.options.controlPlaneRegistration
           && this.options.warmTransitionRegistrationMode === "routed_same_endpoint")) ||
         (connection.mode === "connect" && (endpoint === null || endpoint.search || endpoint.hash || endpoint.username || endpoint.password)) ||
@@ -6332,15 +6333,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     let targetRecoveryActivated = registration === newTransitionRegistration;
     if (oldTransitionRegistration && newTransitionRegistration) {
-      // A guest listener still serves only its actual physical run. Open that
-      // route first; probing the future/retired path cannot prove readiness.
+      // Guest listeners and hosted external ingress serve only their physical
+      // run. Open that route first so its receipt ACK can activate the target.
       await registration?.activate?.();
       this.#assertStartupOpen();
       if (registration === oldTransitionRegistration) {
         // Source authentication can consume its receipt and disappear before
         // a sampled count sees it. The durable/physical proof loop below owns
         // that progress; only target authentication completes recovery.
-        if (expectedRecoveryConnection?.mode !== "listen") {
+        if (expectedRecoveryConnection?.mode !== "listen"
+          && !(expectedRecoveryConnection?.mode === "external" && this.options.readRunnerState)) {
           await newTransitionRegistration.activate?.(); targetRecoveryActivated = true;
         }
       }
@@ -6377,8 +6379,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const connections = core.activeRunnerConnectionCount();
         if (connections === 0 && previousConnections > 0) nextPhysicalInspection = 0;
         previousConnections = connections;
-        if (!sourceRouteRetired && expectedRecoveryConnection?.mode === "listen" && oldTransitionRegistration
-          && newTransitionRegistration && this.options.readRunnerState && Date.now() >= nextPhysicalInspection) {
+        if (!sourceRouteRetired && (expectedRecoveryConnection?.mode === "listen" || expectedRecoveryConnection?.mode === "external")
+          && oldTransitionRegistration && newTransitionRegistration && this.options.readRunnerState && Date.now() >= nextPhysicalInspection) {
           nextPhysicalInspection = Date.now() + 250;
           const physical = await this.options.readRunnerState();
           const proof = inspectWarmRunTransition({ controlPlaneState: core.store.state, runnerState: physical,
