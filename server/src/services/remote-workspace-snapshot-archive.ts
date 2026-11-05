@@ -53,7 +53,7 @@ async function workspaceArchive(input: {
     if (stdin !== undefined) command.stdin?.end(stdin);
   });
   const portableRemoteUrl = (value: string) => {
-    if (!value || /[\u0000- \u007f\\]/u.test(value)) return false;
+    if (!value || /[\u0000-\x20\u007f\\]/u.test(value)) return false;
     if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
       let url: URL; try { url = new URL(value); } catch { return false; }
       if (!["http:", "https:", "ssh:", "git:"].includes(url.protocol)) return false;
@@ -77,7 +77,7 @@ async function workspaceArchive(input: {
       : /^(false|no|off|0)$/iu.test(value) ? "false" : fail("unsupported_git_setting");
     const rows = raw.split("\0").filter(Boolean).map(row => {
       const split = row.indexOf("\n"), key = row.slice(0, split), value = row.slice(split + 1);
-      if (split < 1 || /[\u0000- \u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
+      if (split < 1 || /[\u0000-\x20\u007f\\]/u.test(key) || /[\u0000-\u001f\u007f\\]/u.test(value)) fail("unsupported_git_setting");
       return { key, value, remote: /^remote\.(.+)\.(url|pushurl|fetch|promisor|partialclonefilter)$/.exec(key),
         branch: /^branch\.(.+)\.(remote|merge|rebase)$/.exec(key), identity: /^user\.(name|email)$/.test(key),
         sparse: /^(core\.(sparsecheckout|sparsecheckoutcone)|index\.sparse)$/.test(key) };
