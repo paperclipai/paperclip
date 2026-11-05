@@ -126,6 +126,7 @@ async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbe
     executionWorkspaceId: z.string().uuid(), workspaceCwd: z.string().min(1),
   }).safeParse(proof.payload);
   if (!parsed.success) throw new Error("Verified native continuation workspace is unavailable");
+  if (parsed.data.executionWorkspaceId === source.id) return null;
   const [bound] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd }).from(issues).innerJoin(executionWorkspaces, and(
     eq(executionWorkspaces.companyId, issues.companyId), eq(executionWorkspaces.id, issues.executionWorkspaceId),
   )).where(and(eq(issues.companyId, source.companyId), eq(issues.id, input.issueId),

@@ -30,13 +30,13 @@ describe("task Retry after inherited native cleanup quarantine", () => {
   }, 90_000);
   afterAll(async () => { await db?.$client.end(); await postgres?.cleanup(); });
 
-  async function seed(base: string) {
+  async function seed(base: string, transient = false) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const ownerId = randomUUID(), sourceId = randomUUID(), nativeSessionId = randomUUID(), runnerInstanceId = randomUUID();
     const workspaceId = randomUUID();
     const execution = (runId: string) => parseNativeExecutionInput({
       schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
-      binding: { companyId, agentId, issueId, runId, executionWorkspaceId: workspaceId },
+      binding: { companyId, agentId, issueId, runId, executionWorkspaceId: transient ? runId : workspaceId },
       task: { identifier: "TEST", title: "Continue saved work", description: null, prompt: "Continue saved work", workMode: "standard" },
       workspace: { cwd: base, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: nativeSessionId, driverKind: "codex_app_server", protocolVersion: 1,
@@ -52,9 +52,11 @@ describe("task Retry after inherited native cleanup quarantine", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Native worker", adapterType: "paperclip_runner", status: "idle",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue saved work", status: "blocked", assigneeAgentId: agentId });
-    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId,
-      mode: "shared_workspace", strategyType: "project_primary", name: "Saved work", cwd: base });
-    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
+    if (!transient) {
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId,
+        mode: "shared_workspace", strategyType: "project_primary", name: "Saved work", cwd: base });
+      await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
+    }
     const resultJson = { savedAnswer: "Existing work", recoveredExecutionFailure: { errorCode: "provider_transport_failed" } };
     for (const runId of [ownerId, sourceId]) {
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId,
@@ -79,7 +81,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       nextAction: "Automatic recovery stopped.", evidence: { runId: sourceId,
         automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } });
     const identity = { runId: ownerId, runnerInstanceId, normalizedSessionId: nativeSessionId,
-      environmentLeaseId: workspaceId, turnId: `turn-${ownerId}`, itemId: `item-${ownerId}` };
+      environmentLeaseId: transient ? ownerId : workspaceId, turnId: `turn-${ownerId}`, itemId: `item-${ownerId}` };
     const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceSeq: 5,
       sourceEventId: "provider-open", sourceInstanceId: runnerInstanceId, runId: ownerId,
       normalizedSessionId: nativeSessionId, turnId: identity.turnId, itemId: identity.itemId,
@@ -91,7 +93,8 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       payload: { prpEvent: normalized }, nativeSource: { sourceInstanceId: runnerInstanceId,
         sourceEventId: normalized.sourceEventId, sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayload: normalized } });
     const root = join(base, nativeSha256({ schema: "paperclip.native-session-scope.v2", companyId, agentId,
-      workspace: { kind: "managed", executionWorkspaceId: workspaceId },
+      workspace: transient ? { kind: "transient", cwd: base, repoUrl: null, repoRef: null, branchName: null }
+        : { kind: "managed", executionWorkspaceId: workspaceId },
       provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId }));
     const files = {
       "control-plane/control-plane-state.json": { schema: "paperclip.runner.durable.control-plane-state.v1", identity,
@@ -107,13 +110,13 @@ describe("task Retry after inherited native cleanup quarantine", () => {
     return { companyId, agentId, issueId, workspaceId, ownerId, sourceId, runnerInstanceId, resultJson, root, files };
   }
 
-  it.each(["preserved", "changed_binding", "changed_cwd", "pending_operation", "active_lease", "closed_workspace", "remote_workspace", "foreign_receipt"])(
+  it.each(["preserved", "projectless", "changed_binding", "changed_cwd", "pending_operation", "active_lease", "closed_workspace", "remote_workspace", "foreign_receipt"])(
     "admits one fresh successor through canonical Retry without replaying the retained session (%s)", async mode => {
     const base = await mkdtemp(join(tmpdir(), "quarantined-retry-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
     try {
-      const f = await seed(base);
+      const f = await seed(base, mode === "projectless");
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
       const input = { db, companyId: f.companyId, issueId: f.issueId, actorId: "board", actorSource: "local_implicit", observedRunId: f.sourceId };
       const receipt = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
@@ -139,6 +142,9 @@ describe("task Retry after inherited native cleanup quarantine", () => {
         await db.update(heartbeatRunEvents).set({ payload: { ...proof.payload, successorRunId: randomUUID() } })
           .where(eq(heartbeatRunEvents.id, proof.id));
         expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "fresh_isolated_workspace" });
+      } else if (mode === "projectless") {
+        expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "fresh_isolated_workspace",
+          retryIntentId: receipt.requestId, sourceRunId: f.sourceId });
       } else if (mode === "preserved") {
         expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_stopped_native_workspace",
           retryIntentId: receipt.requestId, sourceRunId: f.sourceId, workspaceId: f.workspaceId, cwd: base });
