@@ -44656,15 +44656,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it.each(slackProtocolCapture ? ["warm", "command-delayed", "action-delayed", "submission-delayed"] as const : ["warm"] as const)("captures signed Slack forwarding protocol with registered owners (%s)", async mode => {
     const network = guardSlackFixtureNetwork({ requirePreload: slackProtocolCapture });
-    const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    let configured: Awaited<ReturnType<typeof configuredSlackEndpoint>> | undefined;
     let routedService: ChatChannelService | undefined;
-    const actualRuntime = createChatRuntime();
-    const custody: Array<{ lane: string; elapsedMs: number; acknowledgedWithin3s: boolean; originalTimestamp: string | null }> = [];
-    const protocol: Array<{ method: string; triggerAgeMs?: number; outcome: string }> = [];
-    let triggerCreatedAt = 0;
+    let actualRuntime: ReturnType<typeof createChatRuntime> | undefined;
+    let failure: { error: unknown } | undefined;
     try {
+      const fixture = await seedCompany();
+      configured = await configuredSlackEndpoint(fixture);
+      const { callbacks, endpoint, runtime, service, wakeup } = configured;
+      actualRuntime = createChatRuntime();
+      const custody: Array<{ lane: string; elapsedMs: number; acknowledgedWithin3s: boolean; originalTimestamp: string | null }> = [];
+      const protocol: Array<{ method: string; triggerAgeMs?: number; outcome: string }> = [];
+      let triggerCreatedAt = 0;
       const channelId = "C-SIGNED-MODAL";
       const threadTs = "1788.100";
       const externalUserId = `U-MODAL-${randomUUID()}`;
@@ -45262,17 +45265,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(observed.slackCallbackSurfaces?.interactivity?.url).toBe(callbackUrl);
       expect(observed.slackCallbackSurfaces?.slashCommands?.url).toBe(callbackUrl);
       if (process.env.PAPERCLIP_SLACK_PROTOCOL_CAPTURE === "1") console.info(JSON.stringify({ mode, protocol, custody, invalidSubmission: "errors", correctedSubmission: "clear", answerDeliveries: accepted.deliveries.length }));
+    } catch (error) {
+      failure = { error };
+      throw error;
     } finally {
-      try {
-        await routedService?.shutdown();
-        await actualRuntime.shutdown();
-      } finally {
-        try {
-          await retirePublicationFixture(service, endpoint.id);
-        } finally {
-          try { network.assertQuiet(); } finally { network.restore(); }
-        }
+      const errors: unknown[] = [];
+      for (const cleanup of [
+        () => routedService?.shutdown(),
+        () => actualRuntime?.shutdown(),
+        () => configured ? retirePublicationFixture(configured.service, configured.endpoint.id) : undefined,
+        () => network.assertQuiet(),
+        () => network.restore(),
+      ]) {
+        try { await cleanup(); } catch (error) { errors.push(error); }
       }
+      if (errors.length) throw new AggregateError([...(failure ? [failure.error] : []), ...errors], "Slack protocol work or cleanup failed");
     }
   });
 
