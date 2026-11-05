@@ -229,6 +229,29 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("preserves empty arrays in traces when all configured bindings are runtime-owned", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-empty-projection-"));
+    roots.push(root);
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH, PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+        ...configuredEnvironmentProjection({ OPENCODE_CONFIG_CONTENT: "{}" }) },
+    });
+    const session = await driver.openSession({ runId: "empty", normalizedSessionId: "empty", workingDirectory: root });
+    try {
+      expect(await session.read()).toMatchObject({ messages: [] });
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    const entries = (await readFile(tracePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const frame = entries.find(entry => entry.kind === "frame" && entry.direction === "provider_to_client"
+      && entry.nativeMethod === "GET /session/ses_fake_1/message 200");
+    expect(frame).toBeDefined();
+    expect(Buffer.from(frame.rawBase64, "base64").toString("utf8")).toBe("[]");
+  });
+
   it.each([false, true])("ignores an ambient configured-environment projection (explicit environment: %s)", async explicit => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-ambient-env-"));

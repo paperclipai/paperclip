@@ -31,6 +31,7 @@ import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.j
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { configuredOpenCodeEnvironment } from "./environment.js";
+import { CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -2477,7 +2478,8 @@ async function startRuntime(input: {
   const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
-    ...Object.values(taskEnvironment).flatMap(value => value ? [value, JSON.stringify(value).slice(1, -1)] : []),
+    ...Object.entries(taskEnvironment).flatMap(([key, value]) =>
+      key !== CONFIGURED_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
     password,
     authHeader,
     bridge.secret,
