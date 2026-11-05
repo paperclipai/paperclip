@@ -41,6 +41,13 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
+If Codex hits its tool-receipt limit during reconnect, runnerd stops its local
+process group at the original deadline. It reads the remaining stdout in short
+intervals, then replays the frames in order across as many batches as needed.
+Only confirmed EOF with no terminal permits a missing-terminal result.
+If stdout stays open or the buffer lacks room for one maximum-size frame,
+runnerd reports uncertainty and keeps the events already committed to disk.
+
 Executors retain polled events until runnerd acknowledges each event after its
 outbox commit. Batches commit one event at a time, so a later oversized event or
 capacity failure cannot roll back the accepted prefix or discard the

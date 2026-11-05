@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -57,6 +58,13 @@ impl CommandExecutor for SelectedExecutor {
             Self::Acpx(executor) => executor.poll_events(),
             Self::Managed(executor) => executor.poll_events(),
             Self::Dot(executor) => executor.poll_events(),
+        }
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.maintain_disconnected_provider(),
+            _ => Ok(None),
         }
     }
 
@@ -390,6 +398,12 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             .credentials
             .pending()
             .map_or(events, |event| vec![event]))
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        self.selected
+            .as_mut()
+            .map_or(Ok(None), CommandExecutor::maintain_disconnected_provider)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
