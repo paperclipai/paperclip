@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { copyOwnedNodeRuntime } from "../../test-support/owned-node-runtime.js";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
 import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
@@ -27,14 +28,10 @@ async function fixture(options: { node?: boolean; script?: string } = {}): Promi
   const root = await mkdtemp(join(tmpdir(), "native-acpx-test-")); roots.push(root);
   const entries: NativeAcpxDistributionEntry[] = [];
   if (options.node) {
-    await copyFile(process.execPath, join(root, "runtime")); await chmod(join(root, "runtime"), 0o700);
-    const bytes = await readFile(join(root, "runtime")); entries.push({ path: "runtime", sha256: hash(bytes), size: bytes.length, executable: true });
-    // Homebrew's test-host Node uses an @rpath libnode dylib. Include that
-    // dependency in this fixture's closure instead of relying on its old path.
-    const libraryRoot = join(dirname(process.execPath), "..", "lib");
-    for (const name of (await readdir(libraryRoot).catch(() => [] as string[])).filter(name => /^libnode\..*\.dylib$/.test(name))) {
-      await copyFile(join(libraryRoot, name), join(root, name)); await chmod(join(root, name), 0o600);
-      const library = await readFile(join(root, name)); entries.push({ path: name, sha256: hash(library), size: library.length, executable: false });
+    const { executable, libraries } = await copyOwnedNodeRuntime(root);
+    const bytes = await readFile(executable); entries.push({ path: "runtime", sha256: hash(bytes), size: bytes.length, executable: true });
+    for (const libraryPath of libraries) {
+      const library = await readFile(libraryPath); entries.push({ path: libraryPath.slice(root.length + 1), sha256: hash(library), size: library.length, executable: false });
     }
     const script = options.script ?? 'console.log("qualified-entry");';
     await writeFile(join(root, "entry.cjs"), script, { mode: 0o600 });

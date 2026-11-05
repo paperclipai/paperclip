@@ -1,7 +1,8 @@
-import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
-import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
+import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
@@ -29,6 +30,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapte
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
+import { describeError } from "@/api/errors";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
@@ -42,6 +44,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, SelectPopover } from "@/components/ui/select";
@@ -144,7 +147,9 @@ type AgentConfigFormProps = {
   /** Keep variable bindings beside secret access in a unified edit surface. */
   environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
-  sectionLayout?: "inline" | "cards";
+  sectionLayout?: "inline" | "cards" | "panels";
+  /** Sections to leave out entirely (by `data-config-section` key). */
+  hiddenSections?: readonly string[];
   /** Optional settings composition; sorting changes DOM order as well as visual order. */
   sectionOrder?: readonly string[];
   sectionTitles?: Record<string, string>;
@@ -322,12 +327,21 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
-function ConfigSections({ order, className, children }: {
+function ConfigSections({ order, hidden, className, children }: {
   order?: readonly string[];
+  hidden?: readonly string[];
   className: string;
   children: ReactNode;
 }) {
-  if (!order) return <div className={className}>{children}</div>;
+  const keyOf = (child: ReactNode) =>
+    isValidElement<{ "data-config-section"?: string }>(child) ? child.props["data-config-section"] : undefined;
+  const visible = hidden?.length
+    ? Children.toArray(children).filter((child) => {
+      const key = keyOf(child);
+      return !key || !hidden.includes(key);
+    })
+    : children;
+  if (!order) return <div className={className}>{visible}</div>;
   const rank = (child: ReactNode) => {
     const key = isValidElement<{ "data-config-section"?: string }>(child)
       ? child.props["data-config-section"]
@@ -335,7 +349,7 @@ function ConfigSections({ order, className, children }: {
     const index = key ? order.indexOf(key) : -1;
     return index < 0 ? order.length : index;
   };
-  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  const sections = Children.toArray(visible).sort((a, b) => rank(a) - rank(b));
   return <div className={className}>{sections}</div>;
 }
 
@@ -344,7 +358,12 @@ function ConfigSections({ order, className, children }: {
 export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
-  const cards = props.sectionLayout === "cards";
+  const panels = props.sectionLayout === "panels";
+  const cards = props.sectionLayout === "cards" || panels;
+  const cardBody = panels
+    ? "space-y-3 rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)"
+    : "border border-border rounded-lg p-4 space-y-3";
+  const untitled = (key: string) => panels && props.sectionTitles?.[key] === "";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
@@ -370,7 +389,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
-    retry: false,
   });
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
@@ -381,7 +399,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["secret-proposals", "none"],
     queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
     enabled: Boolean(selectedCompanyId) && !isCreate,
-    retry: false,
   });
   const agentBindingProposals = useMemo(
     () =>
@@ -394,7 +411,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const adapterPickerDisabledTypes = useMemo(() => {
     const next = new Set(disabledTypes);
@@ -428,12 +444,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
-    retry: false,
   });
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
-    retry: false,
   });
 
   const { data: environments = [] } = useQuery<Environment[]>({
@@ -444,7 +458,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // when the experimental environments picker is otherwise hidden).
     enabled:
       Boolean(selectedCompanyId) &&
-      (environmentsEnabled || generalSettings?.executionMode === "kubernetes"),
+      (environmentsEnabled || !isCreate || generalSettings?.executionMode === "kubernetes"),
   });
 
   // Setting-driven: resolve whether the instance forces Kubernetes execution and
@@ -636,39 +650,34 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => adaptersApi.list({ companyId: selectedCompanyId!, environmentId: rawCurrentDefaultEnvironmentId || null }),
     enabled: Boolean(selectedCompanyId),
   });
+  const runnerDiscoveryView = useQueryView(runnerDiscovery);
   const runnerAvailability = runnerDiscovery.data?.find(item => item.type === harnessType);
-  const showRunnerUpgrade = !isCreate
-    && ["codex_local", "claude_local"].includes(props.agent.adapterType)
-    && adapterType === props.agent.adapterType
-    && !runnerDiscovery.isError
-    && runnerAvailability?.defaultRunner === "paperclip";
-  const upgradeRunner = async () => {
-    if (isCreate || runnerUpgradePending) return;
-    const agentId = props.agent.id;
-    setRunnerUpgrade({ agentId, status: "pending" });
-    try {
-      const flushedEnv = flushEnvironmentDraft();
-      const nextOverlay = flushedEnv
-        ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
-        : overlay;
-      await props.onSave({ ...buildAgentUpdatePatch(props.agent, nextOverlay), runner: "paperclip" });
-      setRunnerUpgrade(current => current?.agentId === agentId ? { agentId, status: "upgraded" } : current);
-    } catch (error) {
-      setRunnerUpgrade(current => current?.agentId === agentId ? {
-        agentId, status: "failed", error: error instanceof Error ? error.message : "Could not upgrade this agent. Try again.",
-      } : current);
-    }
-  };
   const runner: AgentRunnerChoice = isCreate ? props.values.runner ?? "auto" : overlay.runner ?? agentRunner(adapterType);
   const fieldsAdapterType = isRunnerHarness
     ? (runner === "paperclip" || (runner === "auto" && runnerAvailability?.defaultRunner === "paperclip") ? "paperclip_runner" : harnessType)
     : adapterType;
+  const isCursorCloudRunner = harnessType === "cursor_cloud" && fieldsAdapterType === "paperclip_runner";
+  useEffect(() => {
+    if (props.mode !== "create" || !isCursorCloudRunner || !props.values.defaultEnvironmentId) return;
+    props.onChange({ defaultEnvironmentId: "" });
+  }, [props.mode, isCursorCloudRunner, isCreate ? props.values.defaultEnvironmentId : undefined,
+    isCreate ? props.onChange : undefined]);
   useEffect(() => {
     if (props.mode !== "create" || !isRunnerHarness) return;
     const resolvedRunner = runner === "auto" ? runnerAvailability?.defaultRunner : runner;
     if (props.values.resolvedRunner !== resolvedRunner) props.onChange({ resolvedRunner });
   }, [props.mode, harnessType, isRunnerHarness, runner, runnerAvailability?.defaultRunner,
     isCreate ? props.values.resolvedRunner : undefined, isCreate ? props.onChange : undefined]);
+  // A Runner-only environment, such as a plugin environment that runs Runner
+  // tasks, offers no Legacy runner. Switch a Legacy choice to Paperclip Runner
+  // so the test and the save both resolve the Runner.
+  const legacyRunnerUnavailable = isRunnerHarness && runner === "legacy"
+    && runnerAvailability?.supportedRunners !== undefined && !runnerAvailability.supportedRunners.includes("legacy");
+  useEffect(() => {
+    if (!legacyRunnerUnavailable) return;
+    if (props.mode === "create") props.onChange({ runner: "paperclip" });
+    else setOverlay(prev => ({ ...prev, runner: "paperclip" }));
+  }, [legacyRunnerUnavailable, props.mode, props.mode === "create" ? props.onChange : undefined]);
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(isRunnerHarness ? harnessType : adapterType);
   const runnerProvider = adapterType === "paperclip_runner"
@@ -689,6 +698,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // inert while every run happens in the platform-managed environment.
   const showLegacyWorkingDirectoryField =
     isLocal
+    && !isCursorCloudRunner
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -878,25 +888,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // is on but no managed sandbox is available; a render must not throw, so this
   // resolution catches that case and resolves no login environment. The Test
   // mutation surfaces the same case as a fail-closed error.
-  const effectiveLoginEnvironmentId = useMemo(() => {
-    try {
-      return resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
-        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
-        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
-        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
-        // The policy hides the local environment, so an agent default that still
-        // points at the hidden local row names no visible environment. Pass the
-        // visible ids so the resolver redirects that stale local default to the
-        // managed sandbox instead of the hidden local id.
-        visibleEnvironmentIds: environments.map((environment) => environment.id),
-      });
-    } catch {
-      return null;
-    }
+  const savedDefaultEnvironmentId = isCreate ? null : props.agent.defaultEnvironmentId ?? null;
+  const { effectiveLoginEnvironmentId, savedLoginEnvironmentId } = useMemo(() => {
+    const resolve = (agentDefaultEnvironmentId: string | null) => {
+      try {
+        return resolveAdapterTestEnvironmentId({
+          agentDefaultEnvironmentId,
+          instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+          localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+          managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+          managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+          // The policy hides the local environment, so an agent default that still
+          // points at the hidden local row names no visible environment. Pass the
+          // visible ids so the resolver redirects that stale local default to the
+          // managed sandbox instead of the hidden local id.
+          visibleEnvironmentIds: environments.map((environment) => environment.id),
+        });
+      } catch {
+        return null;
+      }
+    };
+    return {
+      effectiveLoginEnvironmentId: resolve(rawCurrentDefaultEnvironmentId || null),
+      savedLoginEnvironmentId: resolve(savedDefaultEnvironmentId),
+    };
   }, [
     rawCurrentDefaultEnvironmentId,
+    savedDefaultEnvironmentId,
     instanceSettings?.defaultEnvironmentId,
     environments,
     experimentalSettings?.enableManagedSandboxOnly,
@@ -905,6 +923,58 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
+  const nativeRunnerAvailability = runnerDiscovery.data?.find(item => item.type === "paperclip_runner");
+  const upgradeEnvironment = forcedKubernetes ? kubernetesEnvironment : effectiveLoginEnvironment;
+  const upgradeEnvironmentId = upgradeEnvironment?.id ?? null;
+  const upgradeEnvironmentChanged = !isCreate && !forcedKubernetes
+    && effectiveLoginEnvironmentId !== savedLoginEnvironmentId;
+  const canQualifyRunnerUpgrade = upgradeEnvironment?.status === "active"
+    && canQualifyRunnerEnvironment(upgradeEnvironment)
+    && Boolean(runnerAvailability && !runnerAvailability.disabled && !runnerAvailability.overriddenBuiltin)
+    && Boolean(nativeRunnerAvailability && !nativeRunnerAvailability.disabled && !nativeRunnerAvailability.overriddenBuiltin);
+  const upgradeWarnings = harnessType === "claude_local" ? normalizeClaudeRunnerOptions(effectiveConfig).warnings : [];
+  const runnerSettingsTargetRef = useRef("");
+  const runnerSettingsTarget = JSON.stringify([!isCreate ? props.agent.id : null, selectedCompanyId, adapterType,
+    rawCurrentDefaultEnvironmentId, upgradeEnvironmentId, upgradeEnvironment?.config, effectiveConfig, overlay]);
+  runnerSettingsTargetRef.current = runnerSettingsTarget;
+  useEffect(() => () => { runnerSettingsTargetRef.current = ""; }, []);
+  const showRunnerUpgrade = !isCreate
+    && ["codex_local", "claude_local", "grok_local"].includes(props.agent.adapterType)
+    && adapterType === props.agent.adapterType
+    && !(runnerDiscoveryView.kind === "error")
+    && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
+  const upgradeRunner = async () => {
+    if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
+    const agentId = props.agent.id;
+    setRunnerUpgrade({ agentId, status: "pending" });
+    try {
+      const flushedEnv = flushEnvironmentDraft();
+      const nextOverlay = flushedEnv
+        ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
+        : overlay;
+      const pendingTarget = runnerSettingsTargetRef.current;
+      if (runnerAvailability?.defaultRunner !== "paperclip") {
+        if (!canQualifyRunnerUpgrade || !upgradeEnvironmentId || !selectedCompanyId) {
+          throw new Error("Could not determine which environment to verify. Retry the upgrade.");
+        }
+        const qualified = await qualifyRunnerEnvironment({
+          adapterType: harnessType,
+          readAdapters: () => adaptersApi.list({ companyId: selectedCompanyId, environmentId: upgradeEnvironmentId }),
+          probeEnvironment: () => agentsApi.qualifyRunner(agentId, upgradeEnvironmentId, selectedCompanyId),
+          isCurrent: () => runnerSettingsTargetRef.current === pendingTarget,
+        });
+        if (!qualified) throw new Error("Agent settings changed during verification. Retry the upgrade with the current settings.");
+        queryClient.setQueryData(queryKeys.adapters.availability(selectedCompanyId, rawCurrentDefaultEnvironmentId || null), qualified.adapters);
+        if (qualified.runner !== "paperclip") throw new Error("This environment does not support Paperclip Runner. Your agent still uses Legacy runner.");
+      }
+      await props.onSave({ ...buildAgentUpdatePatch(props.agent, nextOverlay), runner: "paperclip" });
+      setRunnerUpgrade(current => current?.agentId === agentId ? { agentId, status: "upgraded" } : current);
+    } catch (error) {
+      setRunnerUpgrade(current => current?.agentId === agentId ? {
+        agentId, status: "failed", error: error instanceof Error ? error.message : "Could not upgrade this agent. Try again.",
+      } : current);
+    }
+  };
   // Load the sandbox provider capabilities. A login that runs on a real
   // pseudo-terminal needs a provider that advertises the login pseudo-terminal
   // capability. The login panel gate reads this to hide the panel for a provider
@@ -925,10 +995,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Only applies in create mode and only once the K8s environment is loaded; if
   // none is available the UI surfaces a notice instead of silently selecting it.
   useEffect(() => {
-    if (!isCreate || !set || !forcedKubernetes || !kubernetesEnvironment) return;
+    if (!isCreate || !set || isCursorCloudRunner || !forcedKubernetes || !kubernetesEnvironment) return;
     if (currentDefaultEnvironmentId === kubernetesEnvironment.id) return;
     set({ defaultEnvironmentId: kubernetesEnvironment.id });
-  }, [isCreate, set, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]);
+  }, [isCreate, set, isCursorCloudRunner, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]);
 
   const runnableEnvironments = useMemo(
     () => environments.filter((environment) => {
@@ -967,19 +1037,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
-  const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
+  const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
+  const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
-  const modelAdapterType = isRunnerHarness ? harnessType : adapterType;
+  const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
     ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
     : ["agents", "none", "adapter-models", adapterType];
-  const {
-    data: fetchedModels,
-    error: fetchedModelsError,
-    isLoading: fetchingModels,
-    refetch: refreshConnectionModels,
-  } = useQuery({
+  const fetchedModelsQuery = useQuery({
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, modelAdapterType, {
       environmentId: currentDefaultEnvironmentId || null,
@@ -988,17 +1054,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       aiConnection: modelAiBinding,
       agentId: isCreate ? undefined : props.agent.id,
     }),
-    ...(runnerAcpxAgent === "copilot" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
-  const copilotModelScope = runnerAcpxAgent === "copilot" ? JSON.stringify(modelQueryKey) : null;
+  const { data: fetchedModels, error: fetchedModelsError, isLoading: fetchingModels, refetch: refreshConnectionModels } = fetchedModelsQuery;
+  const fetchedModelsView = useQueryView(fetchedModelsQuery);
+  const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
-    if (copilotModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
-  }, [copilotModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
+    if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
-  const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
+  // `useConnectionModels` owns its own query and exposes only `error`; the
+  // adapter-models read is gated on its view below, so a transient refetch
+  // failure keeps the cached list without an error line.
+  const connectionModelsError = connectionModels?.error ?? null;
   const adapterCommandField = "command";
   const {
     data: detectedModelData,
@@ -1095,7 +1166,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // server resolves the driver and probes the host in that case.
       //
       // Test can be clicked before the settings query settles (or after it
-      // failed with retry:false), so when the agent relies on the instance
+      // failed), so when the agent relies on the instance
       // default, resolve the settings here rather than trusting the
       // render-time cache. A fetch that still fails FAILS the test with an
       // honest diagnostic — silently probing the host instead would report
@@ -1104,7 +1175,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       let settings = instanceSettings;
       let environmentList = environments;
       let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
-      if (!rawCurrentDefaultEnvironmentId) {
+      if (!isCursorCloudRunner && !rawCurrentDefaultEnvironmentId) {
         // The agent has no own environment, so the Test resolves the instance
         // default, the local default, or the managed sandbox. Resolve the
         // settings, the environment list, and the managed-sandbox-only policy
@@ -1142,7 +1213,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // policy is on, probe the managed sandbox the real run uses instead. The
       // resolver throws when no managed sandbox is available, which the mutation
       // surfaces as a fail-closed error rather than a local host probe.
-      const environmentId = resolveAdapterTestEnvironmentId({
+      const environmentId = isCursorCloudRunner ? null : resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
@@ -1159,6 +1230,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
+      const testRunnerSelection = isCursorCloudRunner
+        ? { runner: "paperclip" as const }
+        : isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {};
+      if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
+        && runnerAvailability?.defaultRunner !== "paperclip"
+        && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
+        const target = runnerSettingsTargetRef.current;
+        // Qualify only the saved computer. The strict agent-scoped endpoint
+        // accepts no draft provider config, credentials or replacement target.
+        const qualification = await agentsApi.qualifyRunner(props.agent.id, environmentId, selectedCompanyId);
+        if (runnerSettingsTargetRef.current !== target) throw new Error("Agent settings changed during the test. Run test again.");
+        if (qualification.ok !== true || qualification.details?.platformQualificationRecorded !== true) {
+          throw new Error(qualification.summary || "Could not verify the saved computer. Run test again.");
+        }
+      }
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
@@ -1166,9 +1252,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1261,7 +1347,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     try {
       return await testEnvironment.mutateAsync();
     } catch (error) {
-      setTestActionError(error instanceof Error ? error.message : "Environment test failed");
+      setTestActionError(describeError(error).body);
       throw error;
     } finally {
       setTestActionPending(false);
@@ -1311,11 +1397,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (!props.onTestFeedbackChange) return;
     props.onTestFeedbackChange({
       errorMessage: testActionError
-        ?? (testEnvironment.error instanceof Error
-          ? testEnvironment.error.message
-          : testEnvironment.error
-            ? "Environment test failed"
-            : null),
+        ?? (testEnvironment.error ? describeError(testEnvironment.error).body : null),
       result: testEnvironment.data ?? null,
       // `showAdapterLogin` already requires a selected company and a non-empty
       // environment id, so both are present here.
@@ -1349,10 +1431,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent === "copilot" ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      setRefreshModelsError(describeError(error).body);
     } finally {
       setRefreshingModels(false);
     }
@@ -1365,7 +1447,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : adapterType === "grok_local" ? "reasoningEffort"
+          : harnessType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     isCodexHarness
@@ -1381,7 +1463,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : harnessType === "claude_local" || adapterType === "grok_local"
+              : harnessType === "claude_local" || harnessType === "grok_local"
                 ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
                     id,
                     label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
@@ -1389,11 +1471,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
-    : isCodexHarness || (adapterType === "paperclip_runner" && harnessType === "claude_local")
+    : isCodexHarness || (adapterType === "paperclip_runner" && ["claude_local", "grok_local"].includes(harnessType))
       ? eff(
           "adapterConfig",
           thinkingEffortKey,
-          String(config[thinkingEffortKey] ?? config.reasoningEffort ?? config.modelReasoningEffort ?? config.effort ?? ""),
+          String(config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? ""),
         )
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
@@ -1402,7 +1484,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
-    && adapterType !== "cursor_cloud"
+    && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
@@ -1451,6 +1533,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const environmentVariablesEditor = (
     <EnvironmentVariablesEditor
       ref={environmentVariablesEditorRef}
+      disabled={runnerUpgradePending}
       key={environmentEditorKey}
       onDirtyChange={setEnvironmentDraftDirty}
       hideDraftActions={!isCreate && props.hideInlineSave}
@@ -1476,7 +1559,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   if (!isCreate && props.content === "secrets") {
     return (
-      <div className={cn("relative", cards && "space-y-6")}>
+      <div className={cn("relative", panels ? "flex flex-col gap-(--agent-detail-band-gap)" : cards && "space-y-6")}>
         {isDirty && !props.hideInlineSave && (
           <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
             <div className="flex items-center gap-3">
@@ -1494,7 +1577,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               ? <h3 className="mb-3 text-sm font-medium">Environment variables</h3>
               : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
             }
-            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+            <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? (panels ? "rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)" : "rounded-lg border border-border p-4") : "px-4 pb-3")}>
               {environmentVariablesEditor}
             </div>
           </div>
@@ -1505,7 +1588,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
           }
-          <div className={cn(cards ? "space-y-3 rounded-lg border border-border p-4" : "space-y-3 px-4 pb-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
               config={{ ...config, ...overlay.adapterConfig }}
@@ -1531,12 +1614,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-sm font-medium">Upgrade to Paperclip Runner</p>
               <p className="text-sm text-muted-foreground">
-                Keep {harnessType === "claude_local" ? "Claude" : "Codex"}, your model, account, and compatible settings.
+                Keep your harness, model, account, and compatible settings.
                 New sessions start fresh; past runs stay available.
               </p>
-              {isDirty ? <p className="text-xs text-muted-foreground">Your unsaved changes will be included.</p> : null}
+              {canQualifyRunnerUpgrade && runnerAvailability?.defaultRunner !== "paperclip" ? (
+                <p className="text-xs text-muted-foreground">The upgrade will verify your computer first. This can take a few minutes.</p>
+              ) : null}
+              {upgradeWarnings.map(warning => <p key={warning.field} className="text-xs text-muted-foreground">{warning.message}</p>)}
+              {upgradeEnvironmentChanged ? (
+                <p className="text-xs text-muted-foreground">Save your computer change before upgrading the runner.</p>
+              ) : isDirty ? <p className="text-xs text-muted-foreground">Your unsaved changes will be included.</p> : null}
             </div>
-            <Button size="sm" className="self-end sm:self-auto" onClick={upgradeRunner} disabled={runnerUpgradePending || (!isCreate && props.isSaving)}>
+            <Button size="sm" className="self-end sm:self-auto" onClick={upgradeRunner} disabled={runnerUpgradePending || upgradeEnvironmentChanged || (!isCreate && props.isSaving)}>
               {runnerUpgradePending ? <Loader2 className="size-4 animate-spin" /> : null}
               {runnerUpgradePending ? "Upgrading…" : "Upgrade runner"}
             </Button>
@@ -1545,7 +1634,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
       {runnerUpgraded ? <p role="status" className="text-sm text-muted-foreground">Upgraded to Paperclip Runner.</p> : null}
-    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
+      {adapterType === "paperclip_runner" && upgradeWarnings.length > 0 ? (
+        <div role="status" className="space-y-1 rounded-lg border border-border bg-muted/30 p-4">
+          {upgradeWarnings.map(warning => <p key={warning.field} className="text-sm text-muted-foreground">{warning.message}</p>)}
+        </div>
+      ) : null}
+    <ConfigSections order={props.sectionOrder} hidden={props.hiddenSections} className={cn("relative", panels ? "agent-config-panels" : cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1569,7 +1663,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
@@ -1626,16 +1720,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Execution ---- */}
-      {forcedKubernetes ? (
+      {isCursorCloudRunner ? null : forcedKubernetes ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field
               label="Default environment"
               hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
@@ -1657,10 +1751,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : showEnvironmentOverrideControl ? (
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Environment override">
               <div className="space-y-2">
                 <SelectPopover
@@ -1689,9 +1783,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Adapter ---- */}
       <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-        <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
+        {untitled("adapter") && !showInlineAdapterTestEnvironmentButton ? null : <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>
+            ? (untitled("adapter") ? <span /> : <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>)
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1706,8 +1800,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {testActionPending ? `${testActionLabel}...` : testActionLabel}
             </Button>
           )}
-        </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+        </div>}
+        <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <div className="inline-flex items-center gap-1.5">
@@ -1798,15 +1892,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
               mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
-              if (runnerAcpxAgent === "copilot" && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
+              if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {testActionError
-                ?? (testEnvironment.error instanceof Error
-                  ? testEnvironment.error.message
-                  : "Environment test failed")}
+              {testActionError ?? describeError(testEnvironment.error).body}
             </div>
           )}
 
@@ -1857,7 +1948,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {isLocal && (<>
               <ModelDropdown
                 models={models}
-                loadingModels={connectionModels?.isLoading ?? fetchingModels}
+                loadingModels={connectionModels?.isLoading ?? (fetchingModels || fetchedModelsView.kind === "reconnecting")}
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(isRunnerHarness ? harnessType : adapterType, v);
@@ -1879,8 +1970,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable
@@ -1893,7 +1984,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       return result.data?.model ?? null;
                     }}
                 onRefreshModels={
-                  connectionModels ? connectionModels.refreshModels : supportsAdapterModelRefresh(adapterType)
+                  connectionModels ? connectionModels.refreshModels : accountBoundCatalog || supportsAdapterModelRefresh(adapterType)
                     ? handleRefreshModels
                     : undefined
                 }
@@ -1901,14 +1992,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {(refreshModelsError || modelError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (modelError instanceof Error
-                      ? modelError.message
-                      : "Failed to load adapter models.")}
-                </p>
-              )}
+              {refreshModelsError ? (
+                <p className="text-xs text-destructive">{refreshModelsError}</p>
+              ) : connectionModelsError ? (
+                <p className="text-xs text-destructive">{describeError(connectionModelsError).body}</p>
+              ) : !connectionModels && fetchedModelsView.kind === "error" ? (
+                <QueryErrorState
+                  size="inline"
+                  error={fetchedModelsError}
+                  action="load adapter models"
+                  onRetry={fetchedModelsView.retry}
+                  retrying={fetchedModelsView.isFetching}
+                />
+              ) : null}
               {adapterType === "opencode_local"
                 && !connectionModels
                 && currentDefaultEnvironment
@@ -1954,10 +2050,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {(
         <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Configuration</h3>
+            ? (untitled("configuration") ? null : <h3 className="text-sm font-medium mb-3">Configuration</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -1993,7 +2089,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               >
                 <div className="space-y-3">
                   {isRunnerHarness && <AgentRunnerSelect value={runner}
-                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
                     defaultRunner={runnerAvailability?.defaultRunner}
                     supportedRunners={runnerAvailability?.supportedRunners}
                     onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}
@@ -2077,7 +2173,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Environment variables</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
@@ -2090,7 +2186,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <ToggleWithNumber
               label="Heartbeat on interval"
               hint={help.heartbeatInterval}
@@ -2288,11 +2384,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
+          tone={panels ? "tile" : "card"}
           variant={isExternalRunner ? "prerequisites" : "connection"}
-          metadataOnly={adapterType === "paperclip_runner" && runnerAcpxAgent === "copilot"}
+          metadataOnly={accountBoundCatalog}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
-          error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
+          error={testActionError ?? (testEnvironment.error ? describeError(testEnvironment.error).body : null)}
           onTest={triggerTestEnvironment}
           disabled={testEnvironmentDisabled}
         />
@@ -2544,7 +2641,7 @@ function DisplayedCodeLoginPanel({
       setSessionId(session.sessionId);
     },
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -2561,7 +2658,7 @@ function DisplayedCodeLoginPanel({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
     onSuccess: clearActiveSession,
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -2581,7 +2678,6 @@ function DisplayedCodeLoginPanel({
         throw error;
       }
     },
-    retry: false,
     // Never answered from cache. This read decides whether to adopt a running
     // session or start a new one, and a cached "none" from an earlier mount is
     // exactly wrong after Back: the panel would read `isFetched` immediately,
@@ -2590,6 +2686,7 @@ function DisplayedCodeLoginPanel({
     gcTime: 0,
     staleTime: 0,
   });
+  const activeSessionView = useQueryView(activeSessionQuery);
 
   // While the panel releases a resumed session it cannot recover (see below),
   // it keeps showing the login as active rather than dropping back to idle, so
@@ -2601,11 +2698,8 @@ function DisplayedCodeLoginPanel({
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
     enabled: Boolean(sessionId) && !releasingResumedSession,
     // A status 404 is unrecoverable: the server removed the row, so a retry
-    // cannot bring it back. Stop at once and fail loudly.
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 3;
-    },
+    // cannot bring it back. The shared retry policy never retries a 4xx, so
+    // it stops at once and fails loudly; only transient errors are retried.
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
@@ -2701,13 +2795,9 @@ function DisplayedCodeLoginPanel({
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
-    if (activeSessionQuery.isError) {
+    if (activeSessionView.kind === "error") {
       autoStartedRef.current = true;
-      setStartError(
-        activeSessionQuery.error instanceof Error
-          ? activeSessionQuery.error.message
-          : "Could not check for an active login.",
-      );
+      setStartError(describeError(activeSessionQuery.error).body);
       return;
     }
     if (!activeSessionQuery.isSuccess) return;
@@ -2717,7 +2807,7 @@ function DisplayedCodeLoginPanel({
   }, [
     autoStart,
     activeSessionQuery.isSuccess,
-    activeSessionQuery.isError,
+    activeSessionView.kind,
     activeSessionQuery.data,
     activeSessionQuery.error,
   ]);
@@ -3087,10 +3177,6 @@ function SubmittedBrowserCodeLoginPanel({
         throw error;
       }
     },
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 2;
-    },
   });
   const storedToken = storedTokenQuery.data ?? null;
 
@@ -3117,7 +3203,7 @@ function SubmittedBrowserCodeLoginPanel({
       setSessionId(session.sessionId);
     },
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3144,7 +3230,7 @@ function SubmittedBrowserCodeLoginPanel({
         clearActiveSession();
         return;
       }
-      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3185,7 +3271,6 @@ function SubmittedBrowserCodeLoginPanel({
         throw error;
       }
     },
-    retry: false,
     // Never answered from cache. This read decides whether to adopt a running
     // session or start a new one, and a cached "none" from an earlier mount is
     // exactly wrong after Back: the panel would read `isFetched` immediately,
@@ -3194,6 +3279,7 @@ function SubmittedBrowserCodeLoginPanel({
     gcTime: 0,
     staleTime: 0,
   });
+  const activeSessionView = useQueryView(activeSessionQuery);
 
   // While the panel releases a resumed session it cannot recover (see below),
   // it keeps showing the login as active rather than dropping back to idle, so
@@ -3212,11 +3298,8 @@ function SubmittedBrowserCodeLoginPanel({
     queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
     enabled: pollingEnabled,
     // A status 404 is terminal. The server removes a cleaned-up session at once,
-    // so a retry cannot recover it. Stop at once and fail loudly.
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 3;
-    },
+    // so a retry cannot recover it. The shared retry policy never retries a
+    // 4xx, so it stops at once and fails loudly; only transient errors are retried.
     refetchInterval: (query) => {
       if (timedOut || statusGone) return false;
       const status = query.state.data?.status;
@@ -3308,7 +3391,7 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: (code: string) =>
       agentsApi.submitClaudeSetupTokenBrowserCode(companyId, sessionId!, code),
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not submit the browser code.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3436,13 +3519,9 @@ function SubmittedBrowserCodeLoginPanel({
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
-    if (activeSessionQuery.isError) {
+    if (activeSessionView.kind === "error") {
       autoStartedRef.current = true;
-      setStartError(
-        activeSessionQuery.error instanceof Error
-          ? activeSessionQuery.error.message
-          : "Could not check for an active login.",
-      );
+      setStartError(describeError(activeSessionQuery.error).body);
       return;
     }
     if (!activeSessionQuery.isSuccess) return;
@@ -3452,7 +3531,7 @@ function SubmittedBrowserCodeLoginPanel({
   }, [
     autoStart,
     activeSessionQuery.isSuccess,
-    activeSessionQuery.isError,
+    activeSessionView.kind,
     activeSessionQuery.data,
     activeSessionQuery.error,
   ]);
@@ -3816,7 +3895,7 @@ export function AdapterTypeDropdown({
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
     [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
@@ -3825,10 +3904,9 @@ export function AdapterTypeDropdown({
       <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
       {selectedDisplay.experimental && <ExperimentalBadge />}
     </span>}
-    options={adapterList.map(item => ({ value: item.value, disabled: item.comingSoon,
+    options={adapterList.map(item => ({ value: item.value,
       group: item.value === "paperclip_runner" ? "Advanced" : undefined,
       label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
-      suffix: item.comingSoon ? <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span> : undefined,
     }))} />;
 }
 

@@ -1,6 +1,9 @@
+import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
@@ -8,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
@@ -18,14 +22,22 @@ import {
   saveDraft,
   saveDraftAttachments,
   loadDraftSubmission,
+  replayableRequest,
   saveDraftSubmission,
   clearDraftSubmission,
   settleDraftSubmission,
   type ComposerDraftSubmission,
+  type ComposerSendRequest,
 } from "@/lib/composer-draft";
-import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
+import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
+import { describeError } from "@/api/errors";
+import { useAutoResend } from "@/hooks/useDurableSubmit";
+import { useDraftOwner } from "@/hooks/useDraftOwner";
+import { useRequestOwnerBinding } from "@/hooks/useRequestOwnerBinding";
+import { PendingSendNotice } from "@/components/PendingSendNotice";
 import {
   ArrowUp,
+  RotateCw,
   Square,
   ChevronDown,
   CircleHelp,
@@ -43,7 +55,7 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from "@/components/ui/attachment";
-import { fileKindForName, formatFileSize } from "./task-chat-attachments";
+import { fileKindForName, formatFileSize, isImageAttachment } from "./task-chat-attachments";
 import {
   MarkdownEditor,
   type MarkdownEditorRef,
@@ -62,10 +74,12 @@ import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
+import { ComposerImageAttachments, type ComposerImageAttachment } from "./ComposerImageAttachments";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./ComposerAddMenu";
-import type { ComposerRunSettings } from "./composer-run-settings";
+import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
@@ -110,13 +124,18 @@ interface TaskChatComposerProps {
     details?: ReactNode;
     contextBar?: ReactNode;
     submitDisabled?: boolean;
+    /** Lock the editor, e.g. while a submitted create waits to resend. */
+    readOnly?: boolean;
     privacy?: { private: boolean; inherited?: string; onChange: (value: boolean) => void };
     onSelectFiles: (files: File[]) => void;
+    images?: ComposerImageAttachment[];
+    onRemoveImage?: (id: string) => void;
     runSettings: ComposerRunSettings | null;
     onRunSettingsChange: (settings: ComposerRunSettings | null) => void;
   };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
+  confirmedStoppedRunIds?: ReadonlySet<string>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
@@ -126,7 +145,6 @@ interface TaskChatComposerProps {
   placeholder?: string;
   /** Preferred upload path: attaches the file to the task (mirrors legacy). */
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
-  /** Fallback upload path: returns a URL for inline image markdown. */
   onImageUpload?: (file: File) => Promise<string>;
   /** Mentionable entities for the editor's @-autocomplete. */
   mentions?: MentionOption[];
@@ -149,7 +167,6 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
-  onReviewConversation?: () => Promise<void>;
   /** When set, the main composer temporarily edits this queued message. */
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
@@ -319,12 +336,18 @@ type ComposerAttachment = {
   id: string;
   attachmentId?: string;
   inline?: boolean;
+  contentType?: string;
   name: string;
   size?: number;
   status: "uploading" | "attached" | "error";
   error?: string;
   /** Set once uploaded; the submit path appends `[name](contentPath)` lines. */
   contentPath?: string;
+  /**
+   * The picked file, kept after a failed upload so the chip can offer Retry.
+   * Uploads are not deduped by the server, so they never resend on their own.
+   */
+  file?: File;
 };
 
 type QueuedEditBackup = {
@@ -363,23 +386,12 @@ function escapeMarkdownLabel(name: string): string {
   return name.replace(/[[\]]/g, "\\$&");
 }
 
-/**
- * Composer for the redesigned thread (v7 spec): the shared MarkdownEditor
- * (rich lists, @-mentions, /-commands, inline pasted images) over a 32px
- * comp-bar of [add] [optional mode chip] … [assignee] [send]. The add menu
- * offers files, supported goals, Plan, and Ask. Cmd/Ctrl+. and Shift+Tab cycle modes (captured before
- * Lexical); Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter
- * stays a newline / next list item. Pasted or dropped images upload through
- * `onAttachImage` (or the `onImageUpload` fallback) and land inline at the
- * caret via the editor's image plugin; non-image files render as shadcn
- * base/attachment chips (kind icon · name · size, remove ×, uploading/error
- * states) between the editor and the comp-bar.
- */
 export function TaskChatComposer({
   onAdd,
   creation,
   confirmedSubmissionIds,
   onStop,
+  confirmedStoppedRunIds,
   stopPending = false,
   workMode,
   onWorkModeChange,
@@ -403,7 +415,6 @@ export function TaskChatComposer({
   issueStatus,
   mobile = false,
   draftKey,
-  onReviewConversation,
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
@@ -415,11 +426,10 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const stopControl = useComposerStop(onStop, stopPending);
+  const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
-  const [reviewError, setReviewError] = useState(false);
   const [uncertainSubmission, setUncertainSubmission] =
     useState<ComposerDraftSubmission | null>(() =>
       draftKey ? loadDraftSubmission(draftKey) : null,
@@ -442,6 +452,7 @@ export function TaskChatComposer({
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
+  const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
   const runSettings = creation ? creation.runSettings : localRunSettings;
   const setRunSettings = creation ? creation.onRunSettingsChange : setLocalRunSettings;
@@ -482,12 +493,20 @@ export function TaskChatComposer({
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  // Only the account that made a request may replay it.
+  const draftOwner = useDraftOwner();
+  const isCurrentAccount = useCurrentAccountGuard();
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
     submittedBody: string;
     submittedAttachmentIds: string[];
+    request: ComposerSendRequest;
+    requestOwner?: string;
   } | null>(null);
+  const markRequestUnbound = useRequestOwnerBinding({
+    draftKey, owner: draftOwner, uncertainSubmission, setUncertainSubmission, pendingDraftRef,
+  });
   function changeBody(value: string) {
     bodyRef.current = value;
     if (creation) {
@@ -507,6 +526,8 @@ export function TaskChatComposer({
       attemptId: pending.attemptId, reviewed: false,
       nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
       submittedAttachmentIds: pending.submittedAttachmentIds,
+      request: pending.request,
+      requestOwner: pending.requestOwner,
     });
   }
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -595,6 +616,7 @@ export function TaskChatComposer({
           name: item.name,
           size: item.size,
           inline: item.inline === true,
+          contentType: item.contentType,
           contentPath: item.contentPath,
         })),
     );
@@ -640,7 +662,8 @@ export function TaskChatComposer({
   const showAssignee = Boolean(
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
-  const assigneeValue = creation ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
+  const assigneeValue = creation || conversationMode ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
+  const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -680,8 +703,7 @@ export function TaskChatComposer({
     if (creation) void onWorkModeChange?.(mode);
   }
 
-  /** Upload an image and return its URL for inline `![](src)` markdown. */
-  async function uploadInlineImage(file: File): Promise<string> {
+  async function uploadImage(file: File): Promise<string> {
     const id = crypto.randomUUID();
     setAttachments((prev) => [
       ...prev,
@@ -689,7 +711,8 @@ export function TaskChatComposer({
         id,
         name: file.name,
         size: file.size,
-        inline: true,
+        contentType: file.type,
+        file,
         status: "uploading",
       },
     ]);
@@ -721,7 +744,8 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
@@ -735,7 +759,7 @@ export function TaskChatComposer({
     const id = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
     setAttachments((prev) => [
       ...prev,
-      { id, name: file.name, size: file.size, status: "uploading" },
+      { id, name: file.name, size: file.size, contentType: file.type, status: "uploading" },
     ]);
     try {
       if (!onAttachImage) {
@@ -776,7 +800,8 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
@@ -784,20 +809,20 @@ export function TaskChatComposer({
     }
   }
 
-  /** Images picked from the + button go inline at the caret, like paste/drop. */
+  /** Retry a failed upload from its kept file; only ever on an explicit click. */
+  function retryUpload(attachment: ComposerAttachment) {
+    const file = attachment.file;
+    if (!file) return;
+    setAttachments((prev) => prev.filter((item) => item.id !== attachment.id));
+    void attachPickedFile(file);
+  }
+
   async function attachPickedFile(file: File) {
     if (!file.type.startsWith("image/")) {
       await attachNonImageFile(file);
       return;
     }
-    try {
-      const url = await uploadInlineImage(file);
-      editorRef.current?.insertMarkdown(
-        `![${escapeMarkdownLabel(file.name)}](${url})`,
-      );
-    } catch {
-      // uploadInlineImage retains the failed receipt in the removable chip row.
-    }
+    await uploadImage(file).catch(() => undefined);
   }
 
   function handleFileInputChange(evt: ChangeEvent<HTMLInputElement>) {
@@ -822,46 +847,29 @@ export function TaskChatComposer({
     requestAnimationFrame(() => editorRef.current?.focus());
   }
 
-  /**
-   * Pasted image files fall through to the editor's image plugin (inline at
-   * the caret); non-image files are attached to the task here. Only swallow
-   * the paste when it carries no images the plugin should handle.
-   */
   function handlePasteCapture(evt: ReactClipboardEvent<HTMLDivElement>) {
-    if (pause || !canAcceptFiles) return;
+    if (!canAcceptFiles || disabled || creation?.readOnly) return;
     const files = Array.from(evt.clipboardData?.files ?? []);
     if (files.length === 0) return;
+    evt.preventDefault();
+    evt.stopPropagation();
     if (creation) {
-      if (onImageUpload) {
-        const nonImages = files.filter((file) => !file.type.startsWith("image/"));
-        if (nonImages.length === 0) return;
-        creation.onSelectFiles(nonImages);
-        if (nonImages.length !== files.length) return;
-      } else {
-        creation.onSelectFiles(files);
-      }
-      evt.preventDefault();
-      evt.stopPropagation();
+      creation.onSelectFiles(files);
       return;
     }
-    const nonImages = files.filter((file) => !file.type.startsWith("image/"));
-    if (nonImages.length === 0) return;
-    if (nonImages.length === files.length) {
-      evt.preventDefault();
-      evt.stopPropagation();
-    }
-    void (async () => {
-      for (const file of nonImages) await attachNonImageFile(file);
-    })();
+    for (const file of files) void attachPickedFile(file);
   }
 
-  // Uploaded file references ride along as trailing `[name](contentPath)`
-  // lines — the bubble renderer folds those link-only lines back into chips.
+  function isImage(item: ComposerAttachment) {
+    return isImageAttachment({ name: item.name, url: item.contentPath ?? "", contentType: item.contentType });
+  }
+
   const attachedRefs = attachments.filter(
     (item) => item.status === "attached" && item.contentPath && !item.inline,
   );
+  const imageAttachments = attachments.filter(item => isImage(item) && !item.inline);
   const visibleAttachments = attachments.filter(
-    (item) => !item.inline || item.status !== "attached",
+    (item) => (!item.inline || item.status !== "attached") && !isImage(item),
   );
   // Sending mid-upload would silently drop the pending file from the comment;
   // sending past a failed chip would discard the file the user selected and
@@ -895,7 +903,7 @@ export function TaskChatComposer({
       try {
         await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
       } catch (error) {
-        setActionError(error instanceof Error ? error.message : "Failed to create task. Try again.");
+        setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
@@ -986,7 +994,7 @@ export function TaskChatComposer({
       return;
 
     const refLines = attachedRefs
-      .map((item) => `[${escapeMarkdownLabel(item.name)}](${item.contentPath})`)
+      .map((item) => `${isImage(item) ? "!" : ""}[${escapeMarkdownLabel(item.name)}](${item.contentPath})`)
       .join("\n");
     // A queued edit must preserve the complete Markdown source. Normal sends
     // keep the longstanding trimmed-body behavior.
@@ -1022,6 +1030,8 @@ export function TaskChatComposer({
     setBody("");
     setSubmitting(true);
     let attemptId: string | null = null;
+    let request: ComposerSendRequest | null = null;
+    const requestOwner = draftOwner;
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
@@ -1039,10 +1049,7 @@ export function TaskChatComposer({
         return;
       }
       attemptId = crypto.randomUUID();
-      if (draftKey) {
-        saveDraft(draftKey, submittedBody);
-        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
-      }
+      if (requestOwner === undefined) markRequestUnbound(attemptId);
       // IDs come only from this composer's upload receipts, never from parsing
       // arbitrary Markdown. A removed inline image no longer selects its receipt.
       const attachmentIds = [
@@ -1059,8 +1066,19 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
+      // The exact request is stored before it is sent, so a lost response or
+      // an outage can resend it with the same ID instead of losing it.
+      request = {
+        body: fullBody,
+        ...(reopen === undefined ? {} : { reopen }),
+        ...(reassignment ? { reassignment } : {}),
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+      };
       if (draftKey) {
-        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
+        saveDraft(draftKey, submittedBody);
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false, request, requestOwner });
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
       if (runSettings) {
@@ -1084,11 +1102,15 @@ export function TaskChatComposer({
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
-      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+      // Not delivered, or not known to be: keep it and resend with the same
+      // ID when the connection allows. The server dedupes by that ID.
+      if (attemptId && request && classifySendFailure(error) === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
           submittedAttachmentIds: submittedAttachments.flatMap(item => item.attachmentId ? [item.attachmentId] : []),
+          request,
+          requestOwner,
         };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
@@ -1113,45 +1135,77 @@ export function TaskChatComposer({
     }
   }
 
-  useEffect(() => {
-    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
-    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
-      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
-    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+  /** A confirmed receipt for the retained send: drop its text, keep any next draft. */
+  const settledSubmissionIds = useRef(new Set<string>());
+  function settleUncertainSubmission(submission: ComposerDraftSubmission) {
+    const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
+    if (settledSubmissionIds.current.has(settlementKey)) return;
+    settledSubmissionIds.current.add(settlementKey);
+    const nextDraft = submission.nextDraftOffset === undefined
+      ? "" : bodyRef.current.slice(submission.nextDraftOffset);
+    if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
     setUncertainSubmission(null);
+    setActionError(null);
     bodyRef.current = nextDraft;
     setBody(nextDraft);
-    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    const submittedIds = submission.submittedAttachmentIds;
     setAttachments(current => submittedIds
       ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
       : []);
-  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
-
-  async function reviewUncertainSubmission() {
-    if (!uncertainSubmission) return;
-    setReviewError(false);
-    try {
-      if (!onReviewConversation) throw new Error("Review unavailable");
-      await onReviewConversation();
-      if (mountedTaskKey.current !== draftKey) return;
-      const reviewed = { ...uncertainSubmission, reviewed: true };
-      setUncertainSubmission(reviewed);
-      if (
-        draftKey &&
-        loadDraftSubmission(draftKey)?.attemptId === reviewed.attemptId
-      )
-        saveDraftSubmission(draftKey, reviewed);
-    } catch {
-      setReviewError(true);
-    }
   }
 
-  function discardUncertainDraft() {
-    if (!uncertainSubmission?.reviewed) return;
-    if (draftKey) clearDraft(draftKey, uncertainSubmission.attemptId);
-    bodyRef.current = "";
-    setBody("");
-    setAttachments([]);
+  useEffect(() => {
+    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    settleUncertainSubmission(uncertainSubmission);
+  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
+
+  async function resendUncertainSubmission(): Promise<SendOutcome> {
+    if (!isCurrentAccount()) return "pending";
+    const submission = uncertainSubmission;
+    const request = replayableRequest(submission, draftOwner);
+    if (!submission || !request || !onAdd) return "rejected";
+    const taskKey = draftKey;
+    const args = [
+      request.body,
+      request.reopen,
+      request.reassignment,
+      request.attachmentIds,
+      submission.attemptId,
+    ] as const;
+    try {
+      if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      else await onAdd(...args);
+    } catch (error) {
+      if (!isCurrentAccount()) return "pending";
+      const failure = classifySendFailure(error);
+      if (settledSubmissionIds.current.has(JSON.stringify([taskKey, submission.attemptId]))) return failure;
+      if (failure === "rejected") {
+        // A definitive answer: the text is already back in the editor.
+        if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
+        if (mountedTaskKey.current === taskKey) {
+          setUncertainSubmission(null);
+          setActionError(describeError(error, { action: "send this message" }).body);
+        }
+      }
+      return failure;
+    }
+    if (mountedTaskKey.current === taskKey) settleUncertainSubmission(submission);
+    else if (taskKey) settleDraftSubmission(taskKey, submission.attemptId);
+    return "sent";
+  }
+
+  const resendSourceId = useId();
+  const autoResend = useAutoResend({
+    sourceId: `task-chat-composer:${resendSourceId}`,
+    active: Boolean(replayableRequest(uncertainSubmission, draftOwner)) && !submitting,
+    resend: resendUncertainSubmission,
+  });
+
+  /** Stop resending; the text stays in the editor to edit or send again. */
+  function cancelUncertainSubmission() {
+    if (!uncertainSubmission) return;
+    settledSubmissionIds.current.add(JSON.stringify([draftKey, uncertainSubmission.attemptId]));
+    if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
     setUncertainSubmission(null);
   }
 
@@ -1190,6 +1244,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1264,12 +1326,7 @@ export function TaskChatComposer({
         </TaskChatComposerBar>
       ) : null}
       <div
-        className={cn(
-        streamlined
-          ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
-          : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
-        mobile && "p-3",
-      )}
+        className={taskChatComposerSurfaceClasses(mobile, streamlined)}
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
         // editor is focused and win over Lexical/browser bindings. Match the
@@ -1290,43 +1347,16 @@ export function TaskChatComposer({
       >
         {creation?.header}
         {uncertainSubmission ? (
-        <div
-          role="alert"
-          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
-        >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={reviewUncertainSubmission}
-          >
-            Review conversation
-          </Button>
-          {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
-          ) : null}
-          {uncertainSubmission.reviewed ? (
-            <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={discardUncertainDraft}
-              >
-                Discard draft and start new
-              </Button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+          <PendingSendNotice
+            className="mb-3"
+            noun="message"
+            persisted={Boolean(draftKey && loadDraftSubmission(draftKey)?.attemptId === uncertainSubmission.attemptId && replayableRequest(loadDraftSubmission(draftKey), draftOwner))}
+            resending={autoResend.resending}
+            stalled={autoResend.stalled}
+            onResendNow={replayableRequest(uncertainSubmission, draftOwner) ? autoResend.resendNow : undefined}
+            onCancel={cancelUncertainSubmission}
+          />
+        ) : null}
       {!takeoverVisible && (pendingTakeover || takeover) ? (
         <button
           type="button"
@@ -1349,6 +1379,18 @@ export function TaskChatComposer({
               <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
             </div>
           ) : null}
+          <ComposerImageAttachments
+            images={creation?.images ?? imageAttachments}
+            disabled={disabled || !!uncertainSubmission || submitting || creation?.readOnly}
+            onRemove={(id) => {
+              if (creation) creation.onRemoveImage?.(id);
+              else setAttachments(current => current.filter(item => item.id !== id));
+            }}
+            onRetry={creation ? undefined : (id) => {
+              const image = attachments.find(item => item.id === id);
+              if (image) retryUpload(image);
+            }}
+          />
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
@@ -1359,7 +1401,7 @@ export function TaskChatComposer({
                   ? (disabledReason ?? "Composer disabled")
                   : effectivePlaceholder
               }
-              readOnly={disabled || !!uncertainSubmission || Boolean(creation && submitting)}
+              readOnly={disabled || !!uncertainSubmission || Boolean(creation && (submitting || creation.readOnly))}
               mentions={mentions}
               actionCommands={creation ? [] : conversationMode ? [{
                 id: "action:new", kind: "action", command: "new", name: "New session",
@@ -1367,15 +1409,12 @@ export function TaskChatComposer({
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
-              imageUploadHandler={
-                canAcceptFiles && (!creation || onImageUpload) ? uploadInlineImage : undefined
-              }
-              onDropFile={canAcceptFiles && !creation ? attachNonImageFile : undefined}
+              fileDropTarget="parent"
               bordered={false}
               className={cn(disabled && "opacity-60")}
               contentClassName={
                 mobile
-                  ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+                  ? "max-h-(--tc-composer-editor-max-height) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
                   : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
               }
             />
@@ -1434,6 +1473,15 @@ export function TaskChatComposer({
                       </AttachmentDescription>
                     </AttachmentContent>
                     <AttachmentActions>
+                      {attachment.status === "error" && attachment.file ? (
+                        <AttachmentAction
+                          aria-label={`Retry ${attachment.name}`}
+                          disabled={!!uncertainSubmission}
+                          onClick={() => retryUpload(attachment)}
+                        >
+                          <RotateCw aria-hidden />
+                        </AttachmentAction>
+                      ) : null}
                       <AttachmentAction
                         aria-label={`Remove ${attachment.name}`}
                         disabled={!!uncertainSubmission}
@@ -1460,7 +1508,7 @@ export function TaskChatComposer({
           >
             <div className="flex min-w-0 max-w-full items-center gap-2">
             {canAcceptFiles ? (
-              <input ref={fileInputRef} type="file" className="hidden" multiple={Boolean(creation)} onChange={handleFileInputChange} />
+              <input ref={fileInputRef} type="file" className="hidden" multiple onChange={handleFileInputChange} />
             ) : null}
             <ComposerAddMenu
               privacy={creation?.privacy}
@@ -1470,7 +1518,7 @@ export function TaskChatComposer({
               onGoal={!queuedEdit && !conversationMode && attachments.length === 0 &&
                 runnerGoalCapability?.availability === "available" && onRunnerGoalCommand
                 ? prepareGoal : undefined}
-              disabled={disabled || !!uncertainSubmission}
+              disabled={disabled || !!uncertainSubmission || Boolean(creation?.readOnly)}
               mobile={mobile}
               triggerTestId="task-chat-composer-add"
               menuTestId="task-chat-composer-add-menu"
@@ -1490,7 +1538,7 @@ export function TaskChatComposer({
 
             <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-2", mobile && !queuedEdit && "flex-1 justify-end")}>
 
-            {showAssignee && !queuedEdit && companyId && modelAgents ? (
+            {(showAssignee || showConversationModel) && !queuedEdit && companyId && modelAgents ? (
               <ComposerRunSettingsPicker
                 companyId={companyId}
                 assigneeValue={assigneeValue}
@@ -1501,6 +1549,7 @@ export function TaskChatComposer({
                 settings={runSettings}
                 onSettingsChange={setRunSettings}
                 onAssigneeChange={updatePendingAssignee}
+                allowAssigneeChange={showAssignee && !conversationMode}
                 renderAssigneeIdentity={(value, label, placement) => (
                   <AssigneeIdentityAvatar
                     assigneeValue={value}

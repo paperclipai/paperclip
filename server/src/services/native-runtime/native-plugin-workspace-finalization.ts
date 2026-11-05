@@ -1,5 +1,5 @@
 import type { Db, executionWorkspaces } from "@paperclipai/db";
-import { inspectPluginWorkspace, type WorkspaceWorkers } from "../plugin-workspaces.js";
+import { finalizePluginWorkspace, type WorkspaceWorkers } from "../plugin-workspaces.js";
 
 /** Validate retained plugin files without interpreting a provider reference as a Core path. */
 export async function inspectPluginWorkspaceForFinalization(
@@ -7,9 +7,10 @@ export async function inspectPluginWorkspaceForFinalization(
   workers: WorkspaceWorkers | undefined,
   workspace: typeof executionWorkspaces.$inferSelect,
   agentId: string,
+  runId: string,
 ): Promise<Record<string, unknown> | null> {
   if (workspace.providerType === "plugin") {
-    const inspection = await inspectPluginWorkspace(db, workers, workspace);
+    const inspection = await finalizePluginWorkspace(db, workers, workspace, { agentId, runId });
     if (workspace.strategyType === "git_worktree"
       && (!workspace.branchName || inspection.branchName !== workspace.branchName)) {
       throw new Error("plugin_workspace_branch_mismatch");

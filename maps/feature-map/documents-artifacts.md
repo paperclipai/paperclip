@@ -26,6 +26,26 @@ Agent access: [companion](../agent-access-map/documents-artifacts.md).
 
 Open a document from the task thread or document side panel.
 
+To create or edit a general task document, open **Open a new tab → Artifacts**
+in the task side panel, then **New document** or **Document actions → Edit
+document**. Classic mode keeps the editor in the task body. Plans retain their
+conversation and approval flow.
+
+Select an inline image to open the document's image gallery. Use the left and
+right arrow keys or the Previous and Next buttons to move through images in
+reading order. The URL retains the document and adds a one-based `image` position,
+such as `#document-report&image=2`. Share or reload that URL to open the same image.
+Revision and maximized-view parameters remain in the link. Escape, Close, or the
+backdrop closes the gallery and returns focus to the image.
+
+Coordinator decision receipts also open a pinned reviewed revision alongside
+the matching task interaction. Historical tabs retain their revision identity
+independently of the current document tab. Missing revisions are explicit and
+never silently replaced with the latest document.
+When a decision in one task reviews another task's document, the center pane
+keeps the originating conversation while the sidebar opens the document owner's
+exact revision. An inaccessible owner never falls back to the origin task's document.
+
 ### `task-output`
 
 Open an attachment, output card, or file link from a task.
@@ -44,6 +64,16 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `task-document`
 
 Automated: [documents service](../../server/src/__tests__/documents-service.test.ts), [annotations](../../server/src/__tests__/document-annotations-service.test.ts), and [revision restore](../../server/src/__tests__/issue-document-restore-routes.test.ts) cover server contracts.
+
+[Document image galleries](../../tests/e2e/document-image-gallery.spec.ts) checks
+desktop, mobile, and Classic document views with real uploaded images and saved
+document revisions. It covers keyboard/button navigation, image URLs and reload,
+focus return, focus containment, scroll locking, dismissal, and revision links.
+
+[Exact revision panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.test.tsx)
+checks pinned content and missing-revision behavior; this component test does not
+prove end-to-end conversation scrolling. Open a resolved receipt after making a
+new revision and verify the earlier body plus matching interaction in the browser.
 
 Manual: Edit a paragraph, save, reload, and compare revisions. Add an annotation to a specific selection and inspect it after another edit. Resolve it through the supported action. Restore a disposable revision and confirm the new current document and history agree.
 

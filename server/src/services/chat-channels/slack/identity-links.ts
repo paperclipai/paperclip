@@ -1,3 +1,4 @@
+import { notifyRetentionWork } from "../../retention-work-notifications.js";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gt, or, sql } from "drizzle-orm";
 
@@ -97,6 +98,7 @@ export function createSlackIdentityLinks(db: Db, { previewIdentityLink, stagePro
         inviteType: "company_join", allowedJoinTypes: "human", acceptedAt: now, expiresAt: now,
         defaultsPayload: { human: { role: "operator" }, source: "slack_identity_link" },
       }).returning({ id: invites.id });
+      await notifyRetentionWork(tx, "join_request");
       const [request] = await tx.insert(joinRequests).values({
         inviteId: invite.id, companyId: preview.companyId, requestType: "human", status: "pending_approval",
         requestIp, requestingUserId: userId, requestEmailSnapshot: user.email,

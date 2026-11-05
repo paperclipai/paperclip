@@ -11,12 +11,94 @@ It requires authenticated board task-mutation authority. It records an
 `agent_wakeup_requests` receipt before physical work. Company/key uniqueness
 covers completed and failed receipts as well as pending ones. Concurrent clicks
 attach to accepted work. A new deliberate click after exhaustion can create a
-new generation; a repeated HTTP request cannot.
+new generation; a repeated HTTP request cannot. A click does not renew an
+exhausted generation that already requires an alternative strategy and has no
+fresh attempt. The click binds to that generation and continues in a fresh
+isolated workspace, so it does not repeat the failed step.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
-Retry changes the workspace strategy, not the external principal, source batch,
-conversation access or publication authority.
+Retry preserves external principal, conversation access and publication checks.
+A GitHub Retry selects already-saved, undelivered input before replaying the
+failed run's older request. The selected receipts transfer to the retry owner
+under the dispatch transaction. They link to its one successor, including after
+a restart or a lost dispatch response. Rejected, unadmitted retries release the
+saved input for another deliberate Retry.
+
+A deliberate GitHub Retry can admit saved input after the same App reconnects.
+It verifies the App binding in the accepted delivery or its historical working
+comment receipt, then checks current sender, repository, conversation and task
+access. The retry records the current runtime generation and credential-reference
+fingerprint. Another reconnect invalidates that admission. Historical deliveries,
+stale webhook callbacks and the exact-run retry contract retain their fences.
+Legacy input that predates saved App IDs can also use an earlier processed
+response ledger from the same company, endpoint, conversation and agent. Its
+server-owned App binding must predate that input and retain a processed delivery
+and inbound source link. The endpoint's non-null App claim cannot be replaced;
+this proves historical identity without replaying the earlier response. Missing
+proof or an explicit conflicting App binding still rejects Retry.
+
+Task Retry keeps the complete saved-input batch, including batches larger than
+the exact-run endpoint's limit. Source rows, receipts and invalidations are read
+in batches. Within one transaction, messages with the same principal and automatic
+policy context share a current-access check; every message still proves its App,
+destination, comment link and immutable source. Different automatic policy contexts
+receive separate access checks. Input in another conversation remains queued.
+
+A connected-conversation Retry can save its exact request while the matching
+system recovery generation verifies the old executor. Saving that wait grants
+no execution authority. The chat owner rechecks the same board intent, external
+principal and source batch when it resumes the deferred receipt. Containment,
+current access, task eligibility, pause and budget gates must still pass before
+one successor starts. Restarts reuse the receipt; they do not create another
+Retry generation or another external publication.
+
+Resuming a chat Retry preserves its exact authorized input batch. Independent
+board messages keep their own queue receipts and enter a separate turn. If an
+older queue merged those messages and dispatch refused the batch before any
+provider work, a new deliberate Retry can restore the undelivered receipts.
+Restoration requires the exact bootstrap failure, no execution or allocation,
+current chat authority, unchanged board input and no prior delivery. It records
+an audit event and retains the failed run and original skipped receipts.
+
+Several retained recovery holds can describe the same failed execution. A
+historical hold without a system recovery record uses the current exact Retry's
+workspace strategy for that run. It does not borrow another run's strategy or
+skip any hold's independent containment and effect checks. Attaching a Retry to
+active automatic recovery preserves its generation, attempt count and deadline.
+
+A deliberate Retry can bind that intent to failed historical predecessors within
+a 32-run chain of persisted retry edges. Every run must retain the same company, task and
+agent, a terminal state and an ordered creation time. Missing, cyclic, contradictory
+or overlong lineage stays held; transcript hints confer no authority. Completed
+ancestors retain their existing recovery generation. A failed historical native
+source with an inherited session requires verified saved work, settled ownership
+and exact stop receipts before a fresh user turn. Its bounded host preparation
+settlement must prove no provider work; input, result, process, output and provider
+usage evidence still prevent admission. Prior action outcomes remain recorded and
+are never replayed by this authorization.
+
+A new user message, a saved undelivered message, or a deliberate board Retry can
+continue a failed native preparation after its saved remote workspace is verified.
+The source must retain its unresolved native adapter claim and the server's
+failed-preparation settlement records, with no
+provider execution, session, input or result evidence, and no active controller
+or native coordinator. An inherited `sessionIdBefore` is prior context, not proof
+that this attempt started a provider. An admitted continuation starts a fresh
+session. The saved message is consumed once when execution starts, and the new
+run clears the prior failure notice.
+Every source lease must have exact stop and cleanup proof. The saved snapshot
+must match the source, workspace epoch, generation and clean writer state. Resolving the
+preservation action does not discard the canonical Retry source. The same
+request resumes through normal admission and current repository access checks.
+Unknown execution, operator Stop, changed ownership and missing receipts keep
+the request held. Preservation alone does not authorize automatic replay.
+
+Preparation can initialize an object run log before provider dispatch. A finalized
+log with zero bytes and the SHA-256 digest of empty content is compatible with
+the no-output proof when its reference binds the exact company, agent and run.
+Output progress and nonempty excerpts still block admission. Unknown size or
+digest, another log backend, and incomplete preparation settlement remain held.
 
 Agent Chat additionally requires the current conversation owner and enabled
 Agent Chat. Admission and dispatch both recheck these conditions under the
@@ -39,6 +121,16 @@ environment, allocation, stop-only intent, and physical ownership claim before
 calling the provider. The retained-source fence still blocks ordinary resume
 and destruction. Recovery does not clear it to gain access to the saved files.
 
+The reopen moves the original stop receipt into the stop-only intent before it
+calls the provider. The lease shows no receipt while the reopen is in progress.
+When the provider returns the reopened allocation, recovery discards the old
+receipt, and the allocation needs a fresh stop. If the reopen fails, recovery
+asks the provider to stop the allocation. If that stop also fails, recovery
+restores the original receipt and lease state, so a stopped source never stays
+without a receipt. A reopen that fails because the sandbox disk is full ends the
+generation with `source_unavailable`. Saved input and Retry then continue in a
+fresh isolated workspace.
+
 Execution containment and file preservation are independent facts:
 
 - Another agent needs authoritative containment of the old executor.
@@ -46,6 +138,19 @@ Execution containment and file preservation are independent facts:
 - A fresh attempt uses a new execution workspace and the separate
   `isolated-workspace-attempts` namespace. It does not modify the original
   directory or satisfy that source's preservation/cleanup obligation.
+
+A missing managed sandbox cannot answer another stop request. Core can request
+a signed absence observation from Cloud under a host-bound server capability.
+Cloud reads the exact allocation in the historical credential's organization.
+Only a fresh signature for the exact stack, company, issue, run, lease,
+allocation and physical recovery owner can settle execution absence. Permission
+failures, a changed organization, unsigned answers and provider timeouts remain
+inconclusive. This protocol requires Cloud support before the Core consumer.
+
+An absence receipt does not recover files or complete the task. The original run
+stays failed and its source remains protected. Existing authorized input may use
+normal fresh workspace admission only after every executor is contained. Known
+publications and uncertain external effects retain their normal receipt fences.
 
 Fresh attempts currently require Core-managed storage. Plugin-owned storage
 does not yet support importing these preserved snapshots. Preparation stops

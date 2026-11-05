@@ -67,3 +67,13 @@ it("keeps existing polling retries when the strict error policy is absent", asyn
     load, accept: Boolean, intervalMs: 1 })).resolves.toBe(true);
   expect(load).toHaveBeenCalledTimes(2);
 });
+
+it.each([200, 204, 404, 409])("forwards the cleanup request timeout and preserves DELETE status %s", async status => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const remove = vi.fn(async () => response(status));
+  const api = new RunnerApi({ delete: remove } as unknown as APIRequestContext);
+  const result = api.delete("/api/environments/environment", { allowNotFound: true, timeout: 500 });
+  if (status === 409) await expect(result).rejects.toThrow("409");
+  else await expect(result).resolves.toBeUndefined();
+  expect(remove).toHaveBeenCalledExactlyOnceWith("/api/environments/environment", { timeout: 500 });
+});

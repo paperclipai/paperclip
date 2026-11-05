@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { experimentalSettingKey } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,6 +20,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
+import { CoordinatorWorkspaceSetting } from "@/components/CoordinatorWorkspaceSetting";
+import { describeError } from "@/api/errors";
 
 type WorktreeRunExecutionDisplayState =
   | { kind: "off" }
@@ -95,7 +98,7 @@ function ExperimentalToggleCard({
   const isManaged = managed?.managed === true;
   if (hiddenSettings.has(experimentalSettingKey(settingKey))) return null;
   return (
-    <Card className="block bg-transparent p-5">
+    <Card id={`experimental-${settingKey}`} className="block scroll-mt-4 bg-transparent p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -136,6 +139,7 @@ export function InstanceExperimentalSettings() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const experimentalView = useQueryView(experimentalQuery);
 
   const toggleMutation = useMutation<
     InstanceExperimentalSettingsWithManaged,
@@ -173,21 +177,29 @@ export function InstanceExperimentalSettings() {
       if (context?.previousSettings) {
         queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
       }
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+  if (experimentalQuery.isLoading || experimentalView.kind === "reconnecting") {
+    return (
+      <div className="max-w-6xl space-y-6">
+        <CoordinatorWorkspaceSetting key="personal-workspace" />
+        <div className="text-sm text-muted-foreground">Loading experimental settings...</div>
+      </div>
+    );
   }
 
-  if (experimentalQuery.error) {
+  if (experimentalView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {experimentalQuery.error instanceof Error
-          ? experimentalQuery.error.message
-          : "Failed to load experimental settings."}
-      </div>
+<div className="max-w-6xl space-y-6"><CoordinatorWorkspaceSetting key="personal-workspace" />      <QueryErrorState
+        size="page"
+        error={experimentalQuery.error}
+        action="load experimental settings"
+        onRetry={experimentalView.retry}
+        retrying={experimentalView.isFetching}
+      />
+</div>
     );
   }
 
@@ -262,6 +274,8 @@ export function InstanceExperimentalSettings() {
         </p>
       </div>
 
+      <CoordinatorWorkspaceSetting key="personal-workspace" />
+
       <div
         role="alert"
         className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3"
@@ -304,6 +318,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableAgentChat"
           managed={managedKeys.enableAgentChat}
           ariaLabel="Toggle agent chat experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Artifacts V1"
+          description="Show artifacts the way the artifact directions lab settled: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread."
+          footnote="Presentation only. Turning this off restores the current cards; no data changes."
+          checked={experimentalQuery.data?.enableArtifactsV1 ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableArtifactsV1: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableArtifactsV1"
+          managed={managedKeys.enableArtifactsV1}
+          ariaLabel="Toggle artifacts V1 experimental setting"
         />
 
         <ExperimentalToggleCard

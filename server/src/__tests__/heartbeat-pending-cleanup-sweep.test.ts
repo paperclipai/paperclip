@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   heartbeatRuns,
+  heartbeatRunEvents,
   companies,
   createDb,
   environmentLeases,
@@ -21,7 +22,7 @@ vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClien
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
-    child: vi.fn(function child() {
+    child: vi.fn(function child(this: unknown) {
       return this;
     }),
     trace: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../middleware/logger.js", () => ({
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
 import { hasPendingRunCleanup } from "../services/execution-blocker.js";
+import { environmentStopErrorData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentStopError } from "@paperclipai/plugin-sdk";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -74,6 +76,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(costEvents);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(environments);
     await db.delete(agents);
@@ -351,6 +354,42 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
     expect(saved.metadata?.[CAP_WARNED_KEY]).toBe(true);
     expect(Number(saved.metadata?.pendingCleanupRetryAfterMs)).toBeGreaterThan(Date.now() + 29 * 60_000);
+  });
+
+  it.each([
+    { reason: "resource_unrecoverable", escalated: true },
+    { reason: "recovery_failed", escalated: true },
+    { reason: "recovery_incomplete", escalated: false },
+  ] as const)("escalates only a terminal provider stop failure on its first attempt: $reason", async ({ reason, escalated }) => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(Date.now() - 60 * 60_000) });
+    const failure = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "private provider detail",
+      data: environmentStopErrorData(new PluginEnvironmentStopError(reason)) });
+    const teardown = vi.fn(async () => { throw failure; });
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+
+    expect(await service.sweepPendingCleanupLeases()).toEqual({ swept: 1, destroyed: 0, capped: escalated ? 1 : 0 });
+    expect(teardown).toHaveBeenCalledOnce();
+    const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(saved.status).toBe("pending_cleanup");
+    expect(saved.cleanupStatus).toBe("failed");
+    expect(saved.metadata?.[ATTEMPTS_KEY]).toBe(1);
+    expect(saved.metadata?.[CAP_WARNED_KEY] === true).toBe(escalated);
+    const retryAfterMs = Number(saved.metadata?.pendingCleanupRetryAfterMs);
+    if (escalated) expect(retryAfterMs).toBeGreaterThan(Date.now() + 29 * 60_000);
+    else expect(retryAfterMs).toBeLessThan(Date.now() + 60_000);
+
+    const warnings = vi.mocked(logger.warn).mock.calls;
+    expect(warnings.find(call => call[1] === "pending_cleanup lease retry failed")?.[0]).toMatchObject({
+      leaseId, attempts: 1, providerStopFailure: reason,
+      errorKind: escalated ? "provider_stop_terminal" : "destroy_failed",
+    });
+    const attention = warnings.filter(call => String(call[1]).startsWith("environment lease needs operator attention"));
+    expect(attention).toHaveLength(escalated ? 1 : 0);
+    if (escalated) expect(attention[0]?.[0]).toMatchObject({ leaseId, providerStopFailure: reason });
+    expect(JSON.stringify(warnings)).not.toContain("private provider detail");
   });
 
   it("retries after a restart and cooldown when the provider recovers", async () => {
@@ -1163,6 +1202,14 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       updatedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
 
+    // Inline pending cleanup now runs only after actual orphan recovery. Seed
+    // an abandoned run so this test still reaches the isolated error boundary.
+    const agentId = randomUUID(), runId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Abandoned worker",
+      adapterType: "process", status: "idle" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,
+      status: "running", invocationSource: "manual", startedAt: new Date(Date.now() - 3_600_000) });
+
     // Make the sweep itself throw. The lease query rejects with an error that
     // carries a credential-shaped sentinel in both the name and the message. The
     // reaper's own queries pass through, so only the sweep fails.
@@ -1194,7 +1241,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       });
 
       // The reaper isolates the sweep, so the reaper itself resolves.
-      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toBeDefined();
+      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toEqual({ reaped: 1, runIds: [runId] });
 
       const sweepCall = vi
         .mocked(logger.error)

@@ -10,10 +10,13 @@ import {
   type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
+import { useQueryView } from "@/components/QueryView";
 import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
+import { aiConnectionDisplayLabel } from "./model";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -36,6 +39,7 @@ export function aiProviderForAdapter(
       pi_local: "openrouter",
       grok_local: "xai",
       copilot_runtime: "github",
+      antigravity_runtime: "google",
       gemini_local: "google",
       hermes_local: "openrouter",
     } as Record<string, AiProvider>
@@ -88,7 +92,13 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
+  const accountsView = useQueryView(accounts);
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
+  const pendingAccount = pendingAdoption?.mode === "responsible_user"
+    ? personalDefault
+    : pendingAdoption && pendingAdoption.mode !== "router"
+      ? accounts.data?.connections.find(account => account.id === pendingAdoption.connectionId && account.grantId === pendingAdoption.grantId)
+      : undefined;
   const selectDefault = useMutation({
     mutationFn: async (result: NonNullable<typeof savedAccount>) => {
       // Reconnect retains the existing default and its access. A new account
@@ -153,14 +163,14 @@ export function AiConnectionField({
         agentId={agentId ?? ""}
         agentName={agentName}
         readOnly={readOnly}
-        loading={accounts.isPending}
-        error={accounts.error?.message}
+        loading={accounts.isPending || accountsView.kind === "reconnecting"}
+        error={accountsView.kind === "error" ? describeError(accounts.error).body : undefined}
         onChange={(binding) =>
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
-        onRetry={() => void accounts.refetch()}
+        onRetry={accountsView.retry}
       />}
       <Dialog
         open={Boolean(pendingAdoption)}
@@ -177,10 +187,8 @@ export function AiConnectionField({
           </DialogHeader>
           {pendingAdoption?.mode !== "router" && <p className="text-sm">
             {pendingAdoption?.mode === "responsible_user"
-              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === provider)?.name ?? "Not connected"}. Other users use their own default.`
-              : accounts.data?.connections.find(
-                  (account) => account.id === pendingAdoption?.connectionId,
-                )?.name}
+              ? `Responsible user’s default. For you: ${pendingAccount ? aiConnectionDisplayLabel(pendingAccount) : "Not connected"}. Other users use their own default.`
+              : pendingAccount && aiConnectionDisplayLabel(pendingAccount)}
           </p>}
           {pendingAdoption?.mode !== "router" && <p className="text-xs text-muted-foreground">
             After adoption, missing credentials block execution. Previous
@@ -229,7 +237,7 @@ export function AiConnectionField({
           </label>}
           {savedAccount ? <div className="space-y-4">
             {selectDefault.error ? <>
-              <p role="alert" className="text-sm text-destructive">{selectDefault.error.message}</p>
+              <p role="alert" className="text-sm text-destructive">{describeError(selectDefault.error).body}</p>
               <Button onClick={() => selectDefault.mutate(savedAccount)}>Retry default selection</Button>
             </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
           </div> :

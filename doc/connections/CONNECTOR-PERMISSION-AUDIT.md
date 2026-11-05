@@ -11,7 +11,8 @@ ledger; the counts above are not restated. Later additions: [Neon](./NEON.md)
 (`mcp-oauth`, `mcp-api-key`; 2026-10-02), [Superagent](./SUPERAGENT.md)
 (`mcp-api-key`; 2026-10-06), [Gauge](./GAUGE.md)
 (`mcp-oauth`, `mcp-api-key`; 2026-10-08), [Ditto](./DITTO.md)
-(`mcp-oauth`, `mcp-api-key`; 2026-10-10).
+(`mcp-oauth`, `mcp-api-key`; 2026-10-10), [Unikraft](./UNIKRAFT.md)
+(`api-token`; 2026-10-15).
 
 ## Shared credential failure
 

@@ -1,19 +1,20 @@
+import { pluginIdleManifestGeneration } from "../services/plugin-idle-catalog.js";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
+import { createPluginWorkerHandle, createPluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 
 const manifest = { id: "test.idle", apiVersion: 1 as const, version: "1.0.0", displayName: "Idle fixture",
   description: "Idle fixture", author: "Paperclip", categories: ["automation" as const], capabilities: [], entrypoints: { worker: "worker.cjs" } };
-function worker(write = false, hostHandler = async () => undefined) {
+function worker(write = false, hostHandler: () => Promise<void> = async () => undefined) {
   return createPluginWorkerHandle("test.idle", {
     entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
     execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
     manifest, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
     env: { IDLE_TEST_WRITE: write ? "1" : "0" },
-    hostHandlers: { "state.set": hostHandler, "events.subscribe": async () => ({}) },
+    hostHandlers: { "state.set": hostHandler, "events.subscribe": async () => undefined },
   });
 }
 function hold() {
@@ -23,6 +24,31 @@ function hold() {
 
 describe("plugin manager idle receipts", () => {
   afterEach(() => stopTaskDrain());
+  it("binds a quiet catalog to the actual started manifest and replacement worker", async () => {
+    const manager = createPluginWorkerManager();
+    const options = (version: string) => ({
+      entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
+      execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
+      manifest: { ...manifest, version }, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "events.subscribe": async () => {} },
+    });
+    try {
+      await manager.startWorker("test.idle", options("1.0.0"));
+      const lease = hold();
+      const first = await manager.inspectIdleSleep!(lease);
+      expect(first.backgroundWork).toBe("none");
+      expect(first.catalog).toEqual([{ pluginId: "test.idle", manifestGeneration: pluginIdleManifestGeneration(manifest) }]);
+      expect((await manager.inspectIdleSleep!(lease)).catalogGeneration).toBe(first.catalogGeneration);
+      stopTaskDrain(); manager.releaseIdleSleep!();
+      await manager.stopWorker("test.idle");
+      await manager.startWorker("test.idle", options("1.0.1"));
+      const replacement = await manager.inspectIdleSleep!(hold());
+      expect(replacement.backgroundWork).toBe("none");
+      expect(replacement.catalogGeneration).not.toBe(first.catalogGeneration);
+      expect(replacement.catalog?.[0].manifestGeneration).not.toBe(first.catalog?.[0].manifestGeneration);
+    } finally { stopTaskDrain(); await manager.stopAll(); }
+  });
+
   it("retains timed-out worker operations and admits work after the owned hold releases", async () => {
     const handle = worker();
     await handle.start();

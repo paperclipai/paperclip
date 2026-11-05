@@ -21,7 +21,8 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
   reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
   clearReopenPendingConsumptionForUnconsumedReopen: vi.fn(async () => ({ cleared: true })),
   refreshReopenPendingConsumption: vi.fn(async () => ({ refreshed: true })),
@@ -244,7 +245,7 @@ describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
-    mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(makeClosedWorkspace());
     mockExecutionWorkspaceService.refreshReopenPendingConsumption.mockResolvedValue({ refreshed: true });
     // The guard reopens a closed isolated workspace and lets the request
     // continue. The default is a successful reopen.

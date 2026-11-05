@@ -1,3 +1,6 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import type { ConnectionManagementContext } from "../../connection-management.js";
+import { connectionActorUserId } from "../actor.js";
 import { toConnectionGrant } from "./projection.js";
 import { actorBinding } from "../actor.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
@@ -125,6 +128,7 @@ replaceConnectionGrantMembers: async (
       memberUserIds: string[],
       actor?: ActorInfo,
     ) => {
+      await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       const [grant] = await db
         .select()
@@ -278,7 +282,9 @@ replaceConnectionGrantMembers: async (
       grantId: string,
       agentId: string,
       ownerUserId: string,
+      managementContext?: ConnectionManagementContext,
     ) => {
+      await managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       if (connection.connectionPurpose === "ai") {
         throw badRequest("AI credentials use the connection's human access settings, not agent delegation");
@@ -363,12 +369,13 @@ replaceConnectionGrantMembers: async (
         await tx.insert(toolAccessAuditEvents).values({
           companyId: connection.companyId,
           connectionId: connection.id,
-          actorType: "user",
-          actorId: ownerUserId,
+          actorType: managementContext?.audit.actorType ?? "user",
+          actorId: managementContext?.audit.actorId ?? ownerUserId,
           action: "connection_grant.delegated",
           outcome: "success",
           reasonCode: "delegation_created",
-          details: { grantId: grant.id, delegationId: delegation!.id, agentId },
+          details: { grantId: grant.id, delegationId: delegation!.id, agentId,
+            ...(managementContext ? { responsibleUserId: managementContext.responsibleUserId, runId: managementContext.actor.runId, agentApiKeyId: managementContext.actor.keyId } : {}) },
         });
         return delegation!;
       });
@@ -379,6 +386,7 @@ replaceConnectionGrantMembers: async (
       delegationId: string,
       actor?: ActorInfo,
     ) => {
+      await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       const delegation = await db.transaction(async tx => {
         const [grant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
@@ -425,6 +433,7 @@ replaceConnectionGrantMembers: async (
       },
       actor?: ActorInfo,
     ) => {
+      await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       await assertSecretRefs(
         connection.companyId,
@@ -454,8 +463,7 @@ replaceConnectionGrantMembers: async (
           isDefault: input.isDefault ?? false,
           createdByAgentId:
             binding.actorType === "agent" ? binding.actorId : null,
-          createdByUserId:
-            binding.actorType === "user" ? binding.actorId : null,
+          createdByUserId: connectionActorUserId(actor),
         })
         .returning();
       if (!grant) throw new Error("Failed to create connection installation");
@@ -480,6 +488,7 @@ replaceConnectionGrantMembers: async (
       grantId: string,
       actor?: ActorInfo,
     ) => {
+      await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       const binding = actorBinding(actor);
       const [currentGrant] = await db
@@ -529,6 +538,7 @@ replaceConnectionGrantMembers: async (
         providerRevocation = "local_only_shared_client";
       }
       const grant = await db.transaction(async (tx) => {
+        await notifyGitHubCredentialChange(tx, connection);
         const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
           .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))
           .for("update");

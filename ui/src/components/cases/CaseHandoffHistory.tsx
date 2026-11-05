@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ArrowRight, ChevronRight } from "lucide-react";
 import { casesApi, type CaseHandoffView, type CaseWorkIssue } from "@/api/cases";
@@ -26,12 +27,14 @@ export function CaseHandoffHistory({ caseId, task, agents }: { caseId: string; t
     queryFn: ({ pageParam }) => casesApi.listHandoffs(caseId, pageParam),
     getNextPageParam: page => page.nextCursor ?? undefined,
   });
+  const historyView = useQueryView(history);
+  const waiting = ["loading", "reconnecting"].includes(historyView.kind);
   const handoffs = history.data?.pages.flatMap(page => page.items) ?? [];
   return <section className="space-y-3" aria-label="Case handoffs">
     <h2 className="text-sm font-semibold">Handoffs</h2>
-    {history.isLoading ? <p className="text-sm text-muted-foreground">Loading handoffs…</p> : null}
-    {history.isError ? <p role="alert" className="text-sm text-destructive">Handoffs couldn’t be loaded.</p> : null}
-    {!history.isLoading && !history.isError && handoffs.length === 0 ? <p className="text-sm text-muted-foreground">No handoffs yet.</p> : null}
+    {waiting ? <p className="text-sm text-muted-foreground">Loading handoffs…</p> : null}
+    {(historyView.kind === "error") ? <p role="alert" className="text-sm text-destructive">Handoffs couldn’t be loaded.</p> : null}
+    {!waiting && !(historyView.kind === "error") && handoffs.length === 0 ? <p className="text-sm text-muted-foreground">No handoffs yet.</p> : null}
     <ol className="divide-y divide-border">{handoffs.map(handoff => <HandoffRow key={handoff.id} handoff={handoff} task={task} agents={agents} />)}</ol>
     {history.hasNextPage ? <Button variant="ghost" size="sm" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>Load older handoffs</Button> : null}
   </section>;

@@ -5,6 +5,14 @@ import {
 } from "./document-annotation-hash";
 
 describe("parseDocumentAnnotationHash", () => {
+  it("retains an image position with the reviewed document identity", () => {
+    const target = { documentKey: "design", threadId: null, commentId: null, revisionId: "old", documentIssueId: "owner", viewer: "full" as const, image: 2 };
+    expect(parseDocumentAnnotationHash(buildDocumentAnnotationHash(target))).toEqual(target);
+  });
+
+  it.each(["0", "-1", "1.5", "text", "9007199254740992"])("ignores invalid image positions: %s", (image) => {
+    expect(parseDocumentAnnotationHash(`#document-design&image=${image}`)).not.toHaveProperty("image");
+  });
   it("returns null for non-document hashes", () => {
     expect(parseDocumentAnnotationHash("")).toBeNull();
     expect(parseDocumentAnnotationHash("#issue-foo")).toBeNull();

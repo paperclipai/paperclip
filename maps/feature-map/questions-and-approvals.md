@@ -17,7 +17,7 @@ Agent access: [companion](../agent-access-map/questions-and-approvals.md).
 
 - `questions`: `questions-and-approvals/questions` — single-choice, multiple-choice, custom, and free-text answers;
   paged forms retain answers until submission and show validation failures.
-- `dismiss-and-reopen`: `questions-and-approvals/dismiss-and-reopen` — unanswered questions remain in the feed after dismissal
+- `dismiss-and-reopen`: `questions-and-approvals/dismiss-and-reopen` — questions and composer requests (including completion reviews) remain in the feed after dismissal
   or a newer message; reopening restores the form without inventing an answer.
 - `confirmations`: `questions-and-approvals/confirmations` — accept, decline, or request changes; stale, expired, resolved,
   and withdrawn requests cannot be acted on again.
@@ -28,7 +28,7 @@ Agent access: [companion](../agent-access-map/questions-and-approvals.md).
   resolution. A visible request is not necessarily actionable by that viewer.
 - `governance`: `questions-and-approvals/governance` — pending/history views, approve/reject, revision request, and
   resubmission for formal board approvals.
-- `tool-review`: `questions-and-approvals/tool-review` — approve once, always allow the displayed scope, or decline;
+- `tool-review`: `questions-and-approvals/tool-review` — inspect the bounded server-redacted arguments and audit hash before approving once, always allowing the displayed scope, or declining;
   decision status and provider execution outcome remain distinct.
 - `continuation`: `questions-and-approvals/continuation` — one recorded response leads to the eligible waiting run or
   continuation; repeated clicks, reloads, and competing tabs do not repeat work.
@@ -91,12 +91,12 @@ Use these checks alongside the entry-point recipes below and the operation recor
 | Capability ID | Action and persisted result | Denial, race and retry checks |
 | --- | --- | --- |
 | `questions-and-approvals/questions` | Create fixed-ID single/multiple/custom/text questions; move between pages, submit, and reload the saved answer and responder. | Reject missing/invalid answers without resolving. Competing answers settle once. Distinguish cancel, withdraw, historical Done-task answers, and local dismissal; historical answers must not restart work. |
-| `questions-and-approvals/dismiss-and-reopen` | Dismiss without submitting, reopen from history, edit the retained draft, and reload in the same browser. | Confirm the server request remains pending and a new ordinary comment does not answer it. Resolve in another tab and refresh the old form. Browser draft/dismissal state is not account-wide state. |
+| `questions-and-approvals/dismiss-and-reopen` | Dismiss questions, completion reviews, confirmations, choices, and item requests without deciding; reload and reopen from history. | Confirm the server request remains pending and a new ordinary comment does not answer it. Resolve in another tab and refresh the old form. Saved-request dismissals persist on the server and suppress repeated agent demands; drafts and raw runtime dismissals remain browser-local. Protected actions still require authorization. |
 | `questions-and-approvals/confirmations` | Use separate accept, decline/change-request, checkbox subset, suggested-task selection, and partial item-verdict requests. Inspect the actual selected items and created task IDs. | Test invalid selections, child-without-parent selection, expiry, supersession, withdrawal, and repeated/conflicting decisions. Partial verdicts persist; skip must not start a continuation. |
 | `questions-and-approvals/plan-review` | Open the exact requested plan revision; reject one request and accept another. Inspect saved revision, work mode, owner, and the resulting continuation. | Edit after requesting review and reject stale acceptance. Test finalization readiness and bound completion review separately. In Agent Chat, inspect the later project/task creation and its source-plan provenance; acceptance alone is not a completed handoff. |
 | `questions-and-approvals/audience` | Repeat a request for a named person, named agent, human-only resolver, and independent reviewer. Inspect actionability and final attribution. | Test creator exclusion, wrong audience/company, private task, missing or cancelled run, and changed responsible-user access. A human comment used by an agent remains subject to that agent’s resolver authority. |
 | `questions-and-approvals/governance` | Create and inspect a formal request, comment, request revision, resubmit, then approve or reject distinct requests. Reload history and linked task state. | Test board decision authority separately from agent request/comment/resubmit authority. A repeated decision cannot repeat activation. Current pending status, payload revision, and governed side effects must agree. |
-| `questions-and-approvals/tool-review` | Invoke a harmless Ask first action, compare task and Apps review surfaces, then exercise Approve once, Always allow, and Decline separately. | No provider call before approval. Repeat decisions and compare invocation count. Change the tool definition, revoke access, or set Off before a decision. Record the approval decision and provider outcome independently. |
+| `questions-and-approvals/tool-review` | Invoke a harmless Ask first action with a proposal longer than its preview. Open Arguments and audit hash on task and Apps review surfaces and inspect the tail before a decision. Then exercise Approve once, Always allow, and Decline separately. | No provider call before approval. Repeat decisions and compare invocation count. Change the tool definition, revoke access, or set Off before a decision. Record the approval decision and provider outcome independently. |
 | `questions-and-approvals/continuation` | After answering, inspect the saved response, delivery receipt, eligible run, and useful result in the original task/thread. | Reload, race two tabs, and interrupt delivery after saving. Require one continuation without repeated external actions. Reassignment, Stop, pause, budget, and external-thread boundaries remain effective. |
 
 ### `task-thread`
@@ -187,9 +187,26 @@ Automated: [chat question forms](../../server/src/services/chat-question-forms.t
 and [interaction publications](../../server/src/__tests__/chat-interaction-publications.test.ts)
 cover serialization and delivery logic with fixtures.
 
-Free-text and multi-question cards must show their title, question prompts, help
-text, and relevant context beside Respond. Settled cards must not expose saved
-free-text answers. The interaction publication database suite covers both states.
+Free-text and multi-question cards show their title, prompts, help, and context.
+Slack modals retain instructions and editable starting text. Closed single-choice
+questions use buttons for up to five options and an inline searchable selector
+for six to 100. Multiple choices use checkboxes (up to ten) or a multiple selector,
+then explicit Submit. Custom choices combine direct buttons with an Other modal;
+pattern errors appear beside the native input. Ordinary confirmations use buttons;
+checklists preserve defaults and bounds; item verdicts use radio choices and reasons;
+suggested tasks use Create, selection, and Dismiss. Connection requests offer
+Review connection and native Not now, without granting access from Slack.
+
+Governed approvals, unsupported mixed forms, attachments, and oversized requests
+retain the full Paperclip review path. Link clicks navigate without attempting an
+answer. Terminal edits preserve the submitted response in the same authorized
+conversation and remove stale controls. Inspect the saved interaction, exactly
+one continuation, and useful reply independently. See the
+[continuation regressions](../../server/src/services/chat-interaction-continuation.test.ts)
+and [Slack card tests](../../server/src/services/chat-channels/slack/cards.test.ts).
+Local real-Slack proof for eleven formats, including native validation and public
+link navigation, is recorded with PR #17255. It uses a deterministic protocol
+fixture and does not establish deployed staging or model reliability.
 
 Manual: use a disposable provider conversation, answer as the linked sender,
 and check the task's persisted result and one continuation. Repeat from an

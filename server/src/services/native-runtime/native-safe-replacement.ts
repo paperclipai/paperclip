@@ -1,3 +1,6 @@
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,19 +9,24 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   environmentLeases,
+  executionWorkspaces,
+  executionWorkspaceSnapshots,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
   issueRecoveryActions,
   nativeRunFinalizations,
   toolInvocations,
+  workspaceOperations,
   type Db,
 } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { decideNativeReplacement } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -34,6 +42,72 @@ const processAlive = (pid: number | null) => {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 };
+
+type ReplacementDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/** A saved remote source is proved by its current ledger, never a controller path. */
+async function remoteWorkspaceReplacementEvidence(
+  db: ReplacementDb,
+  run: typeof heartbeatRuns.$inferSelect,
+  issueId: string,
+  leases: Array<typeof environmentLeases.$inferSelect>,
+  lock = false,
+) {
+  const [task] = await db.select({ workspaceId: issues.executionWorkspaceId }).from(issues).where(and(
+    eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+  ));
+  const query = task?.workspaceId ? db.select().from(executionWorkspaces).where(and(
+    eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, task.workspaceId),
+  )) : null;
+  const [workspace] = query ? await (lock ? query.for("update") : query) : [];
+  const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+  if (run.runnerProfileJson?.remoteWorkspace == null && !authority) return null;
+  if (lock) {
+    const [currentRun] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+    )).for("update");
+    if (!currentRun || currentRun.status !== "failed") return { workspacePreserved: false, providerStopped: false };
+    run = currentRun;
+    leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    )).for("update");
+  }
+  const providerStopped = leases.length > 0 && leases.every(hasRemoteTerminationReceipt);
+  const denied = { workspacePreserved: false, providerStopped };
+  const parsed = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  if (!workspace || !authority || !parsed.success || parsed.data.state !== "saved" || !parsed.data.snapshotId
+    || run.runnerProfileJson?.nativeWorkspaceSync != null || ["archived", "cleanup_failed"].includes(workspace.status)) return denied;
+  const reference = parsed.data;
+  const executionWorkspace = record(record(run.runnerProfileJson?.nativeExecutionInput).workspace);
+  if (workspace.id !== reference.workspaceId || executionWorkspace.cwd !== reference.remoteCwd
+    || authority.dirty || authority.writerRunId || authority.epoch !== reference.epoch
+    || authority.snapshotId !== reference.snapshotId) return denied;
+  const lease = leases.find(row => row.id === reference.leaseId && row.providerLeaseId === reference.providerLeaseId
+    && (!row.executionWorkspaceId || row.executionWorkspaceId === workspace.id)
+    && row.metadata?.remoteWorkspaceId === workspace.id && row.metadata?.remoteCwd === reference.remoteCwd);
+  if (!lease || !providerStopped) return denied;
+  if (authority.location ? authority.location.leaseId !== lease.id || authority.location.environmentId !== lease.environmentId
+    || authority.location.providerLeaseId !== reference.providerLeaseId || authority.location.remoteCwd !== reference.remoteCwd
+    : record(lease.metadata?.remoteExecutionTermination).state !== "destroyed") return denied;
+  const snapshotQuery = db.select().from(executionWorkspaceSnapshots).where(and(
+    eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
+    eq(executionWorkspaceSnapshots.id, reference.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
+    eq(executionWorkspaceSnapshots.epoch, reference.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
+  ));
+  const [snapshot] = await (lock ? snapshotQuery.for("update") : snapshotQuery);
+  if (!snapshot?.sha256 || !snapshot.objectKey || !snapshot.key || !snapshot.manifestDigest || !snapshot.byteSize) return denied;
+  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.id, snapshot.sourceOperationId), eq(workspaceOperations.companyId, run.companyId),
+    eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.heartbeatRunId, run.id),
+    eq(workspaceOperations.issueId, issueId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+    eq(workspaceOperations.status, "succeeded"),
+    sql`${workspaceOperations.metadata}->>'boundary' = 'final'`,
+    sql`${workspaceOperations.metadata}->>'epoch' = ${String(reference.epoch)}`,
+    sql`${workspaceOperations.metadata}->>'snapshotId' = ${snapshot.id}`,
+    sql`${workspaceOperations.metadata}->>'sha256' = ${snapshot.sha256}`,
+  ));
+  return { workspacePreserved: Boolean(operation), providerStopped };
+}
 
 export function nativeReplacementPending() {
   return and(
@@ -205,6 +279,7 @@ export async function reconcileSafeNativeReplacements(
       } catch {
         /* The named operator outcome retains incomplete context. */
       }
+      const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       const decision = decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
@@ -220,8 +295,9 @@ export async function reconcileSafeNativeReplacements(
           coordinator.leaseOwner === null && run.status === "failed",
         providerStopped:
           !processAlive(run.processPid) &&
-          !processAlive(run.processGroupId ? -run.processGroupId : null),
-        workspacePreserved:
+          !processAlive(run.processGroupId ? -run.processGroupId : null) &&
+          (remoteWorkspace?.providerStopped ?? true),
+        workspacePreserved: remoteWorkspace ? remoteWorkspace.workspacePreserved :
           typeof workspace.cwd === "string" &&
           (await stat(workspace.cwd).then(
             (s) => s.isDirectory(),
@@ -265,7 +341,7 @@ export async function reconcileSafeNativeReplacements(
             current.failureDetail?.replacementDenied
           )
             return;
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           await tx
             .update(nativeRunFinalizations)
             .set({
@@ -330,6 +406,7 @@ export async function reconcileSafeNativeReplacements(
           (task.checkoutRunId !== null && task.checkoutRunId !== run.id) ||
           !current ||
           current.phase !== "terminal_failure" ||
+          current.leaseOwner !== null ||
           current.failureCode !== coordinator.failureCode ||
           current.failureDetail?.successorRunId ||
           current.failureDetail?.replacementDenied ||
@@ -349,6 +426,10 @@ export async function reconcileSafeNativeReplacements(
             return receipt.runId === run.id && receipt.statusVersion === task.statusVersion;
           });
           if (!ownsBlock) return false;
+        }
+        if (remoteWorkspace) {
+          const currentWorkspace = await remoteWorkspaceReplacementEvidence(tx, run, coordinator.issueId, leases, true);
+          if (!currentWorkspace?.workspacePreserved || !currentWorkspace.providerStopped) return false;
         }
         if (stoppedSession) {
           const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
@@ -407,7 +488,8 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
@@ -466,6 +548,9 @@ export async function reconcileSafeNativeReplacements(
           eq(issueRecoveryActions.cause, current.failureCode!),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
         )).for("update");
+        if (holds.some(hold => hold.status === "active" || hold.status === "escalated")) {
+          await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
+        }
         for (const hold of holds) {
           await tx.update(issueRecoveryActions).set({
             status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
@@ -483,6 +568,7 @@ export async function reconcileSafeNativeReplacements(
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })
           .where(eq(heartbeatRuns.id, run.id));
+        await notifyNativeStatusReassessment(tx, { companyId: run.companyId, issueId: task.id });
         // The successor gets task authority only through the existing admission gate.
         await tx
           .update(issues)

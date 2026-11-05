@@ -1,6 +1,7 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
-import { AGENT_OBSERVABILITY_ENV_KEYS, applyObservabilityEnvironment } from "../agent-observability.js";
+import { codexShellEnvironmentKeys } from "../codex-shell-environment.js";
+import { applyObservabilityEnvironment } from "../agent-observability.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
@@ -36,6 +37,7 @@ import {
   type AdapterExecutionTarget,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
+  type AdapterExecutionTargetProcessSessionTerminalEvidence,
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
@@ -1545,10 +1547,10 @@ function buildCodexStartupConfig(input: {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
-  identityEnvironmentKeys?: string[];
+  shellEnvironmentKeys?: string[];
 }): { value: string | null; invalidExistingConfig: boolean } {
   const hasRuntimeConfig = Boolean(
-    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.identityEnvironmentKeys,
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.shellEnvironmentKeys,
   );
   if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
 
@@ -1579,10 +1581,10 @@ function buildCodexStartupConfig(input: {
             },
           }
         : {}),
-      ...(input.identityEnvironmentKeys ? {
+      ...(input.shellEnvironmentKeys ? {
         features: { ...parseObject(existing.features), ...(input.fastMode ? { fast_mode: true } : {}), shell_snapshot: false },
         shell_environment_policy: { ...parseObject(existing.shell_environment_policy),
-          inherit: "all", ignore_default_excludes: true, include_only: input.identityEnvironmentKeys },
+          inherit: "all", ignore_default_excludes: true, include_only: input.shellEnvironmentKeys },
       } : {}),
     }),
     invalidExistingConfig,
@@ -2119,15 +2121,10 @@ async function buildRuntime(input: {
     env.GEMINI_MODEL = requestedModel;
   }
   if (acpxAgent === "codex") {
+    const shellEnvironmentKeys = codexShellEnvironmentKeys(env, resolvedAdapterEnv, Boolean(input.ctx.agentIdentity));
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,
-      ...(input.ctx.agentIdentity ? { identityEnvironmentKeys: [...new Set([
-        "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
-        "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-        // Preserve Codex's default secret-name exclusions. The short-lived
-        // Paperclip API token is required by the agent skill's Bash/curl calls.
-        ...Object.keys(env).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
-      ])] } : {}),
+      shellEnvironmentKeys,
       requestedModel,
       requestedThinkingEffort,
       fastMode,
@@ -3323,6 +3320,28 @@ function isPendingAcpTool(tool: { status?: string }): boolean {
 }
 
 /**
+ * How the sandbox agent process session ended, when the bridge saw it end.
+ * Separates a process that exited or was killed from a host proxy that closed
+ * by itself. Unknown exit codes and signals are left out.
+ */
+export function summarizeAcpProcessTerminal(
+  evidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null | undefined,
+): {
+  acpProcessTerminalSource?: AdapterExecutionTargetProcessSessionTerminalEvidence["source"];
+  acpProcessTerminalOutcome?: AdapterExecutionTargetProcessSessionTerminalEvidence["outcome"];
+  acpProcessTerminalExitCode?: number;
+  acpProcessTerminalSignal?: string;
+} {
+  if (!evidence) return {};
+  return {
+    acpProcessTerminalSource: evidence.source,
+    acpProcessTerminalOutcome: evidence.outcome,
+    ...(typeof evidence.exitCode === "number" ? { acpProcessTerminalExitCode: evidence.exitCode } : {}),
+    ...(evidence.signal !== "unknown" ? { acpProcessTerminalSignal: evidence.signal } : {}),
+  };
+}
+
+/**
  * Activity as of the moment the turn's stop fired, for a stopped turn only.
  * Separates a turn that went silent long before its deadline from one that
  * was still working. Reports only ages and closed ACP tool-kind labels.
@@ -3627,9 +3646,22 @@ async function emitAcpxFailure(input: {
   childStderrTail: string | null;
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
+  const requestError = parseObject(err);
+  const data = parseObject(requestError.data);
+  const detail = typeof requestError.data === "string"
+    ? requestError.data
+    : asString(data.details, asString(data.message, ""));
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const message = messageOverride ?? rawMessage;
+  const message = messageOverride ?? (detail
+    ? sanitizeTerminalSessionFailure({
+      category: "unknown",
+      title: rawMessage.includes(detail) ? rawMessage : `${rawMessage}\n${detail}`,
+    }, prepared.env, ctx.authToken, parseObject(ctx.config.env)).title ?? "ACP request failed."
+    : rawMessage);
   const classified = classifyError(err, phase);
+  if (typeof requestError.code === "number" && Number.isSafeInteger(requestError.code)) {
+    classified.errorMeta = { ...classified.errorMeta, rpcCode: requestError.code };
+  }
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
@@ -4774,7 +4806,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
             clearSession,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: message,
           };
           return settleFor("handshake", err);
@@ -4804,7 +4839,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...billingFields,
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: "ACPX did not return a runtime session handle.",
           };
           return settleFor(
@@ -4844,7 +4882,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession,
-          resultJson: { phase: "create_runtime" },
+          resultJson: {
+            phase: "create_runtime",
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+          },
           summary: message,
         };
         return settleFor("runtime_create", err);
@@ -4901,6 +4942,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
           },
           summary: message,
         };
@@ -5273,6 +5315,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           acpPendingToolCount: pendingTools.length,
           acpToolInventoryComplete: !incompleteToolInventory,
           ...summarizeAcpStopActivity(turnStopRequestedAt, lastRuntimeEventBeforeStopAt, pendingToolsAtStop ?? pendingTools),
+          ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
         };
         if (input.kind === "terminal") {
         const terminal = input.terminal;

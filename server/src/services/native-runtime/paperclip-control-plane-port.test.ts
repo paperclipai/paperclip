@@ -1,12 +1,21 @@
+import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { plugins } from "@paperclipai/db";
+import { readTaskPanelActivations } from "../plugin-task-panels.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { asc, eq, sql } from "drizzle-orm";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  assets,
   authUsers,
   companies,
   companyMemberships,
@@ -41,28 +50,40 @@ import {
   runControlPlanePortConformance,
 } from "../../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { documentService } from "../documents.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
 import { stageNativeRunnerWakeAttachments } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { ensureNativeCompletionContract, nativeCompletionSource } from "./completion-contracts.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
+import { createStorageService } from "../../storage/service.js";
+import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
+import { buildOnboardingFirstTaskOpeningQuestion, ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID } from "../onboarding-first-task-assets.js";
 import { assertCurrentWakeCommentsRead } from "./current-wake-comments.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
-import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
+import { createGovernedWaitEventObservation, materializeRuntimeQuestionFallback, nativeGovernedWaitResult } from "./native-session-executor.js";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeCompanyLiveEvents,
 } from "../live-events.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CONTROL_PLANE_TEST_DATABASE_URL");
+
 describe("PaperclipControlPlanePort conformance", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
+  let outputStorageRoot: string;
   let db: ReturnType<typeof createDb>;
   const contractId = "00000000-0000-4000-8000-000000000004";
   const contractSha = "phase6-conformance-contract";
@@ -83,8 +104,12 @@ describe("PaperclipControlPlanePort conformance", () => {
   const governanceRunnerId = "00000000-0000-4000-8000-000000000021";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
-    db = createDb(temporary.connectionString);
+    outputStorageRoot = await mkdtemp(join(tmpdir(), "paperclip-native-port-output-"));
+    if (external) db = createDb(external);
+    else {
+      temporary = await startRecoveryPostgres("paperclip-native-port-");
+      db = createDb(temporary.connectionString);
+    }
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     await db.insert(companies).values({ id: identity.companyId, name: "Phase 6", issuePrefix: "P6C" });
     await db.insert(agents).values({
@@ -292,17 +317,387 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(heartbeatRuns);
       await db.delete(completionContracts);
       await db.delete(issues);
+      await db.delete(assets);
       await db.delete(agents);
       await db.delete(companyMemberships);
       await db.delete(companies);
       await db.delete(authUsers);
       await temporary.cleanup();
     }
+    await rm(outputStorageRoot, { recursive: true, force: true });
+  });
+
+  it.each(["settles", "checkpoint timeout", "unscoped terminal"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const fixtureContractId = randomUUID();
+    await db.insert(issues).values({ id: identity.issueId, companyId: identity.companyId, title: "Human-only waiting checkpoint",
+      status: "in_progress", assigneeAgentId: identity.agentId });
+    const [baseContract] = await db.select().from(completionContracts).where(eq(completionContracts.id, contractId));
+    await db.insert(completionContracts).values({ ...baseContract!, id: fixtureContractId, issueId: identity.issueId });
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: fixtureContractId, completionContractSha256: contractSha });
+    const interaction = await issueThreadInteractionService(db).create({ id: identity.issueId, companyId: identity.companyId }, {
+      kind: "ask_user_questions", title: "Choose the format", resolverPolicy: "human_only", continuationPolicy: "none",
+      sourceRunId: identity.runId, payload: { version: 1, title: "Choose the format", questions: [{ id: "format",
+        prompt: "Which format?", required: true, selectionMode: "single", options: [{ id: "onsite", label: "On site" }] }] },
+    }, { agentId: identity.agentId, runId: identity.runId });
+    let releaseObserver!: () => void;
+    const observerGate = new Promise<void>(resolve => { releaseObserver = resolve; });
+    let terminalWasRecorded = false;
+    let terminalRecorded!: () => void;
+    const recorded = new Promise<void>(resolve => { terminalRecorded = resolve; });
+    let observerFinished!: () => void;
+    const observerDone = new Promise<void>(resolve => { observerFinished = resolve; });
+    const observation = createGovernedWaitEventObservation(async () => {
+      const [pending] = await db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.id, interaction.id), eq(issueThreadInteractions.companyId, identity.companyId),
+        eq(issueThreadInteractions.sourceRunId, identity.runId), eq(issueThreadInteractions.status, "pending"),
+      ));
+      return pending?.status === "pending" && pending.sourceRunId === identity.runId
+        ? nativeGovernedWaitResult({ interaction: pending, completionContract: contract }) : null;
+    });
+    let triggerConsumed = false;
+    const port = new PaperclipControlPlanePort(db, { ...identity,
+      completionContractId: fixtureContractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" }, {
+      async onCommittedEvent(event) {
+        await observation.observe(event, event.eventType === "item.completed");
+        if (event.eventType === "turn.interrupted") { terminalWasRecorded = true; terminalRecorded(); try { await observerGate; } finally { observerFinished(); } }
+      },
+    });
+    const contract = { revision: "phase6-v1", objective: "Conformance", criteria: [{ id: "objective", requirement: "Complete conformance" }] };
+    const yielded = nativeGovernedWaitResult({ interaction: { id: interaction.id,
+      title: interaction.title ?? null, summary: interaction.summary ?? null }, completionContract: contract });
+    const event = (sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceInstanceId: runnerId, sourceSeq,
+      sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId, ...(mode === "unscoped terminal" ? {} : { turnId: "park-turn" }),
+      eventType, schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(), payload,
+    });
+    let starts = 0, terminalEmitted = false;
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "park-observer", version: "1",
+        capabilities: { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true } }; },
+      async openSession() { return { identity: () => identity,
+        async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+        async startTurn() { starts++; return { turnId: "park-turn" }; },
+        cancel() { return { cleanup: Promise.resolve() }; },
+        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true; yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
+        async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
+          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted ? "2" : "1" }; },
+        async result() { return null; }, async close() {},
+      }; },
+    };
+    const options = { backend, controlPlane: port, timeoutMs: 2_000,
+      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 100 } : {}),
+      runnerInstanceId: runnerId, controlPlaneInstanceId: "park-control",
+      input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", binding: {
+        companyId: identity.companyId, runId: identity.runId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "park-workspace" },
+        task: { identifier: "PARK-1", title: "Wait for a human", description: null, prompt: "Wait for a human", workMode: "standard" },
+        workspace: { cwd: process.cwd(), repoUrl: null, repoRef: null, branchName: null },
+        session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1 },
+        provider: { kind: "codex", model: null }, interactionResponses: [], credentialBindings: [],
+        completionContract: { id: fixtureContractId, sha256: contractSha, schemaVersion: "paperclip.completion-contract.v1", contract } }),
+      resolveGovernedWait: ({ event }: { event: PrpEvent }) => {
+        const result = observation.consume(event);
+        triggerConsumed ||= result !== null;
+        return result;
+      },
+    };
+    if (mode === "unscoped terminal") releaseObserver();
+    const execution = executeNativeSession(options);
+    const outcome = execution.then(value => ({ value }), error => ({ error }));
+    try {
+      await Promise.race([recorded, outcome.then(result => { if ("error" in result) throw result.error; throw new Error("run settled before recording terminal"); })]);
+      const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+      expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
+      expect(triggerConsumed).toBe(true);
+      if (mode !== "unscoped terminal") {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+        releaseObserver();
+        await observerDone;
+        if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
+        else {
+          expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
+          expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+          const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
+            completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });
+          const checkpoint = await restored.loadSessionCheckpoint();
+          expect(checkpoint?.governedWait?.sourceEvent).toMatchObject({ sourceSeq: 1, turnId: "park-turn" });
+          const session = await backend.openSession({ identity });
+          const recovering = { ...backend, async recoverSession() { return { recovered: true as const, session }; } };
+          await expect(executeNativeSession({ ...options, checkpointTimeoutMs: 1_000, controlPlane: restored,
+            backend: recovering, persistedSession: checkpoint })).resolves.toMatchObject({ result: yielded });
+        }
+      } else {
+        expect(await outcome).not.toHaveProperty("error");
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toHaveLength(1);
+      }
+      expect(starts).toBe(1);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0]).toMatchObject({
+        status: "pending", result: null, effectiveResolverPolicy: "human_only", continuationPolicy: "none", sourceRunId: identity.runId,
+      });
+    } finally { releaseObserver(); await outcome; if (terminalWasRecorded) await observerDone; }
+  });
+
+  async function terminalObserverFixture(options: {
+    onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+    onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+    assertControllerActive?: () => void;
+  } = {}) {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "observer-control" };
+    const port = new PaperclipControlPlanePort(db, binding, options);
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const event: PrpEvent = { schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceInstanceId: runnerId,
+      sourceSeq: 1, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "observer-turn", eventType: "turn.interrupted", schemaVersion: 1, priority: 0,
+      emittedAt: new Date().toISOString(), payload: { status: "interrupted", error: null } };
+    const snapshot = { backendKind: "mock" as const, sessionId: identity.sessionId, identity };
+    const result = { result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL };
+    return { identity, runnerId, binding, port, event, snapshot, result };
+  }
+
+  it.each(["default", "deferred"] as const)("keeps %s terminal observation owned before checkpoint and result acceptance", async mode => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let observed = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; } });
+    const signal = new AbortController().signal;
+    let appendSettled = false;
+    const append = f.port.appendEvent(f.event, { signal, ...(mode === "deferred" ? { deferPostCommitObservers: true } : {}) })
+      .then(receipt => { appendSettled = true; return receipt; });
+    let checkpointSettled = false, resultSettled = false;
+    try {
+      if (mode === "deferred") {
+        expect(await append).toMatchObject({ disposition: "committed" });
+        const checkpoint = f.port.checkpointSession(f.snapshot, { signal }).then(() => { checkpointSettled = true; });
+        const result = f.port.completeRun(f.result, { signal }).then(() => { resultSettled = true; });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(checkpointSettled).toBe(false);
+        expect(resultSettled).toBe(false);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+        release(); await Promise.all([checkpoint, result]);
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(appendSettled).toBe(false);
+      }
+    } finally { release(); await append; }
+    expect(observed).toBe(1);
+  });
+
+  it("returns the default committed receipt when cancellation arrives during its postcommit observer", async () => {
+    let release!: () => void, observed!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { observed = resolve; });
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed(); await gate; } });
+    const controller = new AbortController();
+    const outcome = f.port.appendEvent(f.event, { signal: controller.signal }).then(receipt => ({ receipt }), error => ({ error }));
+    try {
+      await started;
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
+      const cancellation = new Error("cancelled after event transaction committed");
+      controller.abort(cancellation);
+      release();
+      expect(await outcome).toMatchObject({ receipt: { disposition: "committed" } });
+      await expect(f.port.checkpointSession(f.snapshot, { signal: controller.signal })).rejects.toBe(cancellation);
+      await expect(f.port.completeRun(f.result, { signal: controller.signal })).rejects.toBe(cancellation);
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    } finally { release(); await outcome; }
+  });
+
+  it("retains the original deferred observer rejection for checkpoint and result acceptance", async () => {
+    let reject!: (error: Error) => void;
+    const gate = new Promise<void>((_resolve, no) => { reject = no; });
+    const original = new Error("accounting persistence rejected");
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal }).catch(error => error);
+    const result = f.port.completeRun(f.result, { signal }).catch(error => error);
+    reject(original);
+    expect(await checkpoint).toBe(original); expect(await result).toBe(original);
+    await expect(f.port.completeRun(f.result)).rejects.toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it.each(["abort", "detach"] as const)("revokes a checkpoint and result waiting for deferred observation on %s", async reason => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let detached = false;
+    const original = new Error("controller authority revoked");
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; },
+      assertControllerActive() { if (detached) throw original; } });
+    const controller = new AbortController();
+    await f.port.appendEvent(f.event, { signal: controller.signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal: controller.signal }).catch(error => error);
+    const result = f.port.completeRun(f.result, { signal: controller.signal }).catch(error => error);
+    if (reason === "abort") controller.abort(original); else detached = true;
+    release();
+    expect(await checkpoint).toBe(original); expect(await result).toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it("keeps a later observer error visible after an aborted checkpoint stops waiting", async () => {
+    let reject!: (error: Error) => void;
+    const gate = new Promise<void>((_resolve, no) => { reject = no; });
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; } });
+    const controller = new AbortController();
+    await f.port.appendEvent(f.event, { signal: controller.signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal: controller.signal }).catch(error => error);
+    const stop = new Error("checkpoint authority revoked");
+    controller.abort(stop);
+    expect(await checkpoint).toBe(stop);
+    const original = new Error("retained accounting failure after revocation");
+    reject(original);
+    await expect(f.port.completeRun(f.result)).rejects.toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it("joins the exact deferred observer on duplicate append and replays it after a new port opens", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let observed = 0, replayed = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; },
+      async onDuplicateEvent() { throw new Error("must join the original owned observation"); } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    let duplicateSettled = false;
+    const duplicate = f.port.appendEvent(f.event, { signal }).then(value => { duplicateSettled = true; return value; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30)); expect(duplicateSettled).toBe(false);
+      release(); expect(await duplicate).toMatchObject({ disposition: "duplicate" });
+      expect(observed).toBe(1);
+      const restored = new PaperclipControlPlanePort(db, f.binding, { async onDuplicateEvent() { replayed++; } });
+      await restored.openRun({ identity: f.identity, backendKind: "mock", sourceInstanceId: f.runnerId });
+      await expect(restored.appendEvent(f.event)).resolves.toMatchObject({ disposition: "duplicate" });
+      expect(replayed).toBe(1);
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
+    } finally { release(); await duplicate; }
+  });
+
+  it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal", "unscoped"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {
+    const f = await terminalObserverFixture();
+    const event = { ...f.event,
+      ...(fault === "run" ? { runId: randomUUID() } : {}),
+      ...(fault === "session" ? { normalizedSessionId: randomUUID() } : {}),
+      ...(fault === "source" ? { sourceInstanceId: randomUUID() } : {}),
+      ...(fault === "failed" ? { eventType: "turn.failed" as const } : {}),
+      ...(fault === "unproven" ? { payload: { providerTerminalObserved: false } } : {}),
+      ...(fault === "nonterminal" ? { eventType: "item.completed" as const } : {}),
+      ...(fault === "unscoped" ? { turnId: undefined } : {}),
+    };
+    const port = fault === "company" || fault === "agent" ? new PaperclipControlPlanePort(db, { ...f.binding,
+      ...(fault === "company" ? { companyId: randomUUID() } : { agentId: randomUUID() }) }) : f.port;
+    await expect(port.appendEvent(event, { signal: new AbortController().signal, deferPostCommitObservers: true })).rejects.toThrow();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+  });
+
+  it("publishes native recovery metadata in the existing snapshot transaction and fences stale generations", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const owner = { ...identity, authorityRunId: identity.runId, bootId: randomUUID(), generation: 1, leaseOwner: "snapshot-owner" };
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha,
+      runnerProfileJson: { unrelated: "preserve" } });
+    await db.insert(nativeRunFinalizations).values({ runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId,
+      phase: "observed",
+      controllerBootId: owner.bootId, controllerGeneration: owner.generation, leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+      completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "snapshot-control" }, {
+      nativeRecovery: { owner, compatibility: { configDigest: `sha256:${"a".repeat(64)}`, processConfigDigest: null } },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const snapshot = { backendKind: "mock" as const, sessionId: identity.sessionId, identity };
+    const statements: string[] = [];
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, statement) => { statements.push(statement); };
+    try { await port.checkpointSession(snapshot); }
+    finally { db.$client.options.debug = previousDebug; }
+    expect(statements.filter(statement => /^begin\b/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^update\s+"heartbeat_runs"/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^(?:with|select)\b/i.test(statement.trim()))).toHaveLength(1);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(saved.runnerProfileJson).toMatchObject({ unrelated: "preserve", sessionCheckpoint: snapshot,
+      nativeControllerRecovery: { schema: "paperclip.native-controller-recovery.v1", snapshotSha256: nativeSha256(saved.runnerProfileJson?.sessionCheckpoint),
+        checkpoint: null, processConfigDigest: null } });
+    // Missing PRP is an explicit incomplete publication, never fabricated authority.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 2 }).where(eq(nativeRunFinalizations.runId, identity.runId));
+    await expect(port.checkpointSession({ ...snapshot, providerSessionId: "stale" })).rejects.toThrow("checkpoint_owner_lost");
+    await expect(port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }))
+      .rejects.toThrow("checkpoint_owner_lost");
+    const [unchanged] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(unchanged.runnerProfileJson).toEqual(saved.runnerProfileJson);
+    // A valid coordinator lock does not certify a lease that expires while the
+    // subsequent run-row lock waits. Recheck time at the actual write boundary.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 1, leaseExpiresAt: new Date(Date.now() + 150) })
+      .where(eq(nativeRunFinalizations.runId, identity.runId));
+    let locked!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)).for("update");
+      locked();
+      await held;
+    });
+    await acquired;
+    const waiting = port.checkpointSession(snapshot);
+    const rejected = expect(waiting).rejects.toThrow("checkpoint_owner_lost");
+    try { await new Promise(resolve => setTimeout(resolve, 200)); }
+    finally { release(); await blocker; }
+    await rejected;
+  });
+
+  it("permits only read-only admission while an existing startup drains", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+    });
+    let awaitingStartup = true;
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `draining-${identity.runId}`,
+    }, {
+      assertControllerActive: () => { throw new Error("controller_detached"); },
+      assertRunAdmissionActive: () => { if (!awaitingStartup) throw new Error("controller_detached"); },
+    });
+    const open = { identity, backendKind: "mock" as const, sourceInstanceId: runnerId };
+    await expect(port.openRun({ ...open, sourceInstanceId: randomUUID() })).rejects.toThrow("native_open_run_binding_mismatch");
+    await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, identity.runId));
+    await expect(port.openRun(open)).rejects.toThrow("native_open_run_not_authorized");
+    await db.update(heartbeatRuns).set({ runnerInstanceId: runnerId }).where(eq(heartbeatRuns.id, identity.runId));
+    await expect(port.openRun(open)).resolves.toBeUndefined();
+    await expect(port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity })).rejects.toThrow("controller_detached");
+    await expect(port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).rejects.toThrow("controller_detached");
+    awaitingStartup = false;
+    await expect(port.openRun(open)).rejects.toThrow("controller_detached");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(run.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
   });
 
   it.each([
     ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"],
     ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"],
+    ["deferred event", "detach"], ["deferred event", "abort"],
   ] as const)("revokes an in-flight %s on %s", async (operation, reason) => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -321,12 +716,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       assertControllerActive: () => { if (detached) throw new Error("controller_detached"); },
     });
     await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
-    const mutate = () => operation === "event" ? port.appendEvent({
+    const mutate = () => operation === "event" || operation === "deferred event" ? port.appendEvent({
       schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
       sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
       normalizedSessionId: identity.sessionId, eventType: "turn.interrupted", schemaVersion: 1,
+      turnId: "revoked-turn",
       priority: 0, emittedAt: new Date().toISOString(), payload: { reason: "governed_wait" },
-    }, { signal: controller.signal }) : operation === "checkpoint"
+    }, { signal: controller.signal, ...(operation === "deferred event" ? { deferPostCommitObservers: true } : {}) }) : operation === "checkpoint"
       ? port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity }, { signal: controller.signal })
       : port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }, { signal: controller.signal });
     let pending: Promise<unknown> | undefined;
@@ -359,6 +755,46 @@ describe("PaperclipControlPlanePort conformance", () => {
     await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
     await expect(replacement.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
+  });
+
+  it("persists panel activation under the authenticated run and recovers it across source replay", async () => {
+    await db.insert(plugins).values({ pluginKey: "example.live-view", packageName: "example-live-view", version: "1.0.0", status: "ready",
+      manifestJson: { ui: { slots: [{ type: "detailTab", id: "screen", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } }] } } as never });
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `panel-${identity.runId}` };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "runtime.activity.recorded", schemaVersion: 1,
+      priority: 1, emittedAt: new Date().toISOString(),
+      payload: { namespace: "example.runtime", activityKey: "desktop.used" },
+    };
+    const port = new PaperclipControlPlanePort(db, binding);
+    const replayBinding = structuredClone(binding);
+    binding.runId = randomUUID();
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const notifications: string[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(identity.companyId, event => {
+      if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) notifications.push(String(event.payload.eventType));
+    });
+    try { await port.appendEvent(event); } finally { unsubscribe(); }
+    expect(notifications).toEqual(["runtime.activity.recorded"]);
+    expect(await readTaskPanelActivations(db, identity.companyId, identity.runId)).toEqual([{ pluginKey: "example.live-view", slotId: "screen" }]);
+    const restarted = new PaperclipControlPlanePort(db, replayBinding);
+    expect((await restarted.appendEvent(event)).disposition).toBe("duplicate");
+    const activations = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
+    expect(await readTaskPanelActivations(db, identity.companyId, CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId)).toEqual([]);
+    expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
   });
 
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
@@ -406,6 +842,49 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(JSON.stringify(saved)).toContain("apiPayloadRedacted");
     }
     expect(result.data.credentials).toBe("private-history-fixture-value");
+  });
+
+  it.each(["call_api", "create_case"])("retains bounded %s schema-denial guidance through persistence and replay", async operationId => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `api-${identity.runId}`,
+    }, { onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const payload = {
+      provider: "codex", code: "semantic_tool_denied", operationId, callId: "schema-denied",
+      message: `provider arguments for ${operationId} failed JSON Schema validation`, paperclipExecuted: false,
+      inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /required (missing title).",
+    };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "harness.diagnostic", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload,
+      debug: { operationId, data: { value: "private-diagnostic-debug" } },
+    };
+    await port.appendEvent(event);
+    expect(observed[0]?.payload).toEqual(payload);
+    expect(observed[0]?.debug).toMatchObject({ apiPayloadRedacted: true });
+    expect(JSON.stringify(observed[0])).not.toContain("private-diagnostic-debug");
+    expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+    expect(port.normalizeReplayPayload(payload)).toEqual(port.normalizeReplayPayload(observed[0]!.payload));
+    const saved = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(saved).toHaveLength(1);
+    expect((saved[0]!.payload?.prpEvent as unknown as PrpEvent).payload).toEqual(payload);
+    expect(JSON.stringify(saved)).not.toContain("private-diagnostic-debug");
+    await expect(port.appendEvent({ ...event, payload: {
+      ...payload, inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /properties/title/type.",
+    } })).rejects.toThrow();
   });
 
   it("redacts identity private material before persisting native events and checkpoints", async () => {
@@ -547,6 +1026,10 @@ describe("PaperclipControlPlanePort conformance", () => {
       .where(eq(nativeRunFinalizations.runId, identity.runId))).resolves.toEqual([
       expect.objectContaining({ phase: "committed" }),
     ]);
+    // Completion and restart reconciliation must retain the contract even if
+    // the originating heartbeat never returns from its adapter completion.
+    const [completedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(completedRun.resultJson?.nativeTerminal).toEqual(CONTROL_PLANE_CONFORMANCE_TERMINAL);
     await expect(db.select().from(issues).where(eq(issues.id, identity.issueId))).resolves.toEqual([
       expect.objectContaining({ status: "in_progress", statusVersion: 1 }),
     ]);
@@ -561,7 +1044,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     );
   });
 
-  it("signals committed safe progress after row visibility without forwarding its payload", async () => {
+  it("streams committed native rows and deltas after visibility without repeating receipts", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const issueId = "40000000-0000-4000-8000-000000000042";
     const runId = "41000000-0000-4000-8000-000000000042";
@@ -609,7 +1092,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: localContractSha,
       contextSnapshot: { issueId },
     });
-    const observerDb = createDb(temporary!.connectionString);
+    const observerDb = createDb(external ?? temporary!.connectionString);
     const observed: Array<Record<string, unknown>> = [];
     const committedCallbacks: string[] = [];
     let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
@@ -690,8 +1173,10 @@ describe("PaperclipControlPlanePort conformance", () => {
         issueId,
         seq: 1,
         eventType: "tool.execution.started",
+        stream: "system",
+        level: "info",
+        payload: { prpEvent: progressEvent },
       }]);
-      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
 
       await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
         disposition: "duplicate",
@@ -723,10 +1208,14 @@ describe("PaperclipControlPlanePort conformance", () => {
         ...progressEvent,
         sourceEventId: "safe-progress-signal:3",
         sourceSeq: 3,
-        eventType: "turn.started",
-        payload: {},
+        eventType: "item.delta",
+        itemId: "streaming-message",
+        payload: { kind: "agentMessage", text: "still writing" },
       })).resolves.toMatchObject({ disposition: "committed" });
-      expect(observed).toHaveLength(1);
+      expect(observed).toHaveLength(2);
+      expect(observed[1]).toMatchObject({ seq: 3, eventType: "item.delta", payload: {
+        prpEvent: { eventType: "item.delta", payload: { text: "still writing" } },
+      } });
       expect(committedCallbacks).toEqual([
         "safe-progress-signal:1",
         "safe-progress-signal:2",
@@ -986,6 +1475,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       credentialBindings: [],
       runtimeContext: nativeRuntimeContextFixture(),
     });
+    let resultCommitMarkers = 0;
     const port = new PaperclipControlPlanePort(db, {
       companyId: identity.companyId,
       issueId: taskIssueId,
@@ -996,7 +1486,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: "phase6-task-contract",
       sourceInstanceId: taskRunnerId,
       controlPlaneSourceInstanceId: "phase6-control-plane",
-    });
+    }, {onResultCommitted:async()=>{resultCommitMarkers++;}});
     const completed = await executeNativeSession({
       input: execution,
       backend,
@@ -1054,7 +1544,10 @@ describe("PaperclipControlPlanePort conformance", () => {
       .where(eq(heartbeatRuns.id, taskRunId));
     expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
-    expect(await repair()).toBe(true);
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: identity.companyId, runId: taskRunId });
+    expect(entry?.id).toBe(taskRunId);
+    expect(await work.check(entry)).toBeNull();
     expect(await repair()).toBe(false);
     expect(await db.select({ body: issueComments.body }).from(issueComments)
       .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
@@ -1073,6 +1566,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       callerResultId: `phase6-scripted-runner:${taskRunId}:result`,
       callerDedupeKey: `${taskRunId}:phase6-task-contract`,
     })).rejects.toThrow("structured_result_replay_conflict");
+    expect(resultCommitMarkers).toBe(1);
     await Promise.all([
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
@@ -1208,10 +1702,14 @@ describe("PaperclipControlPlanePort conformance", () => {
       nativeSessionId: identity.sessionId, runnerInstanceId: conformanceRunnerId,
       completionContractId: contractId, completionContractSha256: contractSha,
     });
+    let resultCommitted = false;
     const port = kind === "port" ? new PaperclipControlPlanePort(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: conformanceRunnerId, controlPlaneSourceInstanceId: "result-lock-order",
-    }) : new NativeRunCoordinatorStore(db, {
+    }, {onResultCommitted:async()=>{
+      const rows=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId));
+      expect(rows).toHaveLength(1);resultCommitted=true;
+    }}) : new NativeRunCoordinatorStore(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       normalizedSessionId: identity.sessionId, runnerSourceInstanceId: conformanceRunnerId,
       completionContractRevision: "standalone-v1", completionContractCriterionIds: ["objective"],
@@ -1234,12 +1732,44 @@ describe("PaperclipControlPlanePort conformance", () => {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         expect(waiting).toBe(true);
+        expect(resultCommitted).toBe(false);
         await tx.execute(sql`set local lock_timeout = '1s'`);
         await tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
       });
     } finally {
       expect(await completion).toBeNull();
+      expect(resultCommitted).toBe(kind === "port");
     }
+  });
+
+  it.each(["port", "coordinator"])("clears a resumed session's recovery state when %s persists its result", async (kind) => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: conformanceRunnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId, companyId: identity.companyId, issueId: identity.issueId,
+      phase: "observed", recoveryState: "resuming_session", recoveryRequestId: "restart-request",
+    });
+    const port = kind === "port" ? new PaperclipControlPlanePort(db, {
+      ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: conformanceRunnerId, controlPlaneSourceInstanceId: "resumed-result",
+    }) : new NativeRunCoordinatorStore(db, {
+      ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
+      normalizedSessionId: identity.sessionId, runnerSourceInstanceId: conformanceRunnerId,
+      completionContractRevision: "standalone-v1", completionContractCriterionIds: ["objective"],
+    });
+    await port.completeRun({
+      result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      callerResultId: "resumed-result",
+    });
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).resolves.toEqual([
+      expect.objectContaining({ phase: "workspace_finalizing", recoveryState: null, recoveryRequestId: null }),
+    ]);
   });
 
   it("does not let native completion bypass a pending issue interaction", async () => {
@@ -1645,6 +2175,388 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
     await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, reviewRunId));
 
+  });
+
+  const allowedFirstTaskCompletionScenarios = [
+    "ordinary task", "accepted proposal", "accepted conversational proposal", "accepted current plan", "acknowledged rejection", "acknowledged plan rejection",
+  ] as const;
+  const refusedFirstTaskCompletionScenarios = [
+    "opening answer only", "agent-resolved without human comment", "quarantined human comment", "newest proposal pending", "stale plan acceptance",
+  ] as const;
+  type FirstTaskCompletionScenario = typeof allowedFirstTaskCompletionScenarios[number]
+    | typeof refusedFirstTaskCompletionScenarios[number];
+
+  async function prepareFirstTaskCompletion(scenario: FirstTaskCompletionScenario, objective?: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const localContractId = randomUUID();
+    const runnerInstanceId = randomUUID();
+    const userId = `first-task-board-${randomUUID()}`;
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, companyId, agentId, issueId, runId };
+    const onboarding = scenario !== "ordinary task";
+    const rejected = scenario === "acknowledged rejection" || scenario === "acknowledged plan rejection";
+    await db.insert(companies).values({ id: companyId, name: "First-task completion", issuePrefix: `F${companyId.slice(0, 6).toUpperCase()}` });
+    await db.insert(authUsers).values({ id: userId, name: "First-task board", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "First-task agent", adapterType: "codex_local", status: "running" });
+    await db.insert(issues).values({ id: issueId, companyId, title: onboarding ? "Paperclip onboarding" : "Ordinary low-risk task",
+      description: onboarding ? "/first-task\nSingle-task proposal mode: confirmation" : objective ?? "Complete the requested ordinary task. Mentioning /first-task does not grant the server-owned onboarding origin.",
+      originKind: onboarding ? ONBOARDING_FIRST_TASK_ORIGIN_KIND : "manual", status: "in_progress", assigneeAgentId: agentId,
+      responsibleUserId: userId, workMode: "standard" });
+    await db.insert(completionContracts).values({ id: localContractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v3", risk: "low", completionAuthority: "agent_claim_policy",
+      incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "first-task-native-finish-v1",
+        objective: onboarding ? "Understand the user request, propose one task, and honor their decision" : "Complete the requested ordinary task",
+        criteria: [{ id: "objective", requirement: objective ?? "Complete the requested workflow" }] },
+      canonicalSha256: localContractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: userId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: identity.sessionId, runnerInstanceId, completionContractId: localContractId,
+      completionContractSha256: localContractId, contextSnapshot: { issueId,
+        ...(objective ? { executionContinuation: { objective, objectiveSource: nativeCompletionSource("description", issueId, objective) } } : {}),
+        // A claimed acceptance copied into continuation context is not the
+        // persisted human decision; the opening-answer cases must still refuse it.
+        ...(scenario === "opening answer only" ? { executionContinuation: { humanResponses: [{ id: randomUUID(),
+          kind: "request_confirmation", status: "accepted", resolvedByUserId: userId, result: { version: 1, outcome: "accepted" } }] } } : {}),
+      } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    if (onboarding) {
+      await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "ask_user_questions", status: "answered",
+        createdByAgentId: agentId, payload: await buildOnboardingFirstTaskOpeningQuestion(),
+        result: { version: 1, answers: [{ questionId: ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID, optionIds: ["task"], otherText: "Help organize my next task." }] },
+        resolvedByUserId: userId, resolvedAt: new Date() });
+    }
+    if (onboarding && scenario !== "opening answer only") {
+      const proposalAt = new Date(Date.now() - 2_000);
+      const plan = scenario === "accepted current plan" || scenario === "stale plan acceptance" || scenario === "acknowledged plan rejection"
+        ? (await documentService(db).upsertIssueDocument({ issueId, key: "plan", title: "First task plan", format: "markdown",
+          body: "Retain this plan for the user's next task.", createdByAgentId: agentId, createdByRunId: runId })).document
+        : null;
+      const conversational = scenario === "accepted conversational proposal" || scenario === "quarantined human comment";
+      const comment = conversational ? (await db.insert(issueComments).values({ companyId, issueId,
+        authorUserId: userId, authorType: "user", body: "Yes, proceed with that proposal.",
+        createdAt: new Date(proposalAt.getTime() + 1_000),
+        ...(scenario === "quarantined human comment"
+          ? { sourceTrust: { preset: "low_trust_review" as const, disposition: "quarantined" as const } } : {}),
+      }).returning())[0]! : null;
+      const agentResolved = conversational || scenario === "agent-resolved without human comment";
+      const outcome = rejected ? "rejected" as const : "accepted" as const;
+      // Persisted agent interpretations need a real, trusted human reply. The
+      // missing/quarantined variants simulate an untrusted stored result.
+      await db.insert(issueThreadInteractions).values({ companyId, issueId,
+        kind: plan ? "request_checkbox_confirmation" : "request_confirmation", status: outcome,
+        createdByAgentId: agentId, sourceRunId: runId, createdAt: proposalAt,
+        payload: plan ? { version: 1, prompt: "May I retain this plan?",
+          options: [{ id: "retain-plan", label: "Retain the plan" }], defaultSelectedOptionIds: ["retain-plan"], minSelected: 1,
+          target: { type: "issue_document", key: "plan", issueId, documentId: plan.id, revisionId: plan.latestRevisionId! },
+        } : { version: 1, prompt: "May I create one task to organize your agenda?" },
+        result: { version: 1, outcome, ...(plan && outcome === "accepted" ? { selectedOptionIds: ["retain-plan"] } : {}),
+          ...(comment ? { commentId: comment.id } : {}),
+          ...(outcome === "rejected" ? { reason: "Do not do this work." } : {}) },
+        resolvedByUserId: agentResolved ? null : userId,
+        resolvedByAgentId: agentResolved ? agentId : null, resolvedByRunId: agentResolved ? runId : null,
+        resolvedAt: new Date(),
+      });
+      if (scenario === "newest proposal pending") {
+        await db.insert(issueThreadInteractions).values({ companyId, issueId,
+          kind: "request_checkbox_confirmation", status: "pending", createdByAgentId: agentId, sourceRunId: runId,
+          createdAt: new Date(proposalAt.getTime() + 1_000),
+          payload: { version: 1, prompt: "Accept the revised task scope?", options: [{ id: "revised", label: "Use revised scope" }],
+            defaultSelectedOptionIds: ["revised"], minSelected: 1 },
+        });
+      }
+      if (scenario === "stale plan acceptance" || scenario === "acknowledged plan rejection") {
+        await documentService(db).upsertIssueDocument({ issueId, key: "plan", format: "markdown",
+          baseRevisionId: plan!.latestRevisionId, body: "A revised scope that has no persisted human decision.",
+          createdByAgentId: agentId, createdByRunId: runId });
+      }
+    }
+    const port = new PaperclipControlPlanePort(db, { companyId, issueId, runId, agentId, sessionId: identity.sessionId,
+      completionContractId: localContractId, completionContractSha256: localContractId,
+      sourceInstanceId: runnerInstanceId, controlPlaneSourceInstanceId: "first-task-native-finish-control" });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerInstanceId });
+    const result: PrpStructuredRunResult = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+      summary: rejected
+        ? "You declined the proposal. I will stop here and have not created or performed the proposed task."
+        : "The requested workflow is complete.",
+      completionClaim: { contractRevision: "first-task-native-finish-v1", objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      evidence: [], verification: [{ commandOrCheck: "Check the current task state", status: "passed" }], attentionRequests: [] };
+    return { companyId, agentId, issueId, runId, port, result };
+  }
+
+  it("keeps synthetic provider completion open until the requested task document is published", async () => {
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("ordinary task");
+    const objective = "Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Put the returned page titles and service receipt code in the document. When complete, give me the document link.";
+    await db.update(issues).set({ title: "Create the service briefing", description: objective }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } }).where(eq(heartbeatRuns.id, runId));
+    const synthetic: PrpStructuredRunResult = { ...result, summary: "Created briefing.md with the returned page titles and service receipt.",
+      evidence: [{ ref: "provider:opencode:agent-message" }], artifacts: [] };
+    await port.completeRun({ result: synthetic, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId)))
+      .not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+    const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakes).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({
+      continuationIdempotencyKey: "native-completion-incomplete", continuationSummary: expect.stringContaining("write_document"),
+    }) }));
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+    expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId))))
+      .toHaveLength(wakes.length);
+    const followUpId = randomUUID(), runnerInstanceId = randomUUID();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const wake = wakes.find(row => row.payload?.continuationIdempotencyKey === "native-completion-incomplete")!;
+    await db.insert(heartbeatRuns).values({ id: followUpId, companyId, agentId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: source!.nativeSessionId, runnerInstanceId,
+      completionContractId: source!.completionContractId, completionContractSha256: source!.completionContractSha256,
+      wakeupRequestId: wake.id, contextSnapshot: source!.contextSnapshot });
+    await db.update(agentWakeupRequests).set({ runId: followUpId }).where(eq(agentWakeupRequests.id, wake.id));
+    await db.update(issues).set({ executionRunId: followUpId }).where(eq(issues.id, issueId));
+    const followUp = new PaperclipControlPlanePort(db, { companyId, issueId, agentId, runId: followUpId,
+      sessionId: source!.nativeSessionId!, sourceInstanceId: runnerInstanceId,
+      completionContractId: source!.completionContractId!, completionContractSha256: source!.completionContractSha256!,
+      controlPlaneSourceInstanceId: "output-follow-up-control" });
+    await followUp.openRun({ identity: { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, companyId, issueId, agentId, runId: followUpId },
+      backendKind: "mock", sourceInstanceId: runnerInstanceId });
+    await followUp.completeRun({ result: synthetic, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    await finalizeNativeRun({ db, runId: followUpId, workspaceFinalizeStatus: "succeeded" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
+    expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId))))
+      .toHaveLength(wakes.length);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))
+      .toContainEqual(expect.objectContaining({ ownerAgentId: agentId, cause: "completion_evidence_incomplete", nextAction: expect.stringContaining("write_document") }));
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]!.resultJson)
+      .toMatchObject({ result: { reportedWorkDisposition: "done", evidence: synthetic.evidence, artifacts: [] } });
+  });
+
+  it.each(["saved document", "registered attachment", "plain Ask"] as const)(
+    "accepts native completion with %s", async (delivery) => {
+    const objective = delivery === "plain Ask" ? "What is two plus two?" : "Create a Markdown briefing document on this task.";
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("ordinary task", objective);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const report: PrpStructuredRunResult = { ...result, evidence: [{ ref: "provider:opencode:agent-message" }], artifacts: [] };
+    if (delivery === "saved document") {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      await authority.execute({ tool: "write_document", callId: "briefing", arguments: {
+        idempotencyKey: "briefing", key: "briefing", title: "Briefing", body: "Verified service titles and receipt.", baseRevisionId: null,
+      } });
+    } else if (delivery === "registered attachment") {
+      const bytes = Buffer.from("# Briefing\nVerified service titles and receipt.\n");
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        workspaceRoot: "/workspace/output-control", executionTargetKind: "remote", readRemoteTaskFile: async () => bytes,
+        storage: createStorageService(createLocalDiskStorageProvider(outputStorageRoot)) });
+      const receipt = await authority.execute({ tool: "register_deliverable", callId: "briefing", arguments: {
+        idempotencyKey: "briefing", filename: "briefing.md", contentType: "text/markdown", contentRef: "briefing.md",
+        byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), title: "Briefing",
+      } }) as { entityRefs: string[] };
+      report.artifacts = [{ kind: "file", ref: `deliverable:${receipt.entityRefs[0]}` }];
+    }
+    await port.completeRun({ result: report, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("done");
+  });
+
+  it.each(["current human rejection", "model-only decline", "different objective revision", "different trigger",
+    "changed description after admission", "changed description at commit"] as const)(
+    "binds an explicit declined-document fallback to %s", async (scenario) => {
+    const objective = "Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Put the returned page titles and service receipt code in the document. When complete, give me the document link. If I decline the action, do not try again or request another connection. Instead, give me a brief explanation that you could not retrieve the data. That explanation is the complete allowed fallback; no briefing is required after a decline.";
+    const source = await prepareFirstTaskCompletion("ordinary task", objective);
+    const { companyId, agentId, issueId } = source;
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, sourceRunId: source.runId,
+      createdByAgentId: agentId, kind: "request_confirmation", status: "pending", requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only", continuationPolicy: "wake_assignee", payload: { version: 1, prompt: "Approve service read",
+        toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "pages.read",
+          toolDisplayName: "Read pages", connectionId: null, applicationId: null, appDisplayName: null, risk: "read",
+          previewMarkdown: "Read pages", argumentsSummaryJson: "{}", argumentsHash: "test-hash", expiresAt: "2099-01-01T00:00:00Z" } } });
+    if (scenario !== "model-only decline") {
+      await issueThreadInteractionService(db).rejectInteraction({ id: issueId, companyId }, interactionId,
+        { reason: "Do not call the service." }, { userId: issue!.responsibleUserId! });
+    }
+    const contract = await ensureNativeCompletionContract({ db, companyId, issue: issue!, actorId: agentId, humanResponseId: interactionId });
+    const runId = randomUUID(), runnerInstanceId = randomUUID();
+    const continuedObjective = scenario === "different objective revision" ? `${objective} Still create the document even if I decline.` : objective;
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", runtimeMode: "native", nativeIssueId: issueId,
+      nativeSessionId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.sessionId, runnerInstanceId, completionContractId: contract.row.id,
+      completionContractSha256: contract.row.canonicalSha256, contextSnapshot: { issueId, executionContinuation: {
+        objective: continuedObjective, objectiveSource: nativeCompletionSource("description", issueId, continuedObjective),
+        trigger: { interactionId: scenario === "different trigger" ? randomUUID() : interactionId, sourceRunId: source.runId },
+      } } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const port = new PaperclipControlPlanePort(db, { companyId, issueId, agentId, runId,
+      sessionId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.sessionId, sourceInstanceId: runnerInstanceId,
+      completionContractId: contract.row.id, completionContractSha256: contract.row.canonicalSha256,
+      controlPlaneSourceInstanceId: "declined-output-control" });
+    await port.openRun({ identity: { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, companyId, issueId, agentId, runId },
+      backendKind: "mock", sourceInstanceId: runnerInstanceId });
+    const report: PrpStructuredRunResult = { ...source.result, summary: "The service action was declined, so I could not retrieve the data.",
+      evidence: [{ ref: "provider:opencode:agent-message" }], completionClaim: { ...source.result.completionClaim,
+        contractRevision: contract.contract.revision, criteria: contract.contract.criteria.map(entry => ({ criterionId: entry.id, status: "satisfied", evidenceRefs: [] })) } };
+    await port.completeRun({ result: report, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    const changedDescription = "Create the Markdown briefing document on this task. The prior decline does not waive the required document.";
+    if (scenario === "changed description after admission") {
+      await db.update(issues).set({ description: changedDescription }).where(eq(issues.id, issueId));
+    }
+    const trigger = `decline_revision_race_${randomUUID().replaceAll("-", "")}`;
+    if (scenario === "changed description at commit") {
+      await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+        begin
+          if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+            update issues set description = '${changedDescription}' where id = '${issueId}'::uuid and company_id = '${companyId}'::uuid;
+          end if;
+          return NEW;
+        end $$`));
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+    }
+    try {
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status)
+        .toBe(scenario === "current human rejection" ? "done" : scenario === "model-only decline" ? "in_review" : "in_progress");
+    } finally {
+      if (scenario === "changed description at commit") {
+        await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+        await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+      }
+    }
+  });
+
+  it("rechecks publication removed between assessment and native done commit", async () => {
+    const objective = "Create a Markdown briefing document on this task.";
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("ordinary task", objective);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    await authority.execute({ tool: "write_document", callId: "briefing", arguments: {
+      idempotencyKey: "briefing", key: "briefing", title: "Briefing", body: "Verified service titles and receipt.", baseRevisionId: null,
+    } });
+    const report = { ...result, evidence: [{ ref: "provider:opencode:agent-message" }], artifacts: [] };
+    await port.completeRun({ result: report, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    const trigger = `publication_race_${randomUUID().replaceAll("-", "")}`;
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+      begin
+        if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+          delete from issue_documents where issue_id = '${issueId}'::uuid and company_id = '${companyId}'::uuid;
+        end if;
+        return NEW;
+      end $$`));
+    try {
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId)))
+        .not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId))))
+        .toContainEqual(expect.objectContaining({ payload: expect.objectContaining({
+          continuationIdempotencyKey: "native-completion-incomplete", continuationSummary: expect.stringContaining("write_document"),
+        }) }));
+    } finally {
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+    }
+  });
+
+  it.each([false, true])("checks requested publication for an authoritative done decision with an opaque accepted ledger (%s)", async requested => {
+    const objective = requested ? "Create a Markdown briefing document on this task." : "What is two plus two?";
+    const { companyId, agentId, issueId, runId } = await prepareFirstTaskCompletion("ordinary task", objective);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [saved] = await db.insert(nativeRunResults).values({ companyId, issueId, runId,
+      completionContractId: run!.completionContractId!, serverFingerprint: randomUUID(), schemaStatus: "accepted",
+      resultJson: {}, canonicalSha256: randomUUID() }).returning();
+    const [assessment] = await db.insert(workAssessments).values({ companyId, issueId, runId,
+      contractId: run!.completionContractId!, resultId: saved!.id, triggerKind: "native_result", triggerActorCompanyId: companyId,
+      priorIssueStatus: issue!.status, priorStatusVersion: issue!.statusVersion, policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      assessmentJson: {}, inputDigest: randomUUID() }).returning();
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "arbitrating", resultId: saved!.id });
+    const commit = commitNativeStatusDecision({ db, companyId, issueId, runId, assessmentId: assessment!.id,
+      priorStatus: issue!.status as "in_progress", priorStatusVersion: issue!.statusVersion, priorDecisionId: issue!.lastStatusDecisionId,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "done", toStatus: "done",
+        reasonCode: "completion_contract_satisfied", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] } });
+    if (requested) await expect(commit).rejects.toThrow("native_status_race");
+    else await expect(commit).resolves.toMatchObject({ issue: { status: "done" } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe(requested ? "in_progress" : "done");
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, saved!.id)))[0]!.resultJson).toEqual({});
+  });
+
+  it.each(refusedFirstTaskCompletionScenarios)(
+    "refuses native completion feedback without a trusted current first-task decision (%s)", async (scenario) => {
+    const { issueId, runId, result } = await prepareFirstTaskCompletion(scenario);
+    await expect(nativeCompletionFeedback(db, runId, result))
+      .rejects.toThrow("First-task proposal requires a persisted human decision");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual([]);
+  });
+
+  it.each([...allowedFirstTaskCompletionScenarios, ...refusedFirstTaskCompletionScenarios])(
+    "honors the first-task human decision during native completion (%s)", async (scenario) => {
+    const { issueId, runId, port, result } = await prepareFirstTaskCompletion(scenario);
+    const allowed = allowedFirstTaskCompletionScenarios.some(candidate => candidate === scenario);
+    if (allowed) await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
+    // Invalid results bypass only early feedback to exercise the backstop for a
+    // report already committed by a disconnected or older controller.
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: "first-task-native-finish-result" });
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    const [completedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
+    if (!allowed) {
+      const expectedReason = scenario === "newest proposal pending" ? "governed_gate_pending" : "onboarding_first_task_decision_required";
+      expect(completedIssue).toMatchObject({ status: "in_review" });
+      expect(decisions).toContainEqual(expect.objectContaining({ toStatus: "in_review", reasonCode: expectedReason }));
+      expect(decisions).not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!.resultJson)
+        .toMatchObject({ finalizationReasonCode: expectedReason });
+    } else {
+      expect(completedIssue).toMatchObject({ status: "done" });
+      expect(decisions).toContainEqual(expect.objectContaining({ toStatus: "done", reasonCode: "completion_claim_policy_accepted" }));
+    }
+  });
+
+  it("rechecks the first-task human decision atomically before native status commit", async () => {
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("accepted proposal");
+    await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: "first-task-race-result" });
+    expect(await db.select().from(workAssessments).where(eq(workAssessments.runId, runId))).toEqual([]);
+
+    const interactionId = randomUUID();
+    const trigger = `first_task_race_${randomUUID().replace(/-/g, "")}`;
+    // Assessment persistence follows the policy read and precedes status commit.
+    // Insert a newer proposal at that real database boundary, exactly once.
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+      begin
+        if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+          insert into issue_thread_interactions
+            (id, company_id, issue_id, kind, status, created_by_agent_id, source_run_id, payload, created_at)
+          values
+            ('${interactionId}'::uuid, '${companyId}'::uuid, '${issueId}'::uuid,
+             'request_confirmation', 'pending', '${agentId}'::uuid, '${runId}'::uuid,
+             '{"version":1,"prompt":"Accept the revised task scope?"}'::jsonb, clock_timestamp())
+          on conflict (id) do nothing;
+        end if;
+        return NEW;
+      end $$`));
+    try {
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0])
+        .toMatchObject({ status: "pending", issueId });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
+      expect(decisions).toEqual([expect.objectContaining({ toStatus: "in_review", reasonCode: "governed_gate_pending" })]);
+      expect(decisions).not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0])
+        .toMatchObject({ nativePhase: "committed", resultJson: { finalizationReasonCode: "governed_gate_pending" } });
+    } finally {
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+    }
   });
 
   it.each(["none", "queued", "claimed", "deferred_issue_execution", "coalesced", "current_run", "current_intent"])(

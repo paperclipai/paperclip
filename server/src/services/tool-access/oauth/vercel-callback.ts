@@ -1,3 +1,5 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { connectionActorUserId } from "../actor.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
 import { connectionMethodForConnection, projectedConnectionHeaders } from "../connection-methods.js";
@@ -174,16 +176,14 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
         subjectUserId: stateRow.subjectUserId,
         ...grantValues,
         createdByUserId:
-          input.actor?.actorType === "user"
-            ? (input.actor.actorId ?? null)
-            : null,
+          connectionActorUserId(input.actor),
       });
     }
     const preActivationLifecycle = {
       status: connection.status,
       enabled: connection.enabled,
     };
-    [connection] = await db
+    [connection] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         status: "active",
@@ -198,7 +198,7 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
           eq(toolConnections.companyId, connection.companyId),
         ),
       )
-      .returning();
+      .returning());
     emitConnectionUpdated(
       connection,
       preActivationLifecycle,

@@ -22,6 +22,10 @@ export {
   wakeChatConversationsConflict,
   RESOLVED_INTERACTION_CONTINUATION_STATUSES,
   isNonAssigneeWorkspaceBusyRetry,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+  WORKSPACE_BUSY_WAIT_KEY,
+  readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
   extractWakeCommentIds,
   deriveCommentId,
   allowsIssueInteractionWake,
@@ -48,6 +52,9 @@ export type {
 } from "./application/types.js";
 export { RunDispatchApplicationError } from "./application/types.js";
 
+export type { WorkspaceBusyWait } from "./domain/wake-context.js";
+export { wakeWorkspaceBusyWaitersInTx } from "./adapters/workspace-busy-wait.js";
+
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */
   adapter?: ScheduledRetryReader & RunDispatchWriter;
@@ -67,6 +74,7 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
   });
 
   return {
+    nextScheduledRetryAt: (input: { cutoff: Date | null }) => adapter.nextScheduledRetryAt(input),
     evaluateScheduledRetryGate: createEvaluateScheduledRetryGate({ reader: adapter }),
     promoteScheduledRetry,
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({

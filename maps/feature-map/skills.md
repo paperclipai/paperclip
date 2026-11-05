@@ -26,6 +26,12 @@ Agent access: [companion](../agent-access-map/skills.md).
 
 Open `/skills`, Discover, or `/skills/sources`; project import is available through the library’s import flow. In Streamlined UI, Installed, Discover and My Skills are route links styled as tabs beneath the toolbar, with no secondary navigation rail. Sources stays separate under New → Manage sources. Legacy UI retains the Skills sidebar.
 
+Agent API discovery distinguishes importing existing SKILL.md content from
+creating newly authored content. The source-import entry documents allowed local
+skill directories and supported remote sources without changing source checks or
+company skill policy. Its [protocol regression](../../server/src/__tests__/skill-import-discovery.test.ts)
+checks discovery and metadata delivery, not a completed agent import journey.
+
 ### `studio`
 
 Use New skill or `/skills/studio/:skillId`; writable copies and source-backed originals differ. In Streamlined UI, `/skills/studio` uses the shared Skills toolbar and card collection with My Skills active and Recently updated sorting; opening a card enters Studio.
