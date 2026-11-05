@@ -185,3 +185,8 @@ it("extracts only explicit environment identifiers and does not treat the actual
  expect(companyRequestedEnvironmentName("Once it's saved, I'll add a secret reference to Morgan's environment. I'll use DEPLOY_API_KEY as the variable name unless you specify another.")).toBeUndefined();
  expect(companyRequestedEnvironmentName("Bind Morgan's Environment AS `other_api_key`.")).toBe("other_api_key");
 });
+
+it("keeps a generic secure-save completion question with a later agent binding promise on the native path",()=>{
+ expect(companyOperatorBindingRequested("Have you configured the deployment secret in Settings Secrets? Once saved, I'll add its reference to Morgan's environment.")).toBe(false);
+ expect(companyOperatorBindingRequested("Have you configured the secret reference in Morgan's environment?")).toBe(true);
+});

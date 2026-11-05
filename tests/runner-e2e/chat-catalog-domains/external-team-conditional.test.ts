@@ -217,10 +217,10 @@ it("rejects an explicit current noninstallation claim after historical failure i
     expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
   }
 });
-it("does not treat a historical negative alone as an asserted initial recovery", () => {
+it("does not require a present-tense recovery assertion when saved recovery is independently proven", () => {
   const { o } = recovered();
   o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist was previously not installed.";
-  expect(gradeTeamConditions(o, "initial").passed).toBe(false);
+  expect(gradeTeamConditions(o, "initial").passed).toBe(true);
 });
 
 it.each(["It", "This skill", "That skill"])("accepts immediately bound %s recovery without repeating the skill name", subject => {
@@ -233,10 +233,10 @@ it("rejects an immediately bound pronoun claiming the recovered skill is still m
   o.phaseReplies[1]!.body = "Launch Checklist is installed. It is still missing and not installed.";
   expect(gradeTeamConditions(o).passed).toBe(false);
 });
-it.each(["Launch Checklist hit a conflict. Another skill was discussed. It is now installed.", "It is now installed. Launch Checklist hit a conflict.", "Launch Checklist hit a conflict.\n\nIt is now installed."])("does not credit interrupted or unbound pronoun recovery: %s", body => {
+it.each(["Launch Checklist hit a conflict. Another skill was discussed. It is now installed.", "It is now installed. Launch Checklist hit a conflict.", "Launch Checklist hit a conflict.\n\nIt is now installed."])("does not require unbound pronoun prose as evidence of independently proven recovery: %s", body => {
   const { o } = recovered();
   o.phaseReplies[0]!.body = `The existing CTO was preserved and the new role renamed CTO 2. ${body}`;
-  expect(gradeTeamConditions(o, "initial").passed).toBe(false);
+  expect(gradeTeamConditions(o, "initial").passed).toBe(true);
 });
 
 it("invalidates contradictory current failure in a contiguous bound pronoun chain in either phase", () => {
@@ -357,9 +357,9 @@ describe("reviewed skill assertion subject and polarity boundaries", () => {
   it.each([
     "Launch Checklist's slug is occupied and the team was installed successfully.",
     "Launch Checklist's conflict was resolved because the manager was installed.",
-  ])("does not credit an unrelated installation as skill recovery: %s", body => {
+  ])("does not require unrelated installation prose as evidence of independently proven recovery: %s", body => {
     const { o } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. " + body;
-    expect(gradeTeamConditions(o).passed).toBe(false);
+    expect(gradeTeamConditions(o).passed).toBe(true);
   });
   it("rejects affirmed caveat resolution even beside a conditional unresolved reference", () => {
     const o = valid(); o.phaseReplies[1]!.body = "We resolved the launch-checklist skill caveat. No further action needed unless you want the launch-checklist skill caveat resolved.";
@@ -376,4 +376,20 @@ it("recognizes a Markdown-wrapped skill recovery subject", () => {
 });
 it("rejects the same Markdown-wrapped installation claim while the skill is missing", () => {
   expect(truthfulTeamPartial("Launch Checklist's slug is occupied. **Launch Checklist** is now installed.", skill)).toBe(false);
+});
+
+
+it.each(["Launch Checklist has now been installed under another slug.", "Launch Checklist installation succeeded under a new slug.", "The installation of Launch Checklist succeeded under a new slug."])("admits independently verified recovery without a required success phrase: %s", body => {
+  const { o } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. " + body;
+  expect(gradeTeamConditions(o).passed).toBe(true);
+});
+it("rejects an explicit verb-before-name denial of saved recovery", () => {
+  const { o } = recovered(); o.phaseReplies[1]!.body = "The same team exists. We have not installed Launch Checklist.";
+  expect(gradeTeamConditions(o).passed).toBe(false);
+});
+it("does not require an installation assertion from conflict-object prose when saved recovery is independently proven", () => {
+  const { o, condition } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist hit a conflict. The conflict was resolved because the manager was installed.";
+  expect(gradeTeamConditions(o).passed).toBe(true);
+  condition.recovery.version.id = "foreign-revision";
+  expect(gradeTeamConditions(o).passed).toBe(false);
 });
