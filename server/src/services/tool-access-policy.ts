@@ -1263,6 +1263,81 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
   }
 
+  async function namedGatewayDiscoveryScope(input: {
+    companyId: string;
+    gatewayId: string;
+    actor: ToolAccessDecisionInput["actor"];
+  }): Promise<{ applicationIds: string[]; connectionIds: string[]; catalogEntryIds: string[] } | null> {
+    const [gateway] = await db
+      .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+      .from(toolMcpGateways)
+      .where(and(eq(toolMcpGateways.companyId, input.companyId), eq(toolMcpGateways.id, input.gatewayId)))
+      .limit(1);
+    if (gateway?.defaultProfileMode !== "gateway_only") return null;
+    const bindings = await db
+      .select({ profileId: toolProfileBindings.profileId })
+      .from(toolProfileBindings)
+      .where(and(
+        eq(toolProfileBindings.companyId, input.companyId),
+        eq(toolProfileBindings.targetType, "gateway"),
+        eq(toolProfileBindings.targetId, input.gatewayId),
+      ));
+    if (bindings.length === 0) return null;
+    const profiles = (await db
+      .select()
+      .from(toolProfiles)
+      .where(and(
+        eq(toolProfiles.companyId, input.companyId),
+        inArray(toolProfiles.id, bindings.map((binding) => binding.profileId)),
+      )))
+      .filter((profile) => profile.status === "active");
+    if (profiles.some((profile) => profile.defaultAction === "allow")) return null;
+    const allowingPolicies = await db
+      .select({ policyType: toolPolicies.policyType, config: toolPolicies.config })
+      .from(toolPolicies)
+      .where(and(
+        eq(toolPolicies.companyId, input.companyId),
+        eq(toolPolicies.enabled, true),
+        inArray(toolPolicies.policyType, ["allow", "trust_rule", "require_approval"]),
+      ));
+    if (allowingPolicies.some((policy) =>
+      policy.policyType !== "require_approval" || policy.config?.source !== "app_gallery_finish"
+    )) return null;
+    const principalType = input.actor.actorType === "agent" ? "agent" : input.actor.actorType === "user" ? "user" : null;
+    const principalId = input.actor.actorType === "agent" ? input.actor.agentId : input.actor.actorId;
+    if (principalType && principalId) {
+      const [grant] = await db
+        .select({ id: principalPermissionGrants.id })
+        .from(principalPermissionGrants)
+        .where(and(
+          eq(principalPermissionGrants.companyId, input.companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+          eq(principalPermissionGrants.permissionKey, "tools:use"),
+        ))
+        .limit(1);
+      if (grant) return null;
+    }
+    const includes = profiles.length > 0
+      ? await db
+          .select()
+          .from(toolProfileEntries)
+          .where(and(
+            eq(toolProfileEntries.companyId, input.companyId),
+            inArray(toolProfileEntries.profileId, profiles.map((profile) => profile.id)),
+            eq(toolProfileEntries.effect, "include"),
+          ))
+      : [];
+    const scope = { applicationIds: [] as string[], connectionIds: [] as string[], catalogEntryIds: [] as string[] };
+    for (const entry of includes) {
+      if (entry.selectorType === "application" && entry.applicationId) scope.applicationIds.push(entry.applicationId);
+      else if (entry.selectorType === "connection" && entry.connectionId) scope.connectionIds.push(entry.connectionId);
+      else if (entry.selectorType === "catalog_entry" && entry.catalogEntryId) scope.catalogEntryIds.push(entry.catalogEntryId);
+      else return null;
+    }
+    return scope;
+  }
+
   async function enforceRateLimit(policy: typeof toolPolicies.$inferSelect, ctx: ToolAccessContext, consume: boolean) {
     const rule = rateLimitRule(policy);
     if (!rule) return null;
@@ -2263,6 +2338,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
   return {
     decide,
     admitInvocation,
+    namedGatewayDiscoveryScope,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,
