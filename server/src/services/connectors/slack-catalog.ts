@@ -33,6 +33,10 @@ const catalogDefinitions = SLACK_TOOLS.map(tool => ({
   })).digest("hex"),
 }));
 
+export function slackBotToolName(endpointId: string, toolName: string): string {
+  return `slack-bot.${endpointId}:${toolName}`;
+}
+
 export async function slackBotCatalogIsCurrent(
   db: Db,
   endpoint: { id: string; companyId: string; connectionId: string },
@@ -251,7 +255,7 @@ async function slackToolsForEndpoint(
   return entries
     .filter(({ entry }) => SLACK_TOOLS.some((t) => t.name === entry.toolName))
     .map(({ entry, applicationId }) => ({
-      name: `slack-bot.${authority.endpoint.id}:${entry.toolName}`,
+      name: slackBotToolName(authority.endpoint.id, entry.toolName),
       displayName: entry.title ?? entry.toolName,
       description: entry.description ?? "",
       parametersSchema: entry.inputSchema,

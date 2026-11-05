@@ -2,7 +2,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { githubBotCredentials } from "./chat-github-client.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { agents, toolCatalogEntries } from "@paperclipai/db";
-import { GITHUB_BOT_TOOLS, syncGitHubBotTools } from "./chat-github-tools.js";
+import { GITHUB_BOT_TOOLS, githubBotToolName, syncGitHubBotTools } from "./chat-github-tools.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   chatEndpoints,
@@ -588,7 +588,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
           },
           runContext: {},
           request: {
-            toolName: `github-bot.${bot.id}:${entry.toolName}`,
+            toolName: githubBotToolName(bot.id, entry.toolName),
             applicationId: credentials.connection.applicationId,
             applicationKey: "github-chat",
             connectionId: bot.connectionId,

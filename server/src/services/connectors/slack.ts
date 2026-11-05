@@ -2,7 +2,7 @@ import { authorizeSlackDocument } from "./slack-document.js";
 import { slackDelivery } from "./slack-delivery.js";
 import { slackMessage } from "./slack-message.js";
 import { executeSlackWrite } from "./slack-writes.js";
-import { slackBotCatalogIsCurrent, syncSlackBotTools } from "./slack-catalog.js";
+import { slackBotCatalogIsCurrent, slackBotToolName, syncSlackBotTools } from "./slack-catalog.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
@@ -508,7 +508,7 @@ export async function executeGovernedSlackTool(
   return gateway.executeTool({
     sessionToken: session.token,
     timeoutMs: 120_000,
-    tool: `slack-bot.${authority.endpoint.id}:${name}`,
+    tool: slackBotToolName(authority.endpoint.id, name),
     parameters: args,
     idempotencyKey:
       typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined,

@@ -7,6 +7,8 @@ import {
   toolConnections,
   toolProfileEntries,
 } from "@paperclipai/db";
+import { githubBotToolName } from "./chat-github-tools.js";
+import { slackBotToolName } from "./connectors/slack-catalog.js";
 import { connectedGatewayToolNames } from "./tool-gateway.js";
 
 export type ToolProfileMigrationResult = {
@@ -15,9 +17,9 @@ export type ToolProfileMigrationResult = {
   unresolvedEntries: number;
 };
 
-const BOT_TOOL_NAME_PREFIXES: Partial<Record<string, string>> = {
-  slack: "slack-bot",
-  github: "github-bot",
+const BOT_TOOL_NAMES: Partial<Record<string, (endpointId: string, toolName: string) => string>> = {
+  slack: slackBotToolName,
+  github: githubBotToolName,
 };
 
 export async function migrateLegacyProfileToolNameEntries(
@@ -92,9 +94,9 @@ export async function migrateLegacyProfileToolNameEntries(
     addGatewayName(row.companyId, names.baseName, row.catalogEntryId);
     addGatewayName(row.companyId, names.disambiguatedName, row.catalogEntryId);
     for (const endpoint of endpoints) {
-      const prefix = BOT_TOOL_NAME_PREFIXES[endpoint.provider];
-      if (prefix && endpoint.connectionId === row.connectionId) {
-        addGatewayName(row.companyId, `${prefix}.${endpoint.id}:${row.toolName}`, row.catalogEntryId);
+      const botToolName = BOT_TOOL_NAMES[endpoint.provider];
+      if (botToolName && endpoint.connectionId === row.connectionId) {
+        addGatewayName(row.companyId, botToolName(endpoint.id, row.toolName), row.catalogEntryId);
       }
     }
   }

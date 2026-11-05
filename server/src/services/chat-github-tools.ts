@@ -30,6 +30,9 @@ const objectSchema = (
 ) => ({ type: "object", properties, required, additionalProperties: false });
 const text = { type: "string", minLength: 1 };
 const path = { type: "string", minLength: 1, maxLength: 1024 };
+export function githubBotToolName(endpointId: string, toolName: string): string {
+  return `github-bot.${endpointId}:${toolName}`;
+}
 export const GITHUB_BOT_TOOLS = [
   {
     name: "read_pull_request",
@@ -308,7 +311,7 @@ export async function githubBotToolsForSession(
         ),
     )
     .map(({ endpoint, connection, entry }) => ({
-      name: `github-bot.${endpoint.id}:${entry.toolName}`,
+      name: githubBotToolName(endpoint.id, entry.toolName),
       displayName: entry.title ?? entry.toolName,
       description: entry.description ?? "",
       parametersSchema: entry.inputSchema,
