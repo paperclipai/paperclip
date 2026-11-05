@@ -98,8 +98,8 @@ async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: str
   };
 }
 
-async function readRecord(ctx: PluginContext, issueId: string): Promise<GateRecord | null> {
-  const raw = await ctx.state.get({ scopeKind: "company", scopeId: "", stateKey: stateKeyFor(issueId) });
+async function readRecord(ctx: PluginContext, companyId: string, issueId: string): Promise<GateRecord | null> {
+  const raw = await ctx.state.get({ scopeKind: "company", scopeId: companyId, stateKey: stateKeyFor(issueId) });
   return (raw as GateRecord | null) ?? null;
 }
 
@@ -161,7 +161,7 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
     return;
   }
 
-  const previous = await readRecord(ctx, issueId);
+  const previous = await readRecord(ctx, companyId, issueId);
   const count = (previous?.count ?? 0) + 1;
 
   if (count <= MAX_COMMENTS_PER_ISSUE) {
