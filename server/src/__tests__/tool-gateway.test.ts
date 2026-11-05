@@ -1560,7 +1560,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const token = await gateway.createNamedGatewayToken({
         companyId: company.id,
         gatewayId: genericGateway!.id,
-        body: { name: "Generic UUID token", subjectType: "heartbeat_run", subjectId: run.id },
+        body: { name: "Generic UUID token", clientLabel: "Test", ownerNote: "", subjectType: "heartbeat_run", subjectId: run.id },
       });
       const initialized = await request(app)
         .post(`/api/tool-gateway/gateways/${genericGateway!.id}/mcp`)
