@@ -243,6 +243,21 @@ fn rich_event_schema(event_type: &str) -> Option<&'static str> {
     })
 }
 
+/// Workspace change sets carry complete bounded patches. Validate them against
+/// their exact schema so durable storage keeps the patch instead of a preview.
+fn workspace_diff_validator() -> Option<&'static jsonschema::Validator> {
+    static VALIDATOR: OnceLock<Option<jsonschema::Validator>> = OnceLock::new();
+    VALIDATOR
+        .get_or_init(|| {
+            let schema: Value = serde_json::from_str(include_str!(
+                "../../../../protocol/schemas/workspace-diff.schema.json"
+            ))
+            .ok()?;
+            jsonschema::validator_for(&schema).ok()
+        })
+        .as_ref()
+}
+
 fn rich_event_validators(
 ) -> Result<&'static BTreeMap<String, jsonschema::Validator>, LocalRunnerError> {
     static VALIDATORS: OnceLock<Result<BTreeMap<String, jsonschema::Validator>, String>> =
@@ -369,6 +384,14 @@ fn decode_rich_event(value: &Value) -> Result<AcpxEventPayload, LocalRunnerError
 // Durable storage uses this same exact schema gate before lifting diagnostic
 // preview limits. This does not admit an event or grant mutation authority.
 pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) -> bool {
+    if matches!(
+        event_type,
+        "workspace.change.updated" | "workspace.diff.recorded"
+    ) {
+        return serde_json::to_vec(payload)
+            .is_ok_and(|bytes| bytes.len() <= MAX_EVENT_PAYLOAD_BYTES)
+            && workspace_diff_validator().is_some_and(|validator| validator.is_valid(payload));
+    }
     let Some(schema) = rich_event_schema(event_type) else {
         return false;
     };

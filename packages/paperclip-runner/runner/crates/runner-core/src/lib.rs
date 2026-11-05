@@ -42,6 +42,7 @@ pub mod replay;
 mod stable_identity;
 pub mod stdio_mcp;
 pub mod task_memory;
+pub mod tool_file_changes;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
