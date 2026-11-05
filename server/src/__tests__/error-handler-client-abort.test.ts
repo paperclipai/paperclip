@@ -15,7 +15,7 @@ function storageAbortError() {
 }
 
 /** A route that cancels its storage read when the response closes. */
-function createApp(onReadStarted: () => void) {
+function createApp(onReadStarted: () => void, onErrorHandled: (err: unknown) => void = () => {}) {
   const app = express();
   app.get("/log", async (_req, res) => {
     const controller = new AbortController();
@@ -33,7 +33,13 @@ function createApp(onReadStarted: () => void) {
   app.get("/failure", async () => {
     throw storageAbortError();
   });
-  app.use(errorHandler);
+  app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      errorHandler(err, req, res, next);
+    } finally {
+      onErrorHandled(err);
+    }
+  });
   return app;
 }
 
@@ -58,14 +64,16 @@ describe("errorHandler client aborts", () => {
   it("does not report work cancelled because the client disconnected", async () => {
     let readStarted!: () => void;
     const started = new Promise<void>((resolve) => { readStarted = resolve; });
-    await withServer(createApp(() => readStarted()), async (baseUrl) => {
+    let errorHandled!: (err: unknown) => void;
+    const handled = new Promise<unknown>((resolve) => { errorHandled = resolve; });
+    await withServer(createApp(() => readStarted(), (err) => errorHandled(err)), async (baseUrl) => {
       const clientRequest = request(baseUrl).get("/log");
       const settled = clientRequest.then(() => undefined, () => undefined);
       await started;
       clientRequest.abort();
       await settled;
-      // Let the route's rejection reach the error handler.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait until the route's rejection has passed through the error handler.
+      await expect(handled).resolves.toMatchObject({ name: "AbortError", message: "Request aborted" });
     });
 
     expect(captureExceptionMock).not.toHaveBeenCalled();
