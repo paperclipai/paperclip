@@ -65,7 +65,7 @@ import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded
 import { nativeWorkspaceSyncStateRoot, prepareNativeWorkspaceSync, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { nativeWorkspaceExportPendingForResource } from "./native-runtime/native-workspace-finalization-state.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { prepareStoppedSandboxForRecovery, prepareSandboxStopAndRetain, settleStopOnlyCleanup, readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { recoverRetainedWorkspace, requestWorkspaceRecovery, scheduleRecoveredWorkspaceCleanup, reconcileRetainedWorkspaces, retainedWorkspaceCandidates } from "./workspace-recovery.js";
 import * as activity from "./activity-log.js";
@@ -1971,11 +1971,8 @@ describe("automatic retained workspace recovery", () => {
       const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
         actorSource: "local_implicit", observedRunId: source.id, idempotencyKey: randomUUID() });
       await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0])
-        .toMatchObject({ status: "deferred_issue_execution", payload: { executionWait: { reason: "remote_cleanup" } } });
-      await environmentService(db).releaseLease(settledLease.id, "released", { cleanupStatus: "success",
-        remoteExecutionTermination: remoteTerminationReceipt(settledLease, { providerLeaseId: settledLease.providerLeaseId, state: "destroyed" }) });
-      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, settledLease.id)))[0])
+        .toMatchObject({ status: "pending_cleanup", metadata: { workspaceRecoveryCleanup: { runId: f.runId } } });
       const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
       expect(successor).toBeDefined();
       const readiness = await readFreshWorkspaceReadiness(db, successor);
@@ -3238,6 +3235,39 @@ describe("automatic retained workspace recovery", () => {
     }
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
+  it.each([
+    { forged: false, title: "admits a reply while the recovered stopped sandbox waits for destroy cleanup" },
+    { forged: true, title: "keeps a reply waiting when the cleanup marker does not prove this sandbox stopped" },
+  ])("$title", async ({ forged }) => {
+    const f = await seed();
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    f.runtime.retryPendingSandboxTeardown.mockRejectedValue(new Error("provider busy"));
+    await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toMatchObject({
+      status: "pending_cleanup", metadata: { workspaceRecoveryCleanup: { runId: f.runId } } });
+    if (forged) await db.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
+      '{workspaceRecoveryCleanup,stoppedTermination,providerLeaseId}', ${JSON.stringify(randomUUID())}::jsonb)` })
+      .where(eq(environmentLeases.id, f.lease.id));
+    const source = await run(f.runId);
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "operator", body: "We have no onboarding email. Draft a new one." }).returning();
+    const blocked = vi.fn();
+    const admitted = await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: source.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
+      commentId: reply.id, successorRunId: randomUUID(), dryRun: true, onBlocked: blocked });
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(hasRemoteTerminationReceipt(lease)).toBe(false);
+    expect(lease.status).toBe("pending_cleanup");
+    if (forged) {
+      expect(blocked).toHaveBeenCalledWith("remote_cleanup", expect.any(String));
+      expect(admitted).toBeNull();
+      return;
+    }
+    expect(blocked).not.toHaveBeenCalled();
+    expect(admitted).toMatchObject({ previousRunId: f.runId, commentId: reply.id });
   }, 30_000);
 
   it("queues cleanup only after verified persistence and keeps it separate from recovery", async () => {

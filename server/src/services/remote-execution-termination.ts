@@ -37,6 +37,16 @@ export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
     remoteTerminationReceipt(lease, receipt));
 }
 
+export function hasRecoveredSourceStopReceipt(lease: LeaseIdentity & { metadata: Record<string, unknown> | null }): boolean {
+  const cleanup = lease.metadata?.workspaceRecoveryCleanup as Record<string, unknown> | undefined;
+  const receipt = cleanup?.stoppedTermination as Record<string, unknown> | undefined;
+  return Boolean(cleanup && receipt && cleanup.runId === lease.heartbeatRunId &&
+    receipt.schema === "paperclip.remote-termination.v1" &&
+    receipt.companyId === lease.companyId && receipt.runId === lease.heartbeatRunId &&
+    receipt.leaseId === lease.id && receipt.provider === lease.provider &&
+    remoteTerminationReceipt(lease, receipt));
+}
+
 export function remoteLeaseCleanupScope(lease: Pick<LeaseIdentity, "provider" | "providerLeaseId">) {
   return lease.provider && lease.provider !== "local" && lease.providerLeaseId
     ? JSON.stringify([lease.provider, lease.providerLeaseId]) : undefined;

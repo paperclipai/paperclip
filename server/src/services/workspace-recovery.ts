@@ -429,7 +429,7 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
   await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "ephemeral",
     updatedAt: new Date(), metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery' - 'remoteExecutionTermination') ||
       ${JSON.stringify({ workspaceRecoveryCleanup: { runId: run.id, ...(legacy ? { descriptorSha256: legacy.descriptorSha256 }
-        : { snapshotId: remote!.snapshotId, epoch: remote!.epoch }) },
+        : { snapshotId: remote!.snapshotId, epoch: remote!.epoch }), stoppedTermination: lease.metadata?.remoteExecutionTermination },
         pendingCleanupInFlight: false, pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupLeaseExpiresAtMs: 0 })}::jsonb`,
   }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.id, ref.leaseId),
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
