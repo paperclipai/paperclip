@@ -23,7 +23,9 @@ fn bounded(value: Option<&Value>, max: usize) -> Option<String> {
 }
 
 fn finite(value: Option<&Value>) -> Option<f64> {
-    value.and_then(Value::as_f64).filter(|value| value.is_finite())
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
 }
 
 fn percent(value: Option<f64>) -> Value {
@@ -64,7 +66,11 @@ fn window_labels(minutes: Option<i64>) -> (String, String) {
         }
         Some(minutes) if minutes % 1_440 == 0 => {
             let days = minutes / 1_440;
-            let label = if days == 1 { "Daily".to_owned() } else { format!("{days}-day window") };
+            let label = if days == 1 {
+                "Daily".to_owned()
+            } else {
+                format!("{days}-day window")
+            };
             (label, format!("{days}d"))
         }
         Some(minutes) if minutes % 60 == 0 => {
@@ -75,7 +81,12 @@ fn window_labels(minutes: Option<i64>) -> (String, String) {
     }
 }
 
-fn codex_window(limit_id: Option<&str>, limit_name: Option<&str>, slot: &str, raw: &Value) -> Option<Value> {
+fn codex_window(
+    limit_id: Option<&str>,
+    limit_name: Option<&str>,
+    slot: &str,
+    raw: &Value,
+) -> Option<Value> {
     let window = raw.as_object()?;
     let minutes = finite(window.get("windowDurationMins"))
         .filter(|minutes| *minutes > 0.0)
@@ -95,12 +106,16 @@ fn codex_window(limit_id: Option<&str>, limit_name: Option<&str>, slot: &str, ra
 }
 
 fn used(window: &Value) -> f64 {
-    window.get("usedPercent").and_then(Value::as_f64).unwrap_or(-1.0)
+    window
+        .get("usedPercent")
+        .and_then(Value::as_f64)
+        .unwrap_or(-1.0)
 }
 
 /// Merge a sparse update: windows by id; null fields never clear a known value.
 fn merge(previous: Option<&Value>, mut next: Value) -> Value {
-    let Some(previous) = previous.filter(|previous| previous["provider"] == next["provider"]) else {
+    let Some(previous) = previous.filter(|previous| previous["provider"] == next["provider"])
+    else {
         return next;
     };
     let mut windows: Vec<Value> = previous["windows"].as_array().cloned().unwrap_or_default();
@@ -126,23 +141,35 @@ fn merge(previous: Option<&Value>, mut next: Value) -> Value {
 }
 
 /// Normalize Codex `account/rateLimits/updated`, merged into the previous snapshot.
-pub fn codex_rate_limit_snapshot(params: &Value, previous: Option<&Value>, observed_at: &str) -> Option<Value> {
+pub fn codex_rate_limit_snapshot(
+    params: &Value,
+    previous: Option<&Value>,
+    observed_at: &str,
+) -> Option<Value> {
     let snapshot = params.get("rateLimits")?.as_object()?;
     let limit_id = bounded(snapshot.get("limitId"), 160);
     let limit_name = bounded(snapshot.get("limitName"), 160);
     let windows: Vec<Value> = ["primary", "secondary"]
         .iter()
         .filter_map(|slot| {
-            codex_window(limit_id.as_deref(), limit_name.as_deref(), slot, snapshot.get(*slot)?)
+            codex_window(
+                limit_id.as_deref(),
+                limit_name.as_deref(),
+                slot,
+                snapshot.get(*slot)?,
+            )
         })
         .collect();
-    let credits = snapshot.get("credits").and_then(Value::as_object).map(|credits| {
-        json!({
-            "hasCredits": credits.get("hasCredits").and_then(Value::as_bool),
-            "unlimited": credits.get("unlimited").and_then(Value::as_bool),
-            "balance": bounded(credits.get("balance"), 40),
-        })
-    });
+    let credits = snapshot
+        .get("credits")
+        .and_then(Value::as_object)
+        .map(|credits| {
+            json!({
+                "hasCredits": credits.get("hasCredits").and_then(Value::as_bool),
+                "unlimited": credits.get("unlimited").and_then(Value::as_bool),
+                "balance": bounded(credits.get("balance"), 40),
+            })
+        });
     let reason = bounded(snapshot.get("rateLimitReachedType"), 160);
     let mut merged = merge(
         previous,
@@ -159,9 +186,16 @@ pub fn codex_rate_limit_snapshot(params: &Value, previous: Option<&Value>, obser
     if windows.is_empty() && merged["credits"].is_null() && reason.is_none() {
         return None;
     }
-    let fullest = windows.iter().max_by(|a, b| used(a).total_cmp(&used(b))).cloned();
+    let fullest = windows
+        .iter()
+        .max_by(|a, b| used(a).total_cmp(&used(b)))
+        .cloned();
     let exhausted = windows.iter().find(|window| used(window) >= 100.0).cloned();
-    let reached = if reason.is_some() { fullest } else { exhausted.clone() };
+    let reached = if reason.is_some() {
+        fullest
+    } else {
+        exhausted.clone()
+    };
     if reason.is_some() || exhausted.is_some() {
         merged["limitReached"] = json!({
             "windowId": reached.as_ref().map(|window| window["id"].clone()),
@@ -182,7 +216,11 @@ pub fn claude_rate_limit_snapshot(info: &Value, observed_at: &str) -> Option<Val
         "seven_day" => ("Weekly".into(), "7d".into(), Some(10_080)),
         "seven_day_opus" => ("Weekly (Opus)".into(), "7d Opus".into(), Some(10_080)),
         "seven_day_sonnet" => ("Weekly (Sonnet)".into(), "7d Sonnet".into(), Some(10_080)),
-        "seven_day_overage_included" => ("Weekly (with extra usage)".into(), "7d".into(), Some(10_080)),
+        "seven_day_overage_included" => (
+            "Weekly (with extra usage)".into(),
+            "7d".into(),
+            Some(10_080),
+        ),
         "overage" => ("Extra usage".into(), "Extra".into(), None),
         other => (other.replace('_', " "), other.to_owned(), None),
     };
@@ -230,7 +268,11 @@ pub fn rate_limit_snapshot_changed(previous: Option<&Value>, next: &Value) -> bo
 }
 
 fn summary(snapshot: &Value) -> String {
-    let harness = if snapshot["provider"] == "openai" { "Codex" } else { "Claude" };
+    let harness = if snapshot["provider"] == "openai" {
+        "Codex"
+    } else {
+        "Claude"
+    };
     let windows = snapshot["windows"].as_array().cloned().unwrap_or_default();
     if let Some(reached) = snapshot["limitReached"].as_object() {
         let label = windows
@@ -248,7 +290,13 @@ fn summary(snapshot: &Value) -> String {
     }
     let parts: Vec<String> = windows
         .iter()
-        .filter_map(|window| Some(format!("{} {}%", window["label"].as_str()?, window["usedPercent"].as_f64()?)))
+        .filter_map(|window| {
+            Some(format!(
+                "{} {}%",
+                window["label"].as_str()?,
+                window["usedPercent"].as_f64()?
+            ))
+        })
         .collect();
     if parts.is_empty() {
         format!("{harness} rate limits updated")
@@ -262,7 +310,10 @@ pub fn rate_limit_notice(snapshot: &Value, notice_id: &str) -> NormalizedProvide
     let mut bounded_snapshot = snapshot.clone();
     let mut serialized = bounded_snapshot.to_string();
     while serialized.chars().count() > MAX_DETAIL_CHARS {
-        let Some(windows) = bounded_snapshot["windows"].as_array_mut().filter(|w| !w.is_empty()) else {
+        let Some(windows) = bounded_snapshot["windows"]
+            .as_array_mut()
+            .filter(|w| !w.is_empty())
+        else {
             break;
         };
         windows.pop();
@@ -273,14 +324,24 @@ pub fn rate_limit_notice(snapshot: &Value, notice_id: &str) -> NormalizedProvide
     payload.insert("noticeId".into(), json!(notice_id));
     payload.insert(
         "severity".into(),
-        json!(if snapshot["limitReached"].is_null() { "info" } else { "warning" }),
+        json!(if snapshot["limitReached"].is_null() {
+            "info"
+        } else {
+            "warning"
+        }),
     );
     payload.insert("category".into(), json!(PROVIDER_RATE_LIMITS_CATEGORY));
     payload.insert("scope".into(), json!("account"));
     payload.insert("recoverable".into(), json!(true));
     payload.insert("userActionable".into(), json!(false));
-    payload.insert("summary".into(), json!(summary(snapshot).chars().take(4_000).collect::<String>()));
-    payload.insert("details".into(), json!([{"name": "rateLimits", "value": serialized}]));
+    payload.insert(
+        "summary".into(),
+        json!(summary(snapshot).chars().take(4_000).collect::<String>()),
+    );
+    payload.insert(
+        "details".into(),
+        json!([{"name": "rateLimits", "value": serialized}]),
+    );
     NormalizedProviderEvent {
         event_type: "provider.notice.recorded".to_owned(),
         priority: EventPriority::P1,
@@ -333,7 +394,10 @@ mod tests {
 
     #[test]
     fn codex_empty_update_is_ignored() {
-        assert!(codex_rate_limit_snapshot(&json!({"rateLimits": {"primary": null}}), None, T0).is_none());
+        assert!(
+            codex_rate_limit_snapshot(&json!({"rateLimits": {"primary": null}}), None, T0)
+                .is_none()
+        );
         assert!(codex_rate_limit_snapshot(&json!({}), None, T0).is_none());
     }
 
@@ -347,20 +411,30 @@ mod tests {
         assert_eq!(warn["windows"][0]["usedPercent"], 86.0);
         assert_eq!(warn["windows"][0]["status"], "warning");
         assert!(warn["limitReached"].is_null());
-        let rejected = claude_rate_limit_snapshot(&json!({"status": "rejected", "rateLimitType": "seven_day"}), T0).unwrap();
+        let rejected = claude_rate_limit_snapshot(
+            &json!({"status": "rejected", "rateLimitType": "seven_day"}),
+            T0,
+        )
+        .unwrap();
         assert_eq!(rejected["windows"][0]["usedPercent"], 100.0);
         assert_eq!(rejected["limitReached"]["windowId"], "claude.seven_day");
     }
 
     #[test]
     fn notice_carries_snapshot_as_json_detail() {
-        let snapshot = claude_rate_limit_snapshot(&json!({"status": "allowed", "utilization": 0.5}), T0).unwrap();
+        let snapshot =
+            claude_rate_limit_snapshot(&json!({"status": "allowed", "utilization": 0.5}), T0)
+                .unwrap();
         let event = rate_limit_notice(&snapshot, "turn-1:rate-limits");
         assert_eq!(event.event_type, "provider.notice.recorded");
         assert_eq!(event.payload["category"], PROVIDER_RATE_LIMITS_CATEGORY);
         assert_eq!(event.payload["scope"], "account");
-        assert_eq!(event.payload["summary"], "Claude rate limits: 5-hour window 50%");
-        let detail: Value = serde_json::from_str(event.payload["details"][0]["value"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            event.payload["summary"],
+            "Claude rate limits: 5-hour window 50%"
+        );
+        let detail: Value =
+            serde_json::from_str(event.payload["details"][0]["value"].as_str().unwrap()).unwrap();
         assert_eq!(detail, snapshot);
     }
 }

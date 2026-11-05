@@ -578,6 +578,19 @@ changes, and unrelated thread information do not create a provider notice in
 chat. Chat also omits the matching notice stored by older runners. Real provider
 warnings and errors remain visible.
 
+Provider rate-limit windows use `provider.notice.recorded` with category
+`provider.rate_limits` and scope `account`. Codex sends them as
+`account/rateLimits/updated`. Claude sends them as `usage_update` metadata
+(`_claude/rateLimit`) when it uses a subscription sign-in. The runner merges
+sparse Codex updates and records a notice only when the windows change. The
+notice has one `rateLimits` detail: a JSON snapshot with schema
+`paperclip.provider.rate_limits.v1` (windows with used percent and reset time,
+credits, and the reached window). Chat does not show the notice. The server
+keeps the latest snapshot in the agent's runtime state under
+`providerRateLimits`, and the task properties pane shows it as the assignee's
+**Usage limit**. The snapshot is display data. It does not hold or start work;
+the provider-limit wait reads typed run failures.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
 An unstarted legacy conversation retry waiting for execution cleanup retains

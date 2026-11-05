@@ -758,7 +758,13 @@ fn claude_rate_limit_on_usage_update_becomes_an_account_notice() {
         },
     )
     .unwrap();
-    let AcpxEventPayload::Runtime { kind, tool_operation, payload, .. } = decoded else {
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
         panic!("runtime usage must decode as a runtime payload");
     };
     let events =
@@ -781,5 +787,9 @@ fn claude_rate_limit_on_usage_update_becomes_an_account_notice() {
         AcpxRuntimeEventKind::Status,
         json!({"type":"status", "tag":"usage_update"}),
     );
-    assert_eq!(plain.len(), 1, "usage without rate-limit data stays a single event");
+    assert_eq!(
+        plain.len(),
+        1,
+        "usage without rate-limit data stays a single event"
+    );
 }

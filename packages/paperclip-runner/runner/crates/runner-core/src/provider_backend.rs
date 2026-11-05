@@ -5893,23 +5893,31 @@ mod tests {
         state.config.provider = "codex".to_owned();
         let update = json!({"rateLimits": {"limitId": "codex",
             "primary": {"usedPercent": 78, "windowDurationMins": 300, "resetsAt": 1_793_893_200_i64}}});
-        let first = normalize_provider_notification(&mut state, "account/rateLimits/updated", &update).unwrap();
+        let first =
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
+                .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].event_type, "provider.notice.recorded");
         assert_eq!(first[0].payload["category"], "provider.rate_limits");
         assert_eq!(first[0].payload["noticeId"], "codex-rate-limits-1");
-        assert!(normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
-            .unwrap()
-            .is_empty());
+        assert!(
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
+                .unwrap()
+                .is_empty()
+        );
         let sparse = json!({"rateLimits": {"limitId": "codex",
             "secondary": {"usedPercent": 41, "windowDurationMins": 10080, "resetsAt": null}}});
-        let second = normalize_provider_notification(&mut state, "account/rateLimits/updated", &sparse).unwrap();
+        let second =
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &sparse)
+                .unwrap();
         let snapshot: Value =
-            serde_json::from_str(second[0].payload["details"][0]["value"].as_str().unwrap()).unwrap();
+            serde_json::from_str(second[0].payload["details"][0]["value"].as_str().unwrap())
+                .unwrap();
         assert_eq!(snapshot["windows"].as_array().unwrap().len(), 2);
         assert_eq!(snapshot["windows"][0]["usedPercent"], 78.0);
         // Restored checkpoints keep the merged snapshot.
-        let restored: CodexProviderState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        let restored: CodexProviderState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
         assert_eq!(restored.codex_rate_limits, state.codex_rate_limits);
     }
 
