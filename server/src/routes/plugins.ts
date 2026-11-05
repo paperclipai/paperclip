@@ -219,8 +219,17 @@ function titleCasePluginName(packageName: string): string {
     .join(" ");
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
-  return access(filePath).then(() => true, () => false);
+const MISSING_PATH_ERROR_CODES = new Set(["ENOENT", "ENOTDIR"]);
+
+async function pathExists(filePath: string, failures: BundledPluginReadFailure[]): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (!code || !MISSING_PATH_ERROR_CODES.has(code)) recordReadFailure(failures, filePath, error);
+    return false;
+  }
 }
 
 async function readJsonFile(
@@ -240,7 +249,7 @@ async function findPackageJsonFiles(
   failures: BundledPluginReadFailure[],
   maxDepth = 4,
 ): Promise<string[]> {
-  if (!(await fileExists(root))) return [];
+  if (!(await pathExists(root, failures))) return [];
 
   const packageJsonFiles: string[] = [];
   const walk = async (dir: string, depth: number): Promise<void> => {
@@ -298,7 +307,7 @@ async function bundledPluginMetadata(
   failures: BundledPluginReadFailure[],
 ): Promise<{ pluginKey?: string; displayName?: string; description?: string }> {
   const sourcePath = manifestSourcePath(packageRoot, pkgJson);
-  if (!sourcePath || !(await fileExists(sourcePath))) return {};
+  if (!sourcePath || !(await pathExists(sourcePath, failures))) return {};
 
   try {
     const source = await readFile(sourcePath, "utf8");
