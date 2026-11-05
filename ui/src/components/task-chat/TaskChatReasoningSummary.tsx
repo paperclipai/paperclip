@@ -40,7 +40,7 @@ export function TaskChatReasoningSummary({
             />
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               {section.headline ? (
-                <span className="text-xs text-foreground" data-reasoning-headline>{section.headline}</span>
+                <span className="task-chat-reasoning-headline text-xs text-foreground" data-reasoning-headline>{section.headline}</span>
               ) : null}
               {section.body ? (
                 <div className="text-xs text-muted-foreground">

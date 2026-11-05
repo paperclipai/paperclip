@@ -13,6 +13,8 @@ export interface ReasoningSummarySection {
 }
 
 const HEADLINE = /^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*$/;
+/** Opening or closing fence of a Markdown code block. */
+const FENCE = /^\s{0,3}(```|~~~)/;
 /** A headline whose closing emphasis has not streamed in yet. */
 const STREAMING_HEADLINE = /^\s*(?:\*\*|__)([^*_]+)$/;
 
@@ -31,7 +33,17 @@ export function reasoningSummarySections(text: string): ReasoningSummarySection[
     current = null;
   };
   const lines = text.split("\n");
+  let fence: string | null = null;
   for (const [index, line] of lines.entries()) {
+    // Lines inside a fenced code block are code, never section headlines.
+    const fenceMarker = FENCE.exec(line)?.[1];
+    if (fence || fenceMarker) {
+      if (!fence) fence = fenceMarker![0]!;
+      else if (fenceMarker?.[0] === fence) fence = null;
+      if (!current) current = { headline: null, body: [] };
+      current.body.push(line);
+      continue;
+    }
     const match = HEADLINE.exec(line) ?? (index === lines.length - 1 ? STREAMING_HEADLINE.exec(line) : null);
     const headline = match ? cleanHeadline(match[1] ?? "") : "";
     if (headline) {

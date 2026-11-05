@@ -28,4 +28,12 @@ describe("reasoning summary sections", () => {
     expect(latestReasoningHeadline("**Tracing the retry path**\n\n**Verifying edge")).toBe("Verifying edge");
     expect(latestReasoningHeadline("**Tracing the retry path**\n\nThe **worker")).toBe("Tracing the retry path");
   });
+
+  it("keeps bold lines inside fenced code as code, not headlines", () => {
+    const text = "**Drafting the example**\n\n```md\n**Example**\nbody\n```\n\nDone.";
+    const sections = reasoningSummarySections(text);
+    expect(sections.map((section) => section.headline)).toEqual(["Drafting the example"]);
+    expect(sections[0]?.body).toContain("**Example**");
+    expect(latestReasoningHeadline(text)).toBe("Drafting the example");
+  });
 });
