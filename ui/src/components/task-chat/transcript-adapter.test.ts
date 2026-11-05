@@ -2867,6 +2867,131 @@ describe("prependIssueBrief (PAP-375)", () => {
   });
 });
 
+describe("harness status notices", () => {
+  const notice = (noticeId: string, payload: Record<string, unknown>): TranscriptEntry => ({
+    kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+    status: payload.severity === "error" ? "failed" : "informational", title: "Provider notice",
+    summary: String(payload.summary ?? ""),
+    payload: { schema: "paperclip.provider.notice.v1", noticeId, scope: "turn", userActionable: false, ...payload },
+  });
+  const read: TranscriptEntry = { kind: "tool_call", ts: TS, toolUseId: "read-1", name: "read_file", input: { path: "a.ts" } };
+  const retry = notice("error:retry:turn-1", {
+    severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 2/5",
+    details: [{ name: "Reason", value: "responseStreamDisconnected" }],
+  });
+
+  it("shows status notices as top-level timeline rows while generic warnings stay hidden", () => {
+    const parsed = transcriptToTaskChatItems([
+      read,
+      notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] }),
+      notice("warning-1", { severity: "warning", category: "warning", recoverable: true, summary: "noise" }),
+    ], { runId: "status", running: true });
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), true);
+    expect(rows.map((row) => row.kind === "protocol" && row.surface === "provider_activity" ? row.id : row.kind)).toHaveLength(2);
+    const chip = rows[1];
+    expect(chip.kind === "protocol" && chip.surface === "provider_activity" && chip.details.find((d) => d.label === "Phase")?.value).toBe("running");
+    expect(JSON.stringify(rows)).not.toContain("noise");
+  });
+
+  it("marks a retry resolved once real work follows, and drops it behind a fatal error", () => {
+    const live = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry], { runId: "r", running: true })), true);
+    expect(live.at(-1)).toMatchObject({ kind: "protocol" });
+    expect(live.at(-1)).not.toHaveProperty("resolved");
+
+    const recovered = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, { ...read, toolUseId: "read-2" }], { runId: "r", running: true })), true);
+    expect(recovered.find((row) => row.kind === "protocol")).toMatchObject({ resolved: true });
+
+    const failed = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([
+      read, retry,
+      notice("error:final:turn-1", { severity: "error", category: "error", recoverable: false, summary: "You've hit your usage limit." }),
+    ], { runId: "r", running: false })), false);
+    const protocols = failed.filter((row) => row.kind === "protocol");
+    expect(protocols).toHaveLength(1);
+    expect(protocols[0]).toMatchObject({ summary: "You've hit your usage limit." });
+  });
+
+  it("keeps a later retry active after work between retries, and collapses back-to-back retries", () => {
+    const retry2 = notice("error:retry:turn-1", {
+      severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 1/5",
+    });
+    const work: TranscriptEntry = { ...read, toolUseId: "read-2" };
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, work, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[1]).not.toHaveProperty("resolved");
+    const backToBack = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(backToBack).toHaveLength(1);
+    expect(backToBack[0]).toMatchObject({ summary: "Reconnecting... 1/5" });
+  });
+
+  it("marks a compaction that never completed as interrupted once the turn ends", () => {
+    const running = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] });
+    const rows = (live: boolean) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, running], { runId: "r", running: live })), live)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows(true)[0]).toMatchObject({ status: "informational" });
+    expect(rows(false)[0]).toMatchObject({ status: "interrupted" });
+  });
+
+  it("marks a retry left unresolved by a stopped turn as interrupted", () => {
+    const rows = (live: boolean) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry], { runId: "r", running: live })), live)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows(true)[0]).toMatchObject({ status: "informational" });
+    expect(rows(false)[0]).toMatchObject({ status: "interrupted" });
+    expect(rows(false)[0]).not.toHaveProperty("resolved");
+  });
+
+  it("treats a retry followed only by the final answer as recovered", () => {
+    const answer: TranscriptEntry = { kind: "assistant", ts: TS, text: "Done: 8 lines.", channel: "final" } as TranscriptEntry;
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, answer], { runId: "r", running: false })), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[0]).not.toMatchObject({ status: "interrupted" });
+  });
+
+  it("keeps a retry stopped when only run-end records follow it", () => {
+    const parsed = [
+      ...transcriptToTaskChatItems([read, retry], { runId: "r", running: false }),
+      { id: "terminal", kind: "protocol", surface: "run_terminal", turnState: "cancelled", runState: "cancelled", disposition: "blocked" } as TaskChatItem,
+      { id: "stopped", kind: "marker", variant: "interrupted", label: "Run stopped" } as TaskChatItem,
+    ];
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows[0]).toMatchObject({ status: "interrupted" });
+    expect(rows[0]).not.toHaveProperty("resolved");
+  });
+
+  it("does not treat a turn-end changed-files card as recovery from a stopped retry", () => {
+    const parsed = [
+      ...transcriptToTaskChatItems([read, retry], { runId: "r", running: false }),
+      { id: "changes", kind: "protocol", surface: "workspace_change", changeSetId: "c", revision: 1, source: "runner_verified",
+        complete: true, files: [], totals: { files: 1, additions: 2, deletions: 0 }, patchArtifactRef: null } as TaskChatItem,
+    ];
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows[0]).toMatchObject({ status: "interrupted" });
+    expect(rows[0]).not.toHaveProperty("resolved");
+  });
+
+  it("lets a context.compacted divider replace the completed compaction chip", () => {
+    const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
+    const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };
+    const rows = (entries: TranscriptEntry[]) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(entries, { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity" && row.family === "provider_notice");
+    expect(rows([read, compacted])).toHaveLength(1);
+    expect(rows([read, compacted, divider])).toHaveLength(0);
+    const marker = { id: "m", kind: "marker", variant: "context_compacted", label: "Context compacted" } as unknown as TaskChatItem;
+    const parsed = paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, compacted], { runId: "r", running: true }));
+    const withMarker = buildTurnTimelineRows([...parsed, marker], true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(withMarker).toHaveLength(0);
+  });
+});
+
 describe("turn changes assembled from edit rows", () => {
   it("lists each edited file when the harness reports only per-edit patches", () => {
     const items = transcriptToTaskChatItems(

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
@@ -165,6 +166,8 @@ let host: AcpxRuntimeHost | null = null;
 let activeHostCleanup: Promise<void> | null = null;
 let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
+/** Claude compaction banners seen by this sidecar; pairs start and end notices. */
+let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
@@ -1090,6 +1093,8 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
       entries: sanitizeAcpxPlanEntries(record(event).entries),
     };
   }
+  const statusNotice = claudeStatusBannerNotice(event);
+  if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {
     return {
       type: event.stream === "thought" ? "thinking" : "text_delta",
@@ -1206,6 +1211,24 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
     type: "provider_notice",
     category: `unclassified_acp_${safeCode(record(event).type, "unknown")}`,
     summary: "The qualified ACP agent emitted an unclassified runtime update.",
+  };
+}
+
+/** Claude harness lifecycle text becomes a status notice, never part of the answer. */
+function claudeStatusBannerNotice(event: AcpRuntimeEvent): Record<string, unknown> | null {
+  if (initializedAgent !== "claude" || event.type !== "text_delta" || event.stream === "thought") return null;
+  const banner = classifyClaudeStatusBanner(event.text, typeof event.messageId === "string" && event.messageId ? event.messageId : null);
+  if (!banner) return null;
+  if (banner.phase === "running") claudeCompactionCount += 1;
+  return {
+    type: "provider_notice",
+    severity: banner.severity,
+    category: banner.category,
+    summary: banner.summary,
+    ...(banner.category === "context_compaction" ? { noticeKey: `compaction-${claudeCompactionCount}` } : {}),
+    ...(banner.phase || banner.details.length > 0
+      ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+      : {}),
   };
 }
 

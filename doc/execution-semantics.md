@@ -498,6 +498,9 @@ A new run that finds such a recently ended writer waits for the workspace. It do
 not fail setup. The wait uses the same one-hour holder cutoff as a quiet live
 writer, measured from the time the writer ended. After the cutoff, preparation
 fails with the unfinished-writer error and leaves the held files unchanged.
+This wait is also one parked retry, for example after a reassignment stops the
+writer. It is re-checked every minute while the ended writer's hold settles, is
+admitted once the hold releases, and stops parking at the same cutoff.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
@@ -2071,7 +2074,10 @@ backup. Paperclip restores that backup into the new sandbox only when all of
 these are true: the backup's source lease is expired or failed with a provider
 `destroyed` termination receipt, the source lease's backup stamp names this
 exact backup manifest, and no provider event for the session was recorded after
-the backup completed. Any other state is ambiguous. The run then fails closed
+the backup completed. Normal warm handoffs can leave multiple lease records
+for that allocation. Restore requires one final owner and the existing matching
+predecessor/successor receipts for every earlier owner. Unrelated, live, or
+incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
 A per-turn sandbox turn can finish through recovery without a Runner
@@ -2221,7 +2227,10 @@ The lease carries the verified stop forward as
 `workspaceRecoveryCleanup.stopReceipt`. The saved message, Retry and the next
 remote workspace writer wait for that stop, not for the destroy. So they continue
 right after recovery, instead of after the cleanup retry. A lease without a
-matching stop receipt still blocks them.
+matching stop receipt still blocks them. The same holds when the Stop or
+interrupt landed before the provider turn opened: the saved message then goes
+through ordinary admission once the acknowledged Stop has a verified stop, and
+that check also accepts the carried-forward receipt.
 
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
