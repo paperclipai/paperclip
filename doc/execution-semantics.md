@@ -1522,6 +1522,13 @@ The scan scope is:
 
 The reusable watchdog issue is a child of the watched source issue for audit and navigation, but it is excluded from the watched work subtree. This prevents recursive watchdog loops.
 
+Liveness recovery excludes `task_watchdog` origin children when inferring business dependencies or a healthy child path. An active watchdog review alone does not establish that the original work has recovered. Independent follow-up repair issues remain eligible. Explicit watchdog-review dependencies remain valid; recovery does not infer them from `parentId` alone.
+
+Inbox live-descendant counts describe navigation activity, including watchdog review runs. They do not establish business progress. Index lists that request live-descendant summaries also receive blocker attention from the business graph analysis. The UI preserves that result and does not synthesize coverage from server or loaded-tree activity counts. An absent analysis remains unknown; explicit watchdog-review dependencies still participate in the business graph. Index attention is a conclusion-only summary: it includes state, counts, and liveness, but no sampled blocker identities or titles. Visibility of the listed root does not authorize reading every descendant in the analysis graph.
+
+
+Blocker-attention projections apply the same boundary when walking implicit child paths, including nested paths. Removing an incorrect explicit review dependency must not leave the same review counted as active business work solely through parentage. Reads preserve existing explicit relations; they do not decide whether a stored review dependency was intentional.
+
 ### Stopped-subtree evaluation
 
 Task watchdog evaluation is conservative. If any included issue has a live run, queued wake, or scheduled retry that should fire without intervention, the subtree is live and the task watchdog does not run.

@@ -352,7 +352,7 @@ describe("BlockedInboxView", () => {
     act(() => root.unmount());
   });
 
-  it("uses loaded live descendants when blocked inbox rows do not have a server summary", async () => {
+  it("does not turn loaded review activity into covered business work without server attention", async () => {
     mockIssuesApi.list.mockResolvedValue([
       {
         ...makeIssue(
@@ -376,7 +376,8 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector("a") !== null);
 
-    expect(container.querySelector('[aria-label="Blocked · waiting on 1 active sub-task"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Blocked · waiting on 1 active sub-task"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Blocked"]')).not.toBeNull();
 
     act(() => root.unmount());
   });

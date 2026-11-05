@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issueRelations, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -15,6 +15,7 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import * as heartbeatRuntime from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
@@ -930,6 +931,110 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
+  });
+
+  it.each([
+    ["manual", false],
+    ["task_watchdog", false],
+    ["task_watchdog_product_bug", false],
+    ["task_watchdog", true],
+  ] as const)("returns business attention for index summaries with %s children (explicit=%s)", async (originKind, explicit) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentId = randomUUID();
+    const prerequisiteId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Inbox review", issuePrefix: uniqueIssuePrefix(), requireBoardApprovalForNewAgents: false });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Stopped business", status: "blocked", assigneeAgentId: agentId },
+      { id: prerequisiteId, companyId, title: "Delivered prerequisite", status: "done" },
+      { id: childId, companyId, parentId, title: "Active descendant", status: "in_progress", originKind, assigneeAgentId: agentId },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: prerequisiteId, relatedIssueId: parentId, type: "blocks" },
+      ...(explicit ? [{ companyId, issueId: childId, relatedIssueId: parentId, type: "blocks" as const }] : []),
+    ]);
+    // Keep real issue routes and database writes; do not dispatch provider work.
+    const createHeartbeat = heartbeatRuntime.heartbeatService;
+    const heartbeatFactory = vi.spyOn(heartbeatRuntime, "heartbeatService").mockImplementation((...args) => ({
+      ...createHeartbeat(...args),
+      wakeup: vi.fn(async () => null),
+    }));
+    const app = createApp(companyId);
+    heartbeatFactory.mockRestore();
+    const plainIndex = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", ids: parentId });
+    expect(plainIndex.status).toBe(200);
+    expect(plainIndex.body[0]).not.toHaveProperty("blockerAttention");
+    const completedIndex = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", ids: prerequisiteId, includeLiveDescendantSummary: "true" });
+    expect(completedIndex.status).toBe(200);
+    expect(completedIndex.body[0]).toMatchObject({ id: prerequisiteId, liveDescendantCount: 0 });
+    expect(completedIndex.body[0]).not.toHaveProperty("blockerAttention");
+    // Exercise both ways the summary discovers a live run without changing its
+    // navigation count. Business coverage must come from the attention analysis;
+    // a context-only run does not prove the issue still owns that execution.
+    for (const source of ["executionRunId", "queuedExecutionRunId", "contextSnapshot"] as const) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: source === "queuedExecutionRunId" ? "queued" : "running", contextSnapshot: source === "contextSnapshot" ? { issueId: childId } : {} });
+      if (source !== "contextSnapshot") await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, childId));
+      __clearIssueListResponseCacheForTests();
+      const res = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", ids: parentId, includeLiveDescendantSummary: "true" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0]).toMatchObject({ id: parentId, listProjection: "index", liveDescendantCount: 1 });
+      expect(res.body[0].blockerAttention).toMatchObject(originKind === "task_watchdog" && !explicit
+        ? { state: "needs_attention", blockingTreeLive: false, unresolvedBlockerCount: 0 }
+        : { state: source !== "contextSnapshot" ? "covered" : "needs_attention", blockingTreeLive: true, unresolvedBlockerCount: 1 });
+      if (explicit && source === "contextSnapshot") {
+        // Remove only the explicit review edge through the supported HTTP API.
+        const updated = await request(app).patch(`/api/issues/${parentId}`).send({ blockedByIssueIds: [prerequisiteId] });
+        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+        const corrected = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", ids: parentId, includeLiveDescendantSummary: "true" });
+        expect(corrected.status).toBe(200);
+        expect(corrected.body[0]).toMatchObject({ liveDescendantCount: 1, blockerAttention: { state: "needs_attention", blockingTreeLive: false, unresolvedBlockerCount: 0 } });
+      }
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, childId));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it.each([
+    [false, false, "todo"],
+    [true, false, "todo"],
+    [true, true, "todo"],
+    [true, true, "in_review"],
+  ] as const)("keeps index attention free of private blocker details (explicit=%s, deep=%s, status=%s)", async (explicit, deep, status) => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    try {
+      const companyId = randomUUID(), parentId = randomUUID(), childId = randomUUID(), intermediateId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Private attention", issuePrefix: uniqueIssuePrefix() });
+      await seedCloudTenantMember(companyId);
+      await db.insert(issues).values([
+        { id: parentId, companyId, title: "Public stopped task", status: "blocked" },
+        { id: childId, companyId, parentId: explicit ? null : parentId, identifier: "PRIVATE-SAMPLE", title: "PRIVATE_BLOCKER_CONTENT", status, visibility: "private", privacyRootIssueId: childId, createdByUserId: "someone-else" },
+        ...(deep ? [{ id: intermediateId, companyId, title: "Readable intermediate blocker", status: "blocked" }] : []),
+      ]);
+      if (explicit) await db.insert(issueRelations).values([
+        { companyId, issueId: childId, relatedIssueId: deep ? intermediateId : parentId, type: "blocks" },
+        ...(deep ? [{ companyId, issueId: intermediateId, relatedIssueId: parentId, type: "blocks" as const }] : []),
+      ]);
+      const app = createApp(companyId);
+      await request(app).get(`/api/issues/${childId}`).expect(404);
+      const response = await request(app).get(`/api/companies/${companyId}/issues`)
+        .query({ view: "index", ids: parentId, includeLiveDescendantSummary: "true" }).expect(200);
+      expect(response.body[0].blockerAttention).toEqual({
+        state: status === "in_review" ? "stalled" : "needs_attention",
+        reason: status === "in_review" ? "stalled_review" : "attention_required", unresolvedBlockerCount: 1,
+        coveredBlockerCount: 0, stalledBlockerCount: status === "in_review" ? 1 : 0,
+        attentionBlockerCount: status === "in_review" ? 0 : 1,
+        sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null, blockingTreeLive: false,
+      });
+      expect(JSON.stringify(response.body[0].blockerAttention)).not.toContain(childId);
+      expect(JSON.stringify(response.body[0].blockerAttention)).not.toContain(intermediateId);
+      expect(JSON.stringify(response.body)).not.toContain("PRIVATE-SAMPLE");
+      expect(JSON.stringify(response.body)).not.toContain("PRIVATE_BLOCKER_CONTENT");
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {

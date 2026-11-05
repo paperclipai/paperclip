@@ -168,6 +168,56 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
+  it.each(["manual", "task_watchdog", "task_watchdog_product_bug"])(
+    "uses only business children with origin %s as implicit attention paths",
+    async (originKind) => {
+      const { companyId, agentId } = await createCompany("PWB");
+      const parentId = await insertIssue({ companyId, identifier: "PWB-1", title: "Stopped source", status: "blocked" });
+      for (const number of [2, 3]) {
+        const prerequisiteId = await insertIssue({ companyId, identifier: `PWB-${number}`, title: "Completed deliverable", status: "done" });
+        await block({ companyId, blockerIssueId: prerequisiteId, blockedIssueId: parentId });
+      }
+      const childId = await insertIssue({ companyId, identifier: "PWB-4", title: "Active child", status: "in_progress", parentId, originKind, assigneeAgentId: agentId });
+      await activeRun({ companyId, agentId, issueId: childId });
+
+      const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+      expect(parent?.blockerAttention).toMatchObject(originKind === "task_watchdog"
+        ? { state: "needs_attention", unresolvedBlockerCount: 0, blockingTreeLive: false }
+        : { state: "covered", reason: "active_child", unresolvedBlockerCount: 1, blockingTreeLive: true });
+    },
+  );
+
+  it("preserves an explicit watchdog dependency until the operator removes that edge", async () => {
+    const { companyId, agentId } = await createCompany("PWE");
+    const parentId = await insertIssue({ companyId, identifier: "PWE-1", title: "Source waiting for review", status: "blocked" });
+    const childId = await insertIssue({ companyId, identifier: "PWE-2", title: "Watchdog review", status: "in_progress", parentId, originKind: "task_watchdog", assigneeAgentId: agentId });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: childId });
+
+    const before = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    expect(before?.blockerAttention).toMatchObject({ state: "covered", unresolvedBlockerCount: 1, blockingTreeLive: true });
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, parentId))).toHaveLength(1);
+
+    // Correct only the dependency through the normal mutation service. Parentage
+    // remains unchanged and must not silently recreate an implicit review edge.
+    await svc.update(parentId, { blockedByIssueIds: [], companyGuard: companyId });
+    const after = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    expect(after?.blockerAttention).toMatchObject({ state: "needs_attention", unresolvedBlockerCount: 0, blockingTreeLive: false });
+    expect((await svc.getById(childId))?.parentId).toBe(parentId);
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, parentId))).toHaveLength(0);
+  });
+
+  it("does not propagate a watchdog child's live run through an implicit business-child chain", async () => {
+    const { companyId, agentId } = await createCompany("PWN");
+    const rootId = await insertIssue({ companyId, identifier: "PWN-1", title: "Root", status: "blocked" });
+    const businessId = await insertIssue({ companyId, identifier: "PWN-2", title: "Stopped business child", status: "blocked", parentId: rootId });
+    const reviewId = await insertIssue({ companyId, identifier: "PWN-3", title: "Watchdog review", status: "in_progress", parentId: businessId, originKind: "task_watchdog", assigneeAgentId: agentId });
+    await activeRun({ companyId, agentId, issueId: reviewId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+    expect(root?.blockerAttention).toMatchObject({ state: "needs_attention", unresolvedBlockerCount: 1, blockingTreeLive: false });
+  });
+
   it("classifies a blocked parent as covered when its child has a running execution path", async () => {
     const { companyId, agentId } = await createCompany("PBC");
     const parentId = await insertIssue({ companyId, identifier: "PBC-1", title: "Parent", status: "blocked" });

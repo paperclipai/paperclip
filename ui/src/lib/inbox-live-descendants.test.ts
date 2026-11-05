@@ -38,53 +38,14 @@ describe("inbox live descendant status helpers", () => {
     expect(resolveIssueLiveDescendantCount(makeIssue({ liveDescendantCount: -1 }), 2.7)).toBe(2);
   });
 
-  it("synthesizes covered blocker attention for a blocked row with live descendants", () => {
-    const attention = resolveInboxIssueBlockerAttention(
-      makeIssue({ liveDescendantCount: 2 }),
-      { isLive: false },
-    );
-
-    expect(attention).toMatchObject({
-      state: "covered",
-      reason: "active_child",
-      coveredBlockerCount: 2,
-    });
+  it.each([undefined, 0, 1, 3])("does not infer business coverage from navigation count %s", (liveDescendantCount) => {
+    const issue = makeIssue({ liveDescendantCount });
+    expect(resolveIssueLiveDescendantCount(issue, 1)).toBeGreaterThan(0);
+    expect(resolveInboxIssueBlockerAttention(issue)).toBeNull();
   });
 
-  it("uses loaded live descendants when the server count is absent", () => {
-    const attention = resolveInboxIssueBlockerAttention(
-      makeIssue({ liveDescendantCount: undefined }),
-      { isLive: false, loadedSubtreeLiveCount: 1 },
-    );
-
-    expect(attention?.state).toBe("covered");
-    expect(attention?.coveredBlockerCount).toBe(1);
-  });
-
-  it("keeps urgent blocked attention red even when descendants are live", () => {
-    for (const state of ["needs_attention", "stalled"] as const) {
-      const original = makeBlockerAttention({ state, reason: "attention_required" });
-      const attention = resolveInboxIssueBlockerAttention(
-        makeIssue({ blockerAttention: original, liveDescendantCount: 4 }),
-        { isLive: false },
-      );
-
-      expect(attention).toBe(original);
-    }
-  });
-
-  it("does not synthesize covered attention for the live row itself or non-blocked parents", () => {
-    expect(
-      resolveInboxIssueBlockerAttention(
-        makeIssue({ status: "blocked", liveDescendantCount: 2 }),
-        { isLive: true },
-      ),
-    ).toBeNull();
-    expect(
-      resolveInboxIssueBlockerAttention(
-        makeIssue({ status: "done", liveDescendantCount: 2 }),
-        { isLive: false },
-      ),
-    ).toBeNull();
+  it.each(["none", "covered", "needs_attention", "stalled"] as const)("preserves server attention %s regardless of navigation counts", (state) => {
+    const original = makeBlockerAttention({ state });
+    expect(resolveInboxIssueBlockerAttention(makeIssue({ blockerAttention: original, liveDescendantCount: 4 }))).toBe(original);
   });
 });

@@ -229,6 +229,7 @@ import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
+import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -3968,6 +3969,9 @@ async function readIssueBlockerAttentionBatch(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            // Parentage alone does not make watchdog verification business work.
+            // Explicit review dependencies remain in the separate relation query.
+            ne(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
@@ -8520,7 +8524,14 @@ export function issueService(db: Db) {
         reviewAttentionByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
-        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+        // Summary counts describe navigation activity, including review runs.
+        // Inbox coverage needs the business graph's authoritative classification.
+        filters?.listProjection === "index" && !includeLiveDescendantSummary
+          ? Promise.resolve(new Map<string, IssueBlockerAttention>())
+          : listIssueBlockerAttentionMap(db, companyId,
+              filters?.listProjection === "index"
+                ? withRuns.filter((row) => row.status === "blocked")
+                : withRuns),
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
           ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)

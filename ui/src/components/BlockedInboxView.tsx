@@ -311,8 +311,6 @@ function BlockedInboxRow({
   agentNameById,
   agents,
   userLabelById,
-  liveIssueIds,
-  subtreeLiveCounts,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
@@ -320,10 +318,7 @@ function BlockedInboxRow({
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
-  const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
-    isLive: liveIssueIds.has(row.issue.id),
-    loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
-  });
+  const blockerAttention = resolveInboxIssueBlockerAttention(row.issue);
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">

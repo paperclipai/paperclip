@@ -8434,7 +8434,24 @@ export function issueRoutes(
       : await filterIssuesForActor(req, rawResult);
     const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
     if (view === "index") {
-      const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
+      const body = result.map((issue) => {
+        const compact = toCompactIssue(issue);
+        const attention = compact.blockerAttention;
+        // Index needs business coverage, not identities from an unfiltered graph.
+        // Root visibility does not authorize reading every sampled descendant.
+        if (attention) compact.blockerAttention = {
+          state: attention.state,
+          reason: attention.reason,
+          unresolvedBlockerCount: attention.unresolvedBlockerCount,
+          coveredBlockerCount: attention.coveredBlockerCount,
+          stalledBlockerCount: attention.stalledBlockerCount,
+          attentionBlockerCount: attention.attentionBlockerCount,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+          blockingTreeLive: attention.blockingTreeLive,
+        };
+        return { ...compact, listProjection: "index" as const };
+      });
       return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
     }
     const issueIds = result.map((issue) => issue.id);

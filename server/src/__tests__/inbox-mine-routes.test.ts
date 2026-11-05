@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { agents, authUsers, companyMemberships, heartbeatRuns, issueInboxArchives, issues } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, heartbeatRuns, issueInboxArchives, issueRelations, issues } from "@paperclipai/db";
 import { INBOX_MINE_ISSUE_STATUS_FILTER, type CompactIssue, type InboxMineSnapshot } from "@paperclipai/shared";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -57,6 +57,57 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
   }
 
   const sortedContext = (rows: CompactIssue[]) => [...rows].sort((a, b) => a.id.localeCompare(b.id));
+
+  it.each([
+    ["manual", false],
+    ["task_watchdog", false],
+    ["task_watchdog_product_bug", false],
+    ["task_watchdog", true],
+  ] as const)("keeps Mine business attention separate from %s activity (explicit=%s)", async (originKind, explicit) => {
+    const f = await seed("Mine business attention");
+    const agent = await addAgent(f.companyId);
+    const parent = await addTask(f.companyId, f.userId, { status: "blocked", assigneeAgentId: agent.id });
+    const delivered = await addTask(f.companyId, f.userId, { status: "done" });
+    const child = await addTask(f.companyId, f.userId, { parentId: parent.id, status: "in_progress", originKind, assigneeAgentId: agent.id });
+    await ctx.db.insert(issueRelations).values([
+      { companyId: f.companyId, issueId: delivered.id, relatedIssueId: parent.id, type: "blocks" },
+      ...(explicit ? [{ companyId: f.companyId, issueId: child.id, relatedIssueId: parent.id, type: "blocks" as const }] : []),
+    ]);
+    const [run] = await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id, issueId: child.id, status: "running", contextSnapshot: { issueId: child.id } }).returning();
+    await ctx.db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, child.id));
+
+    const response = await request(appFor(f.userId)).get(`/api/companies/${f.companyId}/inbox/mine`).expect(200);
+    const snapshot = response.body as InboxMineSnapshot;
+    expect(snapshot.userId).toBe(f.userId);
+    const row = snapshot.issues.find(issue => issue.id === parent.id);
+    expect(row).toMatchObject({ status: "blocked", listProjection: "index", liveDescendantCount: 1 });
+    expect(row?.displayStatus ?? row?.status).toBe("blocked");
+    expect(row?.blockerAttention).toMatchObject(originKind === "task_watchdog" && !explicit
+      ? { state: "needs_attention", blockingTreeLive: false, unresolvedBlockerCount: 0 }
+      : { state: "covered", blockingTreeLive: true, unresolvedBlockerCount: 1 });
+  });
+
+  it("keeps private blocker details out of Mine attention summaries", async () => {
+    const f = await seed("Private Mine attention");
+    const parent = await addTask(f.companyId, f.userId, { status: "blocked" });
+    const privateId = randomUUID();
+    await addTask(f.companyId, "someone-else", {
+      id: privateId, parentId: parent.id, title: "PRIVATE_ATTENTION_CONTENT", status: "todo",
+      visibility: "private", privacyRootIssueId: privateId,
+    });
+    const app = appFor(f.userId);
+    await request(app).get(`/api/issues/${privateId}`).expect(404);
+    const response = await request(app).get(`/api/companies/${f.companyId}/inbox/mine`).expect(200);
+    const row = (response.body as InboxMineSnapshot).issues.find(issue => issue.id === parent.id);
+    expect(row?.blockerAttention).toEqual({
+      state: "needs_attention", reason: "attention_required", unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0, stalledBlockerCount: 0, attentionBlockerCount: 1,
+      sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null, blockingTreeLive: false,
+    });
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("PRIVATE_ATTENTION_CONTENT");
+    expect(serialized).not.toContain(privateId);
+  });
 
   it("returns the legacy authorized index, archived parent captions and canonical rich failure state in one snapshot", async () => {
     const f = await seed("Snapshot equivalence");
