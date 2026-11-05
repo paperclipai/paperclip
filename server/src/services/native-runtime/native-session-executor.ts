@@ -7036,8 +7036,6 @@ function loadWarmNativeCheckpoint(
         terminalTurns: [],
         pendingRuntimeRequests: [],
         governedWait: undefined,
-        // The previous run's starting point is run-scoped too. Keeping it would
-        // report that run's usage again as part of this one.
         ...(envelope.snapshot.codexUsageBaseline
           ? { codexUsageBaseline: codexUsageBaselineForNextRun(envelope.snapshot.codexUsageBaseline) }
           : {}),

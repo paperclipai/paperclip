@@ -33,10 +33,6 @@ export function observeCodexUsage(
   return { baseline, latest, ...(state?.accounted ? { accounted: state.accounted } : {}) };
 }
 
-/** Starts a new run's measurement on a thread that already has usage. Usage above
- * the accounted total was never charged, so it stays in the new run's delta. The
- * accounted total is kept until a run reports, so a run with no report cannot
- * absorb usage that was carried forward for the next one. */
 export function codexUsageBaselineForNextRun(state: CodexUsageBaseline): CodexUsageBaseline {
   return {
     baseline: { ...(state.accounted ?? state.latest) },

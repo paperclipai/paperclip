@@ -11012,7 +11012,6 @@ describe("native warm session supervision", () => {
             driverSessionId: checkpoint.driverSessionId,
             providerSessionId: checkpoint.providerSessionId,
             activeTurnId: checkpoint.activeTurnId,
-            // The same run is still measuring from its own starting point.
             codexUsageBaseline: checkpoint.codexUsageBaseline,
           }),
         );
@@ -11070,8 +11069,6 @@ describe("native warm session supervision", () => {
       ...firstRun,
       binding: { ...firstRun.binding, runId: "run-warm-next-run-usage-second" },
     } as NativeExecutionInputV1;
-    // A fresh thread's first run has an empty baseline. Keeping it would report
-    // the whole thread total as the next run's usage.
     const checkpoint = {
       identity: {
         runId: firstRun.binding.runId,

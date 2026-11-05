@@ -28,7 +28,6 @@ describe("Codex resume accounting through the production driver", () => {
       const usage = events.filter(event => event.payload.kind === "usage").at(-1);
       return (usage?.payload.usage as { runDelta: unknown }).runDelta;
     };
-    // Core rebinds a saved session to the next run without calling attachRun.
     const coldRestart = async (
       session: Awaited<ReturnType<typeof driver.openSession>>,
       transport: FakeCodexTransport,
