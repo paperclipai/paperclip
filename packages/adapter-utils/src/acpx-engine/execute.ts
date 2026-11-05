@@ -2,6 +2,7 @@ import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/op
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
 import { codexShellEnvironmentKeys } from "../codex-shell-environment.js";
 import { applyObservabilityEnvironment } from "../agent-observability.js";
+import { managedClaudeRoutingEnvironment } from "../managed-claude-routing.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
@@ -2184,6 +2185,10 @@ async function buildRuntime(input: {
       isolateProjectSettings,
     });
     if (managedLocalClaude) {
+      env.PAPERCLIP_LEGACY_CLAUDE_MANAGED = "1";
+      env.PAPERCLIP_MANAGED_AUTH_SECRET = JSON.stringify(managedClaudeRoutingEnvironment(
+        resolveRuntimeEnv(env, acpxAgent, { inheritHostEnvironment: true }),
+      ));
       env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = isolateProjectSettings ? "1" : "0";
       resolvedAdapterEnv.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY;
       if (isolateProjectSettings) {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -177,13 +177,27 @@ describe("claude_local ACP startup fallback", () => {
     try {
       const configDir = path.join(root, "provider");
       await mkdir(configDir);
-      const ctx = buildContext({ engine: "cli", managedAiConnection: { provider: "anthropic" }, env: { CLAUDE_CONFIG_DIR: configDir },
+      const ctx = buildContext({ engine: "cli", managedAiConnection: { provider: "anthropic" }, env: {
+        CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_BASE_URL: "https://trusted.invalid", ANTHROPIC_API_KEY: "synthetic-key",
+      },
         paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } });
       ctx.context = { paperclipWorkspace: { claudeProjectSettingsAllowed: true } };
+      let settingsPath = "";
+      const implementation = runAdapterExecutionTargetProcess.getMockImplementation()!;
+      runAdapterExecutionTargetProcess.mockImplementationOnce((async (...args: unknown[]) => {
+        const cliArgs = args[3] as string[];
+        settingsPath = cliArgs[cliArgs.indexOf("--settings") + 1]!;
+        const protectedSettings = JSON.parse(await readFile(settingsPath, "utf8"));
+        expect(protectedSettings.env.ANTHROPIC_BASE_URL).toBe("https://trusted.invalid");
+        expect(protectedSettings.env.ANTHROPIC_API_KEY).toBe("synthetic-key");
+        expect(protectedSettings.apiKeyHelper).toBe("");
+        return implementation();
+      }) as never);
       await execute(ctx as never);
       const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
       const args = calls[0]![3];
       expect(args[args.indexOf("--setting-sources") + 1]).toBe("user,project");
+      expect(await stat(settingsPath).then(() => true, () => false)).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

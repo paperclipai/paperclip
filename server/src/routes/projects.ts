@@ -669,7 +669,11 @@ export function projectRoutes(db: Db) {
         remoteWorkspaceRef: workspace.remoteWorkspaceRef };
       return matchesClaudeProjectTrustGrant(grant as ClaudeProjectTrustIdentity, identity) ? [agentId] : [];
     });
-    res.json({ agentIds });
+    const existingAgents = agentIds.length ? await db.select({ id: agents.id }).from(agents).where(and(
+      eq(agents.companyId, project.companyId), inArray(agents.id, agentIds),
+    )) : [];
+    const existingIds = new Set(existingAgents.map((agent) => agent.id));
+    res.json({ agentIds: agentIds.filter((id) => existingIds.has(id)) });
   });
 
   router.put("/projects/:id/workspaces/:workspaceId/claude-project-trust",

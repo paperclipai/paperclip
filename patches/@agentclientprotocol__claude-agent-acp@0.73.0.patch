@@ -25,7 +25,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..2d0972362440769625bf3a5e0e1cdc1c
                                      },
                                  });
                              }
-@@ -5311,14 +5321,28 @@ export class ClaudeAcpAgent {
+@@ -5311,14 +5321,36 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -42,6 +42,14 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..2d0972362440769625bf3a5e0e1cdc1c
 +                    ...JSON.parse(process.env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS || "{}"),
 +                },
 +            }),
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_MANAGED === "1" && {
++                settings: {
++                    ...(typeof settings === "object" && settings ? settings : {}),
++                    ...(process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1" ? JSON.parse(process.env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS || "{}") : {}),
++                    apiKeyHelper: "",
++                    env: { ...(typeof settings === "object" && settings ? settings.env : {}), ...JSON.parse(process.env.PAPERCLIP_MANAGED_AUTH_SECRET || "") },
++                },
++            }),
              env,
              // Override certain fields that must be controlled by ACP
              cwd: params.cwd,
@@ -55,7 +63,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..2d0972362440769625bf3a5e0e1cdc1c
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5353,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5361,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),

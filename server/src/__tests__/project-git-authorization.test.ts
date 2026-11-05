@@ -4,7 +4,7 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { createDb, authUsers, companyMemberships, connectionGrants, executionWorkspaces, heartbeatRuns, instanceUserRoles, issues, projectAccessMembers, projects, projectWorkspaces, resourceLifecycleEvents, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { createDb, agents, authUsers, companyMemberships, connectionGrants, executionWorkspaces, heartbeatRuns, instanceUserRoles, issues, projectAccessMembers, projects, projectWorkspaces, resourceLifecycleEvents, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { ghFetch } from "../services/github-fetch.js";
 import { projectRoutes } from "../routes/projects.js";
@@ -387,9 +387,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const expectedUpdatedAt = f.workspace.updatedAt.toISOString();
       const { sourceType, cwd, repoUrl, remoteProvider, remoteWorkspaceRef } = f.workspace;
       const expectedSource = { sourceType, cwd, repoUrl, repoRef: "main", defaultRef: "main", remoteProvider, remoteWorkspaceRef };
+      const [purged] = await db.insert(agents).values({ companyId: f.input.companyId, name: "Purged agent" }).returning();
       expect((await request(app(true)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(403);
       expect((await request(app(false)).put(url).send({ agentIds: [randomUUID()], expectedUpdatedAt, expectedSource })).status).toBe(422);
-      expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(200);
+      expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId, purged.id], expectedUpdatedAt, expectedSource })).status).toBe(200);
+      await db.delete(agents).where(eq(agents.id, purged.id));
       expect((await request(app(false)).get(url)).body.agentIds).toEqual([f.input.agentId]);
       const change = await request(app(false)).patch(`/api/projects/${f.project.id}/workspaces/${f.workspace.id}`)
         .send({ repoUrl: "https://github.com/fixture/other.git" });

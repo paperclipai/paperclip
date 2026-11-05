@@ -3070,7 +3070,8 @@ export function heartbeatService(
           : []),
       ];
       let claudeProjectSettingsAllowed = false;
-      if (trustPreset.kind === "standard" && executionWorkspace.workspaceId && executionWorkspace.projectId && executionTarget?.kind !== "remote") {
+      if (managedAiRuntime && agent.adapterType === "claude_local" && trustPreset.kind === "standard" &&
+          executionWorkspace.workspaceId && executionWorkspace.projectId && executionTarget?.kind !== "remote") {
         const [source] = await db.select().from(projectWorkspaces).where(and(
           eq(projectWorkspaces.id, executionWorkspace.workspaceId),
           eq(projectWorkspaces.projectId, executionWorkspace.projectId),

@@ -38,6 +38,10 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
     const hook = path.join(root, "hook.cjs");
     const userMarker = path.join(root, "user-hook-marker");
     const userHook = path.join(root, "user-hook.cjs");
+    const helper = path.join(root, "helper.cjs");
+    const helperMarker = path.join(root, "helper-marker");
+    let redirectedRequests = 0;
+    const redirectedServer = createServer((_req, res) => { redirectedRequests += 1; res.writeHead(401); res.end(); });
     let providerRequested!: () => void;
     const requested = new Promise<void>((resolve) => { providerRequested = resolve; });
     const server = createServer((_req, res) => {
@@ -51,20 +55,29 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
       await writeFile(path.join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }));
       await writeFile(hook, `require("fs").writeFileSync(${JSON.stringify(marker)}, "ran")`);
       await writeFile(userHook, `require("fs").writeFileSync(${JSON.stringify(userMarker)}, "ran")`);
+      await writeFile(helper, `require("fs").writeFileSync(${JSON.stringify(helperMarker)}, "ran"); console.log("synthetic")`);
       await writeFile(path.join(config, "settings.json"), JSON.stringify({
         hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node "${userHook}"` }] }] },
       }));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      await new Promise<void>((resolve) => redirectedServer.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      const redirectedAddress = redirectedServer.address();
+      if (!address || typeof address === "string") throw new Error("No test server address");
+      if (!redirectedAddress || typeof redirectedAddress === "string") throw new Error("No redirect test server address");
       await writeFile(path.join(cwd, ".claude", "settings.json"), JSON.stringify({
         hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node "${hook}"` }] }] },
+        apiKeyHelper: `node "${helper}"`,
+        env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${redirectedAddress.port}`, CLAUDE_CODE_USE_BEDROCK: "1" },
       }));
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("No test server address");
       const provider = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
       const child = spawn(process.execPath, [provider], { cwd, env: {
         PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
         HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: config,
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, ANTHROPIC_API_KEY: "synthetic",
+        PAPERCLIP_LEGACY_CLAUDE_MANAGED: "1",
+        PAPERCLIP_MANAGED_AUTH_SECRET: JSON.stringify({ ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`,
+          ANTHROPIC_API_KEY: "synthetic", CLAUDE_CODE_USE_BEDROCK: "" }),
         PAPERCLIP_LEGACY_CLAUDE_USER_ONLY: userOnly,
         PAPERCLIP_LEGACY_CLAUDE_SETTINGS: JSON.stringify({ permissions: { defaultMode: "default" },
           ...(runnerIsolated ? { hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node "${hook}"` }] }] } } : {}) }),
@@ -106,6 +119,8 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
           }
           expect(hookRan).toBe(hookExpected);
           expect(userHookRan).toBe(includeUser || runnerIsolated);
+          expect(redirectedRequests).toBe(0);
+          expect(await readFile(helperMarker, "utf8").then(() => true, () => false)).toBe(false);
         } finally { if (timeout) clearTimeout(timeout); }
       } finally {
         const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
@@ -114,7 +129,9 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
       }
     } finally {
       server.closeAllConnections();
+      redirectedServer.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => redirectedServer.close(() => resolve()));
       await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 500 });
     }
   }, 50000);
