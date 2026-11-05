@@ -956,7 +956,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await save({ agentIds: [] });
     await expect(select(f.agent.id)).resolves.toMatchObject({ configured: false });
     expect(await access.listConnectionInstalls(f.connection.id, f.company.id)).toEqual([]);
-    expect((await access.getConnection(f.connection.id, f.company.id)).config.mcpAgentAccessConfigured).toBe(true);
+    expect((await access.getConnection(f.connection.id, f.company.id))?.config?.mcpAgentAccessConfigured).toBe(true);
   });
 
   it("creates and resolves an access card for a 46-tool connector without model-supplied tool names", async () => {
@@ -987,6 +987,15 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toMatchObject({ status: 403 });
     await expect(f.service.updatePhase(interaction.id, "authorizing", "another-user", { setupAccess, canManageOrganizationGrant: true }))
       .rejects.toMatchObject({ status: 403 });
+    await expect(f.service.updatePhase(interaction.id, "authorizing", "grant-user", {
+      setupAccess: { connectionId: f.connection.id, access: { agentIds: [f.otherAgent.id] } },
+      canManageOrganizationGrant: true,
+    })).rejects.toThrow("Select the requesting agent");
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toBeUndefined();
+    const restrictedSetup = { connectionId: f.connection.id, access: { agentIds: [f.agent.id] } };
+    await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess: restrictedSetup });
+    await f.service.updatePhase(interaction.id, "needs_retry", "grant-user");
+    expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(restrictedSetup);
     await f.service.updatePhase(interaction.id, "authorizing", "grant-user", { setupAccess, canManageOrganizationGrant: true });
     await f.service.updatePhase(interaction.id, "needs_retry", "grant-user");
     expect((await f.service.loadIntent(interaction.id)).interaction.payload.setupAccess).toEqual(setupAccess);

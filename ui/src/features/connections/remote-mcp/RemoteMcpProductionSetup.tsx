@@ -32,7 +32,7 @@ function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
 }
 
 export function RemoteMcpProductionSetup({ providerId, connection, host = "page", interactionId,
-  upstreamServiceName, requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
+  upstreamServiceName, requestedAgentId, requiredAgentId, setupAccess, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
 }: ConnectionSetupFlowProps & { providerId: RemoteMcpProviderId; connection?: ToolConnection }) {
   const provider = remoteMcpProviders[providerId];
   const template = getConnectableAppDefinition(providerId)?.agentInstructions;
@@ -65,6 +65,9 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   const savedConnection = useRef(connection);
   const busy = useRef(false);
   const authorizationUrl = useRef<string | undefined>(undefined);
+  const savedAudience = connection?.status === "draft" && setupAccess?.connectionId === connection.id
+    ? setupAccess.access : undefined;
+  const hydratedAudience = useRef<string | null>(null);
   const [state, setState] = useState<RemoteMcpSetupState>(() => ({
     // PAP-659 C0: there is no Access step on the way in. The resolved default
     // is stated on the connect screen and changed in its Advanced disclosure;
@@ -77,6 +80,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     token: "", headers: [], connectStatus: oauthOutcome === "denied" ? "cancelled" : oauthOutcome === "failed" ? "oauth_failed" : "idle", connected: false,
     identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? "Saved credentials are retained when these fields are left blank. Enter a replacement only to change them." : null, refreshing: false,
     ...(!connection ? readAccessDraft(accessDraftKey) : {}),
+    ...(savedAudience ? { allAgents: savedAudience === "all_agents", agentIds: savedAudience === "all_agents" ? [] : savedAudience.agentIds } : {}),
     ...(requestedAgentId ? { allAgents: false, agentIds: [requestedAgentId] } : {}),
   }));
   const installs = useQuery({ queryKey: queryKeys.tools.connectionInstalls(connection?.id ?? "__new__"), queryFn: () => toolsApi.getConnectionInstalls(connection!.id), enabled: !!connection });
@@ -85,8 +89,18 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId,
   });
   useEffect(() => {
-    if (installs.data && !requestedAgentId) setState((s) => ({ ...s, allAgents: installs.data.installs.some((i) => i.targetType === "company"), agentIds: installs.data.installs.filter((i) => i.targetType === "agent").map((i) => i.targetId) }));
-  }, [installs.data, requestedAgentId]);
+    const savedInstalls = installs.data?.installs;
+    if (!savedInstalls || requestedAgentId) return;
+    if (savedAudience) {
+      const key = JSON.stringify(savedAudience);
+      if (hydratedAudience.current === key) return;
+      hydratedAudience.current = key;
+    }
+    setState((s) => ({ ...s,
+      allAgents: savedAudience ? savedAudience === "all_agents" : savedInstalls.some((i) => i.targetType === "company"),
+      agentIds: savedAudience ? savedAudience === "all_agents" ? [] : savedAudience.agentIds : savedInstalls.filter((i) => i.targetType === "agent").map((i) => i.targetId),
+    }));
+  }, [installs.data, requestedAgentId, savedAudience]);
   useEffect(() => {
     if (connection) return;
     try { sessionStorage.setItem(accessDraftKey, JSON.stringify({ grantKind: state.grantKind, allAgents: state.allAgents, agentIds: state.agentIds })); } catch { /* Storage can be disabled. */ }
@@ -179,6 +193,10 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   }, [state.connectStatus, interactionId]);
   const submit = async (saveDraft = false) => {
     if (busy.current || !selectedCompanyId || !instructionsValid || (connection && !installs.data)) return;
+    if (!saveDraft && (!connection || connection.status === "draft") && requiredAgentId && !state.allAgents && !state.agentIds.includes(requiredAgentId)) {
+      edit({ notice: "Include the requesting agent or choose all agents to continue this task." });
+      return;
+    }
     try {
       const url = new URL(state.url.trim());
       if (!["http:", "https:"].includes(url.protocol)) throw new Error();
@@ -234,7 +252,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       }
       if (saveDraft) { if (onCancel) onCancel(); else navigate("/apps"); return; }
       if (result.auth?.kind === "oauth") {
-        if (interactionId) await connectionIntentsApi.setPhase(interactionId, "authorizing", {
+        if (interactionId && (!connection || connection.status === "draft")) await connectionIntentsApi.setPhase(interactionId, "authorizing", {
           connectionId: result.connectionId,
           access: state.allAgents ? "all_agents" : { agentIds: state.agentIds },
         });

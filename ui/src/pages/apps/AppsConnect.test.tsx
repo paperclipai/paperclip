@@ -3039,9 +3039,30 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       asCurrentUser: true,
       interactionId,
     });
+    // The task already stores its restricted audience. Hidden form defaults
+    // must not replace it with all_agents when sign-in is resumed.
+    expect(intentPhaseMock.mock.calls.some(call => call[2] !== undefined)).toBe(false);
     expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=existing",
     );
+  });
+
+  it("requires the task requester in a new OAuth audience before starting provider sign-in", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+    connectAppMock.mockResolvedValue({ connectionId: "conn-notion", connection: { id: "conn-notion", credentialPolicy: "shared" }, auth: { kind: "oauth" } });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="notion" interactionId="intent-1" requiredAgentId="agent-1" />);
+    await openAccessAdvanced();
+    await act(async () => radioContaining("Just agents I pick")!.click());
+    await flushReact();
+    await act(async () => buttonByText("Select agents")!.click());
+    await flushReact();
+    await act(async () => document.body.querySelector<HTMLElement>('[aria-label="Allow Grace"]')!.click());
+    await flushReact();
+    await passAccessStep();
+    await submitCuratedOAuthSetup();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(intentPhaseMock).not.toHaveBeenCalled();
   });
 
   it("resumes the exact draft selected by Finish setup", async () => {

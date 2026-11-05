@@ -75,6 +75,8 @@ New tool setup uses the normal Apps identity and audience choices, including acc
 
 Saving a tool connection's agent audience updates its permission profile and installations in the same transaction. This includes GitHub credential admission and newly hired agents. Explicitly narrowing or clearing the audience removes the corresponding installations. An access request without exact tool names can review an indexed catalog of up to 500 tools; explicit model-selected tool lists remain limited to 20. Existing action blocks still apply, and write tools granted by an access card require approval.
 
+New task setup must include the requesting agent, even when the human chooses a broader audience. The form and phase save reject an omitted requester before provider sign-in. Resuming OAuth with hidden audience controls retains the saved audience rather than submitting form defaults; gateway draft setup restores the saved selection into its visible controls.
+
 ## Verification
 
 Service and native-authority tests cover discovery, current identity, company boundaries, cross-run deduplication, additive grants and installs, permission denial, resolution atomicity, restart delivery and stale assignment. `tests/e2e/in-feed-native/playwright.config.ts` starts source `test-drive` instances with fresh data directories and a deterministic fake Codex provider plus MCP server. It exercises the real native runner and gateway; it is fixture proof, not live Notion or GitHub proof. Run with `pnpm exec playwright test -c tests/e2e/in-feed-native/playwright.config.ts`.

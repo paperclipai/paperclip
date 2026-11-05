@@ -1375,6 +1375,9 @@ export function connectionIntentService(db: Db) {
           throw unprocessable("Only tool connection setup can select a new audience");
         }
         await access.getConnection(setupAccess.connectionId, loaded.issue.companyId);
+        if (setupAccess.access !== "all_agents" && !setupAccess.access.agentIds.includes(loaded.interaction.payload.requestingAgentId)) {
+          throw conflict("Select the requesting agent or all agents to continue this task");
+        }
         if (!options.canManageOrganizationGrant && (setupAccess.access === "all_agents"
           || setupAccess.access.agentIds.some(id => id !== loaded.interaction.payload.requestingAgentId))) {
           throw forbidden("Sharing a connection with other agents requires connection-management authority");
