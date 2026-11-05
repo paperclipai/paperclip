@@ -37,6 +37,28 @@ import {
   text,
 } from "./codex-driver-values.js";
 
+const DELTA_KINDS: Record<string, string> = {
+  "item/agentMessage/delta": "agentMessage",
+  "item/plan/delta": "plan",
+  "item/reasoning/summaryTextDelta": "reasoning",
+  "item/reasoning/textDelta": "reasoning",
+  "item/commandExecution/outputDelta": "commandExecution",
+  "item/fileChange/outputDelta": "fileChange",
+  "item/fileChange/patchUpdated": "fileChange",
+  "turn/diff/updated": "diff",
+  "turn/plan/updated": "plan",
+};
+
+// Turn-scoped activity a resumed runner can replay from committed history.
+// turn/completed is excluded: its replay still passes the fingerprint check.
+const REPLAYABLE_TURN_METHODS = new Set([
+  "turn/started",
+  "item/started",
+  "item/completed",
+  "item/mcpToolCall/progress",
+  ...Object.keys(DELTA_KINDS),
+]);
+
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
       for await (const notification of state.transport.notifications()) {
@@ -52,12 +74,28 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
         message: redactCodexDiagnostic(String(error)),
       });
       state.expirePendingInputRequestsAfterProviderLoss();
+      // The terminal error is what the run shows. Keep the redacted cause on it:
+      // the stream can close because of host-side runner supervision, not only
+      // the provider, and a bare "failed closed" hides which one it was.
       state.failProtocol(
         "notification_transport_failed",
-        "Provider notification transport failed closed.",
+        notificationTransportFailureMessage(error),
       );
     }
   }
+
+const NOTIFICATION_TRANSPORT_CAUSE_LIMIT = 1_000;
+
+function notificationTransportFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  // Redact before bounding so truncation cannot split a credential pattern.
+  const cause = redactCodexDiagnostic(raw).replace(/\s+/g, " ").trim();
+  if (!cause) return "Notification transport failed closed.";
+  const bounded = cause.length > NOTIFICATION_TRANSPORT_CAUSE_LIMIT
+    ? `${cause.slice(0, NOTIFICATION_TRANSPORT_CAUSE_LIMIT)}…`
+    : cause;
+  return `Notification transport failed closed: ${bounded}`;
+}
 
 async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     const sourceSequenceBefore = state.sourceSequence;
@@ -159,6 +197,13 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    // Check before canonical mapping, which would otherwise emit tool and plan
+    // events for the replayed turn while no turn is active.
+    if (
+      threadId === state.opened.threadId
+      && REPLAYABLE_TURN_METHODS.has(notification.method)
+      && ignoreRestoredTerminalReplay(state, notification.method, turnId)
+    ) return;
     if (notification.method === "paperclip/runtimeRequestExpired") {
       const payload = record(params.payload);
       const requestId = text(payload.requestId);
@@ -530,18 +575,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         recordWorkspaceChanges(state, turnId, item.changes, true);
       return;
     }
-    const deltaKinds: Record<string, string> = {
-      "item/agentMessage/delta": "agentMessage",
-      "item/plan/delta": "plan",
-      "item/reasoning/summaryTextDelta": "reasoning",
-      "item/reasoning/textDelta": "reasoning",
-      "item/commandExecution/outputDelta": "commandExecution",
-      "item/fileChange/outputDelta": "fileChange",
-      "item/fileChange/patchUpdated": "fileChange",
-      "turn/diff/updated": "diff",
-      "turn/plan/updated": "plan",
-    };
-    const deltaKind = deltaKinds[notification.method];
+    const deltaKind = DELTA_KINDS[notification.method];
     if (deltaKind !== undefined) {
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
       const methodChannel = channelForDelta(state, notification.method);
@@ -589,6 +623,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.
       if (state.activeTurnId === null || turnId !== state.activeTurnId) return;
+      if (state.codexUsageBaseline) state.codexUsageBaseline.accounted = { ...state.codexUsageBaseline.latest };
       state.emit(
         "item.completed",
         { kind: "usage", usage: state.usageSnapshot },
@@ -600,6 +635,26 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
   }
+
+// Resume can re-deliver committed history for a turn the checkpoint already
+// settled. Between turns the identity classifier sees no active turn, so the
+// replay would otherwise reach the live-turn guards and fail the session.
+function ignoreRestoredTerminalReplay(
+  state: CodexSessionState,
+  method: string,
+  turnId: string,
+): boolean {
+  if (!state.isRestoredTerminalReplay(turnId)) return false;
+  if (state.notificationIdentityDiagnostics < 32) {
+    state.notificationIdentityDiagnostics += 1;
+    state.emit("harness.diagnostic", {
+      code: "provider_notification_identity", method: method.slice(0, 128),
+      classification: "restored_terminal_replay",
+      expectedTurnId: state.activeTurnId, receivedTurnId: turnId.slice(0, 256),
+    });
+  }
+  return true;
+}
 
 function channelForStartedItem(
   state: CodexSessionState,

@@ -91,6 +91,34 @@ export interface NativeStatusDecision {
   effects: NativeStatusEffect[];
 }
 
+/**
+ * Completion is the current owner's decision. A run whose task was reassigned
+ * away (to another agent or to a user) keeps its accepted result as history,
+ * but its done report cannot close the new owner's task.
+ */
+export function ownsNativeTaskCompletion(
+  issue: { assigneeAgentId: string | null; assigneeUserId: string | null },
+  agentId: string,
+) {
+  return issue.assigneeAgentId === agentId && !issue.assigneeUserId;
+}
+
+export function supersedeStaleOwnerCompletion(
+  decision: NativeStatusDecision,
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+  agentId: string,
+): NativeStatusDecision {
+  if (decision.statusAction !== "done" || ownsNativeTaskCompletion(issue, agentId)) return decision;
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: issue.status as NativeAuthoritativeIssueStatus,
+    reasonCode: "completion_owner_superseded",
+    unblockDescriptor: null,
+    effects: [],
+  };
+}
+
 /** Pure authority boundary: model prose is evidence, never a status command. */
 export function arbitrateNativeStatus(input: {
   assessment: NativeEvidenceAssessment;
@@ -113,6 +141,7 @@ export function arbitrateNativeStatus(input: {
   governanceResolvedForRun?: boolean;
   externalChatResponseWaitAuthorization?:
     "authorized" | "revoked" | "not_applicable";
+  hasUnprovenPreservedResultStatus?: boolean;
   publishedExternalReview?: boolean;
   /** Server-verified accepted plan request and normal provider terminal. */
   planWaitAuthorized?: boolean;
@@ -526,6 +555,11 @@ export function arbitrateNativeStatus(input: {
     input.assessment.continuation?.kind === "response_wake" &&
     input.externalChatResponseWaitAuthorization === "authorized"
   ) {
+    if (input.hasUnprovenPreservedResultStatus) return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: "preserved_result_status_unproven", unblockDescriptor: null, effects: [],
+    };
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: input.publishedExternalReview ? "in_review" : "in_progress",

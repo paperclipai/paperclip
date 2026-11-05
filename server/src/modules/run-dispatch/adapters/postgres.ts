@@ -89,6 +89,7 @@ import type {
   PromoteScheduledRetryOutcome,
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
+import { parkWorkspaceBusyRetryInTx } from "./workspace-busy-wait.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -912,6 +913,9 @@ export function createPostgresRunDispatchAdapter(
       if (issueId && (await deferRetryForCleanupInTx(tx, run, issueId, now))) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
+      if (await parkWorkspaceBusyRetryInTx(tx, run, now)) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
 
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
         runId: input.runId,
@@ -957,9 +961,12 @@ export function createPostgresRunDispatchAdapter(
       eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "cancelled"),
       sql`${heartbeatRuns.id}::text = ${preservation.evidence.runId}`,
     )) : [];
-    const baseline = readNativeWorkspaceSyncReference(source?.runnerProfileJson?.nativeWorkspaceSync);
-    if (!preservation || !source || !hasRequiredWorkspaceRecovery(source.resultJson) || !baseline || baseline.state === "finalized" ||
-        preservation.fingerprint !== `native-workspace:${source.id}`) return null;
+    if (!preservation || !source) return null;
+    const baseline = readNativeWorkspaceSyncReference(source.runnerProfileJson?.nativeWorkspaceSync);
+    // Copyback from a native baseline replays the saved turn. Without one, only
+    // a message sent after the Stop is saved; admission still applies all gates.
+    const copybackReplay = hasRequiredWorkspaceRecovery(source.resultJson) && !!baseline && baseline.state !== "finalized" &&
+      preservation.fingerprint === `native-workspace:${source.id}`;
     const context = parseObject(run.contextSnapshot), commentId = deriveCommentId(context);
     const commentIds = queuedCommentIdsFromRunContext(context);
     if (!commentId || !commentIds.includes(commentId) || !isUserCommentContinuationReason(readNonEmptyString(context.wakeReason))) return null;
@@ -981,6 +988,8 @@ export function createPostgresRunDispatchAdapter(
     if (comments.length !== commentIds.length || comments.some(comment =>
       !comment.body.trim() || !comment.authorUserId) ||
       comments.find(comment => comment.id === originalCommentId)?.authorUserId !== wake.requestedByActorId) return null;
+    const latest = comments.find(comment => comment.id === commentId);
+    if (!copybackReplay && (!source.finishedAt || !latest || latest.createdAt <= source.finishedAt)) return null;
     const sourceIds = context.queuedCommentSourceWakeIds;
     if (sourceIds !== undefined && (!Array.isArray(sourceIds) || sourceIds.some(id => typeof id !== "string" || !isUuidLike(id)))) return null;
     const sourceWakeIds = Array.isArray(sourceIds) ? [...new Set(sourceIds as string[])] : [];

@@ -1,5 +1,17 @@
 # Paperclip evaluation guide
 
+The optional Product regression TestOps lane in `runner-full-stack-e2e.yml`
+maps the standing 20-case plan to existing isolated Product E2E cells: native
+Codex/local, with native OpenCode/local for the task-workspaces case. A manual
+`testops_case` bootstrap accepts `all`, a case name or its TestOps ID. TestOps
+dispatch supplies `ALLURE_JOB_RUN_ID`; its exact case IDs and full names take
+precedence. This lane preserves the existing paid admission, fixture, model,
+timeout, assertion, cleanup and retained-report paths. Reporting credentials
+stay in trusted default-branch jobs. Missing evidence becomes a broken result.
+Subset runs do not qualify the full plan or the historical 355-row snapshot.
+Catalog and projection tests are not live qualification; retain the fresh
+TestOps launch and GitHub run when reporting acceptance.
+
 The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
 
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
@@ -124,6 +136,13 @@ ordinary `/new` reset, fresh native context and retained history against an atta
 It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
 Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
+
+The explicit [onboarding approval-history journey](../tests/runner-e2e/README.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
 
 The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 

@@ -537,7 +537,9 @@ Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
-(`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+(`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
+retries a failed renewal until the lease deadline, so `renewal_error` means the
+attempts still failed with an error when the deadline passed.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -551,11 +553,14 @@ initiator IDs or reason text.
 A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
 during setup that fails the run before adapter dispatch. It holds the closed
 cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
-last successful renewal), `renewalPendingMs` (age of a renewal query still in
-flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
-`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
-at a stalled database query; a long `deadlineLateMs` points at a blocked event
-loop. Failure reports carry these bounded numbers and the cause label only.
+last successful renewal), `renewalPendingMs` (age of a renewal operation still
+in progress, including its retries and retry waits, or `null`), `deadlineLateMs`
+(how late the deadline callback ran, when the lease deadline ended the run,
+otherwise `null`), and `renewalCount`. A long `renewalPendingMs` can mean a
+stalled database query or repeated failed attempts with retry waits; the cause
+label tells them apart (`renewal_deadline` or `renewal_error`). A long
+`deadlineLateMs` points at a blocked event loop. Failure reports carry these
+bounded numbers and the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use
@@ -746,6 +751,17 @@ telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
 and current-user redaction. The task page uses one history read on mount/reconnect
 and the existing live transcript stream, then makes a bounded plugin readiness
 check. No panel discovery timer scans runs or provider state while connected.
+
+## Post-result failure diagnostics
+
+`native.post_result_failure` records `stage: post_result_execution`, a closed
+`category` (`io_not_found`, `io_permission_denied`, `io_failure`, or
+`execution_failure`), and `resultAlreadyAccepted: true`. It requires an accepted
+selected result and exact current, unexpired controller authority. A busy diagnostic
+row lock is skipped. Reporting is best effort under the existing 60-second control
+bound; the sink can finish later and emit a late event. The `native_session_lease_lost`
+control classification stays unchanged. The labels grant no recovery, result,
+Stop, provider-work or payment authority and do not establish a hosted failure cause.
 
 ## Payload storage
 

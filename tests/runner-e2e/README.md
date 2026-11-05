@@ -63,8 +63,11 @@ chat. Other YAML entries remain planning inventory; registration is not live
 qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
-`recover-controller` journey with the recorded Codex and Claude staging models
-on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+`recover-controller` journey with the recorded Codex staging model
+on a fresh reusable warm Daytona fixture. Warm controller-replacement and legacy
+migration suites use the production managed warm-session capability to select
+profiles and set both the agent and environment policy to warm. Claude, OpenCode
+and Grok remain covered by the per-turn rolling and migration lanes. The sandbox, Runner and provider history
 must survive both controller replacements. After a completed task tool in an active revision
 turn, it keeps the owned development controller offline for 300 seconds. This
 exceeds the 60-second ownership lease and remains within the Runner's 420-second
@@ -83,7 +86,7 @@ ownership/reconnect limits, archive/delete backstops and owned cleanup remain un
 The retained continuation accepts whitespace between its exact marker and the
 exact `queue_r` output token; readiness and final grading use the same matcher.
 
-Definition version 7 uses the existing warm reusable environment with a dedicated
+Definition version 8 uses an explicitly warm agent and the warm reusable environment with a dedicated
 configuration key. Only the post-completion replacement follow-up uses the normal
 board-authenticated task-comment API, with one persisted user comment and the
 unchanged follow-up request. Initial creation, active outage and queued continuation
@@ -104,9 +107,10 @@ its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
 
-`rolling-web-deployment` definition 4 selects every registered native Daytona
+`rolling-web-deployment` definition 6 selects every registered native Daytona
 profile in disposable per-turn environments; `rolling-web-deployment-warm`
-uses the same profiles in reusable warm environments. Their
+selects providers supported by the production managed warm-session capability
+and explicitly sets both agent and environment policy to warm. Their
 provider-backup path uses encrypted object storage and a fenced database ledger.
 The earlier per-turn failure remains failed evidence; this definition requires
 a fresh passing run, including the strict post-replacement continuation oracle.
@@ -115,7 +119,9 @@ the replacement time to become ready while useful agent work remains active.
 The observer rechecks the original live owner immediately before switching
 traffic and fails if that turn already settled. A completed turn cannot count
 as active takeover. Per-turn file inspection requires the exact committed saved
-snapshot; the warm lane still requires the live workspace.
+snapshot. Completed warm turns also read that exact saved snapshot, while their
+workspace location must remain bound to the retained sandbox. The API's saved
+file response is independent of whether the sandbox is retained or retired.
 Cold restores retain the published workspace directory name, including after
 the old allocation is destroyed, because provider recovery binds the working
 directory into session identity. Unpublished preparations retain distinct
@@ -126,7 +132,7 @@ The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
 
 The explicit-only `remote-workspace-storage` suite reuses that controller-restart
-journey for one native Codex Daytona cell. It verifies the default-enabled remote
+journey for one explicitly warm native Codex Daytona cell. It verifies the default-enabled remote
 workspace setting through the ordinary instance API and creates a projectless task.
 It enables the existing experimental Files viewer through that API. The agent
 creates only synthetic source, an unpushed Git commit, and an untracked random
@@ -141,7 +147,8 @@ after completion, a second replacement must admit a useful fourth native turn
 through the ordinary task-comment API with the same native and provider session.
 That request specifies one plain-text line containing its marker, one space, and
 the command's actual output; the expected output stays private to the evaluator.
-The browser then reads the saved reference through Files again. This is same-task
+The browser then reads the saved reference through Files again, with the sandbox
+location still retained. This is same-task
 continuation, not a separate-task sharing test. The ordinary original-process/lease,
 receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
 
@@ -187,8 +194,13 @@ pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover
 ```
 
 This source lane requires a complete server/UI build and disposable S3 and
-Postgres. Each controller has an independent compiled build and cache; shared
-workspace dependencies mean it is not released-container or Railway evidence.
+Postgres. Each controller has an independent compiled build and cache. The copied
+app retains the checkout's `cli/` and `packages/` dependency links, including the
+development Runner vendor entry. Shared workspace dependencies mean this is
+not released-container or Railway evidence.
+The warm lane selects providers through the production managed warm-session
+capability and explicitly sets the agent policy to warm. The per-turn lane
+retains every registered provider's per-turn policy.
 The read-only recovery observer captures the live predecessor's identity just
 before handoff, then requires a new controller generation, authenticated Runner
 attachment, and new canonical events for the original execution. No fixture
@@ -1591,6 +1603,28 @@ gh workflow run runner-full-stack-e2e.yml \
   -f id=core-compatibility.runner-codex.local.message-marker
 ```
 
+The same trusted workflow can run the standing **Product regression — core
+workflows** TestOps plan. Bootstrap one actual case with `-f testops_case=66`
+(message-marker), or select the complete plan with `-f testops_case=all`.
+Leave the ordinary `id`, `suite`, `group`, `profile`, `environment` and `case`
+selectors empty in this mode. TestOps dispatch supplies `ALLURE_JOB_RUN_ID` and
+`ALLURE_USERNAME`; the requested test-plan selection overrides the bootstrap
+case. All 20 imported case IDs and full names remain stable. The lane uses the
+existing native Codex/local cells and the existing native OpenCode/local
+task-workspaces cell. It does not qualify the historical 355-result snapshot.
+
+The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
+Only default-branch selection and reporting code receives this token. The
+ordinary paid provider jobs, their authorization and their evidence paths stay
+the same. Selection binds the job run, launch, source and workflow revisions.
+Reporting parses the retained normalized campaign, publishes original attempts
+and assertions, and makes an absent result explicitly broken. It verifies the
+uploaded case IDs and verdicts before finishing the original TestOps job run.
+No bootstrap or synthetic control result contributes to the pass count. Tag
+only a complete 20-case attempt `full-run` and `test-plan-2`; omit `full-run`
+from focused reruns. Inspect the linked launch and the retained report for
+acceptance. A local projection test does not establish a live product pass.
+
 Create a protected `runner-e2e-paid` GitHub environment, restrict it to the
 default branch, limit environment administration to trusted maintainers, and
 store the four provider secrets there. This is a second authorization boundary:
@@ -1728,6 +1762,39 @@ checks and independent downloaded-code checks remain mandatory.
 Revision delivery checks exclude preserved originals by their content hash, even when the agent republishes an original after the revised ZIP. The browser downloads the exact selected attachment ID; its bytes still pass through the independent artifact checker.
 
 ## First-task onboarding
+
+The explicit-only `onboarding-approval-history` suite extends the interview path
+through three separate human decisions: a saved plan checkbox selection, a
+writer hiring checkbox, and an untargeted Start drafting confirmation. The user
+selects drafting and clears publishing. The model must hire the approved writer,
+assign one child, and produce the saved welcome document through that child's
+own execution. Persisted decisions, the unchanged plan revision and selection,
+creation timestamps, one child work run, and readback after browser reload own
+the grade. The exact saved output revision must name the writer and its actual
+child run as author. A successful parent run or lead-authored output fails.
+
+It has one local cell each for native Codex and ACPX Claude. It reuses the
+production wizard, first-task fixtures, $5 company task budget, twelve-run
+maximum, fifteen-minute attempt deadline, five-minute response waits, screenshots,
+private diagnostics, sanitized public evidence, and disposable-company cleanup.
+Expect seven provider work turns, including the writer's child. The outer
+runner accepts one to seven parent heartbeat records; it does not count the
+child as a parent run. The oracle independently requires all three human
+decisions and exactly one writer execution. Setup probes are accounted separately.
+The case permits one attempt and is excluded from `--all`. Run it explicitly when
+qualifying changes to onboarding or approval semantics:
+
+```sh
+pnpm test:e2e:runner -- --list --suite onboarding-approval-history
+pnpm test:e2e:runner -- --id onboarding-approval-history.runner-codex.local.interview-hire-execute
+```
+
+The deterministic PostgreSQL contract in
+`server/src/__tests__/onboarding-approval-history.test.ts` runs in the ordinary
+Vitest suite. It uses native-produced cards, authenticated human acceptance,
+and a later native run to check standard and checkbox plan approvals across
+native creation, both REST creation routes, decomposition, context, and replay.
+Journey discovery and grader calibration do not establish a live provider pass.
 
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
@@ -3495,7 +3562,9 @@ change credentials, or change evaluation and evidence limits.
 # Legacy workspace migration
 
 `legacy-workspace-migration` and `legacy-workspace-migration-warm` are explicit,
-paid, two-turn Daytona workflows for registered native production profiles. They
+paid, two-turn Daytona workflows. The per-turn lane covers every registered native
+production profile; the warm lane selects supported managed warm providers and
+sets the agent policy explicitly to warm. They
 create a private reference file and ask a question on a local-disk controller.
 The supervisor stops that controller, runs the packaged offline migration with
 owned PostgreSQL and S3, verifies the export, starts an empty-home controller,
@@ -3508,3 +3577,14 @@ database and storage; failed private evidence is retained under the usual policy
 
 This proves preservation during initial enrollment, which has an offline step.
 Use the separate rolling deployment suites for uninterrupted deployment proof.
+
+## Canonical private framework references
+
+The protected private-cell reader accepts legacy evidence and the source-owned
+compact Playwright JSON representation. It validates both sealed inventories and
+all compact attachment hashes against the original tree. After those checks, it
+materializes exact referenced files only in the derived `selected-runner-e2e`
+tree. The sealed original and final inventories remain unchanged. The existing
+normalizer and TestOps exporter consume the derived files. Registered raw JSON
+remains subject to deep JSON and decoded-body privacy checks regardless of its
+text suffix. No existing physical byte, entry, ZIP, time, or archive bound changes.

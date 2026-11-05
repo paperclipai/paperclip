@@ -836,6 +836,25 @@ with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
 archive and local files remain available for a later administrative retry. Other
 database errors propagate. No automatic retry or lock-strength reduction occurs.
 
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
+
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
 order too. The lifecycle advisory lock alone does not fence runtime operations.

@@ -123,7 +123,7 @@ uses the production component with simulated API responses; it does not establis
 real persistence or permission behavior.
 
 Coordinator More exposes a pin/unpin button beside every destination.
-Pinned pages appear beneath More in pinning order and retain the
+Pinned pages appear above More in pinning order and retain the
 existing company-aware routes.
 Unpin from either the flyout or the pinned row. The list is personal to the current
 user in this browser, shared across companies; it does not sync across devices.

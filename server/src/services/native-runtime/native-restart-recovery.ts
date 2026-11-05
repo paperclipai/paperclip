@@ -179,6 +179,13 @@ export async function currentNativeControllerIdentity(): Promise<NativeControlle
   };
 }
 
+export function isCurrentNativeControllerProcess(owner: {
+  controllerBootId: string | null;
+  controllerPid: number | null;
+}): boolean {
+  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+}
+
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
   return left !== null && right !== null && left.getTime() === right.getTime();
 }
@@ -964,7 +971,9 @@ export async function claimNativeRestartRecoveries(input: {
         !row.coordinator.controllerPid &&
         !row.coordinator.controllerProcessStartedAt &&
         !row.coordinator.leaseOwner &&
-        !row.coordinator.leaseExpiresAt &&
+        // A graceful shutdown stamps an expiry on every coordinator it
+        // suspends. Without an owner, an elapsed expiry grants no authority.
+        (!row.coordinator.leaseExpiresAt || row.coordinator.leaseExpiresAt <= now) &&
         !row.coordinator.failureDetail?.successorRunId &&
         !row.run.processPid &&
         !row.run.processGroupId &&

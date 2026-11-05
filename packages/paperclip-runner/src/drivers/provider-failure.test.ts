@@ -79,6 +79,24 @@ describe("provider failure boundary", () => {
     expect(JSON.stringify(failure)).not.toMatch(/private request|secret|responseHeaders/);
   });
 
+  it("reads the upstream status and type from an OpenRouter error OpenCode reports as UnknownError", () => {
+    const upstream = "Upstream error from Fireworks: Grammar processing took too much time.";
+    const body = { code: 502, message: upstream, metadata: { error_type: "provider_unavailable" } };
+    expect(openCodeProviderFailure({ name: "UnknownError", data: { message: JSON.stringify(body) } }, "openrouter"))
+      .toEqual({ schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn", category: "unknown",
+        message: upstream, providerCode: "provider_unavailable", httpStatus: 502, retryability: "unknown" });
+    // The wrapped `{ error: ... }` form, with OpenCode's own status code taking precedence.
+    expect(openCodeProviderFailure({ name: "UnknownError", data: { statusCode: 503,
+      message: JSON.stringify({ error: body }) } }, "openrouter"))
+      .toMatchObject({ httpStatus: 503, category: "overloaded", message: upstream, providerCode: "provider_unavailable" });
+    // Plain text, and JSON without a usable message or status, keep the original fields.
+    expect(openCodeProviderFailure({ name: "UnknownError", data: { message: "Plain failure." } }, "openrouter"))
+      .toMatchObject({ message: "Plain failure.", providerCode: "UnknownError", category: "unknown" });
+    const invalid = openCodeProviderFailure({ name: "UnknownError", data: { message: "{\"code\":999}" } }, "openrouter");
+    expect(invalid).toMatchObject({ message: "{\"code\":999}", providerCode: "UnknownError" });
+    expect(invalid).not.toHaveProperty("httpStatus");
+  });
+
   it("redacts credentials before truncation and preserves ordinary words and Unicode", () => {
     const secret = "fixture-unusual-secret";
     const failure = createProviderFailure({ provider: "anthropic", phase: "startup",

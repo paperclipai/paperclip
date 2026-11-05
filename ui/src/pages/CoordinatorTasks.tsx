@@ -29,7 +29,7 @@ import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
-import { useLocation, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { loadTaskListView, saveTaskListView, taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, ORGANIZATION_SCOPED_PARAMS, taskView } from "@/lib/task-views";
 import type { Issue } from "@paperclipai/shared";
@@ -46,16 +46,18 @@ export function CoordinatorTasks() {
   const client = useQueryClient();
   const listRef = useRef<HTMLElement>(null);
   const location = useLocation();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [layout, setLayout] = useState<"list" | "board">("list");
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
+  const urlLabels = JSON.stringify(params.getAll("label").filter(Boolean));
   const urlView = params.get("view");
   const viewStorageKey = taskListViewStorageKey("coordinator", userId ?? "local-board");
   const [preference, setPreference] = useState(() => ({ key: viewStorageKey, view: loadTaskListView(viewStorageKey, undefined, "inbox") }));
   const savedView = preference.key === viewStorageKey ? preference.view : loadTaskListView(viewStorageKey, undefined, "inbox");
   const explicitView = urlView === "needs_attention" ? "blocked" : taskListViews.find(option => option.value === urlView)?.value;
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
+  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "status", "label", "sortField", "sortDir"].some(param => params.getAll(param).some(Boolean));
   const view: TaskListView = explicitView ?? (organizationScoped || normalizeTaskViewKey(urlView) ? "all" : savedView);
   useEffect(() => {
     if (!identitySettled) return;
@@ -89,7 +91,7 @@ export function CoordinatorTasks() {
   const normalizedView = normalizeTaskViewKey(urlView);
   const presetStatuses = normalizedView && taskView(normalizedView).surface === "issues" ? taskView(normalizedView).statuses ?? [] : [];
   const initialStatuses: string[] = params.has("status") ? params.getAll("status") : presetStatuses;
-  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly });
+  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, labels: urlLabels, view: urlView, routineTasksOnly });
   const needsAttention = view === "blocked";
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
@@ -196,48 +198,49 @@ export function CoordinatorTasks() {
     searchMode: "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey,
-    initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
+    initialFilters: { labels: params.getAll("label").filter(Boolean), assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
   });
   useEffect(() => {
     const previous = previousUrlFilters.current;
-    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses && previous.routineTasksOnly === routineTasksOnly) return;
-    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, view: urlView, routineTasksOnly };
+    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses && previous.labels === urlLabels && previous.routineTasksOnly === routineTasksOnly) return;
+    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, labels: urlLabels, view: urlView, routineTasksOnly };
     collection.updateFilters({
+      ...(previous.labels !== urlLabels ? { labels: params.getAll("label").filter(Boolean) } : {}),
       ...(previous.routineTasksOnly !== routineTasksOnly ? { routineTasksOnly } : {}),
       ...(previous.assignee !== urlAssignee ? { assignees: params.getAll("assignee") } : {}),
       ...(previous.view !== urlView || previous.statuses !== urlStatuses ? { statuses: initialStatuses } : {}),
     });
-  }, [urlAssignee, urlView, urlStatuses, initialStatuses, routineTasksOnly, collection.updateFilters]);
+  }, [urlAssignee, urlView, urlStatuses, urlLabels, initialStatuses, routineTasksOnly, collection.updateFilters]);
   const updateFilters = (patch: Partial<IssueFilterState>) => {
     collection.updateFilters(patch);
-    if (patch.assignees === undefined && patch.statuses === undefined && patch.routineTasksOnly === undefined) return;
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      if (patch.routineTasksOnly !== undefined) {
-        if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
-        else next.delete("originKind");
-      }
-      if (patch.assignees !== undefined) {
-        next.delete("assignee");
-        for (const id of patch.assignees) next.append("assignee", id);
-      }
-      if (patch.statuses !== undefined) {
-        next.delete("status");
-        for (const status of patch.statuses) next.append("status", status);
-        const preset = normalizeTaskViewKey(next.get("view"));
-        if (preset && taskView(preset).surface === "issues") next.set("view", "all");
-      }
-      return next;
-    }, { replace: true });
+    if (patch.assignees === undefined && patch.statuses === undefined && patch.labels === undefined && patch.routineTasksOnly === undefined) return;
+    const next = new URLSearchParams(params);
+    if (patch.routineTasksOnly !== undefined) {
+      if (patch.routineTasksOnly) next.set("originKind", "routine_execution");
+      else next.delete("originKind");
+    }
+    if (patch.labels !== undefined) {
+      next.delete("label");
+      for (const id of patch.labels) next.append("label", id);
+    }
+    if (patch.assignees !== undefined) {
+      next.delete("assignee");
+      for (const id of patch.assignees) next.append("assignee", id);
+    }
+    if (patch.statuses !== undefined) {
+      next.delete("status");
+      for (const status of patch.statuses) next.append("status", status);
+      const preset = normalizeTaskViewKey(next.get("view"));
+      if (preset && taskView(preset).surface === "issues") next.set("view", "all");
+    }
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const clearFilters = () => {
     collection.updateFilters(defaultIssueFilterState);
-    setParams(current => {
-      const next = new URLSearchParams(current);
-      for (const key of ["q", "assignee", "status", "originKind"]) next.delete(key);
-      if (next.get("view") !== "needs_attention") next.set("view", "all");
-      return next;
-    }, { replace: true });
+    const next = new URLSearchParams(params);
+    for (const key of ["q", "assignee", "status", "label", "originKind"]) next.delete(key);
+    if (next.get("view") !== "needs_attention") next.set("view", "all");
+    navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },

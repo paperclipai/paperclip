@@ -167,6 +167,7 @@ export function routineRoutes(
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+      ...(req.actor.type === "agent" ? { actorResponsibleUserId: req.actor.onBehalfOfUserId ?? null } : {}),
       runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);

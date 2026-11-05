@@ -89,8 +89,9 @@ the bounded waiting allowance is rejected without poisoning accepted batches.
 Transient network, 409, 429 and server errors receive bounded retries. A 412
 or a changed head fences the stale writer; a 409 alone does not prove ownership
 loss or conditional-write support. Live log messages and progress are published
-after storage confirmation. Finalization drains admitted writes before closing
-and hashing the stream. Logging failure reports incomplete persistence and
+after storage confirmation. Finalization rejects new enqueue calls and drains
+already-started bounded admissions, including calls waiting for capacity, before
+closing and hashing the stream. Logging failure reports incomplete persistence and
 leaves the final size/digest unknown rather than claiming a complete snapshot.
 The original progress projection remains coarsely throttled; concurrent batch
 completions share a single progress write.

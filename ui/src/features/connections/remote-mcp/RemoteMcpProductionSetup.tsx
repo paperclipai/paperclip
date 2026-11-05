@@ -1,3 +1,5 @@
+import { bindAccount } from "@/lib/account-scope";
+import { connectionIntentsApi } from "@/api/connection-intents";
 import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,15 +11,17 @@ import { readConnectionIntentOAuthOutcome, type ConnectionSetupFlowProps } from 
 import { agentsApi } from "@/api/agents";
 import { toolsApi } from "@/api/tools";
 import { resolveAccountUserId } from "@/api/companies-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCompany } from "@/context/CompanyContext";
 import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
-import { navigateTopLevel } from "@/lib/browserNavigation";
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { queryKeys } from "@/lib/queryKeys";
 import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
 import { remoteMcpProviders, type RemoteMcpProviderId } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
+import { describeError } from "@/api/errors";
 
 function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
   try {
@@ -76,6 +80,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     ...(requestedAgentId ? { allAgents: false, agentIds: [requestedAgentId] } : {}),
   }));
   const installs = useQuery({ queryKey: queryKeys.tools.connectionInstalls(connection?.id ?? "__new__"), queryFn: () => toolsApi.getConnectionInstalls(connection!.id), enabled: !!connection });
+  const installsView = useQueryView(installs);
   const agents = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId,
   });
@@ -87,21 +92,34 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     try { sessionStorage.setItem(accessDraftKey, JSON.stringify({ grantKind: state.grantKind, allAgents: state.allAgents, agentIds: state.agentIds })); } catch { /* Storage can be disabled. */ }
   }, [connection, accessDraftKey, state.grantKind, state.allAgents, state.agentIds]);
   useEffect(() => {
-    if (host !== "dialog" || !interactionId) return;
-    const receive = (event: MessageEvent) => {
+    if (!interactionId) return;
+    let disposed = false;
+    const receive = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, interactionId);
       if (!outcome) return;
       if (outcome === "connected") {
         // The host verifies durable acceptance; a postMessage is never proof.
-        onComplete?.({ resolvedByCallback: true });
+        if (onComplete) onComplete({ resolvedByCallback: true });
+        else if (host === "page") {
+          const account = bindAccount(queries);
+          try {
+            const verified = await connectionIntentsApi.setupOptions(interactionId);
+            if (disposed || !account.isCurrentScope()) return;
+            if (verified.interaction.status !== "accepted") throw new Error("Authorization has not been confirmed yet. Try again.");
+            navigate(`/issues/${verified.interaction.issueId}`);
+          } catch {
+            if (disposed || !account.isCurrentScope()) return;
+            setState((s) => ({ ...s, connectStatus: "oauth_failed" }));
+          }
+        }
       } else {
         setState((s) => ({ ...s, connectStatus: outcome === "declined" ? "cancelled" : "oauth_failed" }));
         onPhaseChange?.("needs_retry");
       }
     };
     window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [host, interactionId, onComplete, onPhaseChange]);
+    return () => { disposed = true; window.removeEventListener("message", receive); };
+  }, [host, interactionId, onComplete, onPhaseChange, navigate, queries, selectedCompanyId]);
   const edit = (patch: Partial<RemoteMcpSetupState>) => setState((s) => ({ ...s, ...patch }));
   const finish = async (id: string) => {
     try { sessionStorage.removeItem(accessDraftKey); } catch { /* Storage can be disabled. */ }
@@ -125,6 +143,40 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     } else if (isAppAggregator(providerId)) navigate("/apps");
     else navigate(`/apps/${id}/permissions`);
   };
+  useEffect(() => {
+    if (state.connectStatus !== "sign_in" || !savedConnection.current) return;
+    const id = savedConnection.current.id;
+    let cancelled = false;
+    let checking = false;
+    const check = async () => {
+      if (checking || cancelled) return;
+      // Reconnect can begin with an already-active row. Wait for this attempt’s callback.
+      const outcome = readOAuthWindowOutcome(popup.current, id);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
+        popup.current?.close();
+        popup.current = null;
+        setState((s) => ({ ...s, connectStatus: outcome === "failed" ? "oauth_failed" : "cancelled" }));
+        onPhaseChange?.("needs_retry");
+        return;
+      }
+      if (interactionId) return; // The intent callback and host own durable acceptance.
+      checking = true;
+      try {
+        const saved = await toolsApi.getConnection(id);
+        if (!cancelled && saved.status === "active") {
+          cancelled = true;
+          popup.current?.close();
+          popup.current = null;
+          await finish(id);
+        }
+      } catch { /* Keep the saved sign-in and allow a later focus or poll to retry. */ }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(() => void check(), 2000);
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", check); };
+  }, [state.connectStatus, interactionId]);
   const submit = async (saveDraft = false) => {
     if (busy.current || !selectedCompanyId || !instructionsValid || (connection && !installs.data)) return;
     try {
@@ -133,9 +185,11 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     } catch { edit({ connectStatus: "invalid_url" }); return; }
     // Reserve the window while handling the click so popup blockers do not
     // discard the later OAuth response. URL/token-only providers never need it.
-    if (!saveDraft && host === "dialog" && state.auth === "auto" && (!popup.current || popup.current.closed)) {
+    if (!saveDraft && state.auth === "auto" && (!popup.current || popup.current.closed)) {
       try {
-        popup.current = window.open("about:blank", "paperclip-connection-oauth", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
+        popup.current = window.open("about:blank", "_blank", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
+        // Task-bound callbacks must work in both page and dialog hosts.
+        if (popup.current && !interactionId) popup.current.opener = null;
       } catch { popup.current = null; }
     }
     busy.current = true;
@@ -187,11 +241,9 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         authorizationUrl.current = target.url;
         edit({ connectStatus: "sign_in", token: "", headers: [] });
         try {
-          if (host === "dialog") {
-            if (!popup.current || popup.current.closed) throw new Error("Sign-in window unavailable");
-            popup.current.location.assign(target.url);
-            popup.current.focus();
-          } else navigateTopLevel(target.url);
+          if (!popup.current || popup.current.closed) throw new Error("Sign-in window unavailable");
+          popup.current.location.assign(target.url);
+          popup.current.focus();
         } catch {
           // The connection and OAuth session already exist. Preserve them and
           // let the native sign-in link recover a blocked browser handoff.
@@ -220,7 +272,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       popup.current?.close();
       popup.current = null;
       onPhaseChange?.("needs_retry");
-      edit({ connectStatus: "idle", notice: error instanceof Error ? error.message : "Could not connect. Please try again." });
+      edit({ connectStatus: "idle", notice: describeError(error).body });
     } finally { busy.current = false; }
   };
   const actions: RemoteMcpSetupActions = {
@@ -250,9 +302,12 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     connections={existingConnections} pendingId={choicePending} error={choiceError}
     onCancel={onCancel} onConnectNew={() => setShowChoices(false)} onSelect={(id) => {
       setChoicePending(id); setChoiceError(null);
-      void onUseExisting(id).catch((error) => { setChoiceError(error instanceof Error ? error.message : "Could not use this connection."); setChoicePending(null); });
+      void onUseExisting(id).catch((error) => { setChoiceError(describeError(error).body); setChoicePending(null); });
     }} />;
-  if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
+  // Saved access already loaded stays in place through a transient refetch failure.
+  if (connection && !installs.data) return <div className="space-y-3 p-8">{installsView.kind === "error"
+    ? <QueryErrorState error={installs.error} action="load saved access" onRetry={installsView.retry} retrying={installsView.isFetching} />
+    : <p>Loading saved access…</p>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.
   return <RemoteMcpConnectionSetup additionalSettings={template && instructions ? <ConnectionInstructionsEditor provider={provider.name} template={template} value={instructions} onChange={setInstructions} disabled={state.connectStatus === "connecting"} /> : undefined} settingsValid={instructionsValid} companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;

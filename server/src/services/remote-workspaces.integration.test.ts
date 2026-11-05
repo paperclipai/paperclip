@@ -26,6 +26,8 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
+import { notFound } from "../errors.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
 import { workspaceFileResourceService } from "./workspace-file-resources.js";
@@ -391,7 +393,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -424,12 +426,39 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (mode === "occupied root") {
       await fs.mkdir(expectedRemoteRoot, { recursive: true });
       await fs.writeFile(path.join(expectedRemoteRoot, "unpublished.txt"), "preserve unknown preparation\n");
-      await expect(prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second }))
-        .rejects.toThrow("remote_workspace_operation_failed");
+      const occupied = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      // The restore names its step and the occupied folder; it is not retried.
+      expect(occupied).toBeInstanceOf(RemoteWorkspaceRestoreError);
+      expect(occupied).toMatchObject({ step: "sandbox_restore", retryable: false, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root" });
       expect(await fs.readFile(path.join(expectedRemoteRoot, "unpublished.txt"), "utf8")).toBe("preserve unknown preparation\n");
       expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
         .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
       await fs.rename(expectedRemoteRoot, path.join(root, "retained-unknown-preparation"));
+    }
+    if (mode === "transient restore") {
+      // An unnamed sandbox failure (an I/O error) is retryable; the retry restores the saved files.
+      const run = second.runner!.execute.bind(second.runner);
+      vi.spyOn(second.runner!, "execute").mockImplementation(async command => command.args?.[1]?.includes("remote_workspace_restore_failed")
+        ? { exitCode: 1, stdout: "", stderr: "remote_workspace_restore_failed: stage=extract code=EIO exit=1", timedOut: false, signal: null,
+          pid: process.pid, startedAt: new Date().toISOString() } : run(command));
+      const transient = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(transient).toMatchObject({ step: "sandbox_restore", retryable: true, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1" });
+      expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      vi.mocked(second.runner!.execute).mockRestore();
+    }
+    if (mode === "missing object") {
+      // Storage reports a lost saved object as 404; retrying cannot bring it back.
+      const lost: StorageService = { ...storage, getObject: async () => { throw notFound("Object not found"); } };
+      const missing = await prepareRemoteWorkspace({ db, storage: lost, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(missing).toBeInstanceOf(RemoteWorkspaceRestoreError);
+      expect(missing).toMatchObject({ step: "snapshot_download", retryable: false,
+        message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_object_missing" });
+      expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
     }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
     expect(restored.remoteRoot).toBe(expectedRemoteRoot);
@@ -439,6 +468,100 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect((await fs.stat(path.join(restored.remoteRoot, "empty-folder"))).isDirectory()).toBe(true);
     const browse = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
+  }, 60_000);
+
+  it.each(["own retired root", "own restored root", "read-only folder", "receipt missing", "forged receipt", "later allocation",
+    "unsettled save", "newer checkpoint", "never saved here"] as const)(
+    "restores a newer save over this workspace's own retired root on a reused sandbox (%s)", async mode => {
+    // A parent prepares on its retained sandbox, then children inherit the
+    // workspace on other sandboxes and save newer work. When the parent wakes on
+    // the same sandbox, its old root is still present.
+    const reserved = await reserve({ kind: "empty" }), parentSandbox = await target("sandbox-A");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: parentSandbox });
+    await fs.writeFile(path.join(prepared.remoteRoot, "plan.md"), "parent plan\n");
+    await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: parentSandbox, assertOwned: async () => undefined });
+    const writer = async (providerLeaseId: string) => {
+      const runId = randomUUID(), leaseId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+      await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company, environmentId: ids.environment,
+        heartbeatRunId: runId, issueId: ids.issue, provider: "daytona", providerLeaseId, status: "active" });
+      const workspace = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId,
+        agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+      const leased = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]! as EnvironmentLease;
+      return { runId, workspace, lease: leased };
+    };
+    const child = await writer("allocation-child"), childSandbox = await target("sandbox-B");
+    const childPrepared = await prepareRemoteWorkspace({ db, storage, workspace: child.workspace, runId: child.runId, lease: child.lease, target: childSandbox });
+    await fs.writeFile(path.join(childPrepared.remoteRoot, "child-result.md"), "child result\n");
+    const childSaved = await saveRemoteWorkspace({ db, storage, workspace: childPrepared.workspace, runId: child.runId,
+      lease: childPrepared.lease, target: childSandbox, assertOwned: async () => undefined });
+    if (mode === "receipt missing") {
+      // An occupant without a Paperclip preparation or restore receipt is unknown.
+      await fs.rm(path.join(prepared.remoteRoot, ".paperclip-runtime"), { recursive: true, force: true });
+    }
+    if (mode === "own restored root" || mode === "forged receipt") {
+      // The retired root was itself restored by an earlier preparation of this workspace.
+      const runtime = path.join(prepared.remoteRoot, ".paperclip-runtime");
+      await fs.rm(path.join(runtime, "workspace-ready.json"));
+      await fs.writeFile(path.join(runtime, "workspace-restored.json"), JSON.stringify(mode === "forged receipt"
+        ? { identity: "not-an-identity" } : { identity: "a".repeat(64), manifestDigest: "b".repeat(64) }));
+    }
+    if (mode === "read-only folder") {
+      // A non-root sandbox user must still be able to remove the retired tree.
+      const locked = path.join(prepared.remoteRoot, "locked");
+      await fs.mkdir(path.join(locked, "inner"), { recursive: true });
+      await fs.writeFile(path.join(locked, "inner", "file.txt"), "old\n");
+      await fs.chmod(path.join(locked, "inner"), 0o555); await fs.chmod(locked, 0o555);
+    }
+    if (mode === "unsettled save" || mode === "newer checkpoint") {
+      // The last use of this root ended in a save that is not a settled final save.
+      await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id, heartbeatRunId: ids.run,
+        issueId: ids.issue, phase: "remote_workspace_snapshot", status: mode === "unsettled save" ? "running" : "succeeded",
+        metadata: { epoch: 1, boundary: "checkpoint", generation: 99,
+          saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [], unknown: false, quiescedAt: new Date().toISOString() },
+          exportCleanup: { ...readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location, state: "cleaned" } } });
+    }
+    if (mode === "later allocation") {
+      // A later writer used this root on the parent's sandbox after its last final save.
+      await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id, heartbeatRunId: child.runId,
+        issueId: ids.issue, phase: "remote_workspace_restore", status: "succeeded",
+        metadata: { epoch: 2, exportCleanup: { ...readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location, state: "cleaned" } } });
+    }
+    // Preparation narrows a target to its root; a later turn reattaches to the sandbox.
+    const reattach = () => ({ ...parentSandbox, remoteCwd: path.join(root, "sandbox-A") });
+    let parentTarget = reattach();
+    if (mode === "never saved here") {
+      // A different sandbox that holds an unknown folder at this path.
+      parentTarget = await target("sandbox-C");
+      await fs.cp(prepared.remoteRoot, path.join(parentTarget.remoteCwd, ".paperclip-workspaces", path.basename(prepared.remoteRoot)), { recursive: true });
+    }
+    const parent = await writer(mode === "never saved here" ? "allocation-unrelated" : prepared.lease.providerLeaseId!);
+    const restoring = prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: parentTarget });
+    if (mode !== "own retired root" && mode !== "own restored root" && mode !== "read-only folder") {
+      const refused = await restoring.then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(refused).toBeInstanceOf(RemoteWorkspaceRestoreError);
+      expect(refused).toMatchObject({ step: "sandbox_restore", retryable: false });
+      expect(refused!.message).toMatch(/stage=inspect_root reason=occupied_root$/);
+      expect(await fs.readFile(path.join(prepared.remoteRoot, "plan.md"), "utf8")).toBe("parent plan\n");
+      expect(await fs.lstat(path.join(prepared.remoteRoot, "child-result.md")).catch(() => null)).toBeNull();
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toEqual(readRemoteWorkspaceAuthority(parent.workspace.metadata));
+      return;
+    }
+    const restored = await restoring;
+    expect(restored.remoteRoot).toBe(prepared.remoteRoot);
+    expect(await fs.readFile(path.join(restored.remoteRoot, "plan.md"), "utf8")).toBe("parent plan\n");
+    expect(await fs.readFile(path.join(restored.remoteRoot, "child-result.md"), "utf8")).toBe("child result\n");
+    // The replaced root and the restore staging are gone; only saved files were replaced.
+    expect((await fs.readdir(path.dirname(restored.remoteRoot))).filter(name => name.startsWith(path.basename(restored.remoteRoot))))
+      .toEqual([path.basename(restored.remoteRoot)]);
+    expect(readRemoteWorkspaceAuthority(restored.workspace.metadata)).toMatchObject({ snapshotId: childSaved.snapshotId, dirty: true,
+      writerRunId: parent.runId, location: { providerLeaseId: prepared.lease.providerLeaseId, remoteCwd: prepared.remoteRoot } });
+    // A lost reply repeats the same preparation without replacing the restored root again.
+    await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
+    const repeated = await prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: reattach() });
+    expect(repeated.remoteRoot).toBe(prepared.remoteRoot);
+    expect(await fs.readFile(path.join(restored.remoteRoot, "parent-continued.md"), "utf8")).toBe("unsaved parent edits\n");
   }, 60_000);
 
   it.each(["per_turn", "warm", "occupied", "foreign-target", "foreign-allocation", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {

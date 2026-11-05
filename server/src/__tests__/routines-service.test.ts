@@ -34,7 +34,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { envConfigSchema, type Routine } from "@paperclipai/shared";
+import { createRoutineSchema, envConfigSchema, type Routine } from "@paperclipai/shared";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -1650,6 +1650,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     ]);
   });
+
+  it.each(["parent", "company", "missing", "board"] as const)(
+    "preserves routine creation responsibility fallback: %s", async source => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      const parentUserId = randomUUID();
+      const boardUserId = randomUUID();
+      const [parent] = await db.insert(issues).values({ companyId, title: "Parent context", status: "backlog",
+        responsibleUserId: parentUserId }).returning();
+      if (source === "missing") await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+      const creation = svc.create(companyId, createRoutineSchema.parse({
+        title: "Responsibility fallback", assigneeAgentId: agentId, status: "paused",
+        ...(source === "parent" ? { parentIssueId: parent.id } : {}),
+      }), source === "board" ? { userId: boardUserId, actorResponsibleUserId: "other-user" } : { agentId });
+      if (source === "missing") {
+        await expect(creation).rejects.toMatchObject({ status: 422 });
+      } else {
+        expect(await creation).toMatchObject({
+          responsibleUserId: source === "board" ? boardUserId : source === "parent" ? parentUserId : routine.responsibleUserId,
+          createdByAgentId: source === "board" ? null : agentId,
+          createdByUserId: source === "board" ? boardUserId : null,
+        });
+      }
+    },
+  );
 
   it("retains manual runner attribution without adding fresh routine issues to Mine", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();

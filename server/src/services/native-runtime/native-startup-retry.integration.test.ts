@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -11,6 +15,7 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  nativeRunnerCheckpoints,
 } from "@paperclipai/db";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -27,6 +32,13 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
+import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
+import { accountRunCost } from "../run-cost-accounting.js";
+import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 
@@ -34,6 +46,7 @@ type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 function sessionOpenFailure(options: {
   status?: SessionOpenStatus;
   providerFailure?: Record<string, unknown>;
+  classification?: string;
 } = {}) {
   const status = options.status ?? "failed";
   const result = {
@@ -41,7 +54,7 @@ function sessionOpenFailure(options: {
       code: "command_execution_failed",
       message: options.providerFailure
         ? "Provider request failed"
-        : "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)",
+        : `failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=${options.classification ?? "session_ensure_failed"})`,
       ...(options.providerFailure ? { providerFailure: options.providerFailure } : {}),
     },
     status,
@@ -272,6 +285,150 @@ describe("native provider startup retry", () => {
     });
   }
 
+  it.each([
+    { name: "transient 502", status: 502, retry: true },
+    { name: "credential 401", status: 401, retry: false },
+    { name: "permission 403", status: 403, retry: false },
+    { name: "invalid request 400", status: 400, retry: false },
+    { name: "untyped HTML 502", status: 502, retry: false, raw: true },
+    { name: "previously issued credential", status: 502, retry: false, checkpoint: "issued" },
+    { name: "legacy checkpoint", status: 502, retry: false, checkpoint: "legacy" },
+    { name: "truncated checkpoint", status: 502, retry: false, checkpoint: "truncated" },
+    { name: "provider progress", status: 502, retry: false, checkpoint: "progress" },
+    { name: "checkpoint change during settlement", status: 502, retry: false, race: "checkpoint" },
+    { name: "Stop during settlement", status: 502, retry: false, race: "stop" },
+    { name: "new controller claim during settlement", status: 502, retry: false, race: "claim" },
+    { name: "exhausted transient 502", status: 502, retry: false, finalAttempt: true },
+  ])("settles ingress failure safely: $name", async options => {
+    const seeded = await seedRun(await createAgent());
+    if (options.finalAttempt) await db.update(nativeRunFinalizations).set({ attempt: 2 }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const root = mkdtempSync(join(tmpdir(), "native-ingress-bootstrap-"));
+    const server = createServer((_request, response) => {
+      response.writeHead(options.status, { "content-type": "text/html" });
+      response.end(`<html><title>${options.status} Bad Gateway</title></html>`);
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server missing address");
+    const identity = {
+      runnerInstanceId: seeded.runnerInstanceId,
+      environmentLeaseId: seeded.execution.binding.executionWorkspaceId,
+      runId: seeded.runId,
+      normalizedSessionId: seeded.execution.session.normalizedSessionId!,
+      turnId: `turn-${seeded.runId}`,
+      itemId: `item-${seeded.runId}`,
+    };
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+      expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const prepare = { observeCredentials: true, authorizedTools: {}, provider: { provider: "codex" } };
+    core.persistRunAttachTemplate(prepare);
+    core.queueCommand("run.prepare", prepare);
+    core.queueCommand("session.open", { reuse: "same_session" });
+    if (options.checkpoint === "issued") {
+      core.issueBootstrapTicket();
+      core.store.state.tickets = {};
+    }
+    if (options.checkpoint === "legacy") {
+      core.store.state.schema = "paperclip.runner.durable.control-plane-state.v1";
+      delete core.store.state.bootstrapHistory;
+    }
+    const launch = vi.fn();
+    let settlementArmed = false;
+    let settlementTransactions = 0;
+    const transaction = db.transaction.bind(db);
+    const settlementRace = options.race ? vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
+      if (settlementArmed && ++settlementTransactions === 2) {
+        settlementArmed = false;
+        if (options.race === "checkpoint") { core.issueBootstrapTicket(); await core.flushCheckpoint(); }
+        if (options.race === "stop") await db.update(heartbeatRuns).set({ resultJson: {
+          nativeCancellation: { schema: "paperclip.native-cancellation.v1", companyId, issueId: seeded.issueId,
+            runId: seeded.runId, scope: "run", intentAuditId: randomUUID(), dispatchState: "pending" },
+        } }).where(eq(heartbeatRuns.id, seeded.runId));
+        if (options.race === "claim") await db.update(nativeRunFinalizations).set({
+          controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1`, leaseOwner: "successor-controller",
+        }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+      }
+      return transaction(...args);
+    }) : undefined;
+    const getRunnerIngressEndpoint = vi.fn(async () => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/private-preview`);
+      if (options.checkpoint === "truncated") await db.delete(nativeRunnerCheckpoints).where(and(
+        eq(nativeRunnerCheckpoints.companyId, companyId), eq(nativeRunnerCheckpoints.runId, seeded.runId),
+        eq(nativeRunnerCheckpoints.part, "command:2")));
+      if (options.checkpoint === "progress") await db.insert(heartbeatRunEvents).values({
+        companyId, runId: seeded.runId, agentId: seeded.agentId, seq: 900, eventType: "turn.started", stream: "system", level: "info",
+        message: "Provider activity exists", payload: {},
+      });
+      if (!response.ok) {
+        const cause = new Error(await response.text());
+        if (options.raw) throw cause;
+        const error = new PluginEnvironmentRunnerIngressError({ phase: "private_preview", httpStatus: response.status });
+        settlementArmed = true;
+        throw new JsonRpcCallError({ code: -32000, message: error.message, data: environmentRunnerIngressErrorData(error) });
+      }
+      throw new Error("expected the controlled ingress rejection");
+    });
+    provider.execute.mockReset().mockImplementation(async () => {
+      const controller = await currentNativeControllerIdentity();
+      const driver = createNativeRunnerExecutionDriver({
+        target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", leaseId: randomUUID(),
+          effectiveCapabilities: { runnerWebSocketIngress: true }, getRunnerIngressEndpoint } as never,
+        binding: seeded.execution.binding, runnerIngressAuthorized: true, prepareRemote: async () => {},
+        controllerPersistence: { db, bootId: controller.bootId },
+        processStarted: new Promise<void>(() => {}), process: { runnerProcessLauncher: launch },
+      });
+      await driver.controlPlaneRegistration!(core);
+      throw new Error("ingress failure must precede process launch");
+    });
+    try {
+      await expect(executePaperclipNativeSession({ db, execution: seeded.execution,
+        runnerInstanceId: seeded.runnerInstanceId, useRunnerd: true,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: {} } as never,
+        backend: { descriptor: async () => { throw new Error("unexpected descriptor"); },
+          openSession: async () => { throw new Error("unexpected provider session"); } },
+      })).rejects.toThrow(options.race === "claim" ? "native_session_lease_lost" : options.race
+        ? "native_runner_bootstrap_evidence_changed" : options.raw ? "502 Bad Gateway" : `HTTP ${options.status}`);
+      expect(getRunnerIngressEndpoint).toHaveBeenCalledOnce();
+      expect(launch).not.toHaveBeenCalled();
+      if (options.checkpoint !== "truncated") {
+        const saved = await loadNativeRunnerCheckpoint(db, seeded.execution.binding);
+        expect(saved?.recoveryEvidence.authenticatedConnectionCount).toBe(0);
+        expect(saved?.records.size).toBe(4);
+      }
+      const state = await read(seeded);
+      if (options.race) {
+        expect(state.coordinator.phase).not.toBe("retryable_failure");
+        expect(state.coordinator.phase).not.toBe("terminal_failure");
+        expect(state.coordinator.leaseOwner).not.toBeNull();
+        expect(state.issue.executionRunId).toBe(seeded.runId);
+        expect(state.run.status).toBe("running");
+        expect(state.run.costAccountedAt).toBeNull();
+        expect(state.run.usageJson?.accountingProviderWorkStarted).not.toBe(false);
+        return;
+      }
+      expect(state.coordinator).toMatchObject({ phase: options.retry ? "retryable_failure" : "terminal_failure", attempt: options.finalAttempt ? 3 : 1,
+        failureDetail: { recoveryMode: options.retry || options.finalAttempt ? "bootstrap_retry" : "ambiguous_state",
+          providerSessionEstablished: options.checkpoint === "progress", providerEventsExist: options.checkpoint === "progress", checkpointExists: false } });
+      if (options.retry) expect(state.coordinator.nextAttemptAt).toBeInstanceOf(Date);
+      else expect(state.coordinator.nextAttemptAt).toBeNull();
+      expect(state.issue.status).toBe(options.retry ? "in_progress" : "blocked");
+      expect(state.run.costAccountedAt).toBeNull();
+      expect(state.coordinator.resultId).toBeNull();
+      if (options.retry || options.checkpoint) {
+        expect(state.run.usageJson?.accountingProviderWorkStarted).not.toBe(false);
+      } else {
+        expect(state.run.usageJson?.accountingProviderWorkStarted).toBe(false);
+        expect(await accountRunCost(db, seeded.runId)).toBe(true);
+        expect((await read(seeded)).run.costAccountedAt).toBeInstanceOf(Date);
+      }
+    } finally {
+      settlementRace?.mockRestore();
+      await core.stop();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("retries a rejected session.open with growing backoff instead of blocking the task", async () => {
     const seeded = await seedRun(await createAgent());
 
@@ -320,6 +477,53 @@ describe("native provider startup retry", () => {
     expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(secondHigh + 5_000);
     expect(state.issue.status).toBe("in_progress");
   });
+
+  it.each(["grok_model_mismatch", "requested_model_unsupported"])(
+    "stops at a session.open %s rejection with a choose-model action instead of a doomed retry",
+    async (classification) => {
+      const seeded = await seedRun(await createAgent());
+      await failStartup(seeded, sessionOpenFailure({ classification }));
+
+      const state = await read(seeded);
+      // No automatic same-run bootstrap retry: the selected model cannot start.
+      expect(state.coordinator).toMatchObject({
+        phase: "terminal_failure",
+        recoveryState: "blocked",
+        failureCode: "native_provider_model_rejected",
+        attempt: 1,
+        nextAttemptAt: null,
+        failureDetail: expect.objectContaining({
+          originalFailureCode: "native_provider_model_rejected",
+          providerSessionEstablished: false,
+          providerEventsExist: false,
+          checkpointExists: false,
+        }),
+      });
+      expect(String(state.coordinator.failureDetail?.nextAction)).toContain("Choose a supported model");
+      expect(state.run).toMatchObject({ status: "failed", errorCode: "native_provider_model_rejected" });
+      expect(state.issue.status).toBe("blocked");
+      expect(state.issue.executionRunId).toBeNull();
+      // A named, durable board action owns the next step.
+      expect(state.action).toMatchObject({
+        status: "active",
+        ownerType: "board",
+        cause: "native_provider_model_rejected",
+        returnOwnerAgentId: seeded.agentId,
+        wakePolicy: null,
+      });
+      expect(state.action!.nextAction).toContain("Choose a supported model");
+      // The no-replay settler must not fold this owned action into a silent hold.
+      await settleUnrecoverableExecutions(db);
+      expect((await read(seeded)).action).toMatchObject({ id: state.action!.id, status: "active" });
+      expect(await claimNativeSessionResumptions({
+        db,
+        runnerInstanceId: "startup-retry-test",
+        runIds: [seeded.runId],
+        now: new Date(Date.now() + 60 * 60_000),
+        deferIneligible: false,
+      })).toEqual([]);
+    },
+  );
 
   it("blocks with a clear reason once the bounded startup budget is exhausted", async () => {
     const seeded = await seedRun(await createAgent());
