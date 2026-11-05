@@ -6,9 +6,13 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { DEFAULT_CONFIG, type EgmGateConfig, type IssueSnapshot } from "./contracts.js";
 import { buildGateComment, evaluateIssue, parseRepoSlug } from "./evidence.js";
-import { TOOL_KEY_LEVEL } from "./manifest.js";
+import { JOB_KEY_SWEEP, TOOL_KEY_LEVEL } from "./manifest.js";
 
 const PLUGIN_NAME = "egm-gate";
+/** Ventana del barrido: solo issues cerradas hace poco (el cierre viejo ya no se toca). */
+const SWEEP_WINDOW_MS = 1000 * 60 * 60 * 3;
+/** Tope de issues revisadas por barrido, para no cargar la API. */
+const SWEEP_LIMIT = 100;
 const MAX_COMMENTS_PER_ISSUE = 3;
 /** El registro por issue vive en su propia clave de state: dos issues no se pisan. */
 const stateKeyFor = (issueId: string) => `gate:issue:${issueId}`;
@@ -295,7 +299,34 @@ const plugin = definePlugin({
       },
     );
 
-    // 3. Datos para la UI: estado del gate por issue.
+    // 3. Barrido periodico: cubre las cierres que el evento no pudo revisar
+    //    (por ejemplo, si una lectura fallo en el momento del cierre).
+    ctx.jobs.register(JOB_KEY_SWEEP, async () => {
+      try {
+        // El job no viene con company: el barrido recorre las companias
+        // visibles para el plugin.
+        const companies = await ctx.companies.list({ limit: 20 });
+        const cutoff = Date.now() - SWEEP_WINDOW_MS;
+        let checked = 0;
+        for (const company of companies) {
+          const companyId = String(company.id);
+          const list = await ctx.issues.list({ companyId, status: "done", limit: SWEEP_LIMIT });
+          for (const issue of list) {
+            const updatedAt = Date.parse(String((issue as { updatedAt?: unknown }).updatedAt ?? ""));
+            if (!Number.isFinite(updatedAt) || updatedAt < cutoff) continue;
+            checked++;
+            await runGate(ctx, issue.id, companyId);
+          }
+        }
+        ctx.logger.info("gate: barrido de cierres", { checked, windowHours: SWEEP_WINDOW_MS / 3600000 });
+      } catch (error) {
+        ctx.logger.error("gate: fallo el barrido de cierres", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    // 4. Datos para la UI: estado del gate por issue.
     ctx.data.register("gate-status", async (params) => {
       const issueId = String(params.issueId ?? "");
       const companyId = String(params.companyId ?? "");

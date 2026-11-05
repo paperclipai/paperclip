@@ -2,6 +2,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.egm-gate";
 const TOOL_KEY_LEVEL = "egm_level";
+const JOB_KEY_SWEEP = "sweep-closures";
 const DEFAULT_FULL_DIFF_LINES = 300;
 const DEFAULT_FULL_DIFF_FILES = 8;
 
@@ -28,6 +29,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "events.subscribe",
+    "jobs.schedule",
     "agent.tools.register",
   ],
   entrypoints: {
@@ -48,6 +50,15 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     },
   },
+  jobs: [
+    {
+      jobKey: JOB_KEY_SWEEP,
+      displayName: "Barrido de cierres sin evidencia",
+      description:
+        "Re-revisa las issues cerradas sin evidencia (y las que quedaron pendientes por una lectura fallida) y las devuelve a revision.",
+      schedule: "*/2 * * * *",
+    },
+  ],
   tools: [
     {
       name: TOOL_KEY_LEVEL,
@@ -66,4 +77,4 @@ const manifest: PaperclipPluginManifestV1 = {
 };
 
 export default manifest;
-export { TOOL_KEY_LEVEL, PLUGIN_ID };
+export { JOB_KEY_SWEEP, TOOL_KEY_LEVEL, PLUGIN_ID };
