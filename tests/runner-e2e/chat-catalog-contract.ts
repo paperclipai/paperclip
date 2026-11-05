@@ -332,7 +332,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
   } else if(savedName){
     const parsed=askUserQuestionsPayloadSchema.safeParse(row.payload),qs=parsed.success?parsed.data.questionSet:undefined,q=qs?.questions[0],answer=row.result.answers[0];
     const secrets=input.companySecrets?.filter(secret=>secret.id===savedName.secretId),secret=secrets?.[0];
-    if(!qs||qs.questions.length!==1||!q||q.id!==savedName.questionId||q.answerMode!=="text"||!q.required||q.options?.length||q.customAnswer?.enabled||q.initialText!==undefined
+    if(!qs||qs.questions.length!==1||!q||q.id!==savedName.questionId||q.answerMode!=="text"||!q.required||q.options?.length||q.customAnswer?.enabled||(q.initialText!==undefined&&q.initialText!==""&&!/^[a-zA-Z0-9_.-]{1,120}$/.test(q.initialText))
       ||!chatCatalogSavedSecretNameIntent(q.prompt)
       ||secrets?.length!==1||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId
       ||!Number.isFinite(Date.parse(String(row.createdAt)))||!Number.isFinite(Date.parse(source?.startedAt??""))||Date.parse(secret.createdAt)<=Math.max(Date.parse(String(row.createdAt)),Date.parse(source?.startedAt??""))

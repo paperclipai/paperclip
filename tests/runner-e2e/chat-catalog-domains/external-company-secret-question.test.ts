@@ -121,7 +121,7 @@ it.each(["value","mixed","owner","source","help","initial"])("rejects unsafe sav
  if(fault==="owner")row.addresseeUserId="other";
  if(fault==="source")row.sourceRunId="other";
  if(fault==="help")q.helpText+=" Paste the key here in chat.";
- if(fault==="initial")q.initialText="deployment_api_key";
+ if(fault==="initial")q.initialText="not metadata value";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });
 it("checks saved-name answers against actual saved metadata rather than arbitrary text",()=>{
@@ -189,4 +189,16 @@ it("extracts only explicit environment identifiers and does not treat the actual
 it("keeps a generic secure-save completion question with a later agent binding promise on the native path",()=>{
  expect(companyOperatorBindingRequested("Have you configured the deployment secret in Settings Secrets? Once saved, I'll add its reference to Morgan's environment.")).toBe(false);
  expect(companyOperatorBindingRequested("Have you configured the secret reference in Morgan's environment?")).toBe(true);
+});
+
+it("admits the actual secure saved-name card with a proposed metadata default, not a human answer",()=>{
+ const row=question();row.payload=questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",title:"Deployment API key setup",description:"Add the secret in the Paperclip UI, then confirm the secret key name. Never paste the value here.",submitLabel:"Save answer",questions:[{id:"secret_key",prompt:"Which secret key name did you save the deployment API key under?",helpText:"Enter the key name you used in Company Settings → Secrets. I will verify the secret exists, then add a DEPLOYMENT_API_KEY secret reference to Morgan's environment.",required:true,answerMode:"text",initialText:"deployment_api_key",textValidation:{minLength:1,maxLength:120,inputType:"text"}}]});
+ expect(companySecretQuestionHandoff(row,binding)).toMatchObject({savedSecretName:true,questionId:"secret_key"});
+ expect(companySecretQuestionHandoff(row,binding,"answered","deployment_api_key")).toBeUndefined();
+ const blank=structuredClone(row);blank.payload.questionSet!.questions[0]!.initialText="";expect(companySecretQuestionHandoff(blank,binding)).toMatchObject({savedSecretName:true});
+ for(const initialText of ["not metadata value", "x".repeat(121)]){const bad=structuredClone(row);bad.payload.questionSet!.questions[0]!.initialText=initialText;expect(companySecretQuestionHandoff(bad,binding)).toBeUndefined();}
+ const wrongActor={...row,createdByAgentId:"other"};expect(companySecretQuestionHandoff(wrongActor,binding)).toBeUndefined();
+ const rawValue=structuredClone(row);rawValue.payload.questionSet!.questions[0]!.prompt="What is the deployment key value?";expect(companySecretQuestionHandoff(rawValue,binding)).toBeUndefined();
+ const environment=structuredClone(row);environment.payload.questionSet!.questions[0]!.prompt="What environment variable name should Morgan receive?";expect(boundSecretQuestion(environment,binding,"pending","company-environment-name")).toBeUndefined();
+ const choice=question();choice.payload.questionSet!.questions[0]!.initialText="deployment_api_key";expect(companySecretQuestionHandoff(choice,binding)).toBeUndefined();
 });
