@@ -1,5 +1,6 @@
 import type {Locator,Page} from "@playwright/test";
 export function companySecretMenuDirections(body:string){
+ body=body.replace(/[*_`]/g,"");
  return /\b(?:Company\s+)?Settings\s*(?:→|>|then)\s*Secrets\b/i.test(body)&&/\bNew secret\b/i.test(body);
 }
 export async function companySecretMenuURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,timeout:number){

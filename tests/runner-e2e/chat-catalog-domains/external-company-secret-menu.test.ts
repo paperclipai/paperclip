@@ -10,6 +10,7 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses actua
  const scenarios=[
   {name:"ordinary menu",settings,secrets,accepted:true},
   {name:"company switcher menu",settings,secrets,accepted:true,menu:true},
+  {name:"separate Markdown emphasis",settings,secrets,accepted:true,body:"Open **Settings** then **Secrets**, **New secret**. Enter the deployment key in the secure form. After saving, I will bind its secret reference to Morgan's environment.",markup:"<strong>Settings</strong> then <strong>Secrets</strong>, <strong>New secret</strong>"},
   {name:"no route example",settings,secrets,accepted:true,body:"Open Settings then Secrets, New secret. Enter the deployment key in the secure form. After saving, I will bind its secret reference to Morgan's environment.",markup:"Settings then Secrets, New secret"},
   {name:"plain directions",settings,secrets,accepted:true,markup:"Company settings → Secrets (company-prefixed /company/settings/secrets) via New secret"},
   {name:"missing Settings",settings:"",secrets},
