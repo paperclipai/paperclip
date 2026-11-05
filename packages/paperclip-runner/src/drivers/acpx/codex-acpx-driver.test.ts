@@ -755,6 +755,141 @@ describe("Codex ACPX harness driver", () => {
     );
   });
 
+  it("fails a provider turn that produces no stream events within the stall bound", async () => {
+    const fixture = driverFixture(
+      {},
+      {
+        turnStallTimeoutMs: 25,
+        runtimeEventFailure: new Promise<never>(() => undefined),
+      },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-stalled-turn",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.failed");
+    await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+
+    const emitted = await terminalEvents;
+    const failure = emitted.at(-1)!;
+    expect(failure.eventType).toBe("turn.failed");
+    expect(failure.payload).toMatchObject({
+      status: "failed",
+      error: { code: "acpx_turn_stalled" },
+    });
+    expect(
+      emitted.some(
+        (event) =>
+          event.eventType === "provider.notice.recorded" &&
+          event.payload.category === "acpx_turn_failed",
+      ),
+    ).toBe(true);
+    expect(fixture.lastTurn?.cancel).toHaveBeenCalledOnce();
+    await expect(session.snapshot()).resolves.toMatchObject({
+      activeTurnId: null,
+      terminalTurns: [expect.objectContaining({ turnId: expect.any(String) })],
+    });
+    await session.close({ reason: "stall watchdog verified" });
+  });
+
+  it("fails a provider turn that stalls after its stream ends unsettled", async () => {
+    const fixture = driverFixture(
+      {},
+      { turnStallTimeoutMs: 25, runtimeEvents: [] },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-unsettled-turn",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.failed");
+    await session.startTurn({
+      message: { role: "user", text: "Complete the task." },
+    });
+
+    const emitted = await terminalEvents;
+    expect(emitted.at(-1)?.payload).toMatchObject({
+      status: "failed",
+      error: { code: "acpx_turn_stalled" },
+    });
+    expect(fixture.lastTurn?.cancel).toHaveBeenCalledOnce();
+    await session.close({ reason: "unsettled result watchdog verified" });
+  });
+
+  it("defers the stall watchdog while a runtime input request is pending", async () => {
+    const fixture = driverFixture(
+      {},
+      {
+        turnStallTimeoutMs: 50,
+        runtimeEventFailure: new Promise<never>(() => undefined),
+      },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-deferred-stall",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const failedEvents = collectUntil(session.events(), "turn.failed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Wait for input." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+        },
+      },
+      {
+        requestId: "rpc-stall-deferral",
+        signal: new AbortController().signal,
+        responseDelivery: Promise.resolve(),
+      },
+    );
+    await vi.waitFor(() => {
+      expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    });
+
+    // Outlast a full stall window: a durably pending input is a legitimate
+    // blocked turn, not a stalled generation.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    expect(
+      (await session.transcript!()).events.some(
+        (event) => event.eventType === "turn.failed",
+      ),
+    ).toBe(false);
+    expect(fixture.lastTurn?.cancel).not.toHaveBeenCalled();
+
+    const request = session.pendingRuntimeRequests!()[0]!;
+    await session.resolveRuntimeRequest!({
+      requestId: request.requestId,
+      turnId,
+      resolution: { action: "cancel" },
+    });
+    await expect(providerResponse).resolves.toEqual({ action: "cancel" });
+
+    await expect(failedEvents).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "turn.failed",
+          payload: expect.objectContaining({
+            status: "failed",
+            error: expect.objectContaining({ code: "acpx_turn_stalled" }),
+          }),
+        }),
+      ]),
+    );
+    expect(fixture.lastTurn?.cancel).toHaveBeenCalledOnce();
+    await session.close({ reason: "deferred stall verified" });
+  });
+
   it("reports a host close timeout while retaining the exact cleanup", async () => {
     const fixture = driverFixture({}, { closeSettlementTimeoutMs: 1 });
     const hostClose = deferred<void>();
@@ -3035,6 +3170,7 @@ function driverFixture(
     closeSettlementTimeoutMs?: number;
     maxBufferedEvents?: number;
     terminalEventReserve?: number;
+    turnStallTimeoutMs?: number;
     openHost?: NonNullable<CodexAcpxDriverDependencies["openHost"]>;
     readRecoveryWorkspace?: NonNullable<
       CodexAcpxDriverDependencies["readRecoveryWorkspace"]
@@ -3047,15 +3183,17 @@ function driverFixture(
   openHost: ReturnType<typeof vi.fn>;
   readRecoveryWorkspace: ReturnType<typeof vi.fn>;
   hostOptions: OpenAcpxRuntimeHostOptions | null;
+  lastTurn: AcpxRuntimeTurn | null;
   finishTurn(result: Awaited<AcpxRuntimeTurn["result"]>): void;
 } {
   let turnCount = 0;
+  let lastTurn: AcpxRuntimeTurn | null = null;
   let activeResult: ReturnType<
     typeof deferred<Awaited<AcpxRuntimeTurn["result"]>>
   > | null = null;
   const createTurn = (): AcpxRuntimeTurn => {
     activeResult = deferred<Awaited<AcpxRuntimeTurn["result"]>>();
-    return {
+    lastTurn = {
       requestId: `provider-turn-${++turnCount}`,
       promptStarted: Promise.resolve(),
       events: {
@@ -3089,6 +3227,7 @@ function driverFixture(
       cancel: vi.fn(async () => undefined),
       closeStream: vi.fn(async () => undefined),
     };
+    return lastTurn;
   };
   const host = fakeHost(createTurn, () =>
     activeResult?.resolve({
@@ -3114,6 +3253,7 @@ function driverFixture(
     closeSettlementTimeoutMs: fixtureOptions.closeSettlementTimeoutMs,
     maxBufferedEvents: fixtureOptions.maxBufferedEvents,
     terminalEventReserve: fixtureOptions.terminalEventReserve,
+    turnStallTimeoutMs: fixtureOptions.turnStallTimeoutMs,
   };
   const driver = new CodexAcpxDriver(
     {
@@ -3138,6 +3278,9 @@ function driverFixture(
     readRecoveryWorkspace,
     get hostOptions() {
       return hostOptions;
+    },
+    get lastTurn() {
+      return lastTurn;
     },
     finishTurn(result) {
       if (!activeResult) throw new Error("No active fixture turn");

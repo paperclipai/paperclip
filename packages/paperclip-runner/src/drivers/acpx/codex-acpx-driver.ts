@@ -103,6 +103,11 @@ const MAX_RECOVERY_TERMINAL_TURNS = 4_096;
 const MAX_RECOVERY_TERMINAL_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_RUNTIME_REQUESTS = 16;
 const CLOSE_TURN_SETTLEMENT_TIMEOUT_MS = 2_000;
+// A provider turn that emits no stream events for this long is treated as a
+// stalled generation: the driver publishes turn.failed (acpx_turn_failed) and
+// retires the provider through the bounded cancellation path so a hung stream
+// cannot hold a serialized run queue open-endedly.
+const ACPX_TURN_STALL_TIMEOUT_MS = 15 * 60_000;
 const MAX_AUTONOMOUS_HOST_CLOSE_RETRIES = 3;
 const MAX_QUARANTINED_HOST_CLOSE_RETRIES = 3;
 const QUARANTINED_HOST_CLOSE_RETRY_MS = 60_000;
@@ -198,6 +203,8 @@ export interface CodexAcpxDriverDependencies {
   maxBufferedEvents?: number;
   /** Internal test seam; production reserves fixed terminal-event capacity. */
   terminalEventReserve?: number;
+  /** Internal test seam; production uses the fixed turn-stall bound. */
+  turnStallTimeoutMs?: number;
   readRecoveryWorkspace?: (input: {
     runtimeDirectory: string;
     normalizedSessionId: string;
@@ -280,6 +287,7 @@ export class CodexAcpxDriver implements HarnessDriver {
   readonly #closeSettlementTimeoutMs: number;
   readonly #maxBufferedEvents: number;
   readonly #terminalEventReserve: number;
+  readonly #turnStallTimeoutMs: number;
   readonly #cleanupOwners = new Set<Promise<void>>();
   readonly #quarantinedHostCleanups = new Set<QuarantinedHostCleanup>();
   readonly #readRecoveryWorkspace: NonNullable<
@@ -315,6 +323,10 @@ export class CodexAcpxDriver implements HarnessDriver {
     this.#maxBufferedEvents = Math.max(
       this.#terminalEventReserve + TURN_START_EVENT_COUNT,
       Math.floor(dependencies.maxBufferedEvents ?? MAX_BUFFERED_EVENTS),
+    );
+    this.#turnStallTimeoutMs = Math.max(
+      1,
+      Math.floor(dependencies.turnStallTimeoutMs ?? ACPX_TURN_STALL_TIMEOUT_MS),
     );
     this.#readRecoveryWorkspace =
       dependencies.readRecoveryWorkspace ?? readAcpxRecoveryWorkspace;
@@ -509,6 +521,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         closeSettlementTimeoutMs: this.#closeSettlementTimeoutMs,
         maxBufferedEvents: this.#maxBufferedEvents,
         terminalEventReserve: this.#terminalEventReserve,
+        turnStallTimeoutMs: this.#turnStallTimeoutMs,
         retainCleanup: (cleanup) => this.#retainCleanup(cleanup),
         quarantineCleanup: (hostToRetain, reason) =>
           this.#quarantineHostCleanup(hostToRetain, reason),
@@ -753,6 +766,7 @@ class CodexAcpxSession implements HarnessSession {
   readonly #closeSettlementTimeoutMs: number;
   readonly #maxBufferedEvents: number;
   readonly #terminalEventReserve: number;
+  readonly #turnStallTimeoutMs: number;
   readonly #events: AsyncQueue<PrpEvent>;
   readonly #retainCleanup: (cleanup: Promise<void>) => void;
   readonly #quarantineCleanup: (host: CodexAcpxHost, reason: string) => void;
@@ -813,6 +827,7 @@ class CodexAcpxSession implements HarnessSession {
     closeSettlementTimeoutMs: number;
     maxBufferedEvents: number;
     terminalEventReserve: number;
+    turnStallTimeoutMs: number;
     retainCleanup: (cleanup: Promise<void>) => void;
     quarantineCleanup: (host: CodexAcpxHost, reason: string) => void;
     snapshot: PersistedHarnessSession | null;
@@ -830,6 +845,7 @@ class CodexAcpxSession implements HarnessSession {
     this.#closeSettlementTimeoutMs = input.closeSettlementTimeoutMs;
     this.#maxBufferedEvents = input.maxBufferedEvents;
     this.#terminalEventReserve = input.terminalEventReserve;
+    this.#turnStallTimeoutMs = input.turnStallTimeoutMs;
     this.#retainCleanup = input.retainCleanup;
     this.#quarantineCleanup = input.quarantineCleanup;
     this.#events = new AsyncQueue<PrpEvent>(input.maxBufferedEvents);
@@ -1477,6 +1493,13 @@ class CodexAcpxSession implements HarnessSession {
   }
 
   async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence): Promise<void> {
+    // Generation-stall watchdog: a provider that produces no stream events
+    // within the bounded window is declared failed rather than allowed to
+    // hold the turn (and its serialized run queue) indefinitely. While a
+    // permission/elicitation/extension input is durably pending the turn is
+    // legitimately input-blocked, so the stall clock defers until it drains.
+    const stall = new AcpxTurnStallWatchdog(this.#turnStallTimeoutMs, () => this.#pendingRuntimeRequests.size > 0);
+    const iterator = turn.events[Symbol.asyncIterator]();
     try {
       let index = 0;
       const normalizeToolEvent =
@@ -1485,15 +1508,19 @@ class CodexAcpxSession implements HarnessSession {
       const kimiMessages = this.#agent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
       const normalizeMessage = piMessages ? piMessages.normalize : kimiMessages ? kimiMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
-      for await (const event of turn.events) {
+      while (true) {
+        const next = await stall.race(iterator.next());
+        if (next.done) break;
+        stall.feed();
+        const event = next.value;
         toolEvidence?.tool(event);
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
         this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
       }
-      const result = await turn.result;
+      const result = await stall.race(turn.result);
       if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
-      await drainExtensions();
+      await stall.race(drainExtensions());
       const usageAfter = await readUsageStatus(this.#host);
       // Diagnostic projection failures cannot replace the provider's terminal result.
       try {
@@ -1591,6 +1618,53 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
+      if (error instanceof AcpxTurnStalledError) {
+        // Publish the same canonical failure shape the provider would have
+        // produced, then retire the turn through the bounded cancellation
+        // path (cancel ack -> grace -> runtime close). Teardown starts before
+        // terminal publication so a retention failure cannot leave the stalled
+        // provider running unowned.
+        const reason = safeMessage(error);
+        const teardown = turn.cancel({ reason }).catch(() => undefined);
+        this.#cancelPendingRuntimeRequests(error, turnId);
+        this.#emit(
+          "provider.notice.recorded",
+          {
+            schema: "paperclip.provider.notice.v1",
+            noticeId: `${turnId}:failure`,
+            severity: "error",
+            category: "acpx_turn_failed",
+            scope: "turn",
+            recoverable: false,
+            userActionable: true,
+            summary: reason,
+          },
+          { turnId, itemId: `${turnId}:failure` },
+        );
+        const stalledSemanticResult =
+          this.#pendingSemanticTransfer?.turnId === turnId
+            ? this.#pendingSemanticTransfer.fingerprint
+            : null;
+        this.#publishTerminal(
+          turnId,
+          canonicalJson({
+            status: "failed",
+            ...(stalledSemanticResult === null
+              ? {}
+              : { reaffirmedSemanticResult: stalledSemanticResult }),
+          }),
+          "turn.failed",
+          {
+            status: "failed",
+            error: {
+              code: "acpx_turn_stalled",
+              message: reason,
+            },
+          },
+        );
+        await teardown;
+        return;
+      }
       this.#cancelPendingRuntimeRequests(error instanceof AcpxProviderProcessLostError ? error : "provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
@@ -1625,6 +1699,11 @@ class CodexAcpxSession implements HarnessSession {
           { status: "failed", error: { ...(error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}), message: safeMessage(error) } },
         );
       }
+    } finally {
+      stall.dispose();
+      // Some provider iterators await a stuck RPC after retirement; the
+      // optional return() must not become another unbounded shutdown wait.
+      void iterator.return?.().catch(() => undefined);
     }
   }
 
@@ -1985,7 +2064,7 @@ class CodexAcpxSession implements HarnessSession {
     }, { turnId: request.turnId, itemId: request.itemId });
   }
 
-  #cancelPendingRuntimeRequests(reason: string | AcpxProviderProcessLostError, turnId?: string): void {
+  #cancelPendingRuntimeRequests(reason: string | Error, turnId?: string): void {
     for (const [requestId, pending] of this.#pendingRuntimeRequests) {
       if (turnId && pending.request.turnId !== turnId) continue;
       if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
@@ -2439,6 +2518,72 @@ class TerminalEventCapacityError extends Error {
       `Codex ACPX cannot settle ${turnId} before its ${eventType} event is retained`,
     );
     this.name = "TerminalEventCapacityError";
+  }
+}
+
+class AcpxTurnStalledError extends Error {
+  readonly code = "acpx_turn_stalled";
+  constructor(timeoutMs: number) {
+    super(
+      `ACPX turn produced no stream events for ${Math.round(timeoutMs / 1000)}s; treating the provider generation as stalled`,
+    );
+    this.name = "AcpxTurnStalledError";
+  }
+}
+
+/** Re-arming idle clock for a provider turn's event stream. Each observed
+ * event feeds the watchdog; expiry with a durably pending runtime request
+ * defers a full window because the turn is legitimately input-blocked.
+ */
+class AcpxTurnStallWatchdog {
+  readonly #timeoutMs: number;
+  readonly #shouldDefer: () => boolean;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  #fail!: (error: Error) => void;
+  readonly #promise: Promise<never>;
+
+  constructor(timeoutMs: number, shouldDefer: () => boolean) {
+    this.#timeoutMs = timeoutMs;
+    this.#shouldDefer = shouldDefer;
+    this.#promise = new Promise((_, reject) => {
+      this.#fail = reject;
+    });
+    // The watchdog promise may outlive its last raced wait; never surface
+    // an unhandled rejection for a stall nobody observed.
+    void this.#promise.catch(() => undefined);
+    this.#arm();
+  }
+
+  #arm(): void {
+    this.#clearTimer();
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      if (this.#shouldDefer()) {
+        this.#arm();
+        return;
+      }
+      this.#fail(new AcpxTurnStalledError(this.#timeoutMs));
+    }, this.#timeoutMs);
+    this.#timer.unref?.();
+  }
+
+  #clearTimer(): void {
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+  }
+
+  feed(): void {
+    this.#arm();
+  }
+
+  race<T>(pending: Promise<T>): Promise<T> {
+    return Promise.race([pending, this.#promise]);
+  }
+
+  dispose(): void {
+    this.#clearTimer();
   }
 }
 
