@@ -78,7 +78,7 @@ function multipartContinuationCards(o: NonNullable<ReturnType<typeof identityObs
   const original = o.state.original as Interaction | undefined;
   return o.interactions.filter(card => card.id !== original?.id && card.companyId === o.companyId && card.issueId === original?.issueId
     && card.createdByAgentId === o.leadId && card.kind === "ask_user_questions" && card.status === "pending"
-    && typeof card.payload.questionSet?.description === "string" && o.runs.some(run => run.id === card.sourceRunId
+    && typeof card.payload.questionSet?.description === "string" && card.payload.questionSet.description.trim().length > 0 && o.runs.some(run => run.id === card.sourceRunId
       && run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded"
       && run.contextSnapshot?.interactionId === original?.id && run.contextSnapshot?.issueId === original?.issueId));
 }
