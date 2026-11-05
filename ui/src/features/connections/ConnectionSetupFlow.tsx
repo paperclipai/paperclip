@@ -836,8 +836,11 @@ function StandardConnectionSetupFlow({
     if (oauthPopupRef.current?.closed === false) return;
     try {
       oauthPopupRef.current = window.open("about:blank", "_blank", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
+      // Only the existing task-dialog protocol needs an opener for its
+      // origin-checked callback. Standalone flows verify saved state instead.
+      if (oauthPopupRef.current && (host !== "dialog" || !connectionIntentId)) oauthPopupRef.current.opener = null;
     } catch { oauthPopupRef.current = null; }
-  }, [host]);
+  }, [host, connectionIntentId]);
 
   const openAuthorization = useCallback((url: string) => {
     setAuthorizationFallbackUrl(url);

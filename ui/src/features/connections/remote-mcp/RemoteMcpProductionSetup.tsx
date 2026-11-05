@@ -173,6 +173,8 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     if (!saveDraft && state.auth === "auto" && (!popup.current || popup.current.closed)) {
       try {
         popup.current = window.open("about:blank", "_blank", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
+        // Preserve only the existing task-dialog callback contract.
+        if (popup.current && (host !== "dialog" || !interactionId)) popup.current.opener = null;
       } catch { popup.current = null; }
     }
     busy.current = true;

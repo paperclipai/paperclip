@@ -638,7 +638,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   it.each(["closed", "denied", "failed"])("makes standalone remote MCP sign-in retryable when %s", async (outcome) => {
     mockSearch.value = "source=composio";
-    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const popup = { opener: window as Window | null, closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const connection = { id: "conn-provider", status: "draft", credentialPolicy: "shared" };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
@@ -646,6 +646,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Connect Composio")!.click());
     await vi.waitFor(() => expect(popup.location.assign).toHaveBeenCalled());
     await flushReact();
+    expect(popup.opener).toBeNull();
     if (outcome === "closed") popup.closed = true;
     else popup.location.href = `${window.location.origin}/CO/apps/connect?resume=conn-provider&oauth=${outcome}`;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
@@ -2834,7 +2835,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       actions: { readOnly: [], canMakeChanges: [] }, catalog: [], suggestedDefaults: {},
       auth: { kind: "oauth" },
     });
-    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const popup = { opener: window as Window | null, closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const onComplete = vi.fn();
     getConnectionMock.mockResolvedValue({ id: "conn-github", status: "active" });
@@ -2846,6 +2847,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock, container.textContent ?? "").toHaveBeenCalled();
     expect(startOAuthMock, container.textContent ?? "").toHaveBeenCalledWith("conn-github", { asCurrentUser: true });
     expect(onComplete).not.toHaveBeenCalled();
+    expect(popup.opener).toBeNull();
     // AppDetail removes the success flag as soon as its toast is shown.
     popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions`;
     await act(async () => {
