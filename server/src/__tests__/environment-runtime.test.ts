@@ -1,5 +1,6 @@
 import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -1084,8 +1085,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       pluginWorkerManager: offlineManager,
       pluginWorkerReadyTimeoutMs: 0,
     });
-    await expect(runtimeWithStoppedWorker.acquireRunLease(input))
-      .rejects.toThrow("its worker is not running");
+    const refusal = await runtimeWithStoppedWorker.acquireRunLease(input).catch(error => error);
+    expect(refusal).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect((refusal as Error).message).toContain("its worker is not running");
     expect(offlineManager.call).not.toHaveBeenCalled();
   });
 

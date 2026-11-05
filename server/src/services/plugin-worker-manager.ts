@@ -1,5 +1,6 @@
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
+import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -3590,9 +3591,10 @@ export function createPluginWorkerHandle(
       if (!childProcess?.stdin?.writable) {
         onWorkerSettled?.();
         reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is not running`,
-          ),
+          // The status can still read "running" while the child's stdin is
+          // closed, so no status is reported for this refusal.
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `Cannot call "${method}" — worker for "${pluginId}" is not running` }),
         );
         return;
       }
@@ -3833,9 +3835,8 @@ export function createPluginWorkerHandle(
       if (status !== "running" && status !== "starting") {
         onWorkerSettled?.();
         return Promise.reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is ${status}`,
-          ),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: status,
+            message: `Cannot call "${method}" — worker for "${pluginId}" is ${status}` }),
         );
       }
       return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled, startupContextId, observeResult);
@@ -4226,7 +4227,8 @@ export function createPluginWorkerManager(
       if (!handle) {
         onWorkerSettled?.();
         return Promise.reject(
-          new Error(`No worker registered for plugin "${pluginId}"`),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `No worker registered for plugin "${pluginId}"` }),
         );
       }
       let finishInspection: (() => void) | undefined;
@@ -4256,7 +4258,8 @@ export function createPluginWorkerManager(
       const handle = workers.get(pluginId);
       if (!handle) {
         return Promise.reject(
-          new Error(`No worker registered for plugin "${pluginId}"`),
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
+            message: `No worker registered for plugin "${pluginId}"` }),
         );
       }
       return handle.openLoginPtySession(input);

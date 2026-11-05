@@ -5594,7 +5594,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const failedRun = runs?.find((row) => row.id === runId);
     const retryRun = runs?.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("setup_failed");
+    expect(failedRun?.errorCode).toBe("plugin_worker_unavailable");
     expect(failedRun?.error).toContain("worker is not running");
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",

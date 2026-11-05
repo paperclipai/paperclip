@@ -27,6 +27,7 @@ vi.mock("../middleware/logger.js", () => {
 });
 
 import { logger } from "../middleware/logger.js";
+import { PluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../services/plugin-worker-unavailable-error.js";
 import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 import {
   appendStderrExcerpt,
@@ -77,6 +78,24 @@ describe("worker configuration completion", () => {
       await manager.call("test.plugin", "configChanged", { companyId: "company-1", config: {} });
       expect(applied).toHaveBeenCalledTimes(1);
     } finally { unsubscribe(); await manager.stopAll(); }
+  });
+});
+
+describe("plugin worker unavailable refusals", () => {
+  it("refuses calls to a stopped or missing worker with a typed, unsent error", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+    });
+    const settled = vi.fn();
+    const stopped = await handle.call("environmentExecute", {} as never, undefined, undefined, settled).catch(error => error);
+    expect(stopped).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(stopped).toMatchObject({ code: PLUGIN_WORKER_UNAVAILABLE_CODE, pluginId: "test.plugin", workerStatus: "stopped",
+      message: 'Cannot call "environmentExecute" — worker for "test.plugin" is stopped' });
+    expect(settled).toHaveBeenCalledTimes(1);
+    const missing = await createPluginWorkerManager().call("missing.plugin", "environmentExecute", {} as never).catch(error => error);
+    expect(missing).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(missing).toMatchObject({ workerStatus: null, message: 'No worker registered for plugin "missing.plugin"' });
   });
 });
 
