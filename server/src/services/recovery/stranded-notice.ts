@@ -64,6 +64,16 @@ const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string
   workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
 };
 
+const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
+  runner_revision_mismatch: {
+    title: "Remote Runner is out of date",
+    body: "The remote Runner does not match this Paperclip version, which is expected for a few minutes while a release updates the Runner. "
+      + "Paperclip retried before the agent started, but the Runner was still not updated.",
+    nextAction: "Check that the remote Runner received the update for this release, then retry the task.",
+    tone: "danger",
+  },
+};
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -162,6 +172,16 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_incompatible") {
+    return {
+      title: "AI connection conflicts with project settings",
+      body: "Paperclip stopped before the agent started because this agent's managed AI connection conflicts with authentication settings "
+        + "in the project or the agent's arguments, such as an API key, token or apiKeyHelper. The task is blocked until the conflict is removed.",
+      nextAction: "Remove the API key, token or apiKeyHelper from the project's Claude or Codex settings or the agent's arguments, "
+        + "or choose a different AI connection for this agent, then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
     const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
     const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
@@ -229,7 +249,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     ...workspaceScan,
     body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
     tone: "danger" as const,
-  } : input.seed;
+  } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();
   const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =

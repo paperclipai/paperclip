@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
-import { environmentTaskOperationSchema, parseEnvironmentTaskResult, JsonRpcCallError, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvironmentTaskResult, JsonRpcCallError, PluginEnvironmentTaskError,
+  readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 
@@ -511,6 +512,18 @@ describe("plugin-provided Runner execution", () => {
     const error = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation }).catch(error => error);
     expect(error.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
     expect(readEnvironmentTaskErrorDiagnostic(error)).toBeNull();
+  });
+  it("keeps only the plugin's stable task error code through worker error sanitization", async () => {
+    const workers = worker();
+    workers.call.mockRejectedValue(Object.assign(new JsonRpcCallError({ code: -32002, message: "private-credential",
+      data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) }), { extra: "private-credential" }));
+    const error = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught);
+    expect(error.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
+    expect(readEnvironmentTaskErrorCode(error)).toBe("runner_revision_mismatch");
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain("private-credential");
+    expect(error.cause).toBeUndefined();
+    workers.call.mockRejectedValue(new Error("The installed Runner does not match the expected revision"));
+    expect(readEnvironmentTaskErrorCode(await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught))).toBeNull();
   });
   it("accepts PRP identity characters and length limits", () => {
     for (const field of ["runnerId", "leaseId", "runId", "sessionId", "turnId", "itemId"]) {

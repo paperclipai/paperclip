@@ -10,6 +10,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult,
   environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES,
+  environmentTaskErrorCodeData, PluginEnvironmentTaskError, readEnvironmentTaskErrorCode,
   type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -461,7 +462,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       data: environmentTaskErrorData({ status: diagnostic.httpStatus, code: diagnostic.errorCode, reason: diagnostic.reason }),
     });
     // Worker errors and schema diagnostics can contain request credentials.
-    throw new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
+    const code = readEnvironmentTaskErrorCode(error);
+    throw Object.assign(new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"),
+      code ? { data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError(code)) } : {});
   }
 }
 

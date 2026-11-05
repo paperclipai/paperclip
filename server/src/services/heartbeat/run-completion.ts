@@ -13,6 +13,7 @@ import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -1376,12 +1377,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // bootstrap budget; the worker is restarted or replaced meanwhile.
     const pluginWorkerUnavailableFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findPluginWorkerUnavailableError(outerErr) : null;
+    const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
       reusableSandboxResumeFailure?.code ??
       remoteWorkspaceRestoreFailure?.code ??
       pluginWorkerUnavailableFailure?.code ??
+      (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1544,7 +1548,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           const interactionOwnsRetry = livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
-            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+            ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
+              ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
+              : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {
             logger.warn(
