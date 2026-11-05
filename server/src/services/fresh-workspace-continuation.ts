@@ -1,5 +1,5 @@
-import { and, asc, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -10,6 +10,8 @@ import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -39,8 +41,11 @@ export async function canSelectFreshWorkspace(input: {
   if (!wake) return null;
   if (input.taskRetryRequestId) {
     const retry = readTaskRetryIntent(wake.payload);
-    if (retry?.generationId !== wake.id || retry.sourceRunId !== input.sourceRunId ||
+    if (retry?.generationId !== wake.id ||
         retry.actorId !== input.actorId || wake.requestedByActorId !== input.actorId) return null;
+    if (retry.sourceRunId !== input.sourceRunId && (system.intentId !== wake.id ||
+      !(await taskRetryRunAncestry({ db: input.db, companyId: input.companyId, issueId: input.issueId,
+        agentId: input.agentId, sourceRunId: retry.sourceRunId }))?.includes(input.sourceRunId))) return null;
     return wake.id;
   }
   const [source] = await input.db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
@@ -74,30 +79,10 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
       Object.keys(source.usageJson ?? {}).some(key => key !== "ledgerScope") ||
       Object.keys(source.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "chatControlRecoveryAdmission", "aiConnectionNonAssigneeCommentWake"].includes(key)) ||
       Object.keys(source.resultJson ?? {}).some(key => !["effectiveTimeoutSec", "executionRecovery", "stopReason", "timeoutConfigured", "timeoutFired", "timeoutSource", "workspaceValidation"].includes(key))) return null;
-  const events = await db.select().from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, source.companyId), eq(heartbeatRunEvents.runId, source.id),
-  )).orderBy(asc(heartbeatRunEvents.seq)).limit(4);
-  let offset = 0;
-  const warning = events[0];
-  if (warning?.eventType === "agent_observability.unavailable") {
-    if (warning.seq !== 1 || warning.level !== "warn" ||
-        warning.message !== "Company observability was not applied: this harness is not supported." ||
-        warning.payload?.reason !== "unsupported_harness" || !z.string().uuid().safeParse(warning.payload.revision).success ||
-        Object.keys(warning.payload).some(key => !["reason", "revision"].includes(key))) return null;
-    offset = 1;
-  }
-  const diagnostic = events[offset], measured = events[offset + 1];
-  if (events.length !== 2 + offset || !diagnostic || diagnostic.seq !== 1 + offset ||
-      diagnostic.eventType !== "error" || diagnostic.level !== "error" || diagnostic.message !== source.error ||
-      diagnostic.payload !== null || !measured || measured.seq !== 2 + offset ||
-      measured.eventType !== "lifecycle" || measured.level !== "info" || measured.message !== "task.run.measured" ||
-      measured.payload?.phase !== "task.run.measured" || measured.payload?.outcome !== "failed" ||
-      measured.payload?.durableSettlement !== true || typeof measured.payload.durationMs !== "number" ||
-      !Number.isFinite(measured.payload.durationMs) || measured.payload.durationMs < 0 ||
-      Object.keys(measured.payload).some(key => !["phase", "outcome", "durableSettlement", "durationMs"].includes(key)) ||
-      events.some(event => event.stream !== "system" || event.agentId !== source.agentId ||
-        event.sourceInstanceId !== null || event.sourceEventId !== null || event.sourceSeq !== null ||
-        event.sourcePayloadSha256 !== null || event.protocolSchemaVersion !== null)) return null;
+  const settlement = await readFailedPreparationSettlement(db, source);
+  const warning = settlement?.unsupportedHarnessWarning;
+  if (!settlement || warning && (warning.message !== "Company observability was not applied: this harness is not supported."
+    || !z.string().uuid().safeParse(warning.revision).success)) return null;
   const [executionEvidence] = await db.execute<{ present: boolean }>(sql`select
     exists(select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${source.companyId} and ${environmentLeases.heartbeatRunId} = ${source.id})
     or exists(select 1 from ${nativeRunResults} where ${nativeRunResults.companyId} = ${source.companyId} and ${nativeRunResults.runId} = ${source.id})

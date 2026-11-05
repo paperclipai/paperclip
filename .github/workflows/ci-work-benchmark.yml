@@ -7,6 +7,9 @@ on:
       - .github/actions/setup-ci-dependencies/**
       - .github/workflows/ci-work-benchmark.yml
       - scripts/ci-dependency-cache.mjs
+      - .github/workflows/pr-trusted.yml
+      - .github/workflows/release-verify.yml
+      - scripts/runner-debug-crate-cache.mjs
       - scripts/benchmark-ci-work.mjs
       - scripts/run-vitest-stable.mjs
       - server/src/__tests__/setup-supertest.ts
@@ -38,6 +41,21 @@ jobs:
           path: candidate
           fetch-depth: 2
           persist-credentials: false
+
+      - name: Select changed server test work
+        id: test_scope
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD -- \
+            scripts/benchmark-ci-work.mjs \
+            scripts/run-vitest-stable.mjs \
+            server/src/__tests__/setup-supertest.ts \
+            server/src/__tests__/workspace-runtime.test.ts \
+            server/src/services/workspace-git-snapshot-streaming.test.ts)
+          if [ -n "$changed" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -123,6 +141,7 @@ jobs:
           echo "Materialized dependency reuse is disabled by an unmodelled install hook. Retaining cold setup and comparing test commands only." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare unchanged baseline
+        if: steps.test_scope.outputs.run == 'true'
         run: |
           base_sha=$(git rev-parse HEAD^1)
           git worktree add --detach ../baseline "$base_sha"
@@ -135,11 +154,16 @@ jobs:
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
 
       - name: Compare complete commands and executed case inventories
+        if: steps.test_scope.outputs.run == 'true'
         env:
           BENCHMARK_OUTPUT: ${{ runner.temp }}/ci-work-benchmark
         run: |
           node scripts/benchmark-ci-work.mjs ../baseline "$BENCHMARK_OUTPUT"
           cat "$BENCHMARK_OUTPUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Exercise restored dependencies for cache-only changes
+        if: steps.test_scope.outputs.run != 'true' && steps.qualification.outputs.cacheable == 'true'
+        run: pnpm exec vitest run --project @paperclipai/shared
 
       - name: Retain timings, inventories and failure logs
         if: always()
@@ -147,4 +171,121 @@ jobs:
         with:
           name: ci-work-benchmark
           path: ${{ runner.temp }}/ci-work-benchmark
+          retention-days: 14
+
+  rust_prime:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'profile-ci') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'profile-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Select the pinned compiler and workspace path
+        id: workspace
+        working-directory: packages/paperclip-runner
+        run: |
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" | xargs -r -n1 rustup toolchain uninstall || true
+          pinned="$HOME/paperclip-runner-rust"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+      - name: Qualify the dependency cache
+        id: dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.workspace.outputs.path }} -> target
+          shared-key: qualification-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
+          cache-workspace-crates: false
+          cache-bin: false
+          save-if: 'true'
+      - name: Build the exact debug units
+        working-directory: packages/paperclip-runner
+        run: cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins
+      - name: Compute workspace artifact identity
+        id: debug
+        run: node scripts/runner-debug-crate-cache.mjs plan
+      - name: Save workspace artifacts in this PR only
+        id: artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: qualification-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.debug.outputs.key }}
+          path: ${{ steps.debug.outputs.paths }}
+
+  rust_restore:
+    needs: rust_prime
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Select the pinned compiler and workspace path
+        id: workspace
+        working-directory: packages/paperclip-runner
+        run: |
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" | xargs -r -n1 rustup toolchain uninstall || true
+          pinned="$HOME/paperclip-runner-rust"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+      - name: Qualify the dependency cache
+        id: dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.workspace.outputs.path }} -> target
+          shared-key: qualification-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
+          cache-workspace-crates: false
+          cache-bin: false
+          save-if: 'false'
+      - name: Compute workspace artifact identity
+        id: debug
+        run: node scripts/runner-debug-crate-cache.mjs plan
+      - name: Restore workspace artifacts in this PR only
+        id: artifacts
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          key: qualification-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.debug.outputs.key }}
+          path: ${{ steps.debug.outputs.paths }}
+      - name: Verify fresh-host cache reuse
+        env:
+          DEPENDENCIES_HIT: ${{ steps.dependencies.outputs.cache-hit }}
+          ARTIFACTS_HIT: ${{ steps.artifacts.outputs.cache-hit }}
+        run: |
+          test "$DEPENDENCIES_HIT" = true
+          test "$ARTIFACTS_HIT" = true
+          node scripts/runner-debug-crate-cache.mjs mark-current
+          cd packages/paperclip-runner
+          started=$(date +%s)
+          cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins --message-format=json > "$RUNNER_TEMP/rust-restored-build.jsonl"
+          echo "Restored Rust build: $(($(date +%s) - started)) seconds." >> "$GITHUB_STEP_SUMMARY"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const artifacts = readFileSync(`${process.env.RUNNER_TEMP}/rust-restored-build.jsonl`, 'utf8')
+            .trim().split('\n').map(line => JSON.parse(line)).filter(row => row.reason === 'compiler-artifact');
+          if (!artifacts.length || artifacts.some(row => !row.fresh)) {
+            throw new Error(`Cache hit rebuilt units: ${JSON.stringify(artifacts.filter(row => !row.fresh).map(row => row.package_id))}`);
+          }
+          console.log(`All ${artifacts.length} Cargo units were fresh on a new host.`);
+          NODE
+      - name: Retain Cargo reuse evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-cache-qualification
+          path: ${{ runner.temp }}/rust-restored-build.jsonl
           retention-days: 14

@@ -5,7 +5,7 @@ import { readTaskRetryIntent } from "../task-retry.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
-import { getExecutionBlocker } from "../execution-blocker.js";
+import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
 
 /** This receipt changes the workspace strategy, never the external principal,
@@ -32,6 +32,23 @@ export async function readTaskChatRetryIntent(db: Db, input: {
  * executor must still be contained; a terminal database row is insufficient. */
 export async function taskChatRetryExecutionStopped(db: Db, run: typeof heartbeatRuns.$inferSelect) {
   return taskChatRetryExecutionContained(db, run, false);
+}
+
+export async function taskChatRetrySourceCleanupPending(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+  const hint = run.contextSnapshot?.chatFailedRunRetry as Record<string, unknown> | undefined;
+  const intentId = run.contextSnapshot?.taskRetryRequestId;
+  if (typeof intentId !== "string" || !run.retryOfRunId || !run.wakeupRequestId ||
+      run.contextSnapshot?.issueId !== issueId || hint?.version !== 1 ||
+      hint.actionId !== run.wakeupRequestId || hint.failedRunId !== run.retryOfRunId) return false;
+  const retry = await readTaskChatRetryIntent(db, { companyId: run.companyId, issueId, agentId: run.agentId,
+    sourceRunId: run.retryOfRunId, intentId, chatActionId: run.wakeupRequestId });
+  if (retry?.wake.status !== "coalesced" || retry.wake.runId !== run.id) return false;
+  const [source] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+    eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.id, run.retryOfRunId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  ));
+  return Boolean(source && await hasPendingRunCleanup(db, run.companyId, source.id));
 }
 
 async function taskChatRetryExecutionContained(db: Db, run: typeof heartbeatRuns.$inferSelect, admittedFailure: boolean) {

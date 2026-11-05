@@ -65,6 +65,14 @@ runs:
           pnpm install --frozen-lockfile
         fi
 
+    - name: Replay workspace install hooks after restore
+      if: steps.installed.outputs.cache-hit == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        pnpm -r --if-present run postinstall
+        pnpm run postinstall
+
     - name: Restore certified shared build outputs (read only)
       if: inputs.restore-cache == 'true' && steps.inputs.outputs.cacheable == 'true'
       id: builds

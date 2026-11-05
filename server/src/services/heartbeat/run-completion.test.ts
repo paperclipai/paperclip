@@ -1,10 +1,24 @@
+import { promises as fs } from "node:fs";
+import { createDurableRunLogStore } from "../run-log-store.js";
+import { createServer } from "node:http";
+import { registerLocalRuntimeApiServer } from "../../runtime-api.js";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { executePaperclipNativeSession, closeIdleWarmNativeSessionsForRestart } from "../native-runtime/native-session-executor.js";
+import { createHeartbeatRunOutput } from "./run-output.js";
+import { createHeartbeatRunControl } from "./run-control.js";
+import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.js";
+import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as usageReceipts from "../usage-receipts.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -12,7 +26,9 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
+import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { EnvironmentRunError } from "../environment-run-orchestrator.js";
+import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -26,6 +42,39 @@ import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
+
+const diagnosticNativeFixture = vi.hoisted(() => ({
+  enabled: false,
+  retireWarm: false,
+  beforeWarmClose: undefined as (() => Promise<void>) | undefined,
+  backendOptions: undefined as Parameters<typeof import("../../vendor/paperclip-runner/index.js").createNativeSessionBackend>[1],
+}));
+vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
+  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+});
+vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
+  return { ...actual,
+    createNativeSessionBackend: (...args: Parameters<typeof actual.createNativeSessionBackend>) => {
+      if (!diagnosticNativeFixture.enabled) return actual.createNativeSessionBackend(...args);
+      diagnosticNativeFixture.backendOptions = args[1];
+      return { descriptor: () => ({ kind: "test" }) };
+    },
+    executeNativeSession: async (options: Parameters<typeof actual.executeNativeSession>[0]) => {
+      if (!diagnosticNativeFixture.enabled) return actual.executeNativeSession(options);
+      const transport = diagnosticNativeFixture.backendOptions!.codexTransportFactory!();
+      const session = { close: async ({ reason }: { reason: string }) => { await transport.close(reason); } };
+      await options.onSession?.(session as never);
+      await diagnosticNativeFixture.beforeWarmClose?.();
+      if (diagnosticNativeFixture.retireWarm) await closeIdleWarmNativeSessionsForRestart();
+      return { result: { summary: "accepted result" }, terminal: { runTerminalState: "succeeded" }, turnId: "test-turn",
+        normalizedSessionId: options.input.session.normalizedSessionId, providerSessionId: "synthetic-provider",
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    },
+  };
+});
+
 
 type Dependencies = HeartbeatRunCompletionDependencies;
 function callbacks(db: Db) {
@@ -127,6 +176,193 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it.each(["ordinary", "stalled append", "object admission"] as const)("finishes accepted output before ordinary lease teardown without writing to a retired recorder (%s)", async mode => {
+    const stalledAppend = mode === "stalled append", stalledAdmission = mode === "object admission";
+    const f = await fixture({ runtimeMode: "native",
+      resultJson: { durable: "accepted result" } });
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "diagnostic-completion-")));
+    onTestFinished(() => rm(workspace, { recursive: true, force: true }));
+    let holdUploads = false, uploadEntered = false, finalizeEntered = false;
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
+    const store = stalledAppend ? createDurableRunLogStore({ basePath: join(workspace, "run-logs") }) : objectLogFixture(async input => {
+      if (stalledAdmission && holdUploads && input.objectKey.includes("/objects/")) {
+        uploadEntered = true;
+        await uploadGate;
+      }
+    });
+    let latestOutputSeq = 0, admittedBytes = 0;
+    const diagnosticAdmissions: Array<{ chunk: string; admitted?: boolean; error?: string }> = [];
+    if (store.enqueue) {
+      const originalEnqueue = store.enqueue.bind(store);
+      vi.spyOn(store, "enqueue").mockImplementation(async (handle, event) => {
+        latestOutputSeq = event.seq ?? latestOutputSeq;
+        const observation = event.chunk.includes("runnerd diagnostic") ? { chunk: event.chunk } as typeof diagnosticAdmissions[number] : undefined;
+        if (observation) diagnosticAdmissions.push(observation);
+        let receipt;
+        try { receipt = await originalEnqueue(handle, event); if (observation) observation.admitted = true; }
+        catch (error) { if (observation) observation.error = error instanceof Error ? error.message : String(error); throw error; }
+        if (holdUploads) admittedBytes += Buffer.byteLength(JSON.stringify({ ts: event.ts,
+          attemptId: handle.attemptId, stream: event.stream, chunk: event.chunk, seq: event.seq }) + "\n");
+        return receipt;
+      });
+    }
+    const originalFinalize = store.finalize.bind(store);
+    vi.spyOn(store, "finalize").mockImplementation((...args) => {
+      finalizeEntered = true;
+      return originalFinalize(...args);
+    });
+    const readLog = async () => {
+      let content = "", offset = 0;
+      do {
+        const page = await store.read(output.handle!, { offset, limitBytes: 4 * 1024 * 1024 });
+        content += page.content;
+        if (page.nextOffset === undefined) break;
+        offset = page.nextOffset;
+      } while (true);
+      return { content };
+    };
+    let releaseAppend!: () => void, observeAppend!: () => void;
+    const appendGate = new Promise<void>(resolve => { releaseAppend = resolve; });
+    const appendStarted = new Promise<void>(resolve => { observeAppend = resolve; });
+    const originalAppend = fs.appendFile.bind(fs);
+    const append = vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+      if (stalledAppend && String(args[1]).includes("runnerd diagnostic")) { observeAppend(); await appendGate; }
+      return originalAppend(...args);
+    });
+    const warning = vi.spyOn(console, "warn");
+    onTestFinished(() => { releaseAppend(); append.mockRestore(); warning.mockRestore(); });
+    const output = createHeartbeatRunOutput(db, { run: f.run, runId: f.run.id, issueId: null, runLogStore: store,
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: f.deps.appendRunEvent, getCurrentUserRedactionOptions: async () => ({ enabled: false }) });
+    const handlers = await output.begin(f.run);
+    await handlers.onLog("stdout", "accepted output for this exact run\n");
+    const { execution, issue } = await admitNativeExecution(f);
+    await db.update(issues).set({ assigneeAgentId: f.run.agentId, executionRunId: f.run.id, status: "in_progress" }).where(eq(issues.id, issue.id));
+    vi.stubEnv("PAPERCLIP_HOME", join(workspace, "synthetic-controller-home"));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    execution.workspace.cwd = workspace;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.run.id));
+    Object.assign(execution.session, { lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60000 } });
+    await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+    const api = createServer((_req, response) => { response.writeHead(404).end(); });
+    registerLocalRuntimeApiServer(api);
+    await new Promise<void>((resolve, reject) => { api.once("error", reject); api.listen(0, "127.0.0.1", resolve); });
+    onTestFinished(() => new Promise<void>(resolve => api.close(() => resolve())));
+    diagnosticNativeFixture.enabled = true;
+    diagnosticNativeFixture.retireWarm = stalledAppend || stalledAdmission;
+    if (stalledAdmission) diagnosticNativeFixture.beforeWarmClose = async () => {
+      await store.flush!(output.handle!);
+      holdUploads = true;
+      const target = 8 * 1024 * 1024 - 1;
+      while (admittedBytes < target) {
+        const overhead = Buffer.byteLength(JSON.stringify({ ts: new Date().toISOString(),
+          attemptId: output.handle!.attemptId, stream: "stdout", chunk: "", seq: latestOutputSeq + 1 }) + "\n");
+        const chunk = "x".repeat(Math.min(64 * 1024, target - admittedBytes - overhead));
+        await handlers.onLog("stdout", chunk);
+      }
+      expect(admittedBytes).toBe(target);
+      expect(uploadEntered).toBe(true);
+    };
+    let completed = false;
+    const diagnosticWrites: Promise<void>[] = [];
+    const finishing = (async () => {
+      const event: PrpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1,
+        sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1, sourceKind: "runner",
+        runId: f.run.id, normalizedSessionId: execution.session.normalizedSessionId,
+        eventType: "item.delta", priority: 2, emittedAt: new Date().toISOString(), payload: { text: "canonical accepted output 再開" } };
+      const persisted = await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id,
+        agentId: f.run.agentId, eventType: event.eventType, payload: { prpEvent: event },
+        nativeSource: { sourceInstanceId: event.sourceInstanceId, sourceEventId: event.sourceEventId,
+          sourceSeq: event.sourceSeq, protocolSchemaVersion: 1, canonicalPayload: event as unknown as Record<string, unknown> } });
+      if (!stalledAppend) await handlers.onPersistedNativeLog!(persisted.row.seq, formatNativeRunLogEvent(event));
+      const adapter = await executePaperclipNativeSession({ db, execution: execution as never,
+        runnerInstanceId: "synthetic-controller", useRunnerd: true, onLog: (stream, chunk) => {
+          const write = handlers.onLog(stream, chunk);
+          if (chunk.includes("runnerd diagnostic")) diagnosticWrites.push(write);
+          return write;
+        },
+        runnerEnvironment: { HOME: workspace, CODEX_HOME: join(workspace, "synthetic-codex-home") } });
+      await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      Object.assign(f.run, await read(f.run.id));
+      f.agent.adapterType = "paperclip_runner";
+      f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+      f.input.adapterResult = adapter;
+      const completionDeps: Dependencies = { ...f.deps, runLogStore: store };
+      f.input.output = output;
+      f.input.onLog = handlers.onLog;
+      await createHeartbeatRunCompletion(db, completionDeps).completeRun(f.input);
+      completed = true;
+      return { persisted, event };
+    })();
+    void finishing.catch(() => undefined);
+    try {
+      if (stalledAdmission) {
+        await vi.waitFor(() => expect(finalizeEntered).toBe(true), { timeout: 10_000 });
+        expect(diagnosticWrites.length).toBeGreaterThan(0);
+        releaseUpload();
+      }
+      if (stalledAppend) {
+        await appendStarted;
+        await vi.waitFor(() => expect(completed).toBe(true), { timeout: 10_000 });
+      }
+      const { persisted, event } = await finishing;
+      const before = await readLog();
+      expect(before.content).toContain("accepted output for this exact run");
+      const settled = await read(f.run.id);
+      expect(settled).toMatchObject({ companyId: f.run.companyId, status: "succeeded", resultJson: { durable: "accepted result" } });
+      expect(settled).toMatchObject({ costAccountingPending: true, costAccountedAt: null, usageJson: { accountingReceiptReady: false } });
+      expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), expect.any(Object));
+      if (stalledAppend) {
+        expect(settled).toMatchObject({ logBytes: null, logSha256: null });
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining("final log size and hash are unknown"));
+      } else {
+        const chunks = before.content.trimEnd().split("\n").map(line => JSON.parse(line).chunk);
+        expect(chunks).toContain(formatNativeRunLogEvent(event));
+        expect(settled).toMatchObject({ logBytes: Buffer.byteLength(before.content),
+          logSha256: createHash("sha256").update(before.content).digest("hex") });
+      }
+      const deps = controlCallbacks(db);
+      deps.options.closeWarmNativeSessionsForRun.mockImplementation(async ({ runId }) => {
+        expect(runId).toBe(f.run.id);
+        await closeIdleWarmNativeSessionsForRestart();
+        return { closed: 1, busy: 0, failed: 0 };
+      });
+      await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId: f.run.id, companyId: f.run.companyId,
+        agentId: f.run.agentId, status: "succeeded", providerResourceDisposition: "destroy" });
+      expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledOnce();
+      const after = await readLog();
+      expect(after.content).toBe(before.content);
+      if (!stalledAppend) {
+        const coverage = createNativeRunLogCoverageVerifier(db, f.run.companyId, f.run.id, { redactChunks: chunk => [chunk] });
+        await coverage.write(Buffer.from(after.content));
+        expect(await coverage.finish()).toBe(persisted.row.seq);
+      }
+      if (stalledAdmission) {
+        await Promise.allSettled(diagnosticWrites);
+        expect(diagnosticAdmissions.length).toBeGreaterThan(0);
+        const storedChunks = before.content.trimEnd().split("\n").map(line => JSON.parse(line).chunk);
+        for (const admission of diagnosticAdmissions) {
+          expect(admission).toMatchObject({ admitted: true });
+          expect(admission.error).toBeUndefined();
+          expect(storedChunks).toContain(admission.chunk);
+        }
+      }
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.filter(event => (event.payload as { reason?: string } | null)?.reason === "object_log_persistence_failed")).toEqual([]);
+    } finally {
+      releaseAppend();
+      releaseUpload();
+      await Promise.allSettled(diagnosticWrites);
+      await finishing;
+      if (stalledAppend) expect(await read(f.run.id)).toMatchObject({ logBytes: null, logSha256: null });
+      await closeIdleWarmNativeSessionsForRestart();
+      diagnosticNativeFixture.enabled = false;
+      diagnosticNativeFixture.retireWarm = false;
+      diagnosticNativeFixture.beforeWarmClose = undefined;
+    }
+  });
 
   async function admitNativeExecution(f: Awaited<ReturnType<typeof fixture>>) {
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
@@ -690,6 +926,82 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const providerError = Object.assign(new Error("Sandbox abc is not in a valid state: stopping /home/daytona/secret"), { statusCode: 400 });
+    const resume = new ReusableSandboxResumeError({ provider: "daytona", providerLeaseId: "lease-1", cause: providerError });
+    // The orchestrator wraps the runtime error, exactly as staging recorded it.
+    const wrapped = new EnvironmentRunError("lease_acquire_failed",
+      `Failed to acquire lease for environment "Paperclip Computer" (sandbox): ${resume.message}`, { cause: resume });
+    const error = scenario === "untrusted" ? new Error(wrapped.message) : wrapped;
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reusable_sandbox_resume_failed" : "setup_failed" });
+    // The closed-label cause is recorded; provider text never is.
+    expect(failed.error).toContain("cause=provider_error status=400");
+    expect(failed.error).not.toContain("/home/daytona");
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["retried", "exhausted", "refused", "started", "in progress"] as const)("names a %s saved workspace restore failure and leaves recovery", async scenario => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: scenario === "in progress" ? "in_progress" : "blocked",
+      assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const sandboxCause = scenario === "refused"
+      ? "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root"
+      : "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1";
+    const error = new RemoteWorkspaceRestoreError("sandbox_restore", scenario !== "refused", new RemoteWorkspaceOperationError(sandboxCause));
+    if (scenario === "retried") f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled" } as never);
+    else f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 3, maxAttempts: 2 } as never);
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    // The run names the restore step and the sandbox step instead of a bare exit status.
+    expect(failed.error).toBe(`remote_workspace_restore_failed: step=sandbox_restore; ${sandboxCause}`);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    if (scenario === "started") {
+      expect(failed.errorCode).toBe("setup_failed");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+      // Started work keeps its existing reconciliation path.
+      expect(actions.filter(action => action.cause === "remote_workspace_restore_failed")).toHaveLength(0);
+      return;
+    }
+    expect(failed).toMatchObject({ status: "failed", errorCode: "remote_workspace_restore_failed" });
+    expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      remoteWorkspaceRestore: { step: "sandbox_restore", retryable: scenario !== "refused" } });
+    if (scenario === "refused") expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    else expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    // Stranded-work recovery owns scanned statuses; a retry owns the next step.
+    if (scenario === "retried" || scenario === "in progress") { expect(actions).toHaveLength(0); return; }
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
+      kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
+    expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
+    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+  });
+
+  it("keeps an active recovery action that another writer created for the task", async () => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: "blocked",
+      assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    const [existing] = await db.insert(issueRecoveryActions).values({ companyId: f.run.companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "other_failure", fingerprint: "other",
+      evidence: { runId: "other-run" }, nextAction: "Handle the other failure.", attemptCount: 1 }).returning();
+    const error = new RemoteWorkspaceRestoreError("sandbox_restore", false, new RemoteWorkspaceOperationError(
+      "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root"));
+    await f.completion.failRunSetup(f.setup(error));
+    expect((await read(f.run.id)).errorCode).toBe("remote_workspace_restore_failed");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: existing.id, cause: "other_failure", fingerprint: "other", nextAction: "Handle the other failure.",
+      attemptCount: 1, evidence: { runId: "other-run" } });
   });
 
   it("records a lease lost before dispatch as a retryable host stop, not an opaque setup failure", async () => {

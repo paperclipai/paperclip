@@ -478,7 +478,7 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
-  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
+  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number>; accounted?: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
   /** Exact accepted provider turn that spent the disposition-only allowance. */

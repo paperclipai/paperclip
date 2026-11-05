@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { ToolMcpGatewayToken, ToolMcpGatewayWithTokens, ToolProfileWithDetails } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { GatewaysTab } from "./GatewaysTab";
 import { RelativeTime } from "./shared";
 
@@ -258,5 +259,54 @@ describe("GatewaysTab", () => {
     expect(container.textContent).not.toContain("expires 2d ago");
     expect(container.textContent).toContain("revoked 3h ago");
     expect(container.textContent).toContain("No snippets available.");
+  });
+
+  it("keeps loaded gateways visible when a refetch fails transiently", async () => {
+    listGatewaysMock.mockResolvedValue({ gateways: [gateway()] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <GatewaysTab companyId="company-1" />
+      </QueryClientProvider>,
+    );
+    expect(container.textContent).toContain("Dotta's MacBook");
+
+    listGatewaysMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Dotta's MacBook");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("shows readable copy and a Retry button for a real error", async () => {
+    listGatewaysMock
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue({ gateways: [gateway()] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <GatewaysTab companyId="company-1" />
+      </QueryClientProvider>,
+    );
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load gateways");
+    expect(container.textContent).not.toContain("Dotta's MacBook");
+
+    const retry = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Retry"));
+    expect(retry, "Retry button").toBeTruthy();
+    await act(async () => {
+      retry!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Dotta's MacBook");
   });
 });

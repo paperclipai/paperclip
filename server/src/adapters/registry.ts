@@ -150,29 +150,28 @@ import {
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
 
-/** Reuse the existing provider key check without requiring a global Claude CLI.
- * Readiness and account access are separate checks; model access is proven by a task.
- */
-async function verifyNativeClaudeApiKey(
+async function verifyNativeAcpxApiKey(
   config: Record<string, unknown>,
   result: AdapterEnvironmentTestResult,
 ): Promise<AdapterEnvironmentTestResult> {
   const env = config.env as Record<string, unknown> | undefined;
-  if (config.acpxAgent !== "claude" || !env || typeof env.ANTHROPIC_API_KEY !== "string"
-    || !env.ANTHROPIC_API_KEY || config.managedAiRouting || config.managedAiConnection
-    || ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(key => env[key])) return result;
+  const account = config.acpxAgent === "claude" ? { provider: "anthropic" as const, name: "Anthropic", key: "ANTHROPIC_API_KEY",
+    routing: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] }
+    : config.acpxAgent === "grok" ? { provider: "xai" as const, name: "xAI", key: "XAI_API_KEY", routing: ["XAI_BASE_URL", "GROK_BASE_URL"] } : null;
+  if (!account || !env || typeof env[account.key] !== "string" || !env[account.key]
+    || config.managedAiRouting || config.managedAiConnection || account.routing.some(key => env[key])) return result;
   try {
-    await validateAiApiKey("anthropic", env.ANTHROPIC_API_KEY);
+    await validateAiApiKey(account.provider, env[account.key] as string);
     return { ...result, checks: [...result.checks, {
       code: "ai_connection_api_key_reverified", level: "info",
-      message: "Anthropic verified this API key. Model access is checked when the agent runs.",
+      message: `${account.name} verified this API key. Model access is checked when the agent runs.`,
     }] };
   } catch (error) {
     const details = error && typeof error === "object" && "details" in error
       ? error.details as { code?: string } | undefined : undefined;
     return { ...result, status: "fail", checks: [...result.checks, {
       code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
-      level: "error", message: "Could not verify the Anthropic API key. Check the connection and try again.",
+      level: "error", message: `Could not verify the ${account.name} API key. Check the connection and try again.`,
     }] };
   }
 }
@@ -527,7 +526,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (!["grok"].includes(profile.acpxAgent) && arch === "x86_64"))))) {
             throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux ${profile.acpxAgent === "claude" ? "x64/ARM64" : "x64"} or macOS architecture.`);
           }
-          return verifyNativeClaudeApiKey(context.config, {
+          return verifyNativeAcpxApiKey(context.config, {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
@@ -535,7 +534,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }
         const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
         await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
-        return verifyNativeClaudeApiKey(context.config, {
+        return verifyNativeAcpxApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
         });
