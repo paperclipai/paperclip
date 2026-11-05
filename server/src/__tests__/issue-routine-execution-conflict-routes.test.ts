@@ -80,6 +80,16 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     };
   }
 
+  function boardActor(companyId: string): Express.Request["actor"] {
+    return {
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    };
+  }
+
   /**
    * Seeds a routine with two open execution tasks.
    *
@@ -237,6 +247,63 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     expect(res.body).toEqual({
       error: "Another execution for this routine is already in progress",
     });
+  });
+
+  /**
+   * Covers the route-level guard on the PATCH route itself.
+   *
+   * The adopt path in the service already translates the violation. This test
+   * drives a write that never reaches the adopt path. The target task sits in
+   * the terminal status `done` while it still holds an execution binding. A
+   * terminal task is outside the partial unique index, so the row is free.
+   * Moving it back to `in_progress` puts it back into the index and collides
+   * with the open task that holds the same routine slot. The route has to turn
+   * that driver error into the same 409 instead of letting it reach the error
+   * handler as a 500.
+   */
+  it("answers 409 when a PATCH write reaches the unique index outside the adopt path", async () => {
+    const { companyId, agentId, actorRunId, slotRunId, slotIssueId } =
+      await seedRoutineWithOrphanedExecution();
+    const routineId = await db
+      .select({ originId: issues.originId })
+      .from(issues)
+      .where(eq(issues.id, slotIssueId))
+      .then((rows) => rows[0]?.originId ?? null);
+    expect(routineId).toBeTruthy();
+
+    const closedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: closedIssueId,
+      companyId,
+      title: "Closed routine execution",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      // The execution binding survives the terminal status, so reopening the
+      // task puts it straight back into the partial unique index.
+      executionRunId: slotRunId,
+      originKind: "routine_execution",
+      originId: routineId!,
+      originFingerprint: "dispatch-fingerprint-1",
+    });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .patch(`/api/issues/${closedIssueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.error).toBe("Issue checkout conflict");
+    expect(res.body?.code).toBe("routine_execution_conflict");
+
+    // The rejected write must leave the closed task untouched.
+    const row = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, closedIssueId))
+      .then((rows) => rows[0]);
+    expect(row?.status).toBe("done");
+    expect(row?.executionRunId).toBe(slotRunId);
   });
 
   /**
