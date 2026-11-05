@@ -876,31 +876,138 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("projects provider-neutral activity without exposing provider envelopes", () => {
-    expect(nativeRunEventsToTranscript([
+  it("keeps web research as a provider activity with its sources", () => {
+    const transcript = nativeRunEventsToTranscript([
       event(1, "research.started", {
         schema: "paperclip.research.v1",
         researchId: "research-1",
+        action: "search",
         query: "current behavior",
         status: "running",
+        sources: [],
       }),
       event(2, "research.completed", {
         schema: "paperclip.research.v1",
         researchId: "research-1",
+        action: "search",
         query: "current behavior",
         status: "completed",
+        sources: [{ sourceId: "s1", url: "https://example.com/a", title: "A", snippet: null }],
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "research", status: "running", summary: "current behavior" }),
+      expect.objectContaining({
+        kind: "provider_activity",
+        family: "research",
+        status: "completed",
+        payload: expect.objectContaining({ sources: [expect.objectContaining({ url: "https://example.com/a" })] }),
+      }),
+    ]);
+    expect(transcript.some((entry) => entry.kind === "tool_call" || entry.kind === "tool_result")).toBe(false);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false });
+    const research = items.filter((item) => item.kind === "protocol" && item.surface === "provider_activity");
+    expect(research).toHaveLength(1);
+    expect(research[0]).toEqual(expect.objectContaining({
+      status: "completed",
+      links: [expect.objectContaining({ href: "https://example.com/a" })],
+      startedAt: "2026-08-25T18:00:01.000Z",
+    }));
+  });
+
+  it("does not invent a subject for a search the provider reported without a query", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "research.completed", {
+        schema: "paperclip.research.v1",
+        researchId: "research-2",
+        action: "other",
+        query: null,
+        url: null,
+        pattern: null,
+        status: "completed",
+        sources: [],
+      }),
+    ])).toEqual([expect.objectContaining({ kind: "provider_activity", family: "research", summary: "" })]);
+  });
+
+  it("keeps model reroutes and waits as provider activity with their payload", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "model.route.changed", {
+        schema: "paperclip.model.route_changed.v1",
+        routeId: "turn-1",
+        provider: "openai",
+        requestedModel: "gpt-a",
+        fromModel: "gpt-a",
+        effectiveModel: "gpt-b",
+        reason: "capacity",
+      }),
+      event(2, "wait.started", {
+        schema: "paperclip.wait.v1",
+        waitId: "sleep-1",
+        reason: "timer",
+        status: "running",
+        plannedDurationMs: 30000,
+        elapsedDurationMs: null,
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({ kind: "provider_activity", family: "model_identity", status: "completed", payload: expect.objectContaining({ effectiveModel: "gpt-b" }) }),
+      expect.objectContaining({ kind: "provider_activity", family: "wait", status: "running", payload: expect.objectContaining({ plannedDurationMs: 30000 }) }),
+    ]);
+  });
+
+  it("projects the runner's verification items as check activity", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.completed", "result:verification:1", {
+        kind: "verification",
+        text: "passed: node --test",
+        verification: { commandOrCheck: "node --test", status: "passed", detail: "6 tests passed" },
+      }),
+      itemEvent(2, "item.completed", "result:verification:2", {
+        kind: "verification",
+        text: "failed: pnpm typecheck",
+        verification: { commandOrCheck: "pnpm typecheck", status: "failed" },
+      }),
+      itemEvent(3, "item.completed", "result:verification:3", { kind: "verification", text: "malformed" }),
+      itemEvent(4, "item.completed", "result:verification:4", {
+        kind: "verification",
+        text: "not_run: pnpm test:e2e",
+        verification: { commandOrCheck: "pnpm test:e2e", status: "not_run", reasonCode: "policy_restricted", detail: "x".repeat(300) },
+      }),
+    ]);
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "provider_activity",
+        family: "verification",
+        status: "completed",
+        summary: "node --test",
+        payload: expect.objectContaining({ verificationId: "result:verification:1", status: "passed", detail: "6 tests passed" }),
+      }),
+      expect.objectContaining({ kind: "provider_activity", family: "verification", status: "failed", summary: "pnpm typecheck" }),
+      expect.objectContaining({ family: "verification", status: "informational", payload: expect.objectContaining({ reasonCode: "policy_restricted" }) }),
+    ]);
+    const checks = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false })
+      .filter((item) => item.kind === "protocol" && item.surface === "provider_activity");
+    expect(checks).toHaveLength(3);
+    const skipped = checks[2];
+    expect(skipped.kind === "protocol" && skipped.surface === "provider_activity" && skipped.details).toEqual(expect.arrayContaining([
+      { label: "Reason Code", value: "policy_restricted", mono: true },
+      { label: "Detail", value: "x".repeat(300), mono: false },
+    ]));
+  });
+
+  it("leaves families owned by other surfaces on the generic activity path", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "hook.completed", {
+        schema: "paperclip.hook.v1",
+        hookId: "hook-1",
+        event: "PreToolUse",
+        status: "completed",
+        summary: "lint hook",
       }),
     ])).toEqual([
-      expect.objectContaining({
-        kind: "tool_call",
-        name: "research",
-        toolUseId: "research:research-1",
-      }),
-      expect.objectContaining({
-        kind: "tool_result",
-        toolUseId: "research:research-1",
-        content: "current behavior",
-      }),
+      expect.objectContaining({ kind: "tool_call", toolUseId: "hook:hook-1" }),
+      expect.objectContaining({ kind: "tool_result", toolUseId: "hook:hook-1" }),
     ]);
   });
 
@@ -916,8 +1023,9 @@ describe("nativeRunEventsToTranscript", () => {
         }),
       ])).toEqual([
         expect.objectContaining({
-          kind: "tool_call",
-          toolUseId: "artifact:artifact-1",
+          kind: "provider_activity",
+          family: "artifact",
+          status: "running",
         }),
       ]);
     },

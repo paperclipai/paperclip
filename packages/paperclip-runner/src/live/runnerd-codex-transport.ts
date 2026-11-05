@@ -5616,8 +5616,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       })))) {
       throw new Error("native_runner_source_reconciliation_requires_exact_authority");
     }
-    if (lostPredecessor && (this.options.provider ?? "codex") !== "codex") throw new Error("native_runner_recovery_integrity_unsupported");
-    if (lostPredecessor && this.options.sourceRecoveryVersion !== 1) {
+    if (lostPredecessor && (!["codex", "acpx"].includes(this.options.provider ?? "codex") || this.options.acpxCandidateAdmission)) throw new Error("native_runner_recovery_integrity_unsupported");
+    const recoveryCapability = this.options.provider === "acpx" ? this.options.acpxSourceRecoveryVersion : this.options.sourceRecoveryVersion;
+    if (lostPredecessor && recoveryCapability !== 1) {
       throw new Error("native_runner_recovery_integrity_unsupported");
     }
     const hasControlPlaneWarmBoundary =
