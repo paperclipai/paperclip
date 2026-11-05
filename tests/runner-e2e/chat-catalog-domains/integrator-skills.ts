@@ -17,7 +17,7 @@ function websiteChecklistChecks(markdown: string): boolean[] {
   // separate checks isolated so an unrelated earlier width cannot ground it.
   const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
   const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
-  const mobileWaiver = /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not)\s+(?:check|test|verify|confirm|assess|measure|review)\b/i;
+  const mobileWaiver = /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not)\s+(?:check|test|verify|confirm|assess|measure|review|perform|run|execute|conduct|include|carry\s+out)\b/i;
   const instruction = (requirements: RegExp[]) => instructions.some(text => requirements.every(pattern => pattern.test(text)) && !forbidden.test(text));
   return [instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i]),
     instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i]),
