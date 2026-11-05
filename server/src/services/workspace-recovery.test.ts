@@ -903,6 +903,165 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
   }, 30_000);
 
+  it.each(["unchanged", "full_disk", "replacement", "staged_replacement", "marker_replaced"])(
+    "resumes deletion interrupted inside a cache without directory creation times: %s", async scenario => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    await writeFile(path.join(f.pack, "node_modules", "installed-tool"), Buffer.alloc(1024 * 1024, 7));
+    await writeFile(path.join(f.pack, "node_modules", "remaining-tool"), "remaining rebuildable dependency\n");
+    const interruptedTarget = await realpath(path.join(f.pack, "node_modules"));
+    let interrupted = false, cleanupConfirmed = false;
+    const syncOut = target.runner!.syncOut!;
+    target.runner!.syncOut = async operations => {
+      if (!cleanupConfirmed) throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
+      return syncOut(operations);
+    };
+    target.runner!.execute = async input => {
+      if (input.command !== "node" || input.args?.[0] !== "-e") return execute(input);
+      let fault = `(()=>{const fs=require('node:fs/promises'),stat=fs.lstat,open=fs.open;
+        fs.lstat=async(...args)=>{const value=await stat(...args);
+          if(args[1]?.bigint)value.birthtimeNs=0n;return value;};
+        fs.open=async(...args)=>{const handle=await open(...args),stat=handle.stat.bind(handle);
+          handle.stat=async(...args)=>{const value=await stat(...args);if(args[0]?.bigint)value.birthtimeNs=0n;return value;};return handle;};})();`;
+      if (scenario === "full_disk") fault += `(()=>{const fs=require('node:fs/promises'),sync=require('node:fs');
+        const full=()=>{try{return sync.statSync(${JSON.stringify(path.join(f.pack, "node_modules", "installed-tool"))}).size>0;}catch{return false;}};
+        const statfs=fs.statfs;fs.statfs=async(...args)=>{const value=await statfs(...args);return full()?{...value,bavail:0}:value;};
+        for(const name of ['mkdir','writeFile','appendFile','mkdtemp','copyFile','rename','open']){
+          const original=fs[name];fs[name]=async(...args)=>{const writes=name!=='open'||(typeof args[1]==='number'
+            ?!!(args[1]&(sync.constants.O_CREAT|sync.constants.O_TRUNC)):typeof args[1]==='string'&&/[wa]/.test(args[1]));
+            if(full()&&writes&&!(name==='mkdir'&&sync.existsSync(args[0])))throw Object.assign(new Error('No space left on device'),{code:'ENOSPC'});
+            return original(...args);};}})();`;
+      if (input.args[2] === "reclaim") {
+        const [prepared] = await withDedicatedDbConnection(db, observer => observer.select().from(workspaceOperations).where(and(
+          eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare"))));
+        expect(prepared.metadata?.staged).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "node_modules", marker: expect.objectContaining({ generation: expect.stringMatching(/^c:/) }) }),
+        ]));
+      }
+      if (!interrupted && input.args[2] === "reclaim") {
+        interrupted = true;
+        fault += `(()=>{const fs=require('node:fs/promises'),path=require('node:path'),remove=fs.rm;
+          fs.rm=async(p,options)=>{if(p===${JSON.stringify(interruptedTarget)}||p.startsWith(${JSON.stringify(interruptedTarget + ".paperclip-reclaim-")})){
+            await fs.unlink(path.join(p===${JSON.stringify(interruptedTarget)}?p:path.dirname(p),'installed-tool'));process.exit(77);
+          }return remove(p,options);};})();`;
+      }
+      const result = await execute({ ...input, args: ["-e", fault + input.args[1], ...input.args.slice(2)] });
+      if (input.args[2] === "reclaim" && result.exitCode === 0) cleanupConfirmed = true;
+      return result;
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(interrupted).toBe(true);
+    expect(cleanupConfirmed).toBe(false);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    const [prepared] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+    const staged = path.join(f.pack, `node_modules.paperclip-reclaim-${prepared.id}`);
+    const interruptedDirectory = await lstat(staged).then(() => staged, () => path.join(f.pack, "node_modules"));
+    await expect(lstat(path.join(interruptedDirectory, "installed-tool"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(path.join(interruptedDirectory, "remaining-tool"))).isFile()).toBe(true);
+    const remainingBeforeRetry = await readFile(path.join(interruptedDirectory, "remaining-tool"), "utf8");
+    if (scenario === "replacement") {
+      await mkdir(path.join(f.pack, "node_modules"));
+      await writeFile(path.join(f.pack, "node_modules", "replacement-tool"), "replacement installation\n");
+    }
+    if (scenario === "staged_replacement") {
+      await rename(staged, `${staged}.original`);
+      await mkdir(staged);
+      await writeFile(path.join(staged, "replacement-tool"), "replacement installation\n");
+    }
+    if (scenario === "marker_replaced") {
+      const marker = path.join(staged, `.paperclip-reclaim-${prepared.id}.json`), bytes = await readFile(marker);
+      await rename(marker, `${marker}.original`);
+      await writeFile(marker, bytes);
+    }
+    await makeRetryDue(f.actionId);
+    await recoverRetainedWorkspace(f.input);
+    if (["unchanged", "full_disk"].includes(scenario)) {
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+      expect(cleanupConfirmed).toBe(true);
+      expect(await readdir(staged)).toEqual([`.paperclip-reclaim-${prepared.id}.json`]);
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+      const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId, snapshotId: authority.snapshotId! });
+      try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+      finally { await saved.cleanup(); }
+    } else {
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+      expect(cleanupConfirmed).toBe(false);
+      if (scenario === "replacement") expect(await readFile(path.join(f.pack, "node_modules", "replacement-tool"), "utf8")).toBe("replacement installation\n");
+      if (scenario === "staged_replacement") expect(await readFile(path.join(staged, "replacement-tool"), "utf8")).toBe("replacement installation\n");
+      else expect(await readFile(path.join(staged, "remaining-tool"), "utf8")).toBe(remainingBeforeRetry);
+    }
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  }, 30_000);
+
+  it.each(["acknowledgement", "journal", "marker_write"])("resumes cache staging after its %s is interrupted", async failure => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    await writeFile(path.join(f.pack, "node_modules", "installed-tool"), Buffer.alloc(1024 * 1024, 7));
+    await writeFile(path.join(f.pack, "node_modules", "remaining-tool"), "remaining rebuildable dependency\n");
+    let lost = false, reclaimCalls = 0, cleanupConfirmed = false;
+    const syncOut = target.runner!.syncOut!, trigger = `cache_stage_${randomUUID().replaceAll("-", "")}`;
+    target.runner!.syncOut = async operations => {
+      if (!cleanupConfirmed) throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
+      return syncOut(operations);
+    };
+    target.runner!.execute = async input => {
+      if (input.command !== "node" || input.args?.[0] !== "-e") return execute(input);
+      let fault = `(()=>{const fs=require('node:fs/promises'),stat=fs.lstat,open=fs.open;
+        fs.lstat=async(...args)=>{const value=await stat(...args);if(args[1]?.bigint)value.birthtimeNs=0n;return value;};
+        fs.open=async(...args)=>{const handle=await open(...args),stat=handle.stat.bind(handle);
+          handle.stat=async(...args)=>{const value=await stat(...args);if(args[0]?.bigint)value.birthtimeNs=0n;return value;};return handle;};})();`;
+      if (failure === "marker_write" && !lost && input.args[2] === "stage") {
+        lost = true;
+        fault += `(()=>{const fs=require('node:fs/promises'),open=fs.open;
+          fs.open=async(...args)=>{const handle=await open(...args),write=handle.writeFile.bind(handle);
+            if(args[0].includes('/.paperclip-reclaim-'))handle.writeFile=async bytes=>{await write(bytes.slice(0,32));process.exit(77);};
+            return handle;};})();`;
+      }
+      const result = await execute({ ...input, args: ["-e", fault + input.args[1], ...input.args.slice(2)] });
+      if (input.args[2] === "reclaim") { reclaimCalls++; if (result.exitCode === 0) cleanupConfirmed = true; }
+      if (failure === "acknowledgement" && !lost && input.args[2] === "stage") {
+        lost = true;
+        return { ...result, exitCode: null, timedOut: true, stdout: "", stderr: "" };
+      }
+      return result;
+    };
+    if (failure === "journal") {
+      await db.execute(sql.raw(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        RAISE EXCEPTION 'test staged cache journal write failed'; END $$`));
+      await db.execute(sql.raw(`CREATE TRIGGER ${trigger} BEFORE UPDATE ON workspace_operations FOR EACH ROW
+        WHEN (NEW.company_id = '${f.companyId}'::uuid AND NEW.phase = 'native_provider_cache_reclaim_prepare')
+        EXECUTE FUNCTION ${trigger}()`));
+    }
+    try {
+      await recoverRetainedWorkspace(f.input);
+      expect(reclaimCalls).toBe(0);
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+      const [prepared] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+        eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+      expect(prepared.metadata?.staged).toBeUndefined();
+      const staged = path.join(f.pack, `node_modules.paperclip-reclaim-${prepared.id}`);
+      const preserved = await lstat(staged).then(() => staged, () => path.join(f.pack, "node_modules"));
+      expect((await lstat(path.join(preserved, "remaining-tool"))).isFile()).toBe(true);
+    } finally {
+      if (failure === "journal") {
+        await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON workspace_operations`));
+        await db.execute(sql.raw(`DROP FUNCTION ${trigger}()`));
+      }
+    }
+    await makeRetryDue(f.actionId);
+    await recoverRetainedWorkspace(f.input);
+    expect(reclaimCalls).toBe(1);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    const prepared = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+    expect(prepared).toHaveLength(1);
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
   it.each(["pending", "foreign", "lease", "active", "recoverable", "manifest", "symlink"])("keeps files intact when %s cache authority is unproven", async failure => {
     const f = await pressuredToolCache(), before = await run(f.runId);
     if (failure === "pending") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before.runnerProfileJson,

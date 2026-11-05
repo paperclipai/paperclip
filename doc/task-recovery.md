@@ -174,13 +174,25 @@ Only the reserved provider-pack `node_modules` and `provider-assets` directories
 are eligible. The installation manifest, task files, Git history, sessions,
 checkpoints and action receipts stay intact. A read-only inspection supplies
 manifest and directory identities for a source-bound journal in Core's database.
-That journal commits before deletion starts. The sandbox commands create no
-files or directories, so cleanup can start even when archive-helper writes fail
-for lack of space. The prepared inventory allows an interrupted deletion to
-resume while refusing a replacement installation. Changed identities or symlinks
-keep the original export failure.
+That journal commits before cache contents change. Where directory creation
+times are available, cleanup needs only reads and deletion, so it can start even
+when archive-helper writes fail for lack of space.
 
-Inspection and deletion each have a bounded remote call. Journal creation and
+On filesystems without creation times, deleting children changes the directory's
+fallback timestamp. Recovery first releases blocks by truncating only regular
+installation files with no additional hard links through verified file handles. It
+then moves the cache to an operation-specific path and pins a small identity
+marker in the existing Core journal before recursive deletion. An interrupted
+cleanup can resume against that marker without accepting a new installation,
+a replacement staged directory or a copied marker. The emptied staged directory
+and its marker remain in reserved runtime storage as generation evidence; the
+canonical installation path stays absent so later installation rebuilds it.
+Neither task files nor sessions enter this staging path. Changed identities or
+symlinks keep the original export failure.
+
+Inspection, optional staging and deletion each have a bounded remote call. The
+block-release scan visits at most 8,192 entries and stops after releasing 256 KiB
+of installation data, before allocating the marker. Journal creation and
 cleanup record separate terminal operations; neither is a file-save receipt or
 a new background obligation. An uncertain acknowledgement never proves that
 files were saved. This adds no provider turn, recovery generation or retry budget,

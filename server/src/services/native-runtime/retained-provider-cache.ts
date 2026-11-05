@@ -20,6 +20,9 @@ const inventoryCodec = z.object({ schema: z.literal(inventorySchema), sourceRunI
   availableBytesBefore: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
 });
 type Inventory = z.infer<typeof inventoryCodec>;
+const stagedCodec = z.array(z.object({ name: z.enum(["node_modules", "provider-assets"]),
+  cache: identity, marker: identity, markerSha256: z.string().regex(/^[a-f0-9]{64}$/) })).max(2);
+type Staged = z.infer<typeof stagedCodec>;
 
 function verifiedCacheDigest(run: typeof heartbeatRuns.$inferSelect, workspaceId: string, target: RemoteWorkspaceTarget): string | null {
   const profile = record(run.runnerProfileJson), state = record(profile.nativeProviderPackAdmissionState);
@@ -35,10 +38,10 @@ function verifiedCacheDigest(run: typeof heartbeatRuns.$inferSelect, workspaceId
 }
 
 const reclaimScript = String.raw`
-const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto');
+const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto'),{constants}=require('node:fs');
 (async()=>{
  const [mode,root,source,expected,raw]=process.argv.slice(1),schema='paperclip.native-provider-cache-reclaim.v1';
- if(!['inventory','reclaim'].includes(mode)||!path.isAbsolute(root)||!/^[a-f0-9-]{36}$/.test(source)
+ if(!['inventory','stage','reclaim'].includes(mode)||!path.isAbsolute(root)||!/^[a-f0-9-]{36}$/.test(source)
    ||!/^sha256:[a-f0-9]{64}$/.test(expected)||await fs.realpath(root)!==root)throw Error('invalid_binding');
  const runtime=path.join(root,'.paperclip-runtime'),runner=path.join(runtime,'paperclip-runner'),pack=path.join(runner,'provider-pack');
  const sessions=path.join(runner,'sessions'),file=path.join(pack,'provider-pack.json');
@@ -70,13 +73,70 @@ const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('n
    ||plan.sourceRunId!==source||plan.manifestDigest!==expected||plan.manifestSha256!==manifestSha256
    ||!same(plan.root,rootIdentity)||!same(plan.pack,packIdentity,false)||!same(plan.manifest,manifestIdentity)||!same(plan.sessions,sessionIdentity)
    ||!Array.isArray(plan.targets)||plan.targets.length>2||new Set(plan.targets.map(x=>x.name)).size!==plan.targets.length)throw Error('plan_changed');
+ const markerName='.paperclip-reclaim-'+request.preparationOperationId+'.json';
+ const stagedPath=item=>path.join(pack,item.name+'.paperclip-reclaim-'+request.preparationOperationId);
+ const markerText=item=>JSON.stringify({preparationOperationId:request.preparationOperationId,source,expected,item});
+ const markerState=async(p,item,partial=false)=>{const x=await stat(p);
+  if(!x||!x.isFile()||x.isSymbolicLink()||x.nlink!==1n||x.size>4096n)throw Error('marker_changed');
+  const bytes=await fs.readFile(p),text=bytes.toString();
+  if(text!==markerText(item)&&!(partial&&markerText(item).startsWith(text)))throw Error('marker_changed');
+  return {identity:identity(x),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};};
+ const releaseBlocks=async root=>{let freed=0n,visited=0;
+  const visit=async dir=>{await directory(dir);for await(const entry of await fs.opendir(dir)){
+   if(freed>=262144n||++visited>8192)return;
+   if(entry.name===markerName)continue;
+   const p=path.join(dir,entry.name),x=await stat(p);if(!x||x.isSymbolicLink())continue;
+   if(x.isDirectory()){await visit(p);continue;}
+   if(!x.isFile()||x.nlink!==1n||x.size===0n)continue;
+   const handle=await fs.open(p,constants.O_RDWR|constants.O_NOFOLLOW);
+   try{const opened=await handle.stat({bigint:true});if(!same(identity(x),identity(opened))||opened.nlink!==1n)throw Error('cache_changed');
+    await handle.truncate(0);freed+=opened.blocks*512n;}finally{await handle.close();}
+  }};await visit(root);};
+ const fallback=plan.targets.filter(item=>item.generation.startsWith('c:'));
  for(const item of plan.targets){
   if(!['node_modules','provider-assets'].includes(item.name))throw Error('plan_changed');
   const p=path.join(pack,item.name),current=await stat(p);
-  if(current&&(!current.isDirectory()||current.isSymbolicLink()||await fs.realpath(p)!==p||!same(item,identity(current))))throw Error('cache_changed');
+  if(item.generation.startsWith('c:')){
+   const staged=await stat(stagedPath(item));if(current&&staged)throw Error('cache_changed');
+   if(staged){await directory(stagedPath(item));if(!same(item,identity(staged),false))throw Error('cache_changed');}
+   else if(current){await directory(p);const marker=await stat(path.join(p,markerName));
+    if(!same(item,identity(current),!marker))throw Error('cache_changed');
+    if(marker)await markerState(path.join(p,markerName),item,true);}
+  }else if(current&&(!current.isDirectory()||current.isSymbolicLink()||await fs.realpath(p)!==p||!same(item,identity(current))))throw Error('cache_changed');
+ }
+ if(mode==='stage'){
+  const staged=[];
+  for(const item of fallback){const p=path.join(pack,item.name),dest=stagedPath(item),current=await stat(p);
+   if(current){const marker=path.join(p,markerName),existing=await stat(marker);
+    if(!existing||((await fs.readFile(marker)).toString()!==markerText(item))){
+     await releaseBlocks(p);
+     const handle=await fs.open(marker,constants.O_WRONLY|constants.O_NOFOLLOW|(existing?0:constants.O_CREAT|constants.O_EXCL),0o600);
+     try{if(existing&&!same(identity(existing),identity(await handle.stat({bigint:true}))))throw Error('marker_changed');
+      await handle.writeFile(markerText(item));await handle.sync();}finally{await handle.close();}
+    }
+    await fs.rename(p,dest);
+   }
+   const cache=await stat(dest);if(!cache)continue;
+   await directory(dest);if(!same(item,identity(cache),false))throw Error('cache_changed');
+   const marker=await markerState(path.join(dest,markerName),item);
+   staged.push({name:item.name,cache:identity(cache),marker:marker.identity,markerSha256:marker.sha256});
+  }
+  console.log(JSON.stringify({preparationOperationId:request.preparationOperationId,staged}));return;
+ }
+ if(!Array.isArray(request.staged)||request.staged.length>2||new Set(request.staged.map(x=>x.name)).size!==request.staged.length)throw Error('plan_changed');
+ for(const item of fallback){const witness=request.staged.find(x=>x.name===item.name),dest=stagedPath(item),current=await stat(dest);
+  if(await stat(path.join(pack,item.name)))throw Error('cache_changed');
+  if(!witness&&!current)continue;
+  if(!witness||!current||!same(witness.cache,identity(current),false)||!same(item,identity(current),false))throw Error('cache_changed');
+  const marker=await markerState(path.join(dest,markerName),item);
+  if(!same(witness.marker,marker.identity)||witness.markerSha256!==marker.sha256)throw Error('marker_changed');
  }
  let changed=false;
- for(const item of plan.targets){const p=path.join(pack,item.name),current=await stat(p);if(!current)continue;
+ for(const item of plan.targets){
+  if(item.generation.startsWith('c:')){const p=stagedPath(item);if(!await stat(p))continue;
+   for await(const entry of await fs.opendir(p)){if(entry.name!==markerName)await fs.rm(path.join(p,entry.name),{recursive:true,force:false});}
+   changed=true;continue;}
+  const p=path.join(pack,item.name),current=await stat(p);if(!current)continue;
   if(!current.isDirectory()||current.isSymbolicLink()||!same(item,identity(current)))throw Error('cache_changed');
   await fs.rm(p,{recursive:true,force:false});changed=true;}
  if(!same(plan.sessions,identity(await directory(sessions))))throw Error('sessions_changed');
@@ -111,7 +171,8 @@ export async function reclaimInactiveNativeProviderCache(input: {
   if (!expected) return false;
   const scope = and(eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, input.issueId),
     eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId));
-  const execute = async (mode: "inventory" | "reclaim", preparation?: { preparationOperationId: string; inventory: Inventory }) => {
+  const execute = async (mode: "inventory" | "stage" | "reclaim",
+    preparation?: { preparationOperationId: string; inventory: Inventory; staged?: Staged }) => {
     await input.assertOwned();
     const response = await input.target.runner!.execute({ command: "node", args: ["-e", reclaimScript,
       mode, input.target.remoteCwd, input.runId, expected, JSON.stringify(preparation ?? null)],
@@ -153,7 +214,26 @@ export async function reclaimInactiveNativeProviderCache(input: {
       sql`${workspaceOperations.metadata}->>'preparationOperationId' = ${preparationOperationId}`,
       sql`${workspaceOperations.metadata}->>'outcome' = 'evicted'`)).limit(1);
     if (completed) return false;
-    const receipt = await execute("reclaim", { preparationOperationId, inventory });
+    let staged: Staged = [];
+    if (inventory.targets.some(target => target.generation.startsWith("c:"))) {
+      if (prepared.metadata.staged === undefined) {
+        const response = await execute("stage", { preparationOperationId, inventory });
+        if (response.preparationOperationId !== preparationOperationId) throw new Error("native_provider_cache_reclaim_unconfirmed");
+        staged = stagedCodec.parse(response.staged);
+        if (new Set(staged.map(item => item.name)).size !== staged.length || staged.some(item => !inventory.targets.some(target =>
+          target.name === item.name && target.generation.startsWith("c:") && target.dev === item.cache.dev && target.ino === item.cache.ino)))
+          throw new Error("native_provider_cache_reclaim_unconfirmed");
+        await input.assertOwned();
+        [prepared] = await withDedicatedDbConnection(input.db, journal => journal.transaction(async tx => {
+          await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
+          return tx.update(workspaceOperations).set({ metadata: { ...prepared.metadata, staged } })
+            .where(and(scope, eq(workspaceOperations.id, preparationOperationId!))).returning();
+        }));
+        if (!prepared) throw new Error("native_provider_cache_reclaim_unconfirmed");
+      }
+      staged = stagedCodec.parse(prepared.metadata?.staged);
+    }
+    const receipt = await execute("reclaim", { preparationOperationId, inventory, staged });
     if (receipt.schema !== schema || receipt.sourceRunId !== input.runId || receipt.manifestDigest !== expected
       || receipt.preparationOperationId !== preparationOperationId || receipt.status !== "evicted"
       || typeof receipt.changed !== "boolean" || receipt.sessionDirectoryPreserved !== true)
