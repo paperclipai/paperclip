@@ -41,6 +41,12 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
+After disconnect, runnerd tries Core when reconnect is due. Between attempts,
+live Codex processes can drain local output into the outbox. Work that
+needs a provider request waits for Core, including managed-provider history
+reads and unanswered tools or approvals. Runnerd suspends
+intake during terminal delivery or an authority transition.
+
 If Codex hits its tool-receipt limit during reconnect, runnerd stops its local
 process group at the original deadline. It reads the remaining stdout in short
 intervals, then replays the frames in order across as many batches as needed.
@@ -75,6 +81,11 @@ The outbox has separate hard and reserved limits. P1/P2 events cannot consume
 the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the
 P0 reserve is an explicit unrecoverable condition.
+
+While disconnected, soft-limit backpressure retains the rejected event and its
+suffix at the provider owner until replay ACKs free outbox space. Oversized
+events or exhausted hard limits stop the owned provider and preserve the
+accepted durable prefix.
 
 ## Recovering Codex between turns
 
