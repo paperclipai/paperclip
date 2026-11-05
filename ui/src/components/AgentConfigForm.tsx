@@ -2544,17 +2544,11 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // the completion failed, or the session failed or ran out of time. The pair
   // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
   onSubmitFailed?: () => void;
+  onAuthorizationOpened?: () => void;
+  onSubmitReady?: (submit: (() => void) | null) => void;
   chrome?: AdapterLoginChrome;
   /**
    * The address the customer has to open, once the server has produced one.
-   *
-   * The one fact about a running login that the step needs outside the card:
-   * its own button is what sends the customer there, and a prompt arriving is
-   * what moves the step from waiting to ready. Everything else it needs the
-   * panel already does — the paste submits itself, and the submit and how it
-   * ended are reported through `onCodeSubmitted`, `onSubmitFailed` and
-   * `onConnected` — so this stays a single value rather than a whole session
-   * handed upward.
    */
   onPromptReady?: (authorizationUrl: string | null) => void;
 };
@@ -2607,6 +2601,7 @@ function DisplayedCodeLoginPanel({
   chrome = "panel",
   aiConnection,
   onPromptReady,
+  onAuthorizationOpened,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2877,6 +2872,7 @@ function DisplayedCodeLoginPanel({
         loading={!prompt && !startError && !failed}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={prompt?.url}
+        onAuthorizationOpened={onAuthorizationOpened}
         mode="displayed_code"
       >
         {startError ? (
@@ -3102,6 +3098,8 @@ function SubmittedBrowserCodeLoginPanel({
   chrome = "panel",
   aiConnection,
   onPromptReady,
+  onAuthorizationOpened,
+  onSubmitReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -3127,6 +3125,7 @@ function SubmittedBrowserCodeLoginPanel({
   // or a failure. The field is locked for that stretch: the step's button is
   // saying "Connecting" above it, and a second paste would submit again.
   const [codeSubmitted, setCodeSubmitted] = useState(false);
+  const codeSubmittedRef = useRef(false);
   // True after the status poll returns 404. The server removes the row and the
   // in-memory session at once on any non-stored terminal state, so a status 404
   // means the login failed and the server cleaned up. The panel stops both
@@ -3156,6 +3155,7 @@ function SubmittedBrowserCodeLoginPanel({
     setTimedOut(false);
     setStatusGone(false);
     setCodeSubmitted(false);
+    codeSubmittedRef.current = false;
     completionStartedRef.current = false;
   };
 
@@ -3478,7 +3478,8 @@ function SubmittedBrowserCodeLoginPanel({
   onSubmitFailedRef.current = onSubmitFailed;
 
   const handleSubmit = () => {
-    if (!canSubmit) return;
+    if (!canSubmit || codeSubmittedRef.current) return;
+    codeSubmittedRef.current = true;
     // A new attempt supersedes the last attempt's error, and has to: the
     // failure report below watches for an error after a submit, and one left
     // over from before it would end this attempt the moment it began.
@@ -3560,6 +3561,13 @@ function SubmittedBrowserCodeLoginPanel({
    */
   const handleSubmitRef = useRef(handleSubmit);
   handleSubmitRef.current = handleSubmit;
+  const onSubmitReadyRef = useRef(onSubmitReady);
+  onSubmitReadyRef.current = onSubmitReady;
+  const submitReady = canSubmit && !startError;
+  useEffect(() => {
+    onSubmitReadyRef.current?.(submitReady ? () => handleSubmitRef.current() : null);
+    return () => onSubmitReadyRef.current?.(null);
+  }, [submitReady]);
   const autoSubmit = chrome === "onboarding";
   const pastedRef = useRef(false);
   useEffect(() => {
@@ -3590,6 +3598,7 @@ function SubmittedBrowserCodeLoginPanel({
     if (!codeSubmitted) return;
     if (!startError && !isFailure && !timedOut) return;
     setCodeSubmitted(false);
+    codeSubmittedRef.current = false;
     onSubmitFailedRef.current?.();
   }, [codeSubmitted, startError, isFailure, timedOut]);
 
@@ -3606,6 +3615,7 @@ function SubmittedBrowserCodeLoginPanel({
         loading={!authorizationUrl && !startError && !failedNow}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={authorizationUrl ?? undefined}
+        onAuthorizationOpened={onAuthorizationOpened}
         mode="submitted_code"
       >
         {/* The plain-HTTP advisory survives the redesign. It is the one thing on

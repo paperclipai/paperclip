@@ -688,6 +688,7 @@ function OnboardingWizardInner({
    * browser. Its arrival is also what moves the step off its waiting beat.
    */
   const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
+  const [submitLoginCode, setSubmitLoginCode] = useState<(() => void) | null>(null);
   /**
    * The key itself, held only for as long as the wizard is open. It is written
    * into the adapter config at hire time and never into the draft — a draft is
@@ -1560,6 +1561,8 @@ function OnboardingWizardInner({
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     setupError ? { label: "Retry", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
+      ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
       ? { label: "Waiting for code", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
@@ -1601,6 +1604,7 @@ function OnboardingWizardInner({
     setLoading(false);
     setAdapterEnvLoading(false);
     setConnectAuthUrl(null);
+    setSubmitLoginCode(null);
     connectingSinceRef.current = null;
     setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
@@ -1620,6 +1624,10 @@ function OnboardingWizardInner({
    */
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if ((connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode) {
+      submitLoginCode();
+      return;
+    }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
       if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
@@ -2647,7 +2655,7 @@ function OnboardingWizardInner({
         step === 4 &&
         agentName.trim() &&
         connectStepReady &&
-        !connectStepLoggingIn
+        (submitLoginCode || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
@@ -3174,6 +3182,10 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onAuthorizationOpened={() => {
+                          setConnectPhase(phase => phase === "ready" ? "waiting" : phase);
+                        }}
+                        onSubmitReady={submit => setSubmitLoginCode(() => submit)}
                         onCodeSubmitted={() => {
                           // The button reacts to the paste, not to the server.
                           // Waiting for the login to be stored left about a

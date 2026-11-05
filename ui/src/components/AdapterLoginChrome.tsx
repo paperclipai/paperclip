@@ -418,12 +418,14 @@ export function OnboardingCardField({
 export function ProviderSubscriptionCard({
   providerName,
   authorizationUrl,
+  onAuthorizationOpened,
   mode,
   loading,
   children,
 }: {
   providerName: string;
   authorizationUrl?: string;
+  onAuthorizationOpened?: () => void;
   mode: "submitted_code" | "displayed_code" | "browser_redirect";
   loading?: boolean;
   children: ReactNode;
@@ -435,6 +437,7 @@ export function ProviderSubscriptionCard({
         <>
           <a
             href={authorizationUrl}
+            onClick={onAuthorizationOpened}
             target="_blank"
             rel="noreferrer noopener"
             className="underline underline-offset-2 hover:text-foreground"

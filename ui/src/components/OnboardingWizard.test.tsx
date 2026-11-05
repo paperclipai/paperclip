@@ -2873,6 +2873,116 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it.each([
+      ["claude_local", /Claude/, "claude.ai"],
+      ["codex_local", /OpenAI/, "auth.openai.com"],
+    ] as const)("waits for the code after the %s instruction link opens sign-in", async (adapterType, source, host) => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      await pickSource(source);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        const link = document.body.querySelector(`a[href*="${host}"]`) as HTMLAnchorElement;
+        expect(link.target).toBe("_blank");
+        await act(async () => link.click());
+        const primary = [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary.textContent?.trim()).toBe("Waiting for code");
+        expect(primary.disabled).toBe(true);
+        await act(async () => primary.click());
+        expect(open).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(adapterType === "claude_local" ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([false, true])("submits a code inserted without a paste event from the footer (opened link: %s)", async openedLink => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        if (openedLink) await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+        const primary = [...document.body.querySelectorAll("button")].at(-1)!;
+        expect(primary.textContent?.trim()).toBe("Submit code");
+        expect(primary.disabled).toBe(false);
+        await act(async () => { primary.click(); primary.click(); });
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect([...document.body.querySelectorAll("button")].at(-1)!.textContent?.trim()).toBe("Connecting");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([{}, { metaKey: true }, { ctrlKey: true }])("submits the code once with Enter from its field (%j)", async modifier => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        await act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifier })));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([{ metaKey: true }, { ctrlKey: true }])("submits the code with the wizard shortcut while waiting (%j)", async modifier => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const open = vi.spyOn(window, "open").mockImplementation(() => null);
+      try {
+        await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+        const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+        await act(async () => setControlledValue(field, "authorization-code"));
+        const wizard = document.querySelector('[data-testid="onboarding-wizard"]')!;
+        await act(async () => wizard.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifier })));
+        expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledExactlyOnceWith("company-new", "claude-session-1", "authorization-code");
+        expect(open).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("withdraws the footer submit action when the code is cleared or the card is closed", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      const field = document.body.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+      await act(async () => (document.body.querySelector('a[href*="claude.ai"]') as HTMLAnchorElement).click());
+      await act(async () => setControlledValue(field, "authorization-code"));
+      const primary = () => [...document.body.querySelectorAll("button")].at(-1)!;
+      expect(primary().textContent?.trim()).toBe("Submit code");
+      await act(async () => setControlledValue(field, ""));
+      expect(primary().textContent?.trim()).toBe("Waiting for code");
+      expect(primary().disabled).toBe(true);
+      await act(async () => setControlledValue(field, "authorization-code"));
+      const back = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!;
+      await act(async () => back.click());
+      for (let i = 0; i < 10; i++) await flushReact();
+      expect(primary().textContent?.trim()).toBe("Next");
+      expect(primary().disabled).toBe(true);
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
     it("submits the browser code on the paste, not on the first keystroke", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
