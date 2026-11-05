@@ -2999,6 +2999,13 @@ describe("automatic retained workspace recovery", () => {
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     // The recovered hold no longer binds the board-chosen new owner...
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    // A different reconciliation hold for the same stopped run, without file
+    // preservation evidence, still blocks the new owner.
+    const [other] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "native_continuation_requires_reconciliation",
+      fingerprint: `other:${f.runId}`, nextAction: "Reconcile the stopped run.", evidence: { runId: f.runId } }).returning();
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: other.id });
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, other.id));
     // ...and the stranded-work sweep gives that owner a durable next action.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: newOwnerId, status: "running" });
     const pending = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
@@ -3029,6 +3036,23 @@ describe("automatic retained workspace recovery", () => {
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, successors[0].id));
     await db.update(issues).set({ assigneeAgentId: previousOwnerId }).where(eq(issues.id, f.issueId));
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: false });
+  }, 30_000);
+
+  it("keeps a snapshot-only recovery held for a new assignee because the task workspace lacks the saved files", async () => {
+    const f = await seed("native", false);
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, f.runId));
+    const held = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked", resolvedAt: new Date(),
+      evidence: { ...held.evidence, automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked" } },
+    }).where(eq(issueRecoveryActions.id, f.actionId));
+    const newOwnerId = randomUUID();
+    await db.insert(agents).values({ id: newOwnerId, companyId: f.companyId, name: "Reviewer", adapterType: "paperclip_runner", status: "idle" });
+    await db.update(issues).set({ assigneeAgentId: newOwnerId, status: "in_progress" }).where(eq(issues.id, f.issueId));
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
+      eq(workspaceOperations.phase, "workspace_recovery_snapshot"), eq(workspaceOperations.status, "succeeded")))).toHaveLength(1);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId, runId: f.runId });
   }, 30_000);
 
   it("projects active preservation without waiting input as working, and stale observations as failed", async () => {

@@ -4,7 +4,7 @@ import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -136,7 +136,11 @@ export function nativeExecutionRecoveryActionPredicate() {
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
-  return and(
+  const operationIds = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+    then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end`;
+  // JSON reads are NULL for other holds. Callers negate this predicate, so it
+  // must be strictly true or false: NOT NULL would hide unrelated blockers.
+  return sql`coalesce((${and(
     sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
     sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
     sql`exists (select 1 from ${heartbeatRuns} stopped
@@ -152,7 +156,13 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
           and task.execution_state->'currentParticipant'->>'type' = 'agent'
           and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
-  )!;
+    // Copyback put the files back into the task workspace that the new owner
+    // reuses. A snapshot-only save needs an explicit fresh-workspace request
+    // to attach it, so that hold stays until such a request or a repair.
+    sql`not exists (select 1 from jsonb_array_elements_text(${operationIds}) saved(id)
+      join ${workspaceOperations} op on op.id::text = saved.id
+      where op.company_id = ${issueRecoveryActions.companyId} and op.phase <> 'workspace_recovery')`,
+  )}), false)`;
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
