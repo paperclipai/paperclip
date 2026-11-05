@@ -88,3 +88,39 @@ it("resets an explicit request after a dash while retaining a plain prohibition"
   expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
   expect(solicitsChatCredential("Do not paste your credential into files — keep it private.")).toBe(false);
 });
+
+it("separates secure entry from its dash-prefixed negative chat warning", () => {
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — don't paste it in chat.")).toBe(false);
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — paste it in chat.")).toBe(true);
+});
+
+it.each(["don't", "shouldn't", "mustn't", "can't", "couldn't", "won't", "wouldn't"])("keeps a contracted negative warning separate from a later request: %s", contraction => {
+  for (const negative of [contraction, contraction.replace("'", "’")]) {
+    const warning = `Choose Set my value and enter your publishing key there — ${negative} paste it in chat.`;
+    expect(solicitsChatCredential(warning), warning).toBe(false);
+    expect(solicitsChatCredential(`${warning} But share it here in chat.`)).toBe(true);
+  }
+});
+it("keeps ever within a negative warning without extending it across contrast", () => {
+  expect(solicitsChatCredential("Choose Set my value and enter your publishing key there — don't ever paste it in chat.")).toBe(false);
+  expect(solicitsChatCredential("Don't ever paste your key in files — send it here in chat.")).toBe(true);
+});
+it("does not let a prohibition mask an independent comma-conjoined request", () => {
+  for (const politeness of ["", "please "]) expect(solicitsChatCredential(`Don't ever paste your key in files, and ${politeness}send it here in chat.`)).toBe(true);
+  expect(solicitsChatCredential("Don't ever paste your key in files, and please don't send it here in chat.")).toBe(false);
+});
+it("normalizes cannot in a warning without masking a later positive request", () => {
+  const warning="Choose Set my value and enter your publishing key there — you cannot paste it in chat.";
+  expect(solicitsChatCredential(warning)).toBe(false);
+  expect(solicitsChatCredential(`${warning} But send it here in chat.`)).toBe(true);
+});
+
+it("separates a directly negated chat destination from secure entry", () => {
+  expect(solicitsChatCredential("Enter and save the key there — not here in chat.")).toBe(false);
+  expect(solicitsChatCredential("Enter the key in Settings — then paste it here in chat.")).toBe(true);
+  expect(solicitsChatCredential("Enter your key here in chat — not in the secure form.")).toBe(true);
+});
+
+it("retains the entry request after an excluded destination before a positive destination", () => {
+  expect(solicitsChatCredential("Enter your personal publishing credential in the secure form — not here, but in chat.")).toBe(true);
+});

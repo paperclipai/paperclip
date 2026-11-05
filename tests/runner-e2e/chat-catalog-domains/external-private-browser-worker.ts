@@ -1,3 +1,4 @@
+import { personalSecretEntryDialog } from "./external-personal-secret-entry-dialog.js";
 import { validDevicePrivateInput, type DevicePrivateInput } from "./external-device-private-contract.js";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -219,7 +220,7 @@ async function main() {
         await page.getByRole('tab',{name:'My secrets',exact:true}).click();
         await page.getByRole('listitem').filter({hasText:entry.definition.key}).getByRole('button',{name:'Set value',exact:true}).click();
       } else await page.getByRole('button',{name:'Set my value',exact:true}).click();
-      const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
+      const dialog=personalSecretEntryDialog(page);await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
       if(!await dialog.getByText('Personal publishing credential',{exact:true}).isVisible())throw new Error('Wrong personal credential form');
       await dialog.getByRole('textbox').fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/me/user-secrets`&&response.request().method()==='POST'&&response.status()===201);

@@ -2,8 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 const port = vi.hoisted(() => ({ observation: {} as Record<string, unknown> }));
+vi.mock("./external-personal-secret-confirmation.js", async original => ({ ...await original<typeof import("./external-personal-secret-confirmation.js")>(), readVisiblePersonalSecretConfirmation: async () => ({ definitionVisible: true, visibleTextHash: "reader-tested-separately" }) }));
 vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => port.observation }));
-import { personalSecretExternalCases, personalSecretQuestionHandoff } from "./external-personal-secret.js";
+import { personalSecretExternalCases, personalSecretQuestionHandoff, personalSecretSavedAcknowledgement } from "./external-personal-secret.js";
 afterEach(() => { vi.useRealTimers(); });
 export function question() {
   return { id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo",
@@ -25,12 +26,13 @@ function measuredQuestion() {
           { id: "not-yet", label: "Not yet / need help", description: "I have not saved it yet or need help locating the page." }] }] }),
   };
 }
-it("actual personal-secret act admits a bound secure-entry question before any private human action", async () => {
+it.each(["question", "confirmation"])("actual personal-secret act admits a bound secure-entry %s before any private human action", async kind => {
   vi.useFakeTimers(); vi.setSystemTime(10_000);
   const query = "Set up my personal publishing credential for this task.";
   const run = { id: "initial", companyId: "company", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "source", commentId: "human" } };
   const human = { id: "human", companyId: "company", issueId: "source", authorUserId: "person", body: query };
-  port.observation = { companyId: "company", phaseReplies: [], links: [], interactions: [measuredQuestion()] };
+  const confirmation = { id: "confirmation", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], resolverPolicy: "anyone", continuationPolicy: "wake_assignee", kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Set your personal publishing credential in Settings Secrets, My secrets, Set my value, PERSONAL_PUBLISHING_KEY definition definition. Never paste credentials in chat. When you have saved it, confirm this card.", acceptLabel: "Confirm" } };
+  port.observation = { companyId: "company", phaseReplies: [], links: [], interactions: [kind === "confirmation" ? confirmation : measuredQuestion()] };
   let reached = false;
   const ctx = { observationDeadlineAt: 640_000, scenario: { query }, input: { fixtures: { company: { id: "company", issuePrefix: "ACORN" }, agent: { id: "ceo" } }, api: { get: async (path: string) => {
     if (path.endsWith("/comments?order=asc")) return [human];
@@ -161,4 +163,10 @@ it("requires completed setup for terse Done and rejects prospective instructions
   expect(choose({ prompt: "Will I save your PERSONAL_PUBLISHING_KEY value in My secrets?" })).toBeUndefined();
   expect(choose({ prompt: "Confirm your setup", header: "May I save the value for you?" })).toBeUndefined();
   expect(choose({ prompt: "Have you saved your own PERSONAL_PUBLISHING_KEY value in My secrets?", helpText: "May I save the value for you?" })).toBeUndefined();
+});
+
+it("plain-comment followup acknowledges only secure entry without repeating setup or exposing private content", () => {
+  expect(personalSecretSavedAcknowledgement).toBe("I saved my personal publishing value through the secure UI. Please continue and check the task.");
+  expect(personalSecretSavedAcknowledgement).not.toBe("Set up my personal publishing credential for this task.");
+  expect(personalSecretSavedAcknowledgement).not.toMatch(/PERSONAL_PUBLISHING_KEY|userSecret|definition|https?:|[a-f0-9]{8}-[a-f0-9-]{27,}|verified|succeeded|complete|delivered/i);
 });

@@ -20,14 +20,22 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
-  const requestText = text.replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
-    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ");
+  const negativeModals: Record<string, string> = { don: "do", shouldn: "should", mustn: "must", can: "can", couldn: "could", won: "will", wouldn: "would" };
+  const requestText = text.replace(/\bcannot\b/gi, "can not").replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
+    .replace(/\b((?:do|should|must|can|could|will|would)\s+not)\s+ever\b/gi, "$1")
+    .replace(/,\s*and\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, ", ")
+    .replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
+    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:(?:you\s+)?(?:(?:do|should|must|can|could|will|would)\s+not|don.t|never|not)\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ")
+    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:here|chat|message|conversation)\b)/gi, " but ");
   const hasKeyContext = /key|credential|token/i.test(text);
   if (requestText.split(/[.!?;\n]+/).some(sentence => {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);
-    return parts.some((part, index) => index > 0
-      && /^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)
-      && positiveCredentialRequest(parts[index - 1]!, hasKeyContext, false));
+    return parts.some((part, index) => {
+      if (index === 0 || !/^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)) return false;
+      let requestIndex = index - 1;
+      while (requestIndex >= 0 && /^\s*(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)(?:\s+(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|conversation|message))?\s*,?\s*$/i.test(parts[requestIndex]!)) requestIndex -= 1;
+      return requestIndex >= 0 && positiveCredentialRequest(parts[requestIndex]!, hasKeyContext, false);
+    });
   })) return true;
   return clauses(requestText).some(clause => !secureEntryExcludesChat(clause) && positiveCredentialRequest(clause, hasKeyContext, true));
 }

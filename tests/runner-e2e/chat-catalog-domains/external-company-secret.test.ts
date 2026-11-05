@@ -134,3 +134,19 @@ it("distinguishes a dash-separated chat request from a plain warning", () => {
   expect(deploymentSecretGuidance(context + "Do not paste your credential into files — send it here in chat.")).toBe(false);
   expect(deploymentSecretGuidance(context + "Do not paste your credential into files — keep it private.")).toBe(true);
 });
+
+it("accepts secure entry with a separate negative chat warning", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Choose Set my value and enter your publishing key there — don't paste it in chat.")).toBe(true);
+  expect(deploymentSecretGuidance(context + "Choose Set my value and enter your publishing key there — paste it in chat.")).toBe(false);
+});
+
+it("accepts an excluded chat destination without hiding a later positive request", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Enter and save the key there — not here in chat.")).toBe(true);
+  expect(deploymentSecretGuidance(context + "Enter the key in Settings — then paste it here in chat.")).toBe(false);
+});
+
+it("rejects a company chat destination after an excluded destination", () => {
+  expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Enter your credential in the secure form — not here, but in chat.")).toBe(false);
+});
