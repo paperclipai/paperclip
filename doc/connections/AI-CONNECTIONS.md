@@ -78,10 +78,12 @@ make selected skills discoverable on SSH.
 
 This CLI behavior does not describe the Claude ACP engine. The legacy ACP
 adapter materializes selected skills separately and supplies their paths in its
-prompt. The bundled Claude ACP provider normally uses user, project, and local
-settings sources; Paperclip Runner's isolated ACPX mode uses a patched provider
-that selects only the user source. Verify the effective engine and runtime mode
-before assuming whether repository settings or hooks apply.
+prompt. The bundled Claude ACP provider defaults to user, project, and local
+sources, but the legacy ACPX client normally overrides that with project and
+local sources (it adds user when `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1`). Paperclip
+Runner's isolated ACPX mode uses a patched provider that selects only the user
+source. Verify the effective engine and runtime mode before assuming whether
+repository settings or hooks apply.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
 
