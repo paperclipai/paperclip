@@ -134,7 +134,10 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        // Keep the accounted total until a run reports usage, so a run with no
+        // report cannot absorb usage that was carried forward for the next one.
+        const { accounted, latest } = this.codexUsageBaseline;
+        this.codexUsageBaseline = { baseline: { ...(accounted ?? latest) }, latest: { ...latest }, ...(accounted ? { accounted: { ...accounted } } : {}) };
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;
@@ -729,6 +732,9 @@ export class CodexHarnessSession
           reconciledUsage.total,
           false,
         );
+        // Only an active turn's report belongs to this run. An idle thread read
+        // can include late usage that no run has been charged for yet.
+        if (this.activeTurnId !== null) this.codexUsageBaseline.accounted = { ...this.codexUsageBaseline.latest };
         this.usageSnapshot = {
           ...reconciledUsage,
           ...codexRunUsage(this.codexUsageBaseline),

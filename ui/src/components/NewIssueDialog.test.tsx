@@ -8,6 +8,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { rememberComposerEffort } from "../lib/recent-composer-effort";
@@ -339,8 +341,8 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
-function renderDialog(container: HTMLDivElement, hiddenSettings: string[] = []) {
-  const queryClient = new QueryClient({
+function renderDialog(container: HTMLDivElement, hiddenSettings: string[] = [], client?: QueryClient) {
+  const queryClient = client ?? new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
@@ -1784,6 +1786,36 @@ describe("NewIssueDialog", () => {
     } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 
+  it.each(["user-1", "user-2"])("waits for fresh session verification before restoring a pending create (%s)", async verifiedUser => {
+    dialogState.newIssueDefaults = { title: "Saved task" };
+    localStorage.setItem("paperclip:issue-draft:pending-create:user-1", JSON.stringify({ version: 1,
+      key: "paperclip:issue-draft:pending-create:user-1", idempotencyKey: "unverified-create-key", createdAt: Date.now(),
+      payload: { fingerprint: "{}", data: { companyId: "company-1", title: "Saved task" }, stagedFileNames: [] } }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let complete!: (value: { user: { id: string } }) => void;
+    mockAuthApi.getSession.mockReturnValue(new Promise(resolve => { complete = resolve; }));
+    const { root } = renderDialog(container, [], client);
+    try {
+      await flush();
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now");
+      if (resend) act(() => resend.click());
+      await waitForAssertion(() => expect(mockAuthApi.getSession).toHaveBeenCalled());
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+      await act(async () => { complete({ user: { id: verifiedUser } }); });
+      if (verifiedUser === "user-1") {
+        await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+        expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("unverified-create-key");
+      } else {
+        await flush();
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+      }
+    } finally { act(() => root.unmount()); cache.dispose(); client.clear(); }
+  });
+
   it.each([false, true])("retains a restored task backup after the debounce (session known=%s)", async (sessionKnown) => {
     if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
     localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
@@ -1929,7 +1961,7 @@ describe("NewIssueDialog", () => {
       await flush(); await flush();
       finish(during === "create" ? created : {});
       await waitForAssertion(() => {
-        const mutation = queryClient.getMutationCache().getAll().find(item => (item.state.variables as { idempotencyKey?: string } | undefined)?.idempotencyKey === key);
+        const mutation = queryClient.getMutationCache().getAll().find(item => (item.state.variables as { input?: { idempotencyKey?: string } } | undefined)?.input?.idempotencyKey === key);
         expect(mutation?.state.status).toMatch(/^(success|error)$/);
       });
       expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(during === "create" ? 0 : 1);

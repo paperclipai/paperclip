@@ -171,7 +171,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       await createCostEventInTransaction(tx, run.companyId, receipt, publications, undefined, { deferBudgetEvaluation: true });
     }
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
-    await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date(), accountingProjectionVersion: "v2", accountingLastError: null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    // Late usage reported by a later run can arrive before this charge posts.
+    const lateDebt = usage.accountingLateReceiptPending === true;
+    await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
+      accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     return true;
   }), { "budget.accounting.owner": "run" });
   for (const file of recoveredFiles) {

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
@@ -719,6 +720,31 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
+});
+
+it.each(["offline", "reconnecting"] as const)("reveals a cached task header while history waits through %s and keeps it after recovery", async status => {
+  const store = createConnectivityStore({ probe: () => new Promise(() => {}) });
+  store.setBrowserOnline(false);
+  if (status === "reconnecting") store.setBrowserOnline(true);
+  const show = (pending: boolean) => render(<ConnectivityProvider store={store}>
+    <TaskChatThread issueId="cached-task" comments={[]} onAdd={async () => {}} initialHistoryPending={pending}
+      threadHeader={<h2>Cached task title</h2>} emptyMessage="No comments yet" />
+  </ConnectivityProvider>);
+  try {
+    show(true);
+    const header = container.querySelector('[data-testid="task-chat-thread-header"]');
+    expect(header?.textContent).toContain("Cached task title");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.textContent).toContain("Loading task history…");
+    expect(container.textContent).not.toContain("No comments yet");
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    expect(container.querySelector('[data-testid="task-chat-thread-header"]')).toBe(header);
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    show(false);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Loading task history…");
+    expect(container.textContent).toContain("No comments yet");
+  } finally { store.dispose(); }
 });
 
 it.each([true, false])("reveals saved conversation when initial history stalls (mobile=%s)", async (mobile) => {

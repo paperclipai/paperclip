@@ -68,7 +68,7 @@ without target tool dispatch or a fabricated response. The staged restart helper
 and classifier tests cover target discovery before its first session snapshot,
 exact encrypted source/header/artifact bindings and the existing compatibility
 rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
-receipt replay, equal finalized usage and late usage requiring reconciliation.
+receipt replay, equal finalized usage and late usage posted to its owning run.
 Handoff crash tests must restore the exact queued command or authenticated
 receipt, reuse the verified physical Runner and preserve endpoint binding. Test
 both direct callbacks and the same guest listener when that ingress is enabled;

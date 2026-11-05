@@ -3019,6 +3019,90 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
     });
 
+    // An idle gap longer than `autoStopInterval` (for example, a long host-side
+    // workspace pack) lets Daytona stop the sandbox. Workspace realize and
+    // sync-in then restart it before the next command. A restarted sandbox has
+    // no process sessions, so the next command must open a fresh session
+    // instead of sending the dead id and failing with "session not found".
+    const autoStoppedSandbox = () => {
+      const sandbox = createMockSandbox({ state: "started" });
+      sandbox.start.mockImplementation(async () => {
+        sandbox.state = "started";
+      });
+      return sandbox;
+    };
+
+    it("opens a fresh session after workspace realize restarts an auto-stopped sandbox", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const staleSessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+
+      sandbox.state = "stopped";
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      const freshSessionId = sandbox.process.createSession.mock.calls[1]![0] as string;
+      expect(freshSessionId).not.toBe(staleSessionId);
+      const lastExec = sandbox.process.executeSessionCommand.mock.calls.at(-1)!;
+      expect(lastExec[0]).toBe(freshSessionId);
+    });
+
+    it("opens a fresh session after sync-in restarts an auto-stopped sandbox", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+
+      sandbox.state = "stopped";
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        operations: [],
+      } as never);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the live session when realize finds the sandbox already running", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+    });
+
     it("emits a session.open span on create and a session.close span on delete", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();

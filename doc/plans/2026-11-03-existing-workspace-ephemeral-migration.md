@@ -23,6 +23,14 @@ encrypted task-directory restoration, Git restoration recipes, and legacy
 branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
+
+An archived isolated checkout can be gone while its recorded deleted commit
+survives in the company/project Git cache. After validating the exact successful
+branch-deletion receipt, the importer can read immutable objects from that
+namespace- and origin-checked cache. It reconstructs only the recorded commit,
+never today's working tree. Ordinary private-checkout and restore-point
+validation stays strict. Missing/revoked receipts, foreign caches and changed
+origins still block publication.
 The next slice adds leaf-first offline migration of overlapping folders, verified
 nested snapshot dependencies, interruption recovery, and dependency retention.
 Recovery-obligation reconciliation remains a separate gap; these slices do not
@@ -170,3 +178,30 @@ keeps its supervisor and ownership requirements.
 For a retired reusable sandbox lease, the existing remote-termination resolver
 may prove destruction through its exact successor handoff chain. A stopped
 successor, broken chain or competing tip does not grant archival authority.
+
+### Bounded offline harness transfers
+
+The full bundled cold rehearsal reached only 699 of 1,953 local harness backups
+before the 25-minute maintenance deadline. Keep every source and its existing
+ownership and hash checks. Migrate up to four sources together. Reserve space for
+both each tar archive and its encrypted copy before starting a group, with the
+same total scratch limit as one maximum-size serial transfer. Use the verified
+manifest sizes for a closed directory set; give sources with extra files an
+exclusive maximum-size reservation so those files are preserved. Enforce the
+reservation while streaming the archive. Ordinary runtime backups keep their
+existing maximum archive limit.
+
+Derive tar overhead from the maximum entry count and both maximum path lengths.
+PAX can encode a path and symlink target for every entry. The difference between
+the global object and content limits is not a safe per-source overhead estimate.
+Check the bound against real maximum-path PAX encoding at the full entry budget,
+and check streaming at an exact byte limit and one byte beyond it.
+
+On failure, cancel and await every transfer in the group before returning. A
+completed publication remains valid for the next attempt. Tests must exercise
+real PostgreSQL publication and byte restoration, the four-transfer bound,
+failure while another storage call is unresolved, retry, extra-file preservation,
+and rejection at the archive limit before any object or row is published. This
+finite offline operation adds no idle background work. A resumed rehearsal can
+measure the fix but cannot replace fresh full-image migration and empty-home
+recovery proof.
