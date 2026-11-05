@@ -7,6 +7,10 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("admits the
  const browser=await chromium.launch({headless:true,...process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?{executablePath:process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE}:{}}),page=await browser.newPage();
  const render=async(text:string,html?:string,id="native")=>{await page.setContent(`<article id="comment-${id}"><p>Use secure Settings Secrets for Morgan's deployment credential environment binding.</p>${html??`<code>${text}</code>`}</article>`);};
  try{
+  await page.setContent(`<div style="height:100px;overflow-x:hidden;overflow-y:auto"><article id="comment-native"><code>${route}</code><div style="height:1500px">Long reply</div></article></div>`);
+  await page.locator("body > div").evaluate(node=>node.scrollTop=node.scrollHeight);
+  expect(await companySecretSetupURL(page,{body,commentId:"native"},origin,"RUN",1000)).toBe(origin+route);
+
   await render(route);expect(await companySecretSetupURL(page,{body,commentId:"native"},origin,"RUN",1000)).toBe(origin+route);
   await render(route,`<p style="height:1500px">Ordinary reply context</p><code>${route}</code>`);expect(await companySecretSetupURL(page,{body,commentId:"native"},origin,"RUN",1000)).toBe(origin+route);
   for(const html of [`<code style="position:absolute;left:-9999px">${route}</code>`,`<details><summary>More</summary><code>${route}</code></details>`,`<code style="font-size:0">${route}</code>`,`<code style="color:transparent">${route}</code>`,`<code style="opacity:0.001">${route}</code>`,`<div style="overflow:hidden;height:1px"><p style="margin-top:200px"><code>${route}</code></p></div>`]){

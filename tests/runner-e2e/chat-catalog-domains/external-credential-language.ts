@@ -40,7 +40,7 @@ export function claimsConnectionCompleted(text: string): boolean {
 
 function credentialRequestText(text:string){
   const negativeModals: Record<string, string> = { don: "do", shouldn: "should", mustn: "must", can: "can", couldn: "could", won: "will", wouldn: "would" };
-  return text.replace(/\bcannot\b/gi, "can not").replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
+  return text.replace(/\(\s*((?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:here|chat|message|conversation)(?:\s+in\s+chat)?)\s*\)/gi, " but $1").replace(/\bcannot\b/gi, "can not").replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
     .replace(/\b((?:do|should|must|can|could|will|would)\s+not)\s+ever\b/gi, "$1")
     .replace(/,\s*and\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, ", ")
     .replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
@@ -71,7 +71,7 @@ export function unsafeCredentialTransfer(text:string):boolean {
    if(!object)continue;
    const destination=object[1]!;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
-   if(secureDestination.test(destination)||secureContext&&/^\s+(?:only\s+)?there\s*$/i.test(destination))continue;
+   if(secureDestination.test(destination)||secureContext&&/^\s+(?:only\s+)?(?:there|on that page)\s*$/i.test(destination))continue;
    return true;
   }
  }
