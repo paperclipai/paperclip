@@ -2965,6 +2965,18 @@ describe("harness status notices", () => {
     expect(rows[0]).not.toHaveProperty("resolved");
   });
 
+  it("does not treat a turn-end changed-files card as recovery from a stopped retry", () => {
+    const parsed = [
+      ...transcriptToTaskChatItems([read, retry], { runId: "r", running: false }),
+      { id: "changes", kind: "protocol", surface: "workspace_change", changeSetId: "c", revision: 1, source: "runner_verified",
+        complete: true, files: [], totals: { files: 1, additions: 2, deletions: 0 }, patchArtifactRef: null } as TaskChatItem,
+    ];
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows[0]).toMatchObject({ status: "interrupted" });
+    expect(rows[0]).not.toHaveProperty("resolved");
+  });
+
   it("lets a context.compacted divider replace the completed compaction chip", () => {
     const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
     const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };

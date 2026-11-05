@@ -1916,8 +1916,9 @@ function statusNoticeResolvesRetry(item: TaskChatItem): boolean {
     case "tool":
       return true;
     case "protocol":
-      if (item.surface === "provider_activity") return !isStatusNotice(item);
-      return item.surface === "workspace_change" || item.surface === "workspace_file";
+      // Workspace cards are re-positioned to the end of the turn, so their
+      // place says nothing about when the work happened.
+      return item.surface === "provider_activity" && !isStatusNotice(item);
     default:
       return false;
   }
