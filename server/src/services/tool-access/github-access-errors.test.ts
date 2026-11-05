@@ -19,7 +19,16 @@ describe("GitHub tool access failures", () => {
       version: 1 as const, status: "failed" as const, errorCode: "tool_error",
       errorMessage: "403 Resource not accessible by integration", updatedAt: new Date().toISOString(),
     } };
-    expect(projectGitHubActionResult({ version: 1, prompt: "Confirm?" }, result)).toBe(result);
-    expect(projectGitHubActionResult({ version: 1, prompt: "Confirm?" }, null)).toBeNull();
+    expect(projectGitHubActionResult("notion", result)).toBe(result);
+    expect(projectGitHubActionResult(undefined, result)).toBe(result);
+    expect(projectGitHubActionResult("github", null)).toBeNull();
+  });
+
+  it.each(["tool_error", "tool_execution_failed"])("projects historical %s errors using verified provider identity", errorCode => {
+    const result = { version: 1 as const, outcome: "accepted" as const, toolAction: {
+      version: 1 as const, status: "failed" as const, errorCode,
+      errorMessage: "403 Resource not accessible by integration", updatedAt: new Date().toISOString(),
+    } };
+    expect(projectGitHubActionResult("github", result)).toMatchObject({ toolAction: { errorCode: "github_access_denied" } });
   });
 });

@@ -5,7 +5,7 @@ import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
-import { projectGitHubActionResult } from "./tool-access/github-access-errors.js";
+import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
@@ -766,11 +766,11 @@ function hydrateInteraction(
         ...base,
         kind: "request_confirmation",
         payload,
-        result: projectGitHubActionResult(payload, parseStoredInteractionResult(
+        result: parseStoredInteractionResult(
           requestConfirmationResultSchema,
           row.result,
           row,
-        )),
+        ),
       } satisfies RequestConfirmationInteraction;
     }
     case "request_checkbox_confirmation":
@@ -2144,6 +2144,7 @@ export function issueThreadInteractionService(
     interactions: IssueThreadInteraction[],
     issueWorkspace?: { companyId: string; executionWorkspaceId: string | null },
   ): Promise<IssueThreadInteraction[]> {
+    interactions = await projectGitHubInteractionErrors(db, interactions);
     const guarded = interactions.filter((interaction) =>
       interaction.status === "pending"
       && interaction.sourceRunId
@@ -2168,7 +2169,7 @@ export function issueThreadInteractionService(
     if (!workspace?.executionWorkspaceId) return interactions;
 
     // Only pending confirmations need checks, once per source run even if that
-    // run produced several cards. Historical interactions add no queries.
+    // run produced several cards. Historical interactions need no workspace queries.
     const { companyId, executionWorkspaceId } = workspace;
     const sourceRunIds = [...new Set(guarded.map((interaction) => interaction.sourceRunId!))];
     const pendingRunIds = new Set<string>();

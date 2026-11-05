@@ -27,10 +27,13 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import {
@@ -60,7 +63,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     db = createDb(externalUrl ?? tempDb!.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -82,6 +85,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(instanceSettings);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(companies);
     await db.delete(authUsers);
   });
@@ -153,23 +158,52 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
-  it("projects a saved GitHub permission error without rewriting its diagnostic record", async () => {
+  it.each([
+    ["tool_error", "GitHub"], ["tool_execution_failed", "GitHub"],
+    ["tool_error", "GitHub (2)"], ["tool_execution_failed", "Prototype code"],
+  ])("projects a saved GitHub %s permission error for %s without rewriting its diagnostic record", async (errorCode, appName) => {
     const { companyId, issueId } = await seedConfirmationIssue("GitHub access repair");
+    const [application] = await db.insert(toolApplications).values({ companyId, applicationKey: `github-${randomUUID()}`,
+      name: appName, type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id,
+      name: appName, uid: `github-${randomUUID()}`, transport: "mcp_remote", config: { sourceTemplateKey: "github" } }).returning();
     const errorMessage = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
     const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
       kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Create repository?",
         toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "github.create_repository",
-          toolDisplayName: "Create repository", appDisplayName: "GitHub", connectionId: randomUUID(), applicationId: randomUUID(),
+          toolDisplayName: "Create repository", appDisplayName: appName, connectionId: connection!.id, applicationId: application!.id,
           risk: "write", previewMarkdown: "Create a private prototype repository", argumentsSummaryJson: "{}",
           argumentsHash: "hash", expiresAt: new Date().toISOString() } },
       result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "failed",
-        errorCode: "tool_error", errorMessage, updatedAt: new Date().toISOString() } },
+        errorCode, errorMessage, updatedAt: new Date().toISOString() } },
     }).returning();
     expect(await interactionsSvc.getById(row!.id)).toMatchObject({ result: { toolAction: {
       errorCode: "github_access_denied", errorMessage,
     } } });
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, row!.id)))[0]?.result)
-      .toMatchObject({ toolAction: { errorCode: "tool_error", errorMessage } });
+      .toMatchObject({ toolAction: { errorCode, errorMessage } });
+  });
+
+  it.each(["other_company", "other_provider", "other_application"])("does not infer GitHub identity from a card name with %s metadata", async variant => {
+    const { companyId, issueId } = await seedConfirmationIssue("Connection identity boundary");
+    const connectionCompanyId = variant === "other_company" ? randomUUID() : companyId;
+    if (connectionCompanyId !== companyId) await db.insert(companies).values(interactionCompanyRow(connectionCompanyId));
+    const [application] = await db.insert(toolApplications).values({ companyId: connectionCompanyId,
+      applicationKey: `provider-${randomUUID()}`, name: "GitHub", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: connectionCompanyId, applicationId: application!.id,
+      name: "GitHub", uid: `provider-${randomUUID()}`, transport: "mcp_remote",
+      config: { sourceTemplateKey: variant === "other_provider" ? "notion" : "github" } }).returning();
+    const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Run action?",
+        toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "provider.action",
+          toolDisplayName: "Run action", appDisplayName: "GitHub", connectionId: connection!.id,
+          applicationId: variant === "other_application" ? randomUUID() : application!.id,
+          risk: "write", previewMarkdown: "Run action", argumentsSummaryJson: "{}", argumentsHash: "hash",
+          expiresAt: new Date().toISOString() } },
+      result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "failed",
+        errorCode: "tool_error", errorMessage: "403 Resource not accessible by integration", updatedAt: new Date().toISOString() } },
+    }).returning();
+    expect(await interactionsSvc.getById(row!.id)).toMatchObject({ result: { toolAction: { errorCode: "tool_error" } } });
   });
 
   async function attachPlanDocument(companyId: string, issueId: string) {
