@@ -311,6 +311,26 @@ describe("portable remote workspace archives", () => {
     await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")], { env }))
       .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
   });
+  it("rejects a damaged Git entry before checking whether node_modules is tracked", async () => {
+    const cwd = await source(); await fs.mkdir(path.join(cwd, ".git"));
+    await fs.writeFile(path.join(cwd, "package.json"), "{}\n");
+    await fs.mkdir(path.join(cwd, "node_modules", "dependency"), { recursive: true });
+    await fs.writeFile(path.join(cwd, "node_modules", "dependency", "index.js"), "module.exports = 1;\n");
+    await expect(capture(cwd)).rejects.toThrow(/^remote_workspace_archive_invalid_git_repository$/u);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")], { env }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_archive_invalid_git_repository" });
+  });
+  it("keeps a full-disk Git failure distinct from a damaged Git entry", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    const bin = path.join(root, "full-disk-bin"); await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s' 'No space left on device' >&2\nexit 2\n", { mode: 0o700 });
+    const helper = path.join(root, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")],
+      { env: { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? process.env.PATH}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" });
+  });
   it.each([["an empty directory", "directory"], ["a gitfile for a removed worktree", "gitfile"]])(
     "does not save an enclosing repository's state for %s",
     async (_name, kind) => {
