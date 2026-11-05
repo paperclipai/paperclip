@@ -5,8 +5,8 @@ import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellat
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
-import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
+import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { ACP_TOOL_KINDS } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -421,7 +421,7 @@ export function sanitizeRunFailureText(input: string, limit: number): string {
   const normalized = input
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/[\ud800-\udfff]/gu, "\ufffd");
+    .replace(/[\ud800-\udfff]/gu, "�");
   const clean = redactSensitiveText(redactDiagnosticText(redactCurrentUserText(normalized)));
   if (clean.length <= limit) return clean;
   const suffix = "\n[truncated]";
