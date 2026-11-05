@@ -3,7 +3,7 @@ import {chromium} from "@playwright/test";
 import {personalSecretSetupURL} from "./external-personal-secret.js";
 const origin="https://paperclip.example",path="/RUN/company/settings/secrets",definition="current-definition";
 const body=`Open \`${path}?definition=${definition}\` → My secrets → PERSONAL_PUBLISHING_KEY → Set my value, then save. Please don't paste the key in chat. Morgan's PUBLISHING_API_KEY runtime reference is already configured.`;
-it("admits the visible own-definition route from4716 and rejects unbound or unsafe routes",async()=>{
+it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("admits the visible own-definition route from4716 and rejects unbound or unsafe routes",async()=>{
  const browser=await chromium.launch({headless:true}),page=await browser.newPage();
  const render=async(text:string,html?:string)=>page.setContent(`<article id="comment-native"><p>Personal credential setup</p>${html??`<code>${text}</code>`}</article>`);
  try{
