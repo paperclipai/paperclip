@@ -32,20 +32,22 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
   if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{describeError(error).body}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
-  if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
-    return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
-      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
-      {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
-    </ProviderFailureNotice>;
-  }
   const step = !optimistic && presentation?.responsibility === "system" && presentation.recoveryStep
     && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
+  const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
+  const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
+  if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+    // Saved-work recovery is what the task waits for, so name it over the
+    // generic automatic-retry line while keeping the provider explanation.
+    return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
+      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
+      {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : "Paperclip will retry automatically."}</p>}
+    </ProviderFailureNotice>;
+  }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
-  const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));
-  const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
   return (
     <div className={cn(presentation.state === "failed" && "pt-4", className)}>
       <div role="status" aria-label="Task status" className={cn(

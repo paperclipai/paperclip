@@ -197,6 +197,17 @@ describe("saved-work recovery step", () => {
       .toMatchObject({ state: "working", recoveryStep: "saving_previous_files" });
   });
 
+  it("names recovery over a pending chat preparation and keeps failed preparation authoritative", () => {
+    const wait = { id: "retry", requestedAt: new Date(now), sourceRunId: failed.id, preparationStatus: "issued", preparationRetryAt: now + 250 };
+    const running = action({ systemRecovery: system("preserve_files", "running", null), systemRecoveryActiveAt: now - 1_000 });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false, action: running }, now))
+      .toMatchObject({ state: "working", recoveryStep: "saving_previous_files" });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, preparationStatus: "failed" },
+      paused: false, approval: false, action: running }, now)).toMatchObject({ state: "failed" });
+    expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false }, now))
+      .toMatchObject({ state: "retry_scheduled", nextRetryAt: new Date(now + 250).toISOString() });
+  });
+
   it("does not name a step for an ordinary scheduled retry", () => {
     expect(projectTaskInterruption(issue, { run: { ...failed, scheduledRetryAt: new Date(now + 30_000) }, agent,
       paused: false, approval: false }, now)).not.toHaveProperty("recoveryStep");

@@ -108,22 +108,27 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     if (!ready) return { ...base, responsibility: "user", state: "waiting_for_user",
       userAction: "project_access", projectAccess };
   }
-  if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
-    const deadline = retryWait.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
-    if (["issued", "processing"].includes(retryWait.preparationStatus) && Number.isFinite(deadline))
-      return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
-    return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
-  }
   const recoveryStep: TaskInterruptionPresentation["recoveryStep"] = !system ? undefined
     : system.phase === "verify_execution" ? "checking_previous_run"
       : system.phase === "preserve_files" ? "saving_previous_files" : "finishing_recovery";
+  const activeObservation = action?.evidence.systemRecoveryActiveAt;
+  const recoveryRunning = system?.state === "running" && typeof activeObservation === "number"
+    && activeObservation > now - 45_000;
+  const recoveryScheduled = Boolean(system?.nextAttemptAt && system.nextAttemptAt > now);
+  if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
+    const deadline = retryWait.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
+    const pending = ["issued", "processing"].includes(retryWait.preparationStatus) && Number.isFinite(deadline);
+    // Saved-work recovery gates a pending preparation, so it names the wait.
+    // Failed or cancelled preparation stays authoritative.
+    if (pending && !recoveryRunning && !recoveryScheduled)
+      return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
+    if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
+  }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: true,
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
-  const activeObservation = action?.evidence.systemRecoveryActiveAt;
-  if (system?.state === "running" && typeof activeObservation === "number" &&
-      activeObservation > now - 45_000) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
+  if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
