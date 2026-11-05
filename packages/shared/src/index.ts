@@ -975,6 +975,7 @@ export type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceCloseReasonPresentation,
   ExecutionWorkspaceCloseReadinessState,
   ExecutionWorkspaceDeliveryState,
   WorkspaceOverviewItem,

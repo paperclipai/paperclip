@@ -1,0 +1,6 @@
+{
+  "envOneSecret_one": "{{count}} key ({{secretCount}} secret ref)",
+  "envOneSecret_other": "{{count}} keys ({{secretCount}} secret ref)",
+  "envManySecrets_one": "{{count}} key ({{secretCount}} secret refs)",
+  "envManySecrets_other": "{{count}} keys ({{secretCount}} secret refs)"
+}

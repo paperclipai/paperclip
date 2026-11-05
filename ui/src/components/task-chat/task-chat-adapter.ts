@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Live adapter: normalize the existing IssueChatComment stream (including
  * optimistic echoes) into the redesign's TaskChatItem[] model. This is the
@@ -73,8 +74,8 @@ export function commentsToTaskChatItems(
   for (const comment of comments) {
     if (comment.deletedAt) continue;
     if (comment.conversationSessionGeneration != null) {
-      items.push({ id: comment.id, kind: "marker", variant: "session_start", label: "New session",
-        detail: "Earlier messages and files are still available.", createdAtIso: new Date(comment.createdAt).toISOString() });
+      items.push({ id: comment.id, kind: "marker", variant: "session_start", get label() { return t("final-components-b:New_session_cffdba"); },
+        get detail() { return t("final-components-b:Earlier_messages_and_files_are_still_available_094c37"); }, createdAtIso: new Date(comment.createdAt).toISOString() });
       continue;
     }
     const kind = authorKind(comment);

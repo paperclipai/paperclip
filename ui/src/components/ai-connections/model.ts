@@ -1,3 +1,4 @@
+import { t as translate } from "@/i18n";
 /** Redacted presentation contracts shared with the production API. */
 import type { AiProvider, AiAuthMethod, AiManagedConnectionSummary, AiConnectionBinding } from "@paperclipai/shared";
 export type { AiProvider, AiAuthMethod, AiConnectionBinding } from "@paperclipai/shared";
@@ -36,10 +37,10 @@ export interface AiConnectionRequirement {
 }
 
 export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
-  connected: "Connected",
-  needs_attention: "Needs attention",
-  expired: "Expired",
-  revoked: "Revoked",
+  get connected() { return translate("connections:connected_c2f9b7b"); },
+  get needs_attention() { return translate("connections:needs_attention_a126722"); },
+  get expired() { return translate("connections:expired_a689a99"); },
+  get revoked() { return translate("connections:revoked_85f17ac"); },
 };
 
 export function defaultAiConnectionName(ownerName: string | undefined, provider: AiProvider, method: AiAuthMethod) {
@@ -51,10 +52,16 @@ export function defaultAiConnectionName(ownerName: string | undefined, provider:
   return `${prefix} ${providerName} account`;
 }
 
+export function aiProviderSubscriptionLabel(provider: AiProvider): string | undefined {
+  const keys: Partial<Record<AiProvider, string>> = { google: "google_antigravity_account_925b40b", anthropic: "claude_subscription_f9fac38", openai: "chatgpt_subscription_7d79171", xai: "grok_subscription_706d24c" };
+  const key = keys[provider];
+  return key ? translate(`connections:${key}`) : undefined;
+}
+
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
-    ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
-    : provider === "github" ? "Personal access token" : "API key";
+    ? (aiProviderSubscriptionLabel(provider) ?? translate("connections:subscription_unavailable_681ca16"))
+    : provider === "github" ? translate("connections:personal_access_token_318e3c8") : translate("connections:api_key_cf678ca");
 }
 
 export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
@@ -62,7 +69,7 @@ export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
   return [
     connection.name,
     aiMethodLabel(connection.provider, connection.method),
-    personal ? "Personal" : "Company shared",
+    personal ? translate("connections:personal_40f0732") : translate("connections:company_shared_62c7551"),
     connection.accountLabel || connection.ownerName,
   ].filter(Boolean).join(" · ");
 }
@@ -95,12 +102,12 @@ export function personalAiDefault(
 
 export function aiConnectionProblem(connection?: AiConnectionSummary) {
   if (!connection)
-    return "No connection selected. Connect an account to continue.";
+    return translate("connections:no_connection_selected_connect_an_account_to_09146fd");
   return (
     connection.unavailableReason ??
     (connection.status === "connected"
       ? null
-      : `${AI_CONNECTION_STATUS[connection.status]}. Reconnect this account to continue.`)
+      : translate("connections:reconnect_this_account_to_continue_92f96a9", { value: AI_CONNECTION_STATUS[connection.status] }))
   );
 }
 
@@ -115,7 +122,7 @@ export function bindingProblem(
     binding.provider !== requirement.provider ||
     (binding.mode !== "responsible_user" && requirement.method !== undefined && binding.method !== requirement.method)
   )
-    return "Choose a connection compatible with this provider and sign-in method.";
+    return translate("connections:choose_a_connection_compatible_with_this_provider_30d137f");
   if (binding.mode === "responsible_user")
     return aiConnectionProblem(
       personalAiDefault(connections, requirement, userId),
@@ -128,14 +135,14 @@ export function bindingProblem(
       matchesAiRequirement(item, requirement),
   );
   if (!connection)
-    return "This connection is no longer available for this agent. Choose another connection.";
+    return translate("connections:this_connection_is_no_longer_available_for_fa5e058");
   if (binding.mode === "shared" && connection.ownership !== "shared")
-    return "Choose a company-shared connection.";
+    return translate("connections:choose_a_company_shared_connection_8ac55a4");
   if (
     binding.mode === "delegated" &&
     (connection.ownership !== "personal" ||
       connection.ownerUserId !== userId)
   )
-    return "This credential is not shared with you. Choose a connection you can use.";
+    return translate("connections:this_credential_is_not_shared_with_you_87c0aaf");
   return aiConnectionProblem(connection);
 }

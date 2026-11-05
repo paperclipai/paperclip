@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 import {
@@ -21,6 +22,7 @@ function humanBytes(size: number): string {
  * variation-picker (out of scope).
  */
 export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttachmentRef[] }) {
+  useTranslation("task-components");
   const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
 
   // The lightbox only navigates across image attachments.
@@ -36,7 +38,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
   );
 
   if (attachments.length === 0) {
-    return <p className="text-xs text-muted-foreground">No attachments.</p>;
+    return <p className="text-xs text-muted-foreground">{t("task-components:noAttachments_eef2d998")}</p>;
   }
 
   return (
@@ -44,7 +46,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {attachments.map((attachment) => {
           const isImage = isImageAttachment(attachment);
-          const filename = attachment.asset.originalFilename ?? "attachment";
+          const filename = attachment.asset.originalFilename ?? t("final-components-b:CaseAttachmentsGallery.attachment_602a5e");
           const imageIdx = isImage ? imageItems.findIndex((i) => i.id === attachment.id) : -1;
           return (
             <button

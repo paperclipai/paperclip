@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ export interface SpekoProviderSetupProps {
   signingSecretConfigured?: boolean;
 }
 export function SpekoProviderSetup({ agentName, onSaveExit, credentials, onChange, onConnect, callbackUrl, pending = false, repairing = false, signingSecretConfigured }: SpekoProviderSetupProps) {
+  const { t } = useTranslation("connections");
   const hasSavedSecret = signingSecretConfigured ?? repairing;
   const ready = repairing && hasSavedSecret || Boolean(credentials.apiKey?.trim() && credentials.agentId?.trim());
   const reachable = callbackUrl?.startsWith("https://") === true;
@@ -30,20 +32,20 @@ export function SpekoProviderSetup({ agentName, onSaveExit, credentials, onChang
   }
   return <div className="space-y-5">
     <div>
-      <h1 className="text-xl font-bold">Connect {agentName} to Speko</h1>
-      <p className="mt-1 text-sm text-muted-foreground">Choose a dedicated Speko voice persona. Paperclip uses its voice while {agentName} keeps its existing runtime, tools, and task context.</p>
+      <h1 className="text-xl font-bold">{t("connect_to_speko_7e0e29b", { agentName: agentName })}</h1>
+      <p className="mt-1 text-sm text-muted-foreground">{t("choose_a_dedicated_speko_voice_persona_paperclip_5f2a1b7", { agentName: agentName })}</p>
     </div>
     <ol className="list-decimal space-y-2 pl-5 text-sm">
-      <li>Create a dedicated agent in Speko and choose its voice. Keep only Speko’s default tools; Paperclip adds the task connection.</li>
-      <li>Copy its agent ID and a Speko API key below.</li>
-      <li>Review recording and retention settings in your Speko workspace before testing.</li>
+      <li>{t("create_a_dedicated_agent_in_speko_and_e970079")}</li>
+      <li>{t("copy_its_agent_id_and_a_speko_b4ab329")}</li>
+      <li>{t("review_recording_and_retention_settings_in_your_e7bc624")}</li>
     </ol>
-    <Button asChild variant="outline"><a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer">Open Speko agents</a></Button>
-    <label className="grid gap-2 text-sm font-medium">Speko agent ID<Input autoComplete="off" value={credentials.agentId ?? ""} placeholder={repairing ? "Leave blank to keep the current persona" : "agent_…"} onChange={(event) => onChange({ ...credentials, agentId: event.target.value })} /></label>
-    <label className="grid gap-2 text-sm font-medium">Speko API key<Input type="password" autoComplete="new-password" value={credentials.apiKey ?? ""} placeholder={repairing ? "Leave blank to keep the saved key" : "Paste your Speko API key"} onChange={(event) => onChange({ ...credentials, apiKey: event.target.value })} /></label>
-    {!reachable && <p role="alert" className="text-sm text-destructive">Configure a public HTTPS callback origin for Paperclip first. Local instances need an explicitly configured tunnel or reverse proxy.</p>}
-    {reachable && <p className="break-all text-xs text-muted-foreground">Callback: {callbackUrl}</p>}
-    <p className="text-sm text-muted-foreground">Credentials and a generated callback signing secret are saved in the company vault. Speko charges for voice usage separately from agent work. Outgoing calls are experimental. After connecting, save your callback number to let this agent call you about your tasks.</p>
-    {onSaveExit ? <SetupWizardFooter onSaveExit={onSaveExit} disabled={pending}><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? "Verifying Speko…" : repairing ? "Reconnect Speko" : "Connect Speko"}</Button></SetupWizardFooter> : <div className="flex justify-end"><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? "Verifying Speko…" : repairing ? "Reconnect Speko" : "Connect Speko"}</Button></div>}
+    <Button asChild variant="outline"><a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer">{t("open_speko_agents_6790431")}</a></Button>
+    <label className="grid gap-2 text-sm font-medium">{t("speko_agent_id_3cb7890")}<Input autoComplete="off" value={credentials.agentId ?? ""} placeholder={repairing ? t("leave_blank_to_keep_the_current_persona_8342877") : t("agent_bfb1036")} onChange={(event) => onChange({ ...credentials, agentId: event.target.value })} /></label>
+    <label className="grid gap-2 text-sm font-medium">{t("speko_api_key_43c3193")}<Input type="password" autoComplete="new-password" value={credentials.apiKey ?? ""} placeholder={repairing ? t("leave_blank_to_keep_the_saved_key_a130483") : t("paste_your_speko_api_key_f379261")} onChange={(event) => onChange({ ...credentials, apiKey: event.target.value })} /></label>
+    {!reachable && <p role="alert" className="text-sm text-destructive">{t("configure_a_public_https_callback_origin_for_5e995b1")}</p>}
+    {reachable && <p className="break-all text-xs text-muted-foreground">{t("callback_0563aed")}{callbackUrl}</p>}
+    <p className="text-sm text-muted-foreground">{t("credentials_and_a_generated_callback_signing_secret_3923fe1")}</p>
+    {onSaveExit ? <SetupWizardFooter onSaveExit={onSaveExit} disabled={pending}><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? t("verifying_speko_c814c62") : repairing ? t("reconnect_speko_635d6f3") : t("connect_speko_c42bcce")}</Button></SetupWizardFooter> : <div className="flex justify-end"><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? t("verifying_speko_c814c62") : repairing ? t("reconnect_speko_635d6f3") : t("connect_speko_c42bcce")}</Button></div>}
   </div>;
 }

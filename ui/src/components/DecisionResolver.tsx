@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -43,6 +44,7 @@ export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { de
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
 export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, recordedDecision, onResolved }: DecisionResolverProps) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
@@ -168,16 +170,13 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   if (!recordedDecision && detail.isLoading) {
     return (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
-      </div>
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{" "}{t("task-components:loadingDecision_ad0b2287")}</div>
     );
   }
 
   if ((!recordedDecision && detail.error) || !decision) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
-        This decision is no longer available — it may have been resolved elsewhere.
-      </p>
+      <p className="py-3 text-xs text-muted-foreground">{t("task-components:thisDecisionIsNoLongerAvailableIt_e3f188cd")}</p>
     );
   }
 

@@ -1,0 +1,14 @@
+{
+  "missingFileUrl": "Upload did not return a file URL",
+  "attachmentUnsupported": "This file type cannot be attached here",
+  "uploadAction": "upload the file",
+  "saveDocumentAction": "save the document",
+  "deletionUnavailable": "Document deletion is not available",
+  "restoreUnavailable": "Document revision restore is not available",
+  "lockingUnavailable": "Document locking is not available",
+  "runLabel": "run {{id}}",
+  "traceSkipped": "Trace re-run was skipped.",
+  "selectOrganization": "Select an organization to create secrets",
+  "viewingRevision": "Viewing revision {{revision}}",
+  "attemptBudget": "attempt {{attempt}} of {{max}}"
+}

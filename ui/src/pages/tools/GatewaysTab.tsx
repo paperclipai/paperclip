@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { type FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -51,6 +52,8 @@ function shortId(value: string | null | undefined) {
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  const key: Record<string, string> = { tool: "count_tool", app: "count_app", agent: "count_agent", assignment: "count_assignment", connection: "count_connection" };
+  if (key[singular]) return translateAgentPage(`agents:${key[singular]}`, { count });
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
@@ -69,12 +72,12 @@ function latestTokenActivity(gateway: ToolMcpGatewayWithTokens) {
 }
 
 function formatOwner(gateway: ToolMcpGatewayWithTokens, agentNames: Map<string, string>) {
-  if (gateway.agentId) return agentNames.get(gateway.agentId) ?? `Agent ${shortId(gateway.agentId)}`;
+  if (gateway.agentId) return agentNames.get(gateway.agentId) ?? translateAgentPage("agents:agent_c080a2", { value1: shortId(gateway.agentId) });
   if (gateway.createdByAgentId) {
-    return agentNames.get(gateway.createdByAgentId) ?? `Agent ${shortId(gateway.createdByAgentId)}`;
+    return agentNames.get(gateway.createdByAgentId) ?? translateAgentPage("agents:agent_c080a2", { value1: shortId(gateway.createdByAgentId) });
   }
-  if (gateway.createdByUserId) return `Board user ${shortId(gateway.createdByUserId)}`;
-  return "Board";
+  if (gateway.createdByUserId) return translateAgentPage("agents:board_user", { value1: shortId(gateway.createdByUserId) });
+  return translateAgentPage("agents:board");
 }
 
 function formatScope(
@@ -84,26 +87,26 @@ function formatScope(
 ) {
   if (gateway.contextScopeType !== "none" && gateway.contextScopeId) {
     if (gateway.contextScopeType === "project") {
-      return `Project ${projectNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId)}`;
+      return translateAgentPage("agents:project_4787dd", { value1: projectNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId) });
     }
     if (gateway.contextScopeType === "agent") {
-      return `Agent ${agentNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId)}`;
+      return translateAgentPage("agents:agent_c080a2", { value1: agentNames.get(gateway.contextScopeId) ?? shortId(gateway.contextScopeId) });
     }
     return `${gateway.contextScopeType} ${shortId(gateway.contextScopeId)}`;
   }
-  if (gateway.projectId) return `Project ${projectNames.get(gateway.projectId) ?? shortId(gateway.projectId)}`;
-  if (gateway.issueId) return `Issue ${shortId(gateway.issueId)}`;
-  if (gateway.agentId) return `Agent ${agentNames.get(gateway.agentId) ?? shortId(gateway.agentId)}`;
-  return "Company";
+  if (gateway.projectId) return translateAgentPage("agents:project_4787dd", { value1: projectNames.get(gateway.projectId) ?? shortId(gateway.projectId) });
+  if (gateway.issueId) return translateAgentPage("agents:issue", { value1: shortId(gateway.issueId) });
+  if (gateway.agentId) return translateAgentPage("agents:agent_c080a2", { value1: agentNames.get(gateway.agentId) ?? shortId(gateway.agentId) });
+  return translateAgentPage("agents:company_7a1994");
 }
 
 function formatAllowedTools(profile: ToolProfileWithDetails | undefined) {
-  if (!profile) return "Profile unavailable";
+  if (!profile) return translateAgentPage("agents:profile_unavailable");
   const allowed = profile.summary.allowedToolCount;
   if (profile.summary.accessMode === "all_except") {
-    return `${pluralize(Math.max(profile.summary.totalToolCount - profile.summary.excludedToolCount, 0), "tool")} allowed`;
+    return translateAgentPage("agents:allowed_9df95c", { value1: pluralize(Math.max(profile.summary.totalToolCount - profile.summary.excludedToolCount, 0), "tool") });
   }
-  return allowed === 0 ? "No tools allowed" : `${pluralize(allowed, "tool")} allowed`;
+  return allowed === 0 ? translateAgentPage("agents:no_tools_allowed") : translateAgentPage("agents:allowed_9df95c", { value1: pluralize(allowed, "tool") });
 }
 
 function formatSnippetConfig(config: Record<string, unknown>) {
@@ -115,6 +118,7 @@ function buildTokenExpiresAt(value: string) {
 }
 
 export function GatewaysTab({ companyId }: { companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [creating, setCreating] = useState(false);
@@ -174,11 +178,11 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     onSuccess: async (gateway) => {
       setCreateDraft({ name: "", description: "", profileId: activeProfiles[0]?.id ?? "" });
       setCreating(false);
-      pushToast({ title: "Gateway created", body: gateway.name, tone: "success" });
+      pushToast({ title: translateAgentPage("agents:gateway_created"), body: gateway.name, tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Gateway was not created", body: describeError(error).body, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:gateway_was_not_created"), body: describeError(error).body, tone: "error" });
     },
   });
 
@@ -197,11 +201,11 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       setCreatedTokens((current) => ({ ...current, [token.gatewayId]: token }));
       setIssuingGatewayId(null);
       setTokenDrafts((current) => ({ ...current, [token.gatewayId]: defaultTokenDraft() }));
-      pushToast({ title: "Token issued", body: `${token.name} was created. Copy it now; it will not be shown again.`, tone: "success" });
+      pushToast({ title: translateAgentPage("agents:token_issued"), body: translateAgentPage("agents:was_created_copy_it_now_it_will_not", { value1: token.name }), tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not issued", body: describeError(error).body, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:token_was_not_issued"), body: describeError(error).body, tone: "error" });
     },
   });
 
@@ -209,20 +213,20 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     mutationFn: (tokenId: string) => toolsApi.revokeGatewayToken(companyId, tokenId),
     onSuccess: async (token) => {
       setConfirmingRevokeTokenId(null);
-      pushToast({ title: "Token revoked", body: token.name, tone: "success" });
+      pushToast({ title: translateAgentPage("agents:token_revoked"), body: token.name, tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not revoked", body: describeError(error).body, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:token_was_not_revoked"), body: describeError(error).body, tone: "error" });
     },
   });
 
   async function copyText(value: string, label: string) {
     try {
       await copyTextToClipboard(value);
-      pushToast({ title: "Copied to clipboard", body: label, tone: "success" });
+      pushToast({ title: translateAgentPage("agents:copied_to_clipboard"), body: label, tone: "success" });
     } catch (error) {
-      pushToast({ title: "Copy failed", body: describeError(error).body, tone: "error" });
+      pushToast({ title: translateAgentPage("agents:copy_failed"), body: describeError(error).body, tone: "error" });
     }
   }
 
@@ -239,7 +243,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
   function submitCreateGateway(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!createDraft.profileId) {
-      pushToast({ title: "Pick a profile", body: "A gateway needs an access profile before it can be created.", tone: "warn" });
+      pushToast({ title: translateAgentPage("agents:pick_a_profile"), body: translateAgentPage("agents:a_gateway_needs_an_access_profile_before_it"), tone: "warn" });
       return;
     }
     createGatewayMutation.mutate();
@@ -249,18 +253,18 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     event.preventDefault();
     const draft = tokenDrafts[gatewayId] ?? defaultTokenDraft();
     if (draft.allowedActions.length === 0) {
-      pushToast({ title: "Pick token actions", body: "Gateway tokens need at least one allowed MCP action.", tone: "warn" });
+      pushToast({ title: translateAgentPage("agents:pick_token_actions"), body: translateAgentPage("agents:gateway_tokens_need_at_least_one_allowed_mcp"), tone: "warn" });
       return;
     }
     createTokenMutation.mutate(gatewayId);
   }
 
-  if (gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting") return <LoadingState label="Loading gateways..." />;
+  if (gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting") return <LoadingState label={translateAgentPage("agents:loading_gateways")} />;
   if (gatewaysView.kind === "error") {
     return (
       <QueryErrorState
         error={gatewaysQuery.error}
-        action="load gateways"
+        action={translateAgentPage("agents:load_gateways")}
         onRetry={gatewaysView.retry}
         retrying={gatewaysView.isFetching}
       />
@@ -275,8 +279,8 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <ToolsPageHeader
-          title="Named MCP gateways"
-          description="Stable endpoints for external clients that use the same profiles, rules, and audit trail as agent tool access."
+          title={translateAgentPage("agents:named_mcp_gateways")}
+          description={translateAgentPage("agents:stable_endpoints_for_external_clients_that_use_the")}
         />
         <Button
           type="button"
@@ -287,26 +291,24 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
           }}
           disabled={profileLoading}
         >
-          <Plus className="mr-1.5 h-3.5 w-3.5" />
-          Create gateway
-        </Button>
+          <Plus className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:create_gateway")}</Button>
       </div>
 
       {creating ? (
         <form className="space-y-3 rounded-md border border-border p-4" onSubmit={submitCreateGateway}>
           <div className="grid gap-3 md:grid-cols-(--gtc-60)">
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Gateway name</span>
+              <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:gateway_name")}</span>
               <input
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={createDraft.name}
                 onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Engineering laptops"
+                placeholder={translateAgentPage("agents:engineering_laptops")}
                 required
               />
             </label>
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Access profile</span>
+              <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:access_profile")}</span>
               <select
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={createDraft.profileId}
@@ -315,7 +317,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                 disabled={activeProfiles.length === 0}
               >
                 <option value="" disabled>
-                  {profileLoading ? "Loading profiles..." : "Choose a profile"}
+                  {profileLoading ? translateAgentPage("agents:loading_profiles") : translateAgentPage("agents:choose_a_profile")}
                 </option>
                 {activeProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
@@ -326,32 +328,28 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
             </label>
           </div>
           <label className="space-y-1.5 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Description</span>
+            <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:description")}</span>
             <textarea
               className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={createDraft.description}
               onChange={(event) => setCreateDraft((current) => ({ ...current, description: event.target.value }))}
-              placeholder="Who this endpoint is for and when it should be rotated."
+              placeholder={translateAgentPage("agents:who_this_endpoint_is_for_and_when_it")}
             />
           </label>
           {activeProfiles.length === 0 && !profileLoading ? (
-            <p className="text-xs text-muted-foreground">Create an access profile before adding a gateway.</p>
+            <p className="text-xs text-muted-foreground">{translateAgentPage("agents:create_an_access_profile_before_adding_a_gateway")}</p>
           ) : null}
           <div className="flex flex-wrap justify-end gap-2">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>
-              Cancel
-            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>{translateAgentPage("agents:cancel")}</Button>
             <Button type="submit" size="sm" disabled={createDisabled || !createDraft.name.trim() || !createDraft.profileId}>
-              {createGatewayMutation.isPending ? "Creating..." : "Create gateway"}
+              {createGatewayMutation.isPending ? translateAgentPage("agents:creating") : translateAgentPage("agents:create_gateway")}
             </Button>
           </div>
         </form>
       ) : null}
 
       {gateways.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">
-          No named gateways yet. Create one here, then issue a token for the client that will connect to it.
-        </div>
+        <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">{translateAgentPage("agents:no_named_gateways_yet_create_one_here_then")}</div>
       ) : (
         <div className="divide-y divide-border rounded-md border border-border">
           {gateways.map((gateway) => {
@@ -375,14 +373,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                     ) : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={() => void copyText(endpoint, "Gateway endpoint")}>
-                      <Copy className="mr-1.5 h-3.5 w-3.5" />
-                      Copy endpoint
-                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => void copyText(endpoint, translateAgentPage("agents:gateway_endpoint"))}>
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:copy_endpoint")}</Button>
                     <Button type="button" variant="outline" size="sm" onClick={() => startIssuing(gateway.id)}>
-                      <KeyRound className="mr-1.5 h-3.5 w-3.5" />
-                      Issue token
-                    </Button>
+                      <KeyRound className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:issue_token")}</Button>
                   </div>
                 </div>
 
@@ -392,23 +386,23 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
 
                 <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Owner</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:owner")}</dt>
                     <dd className="mt-0.5 text-foreground">{formatOwner(gateway, agentNames)}</dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Scope</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:scope")}</dt>
                     <dd className="mt-0.5 text-foreground">{formatScope(gateway, projectNames, agentNames)}</dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Allowed tools</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:allowed_tools")}</dt>
                     <dd className="mt-0.5 text-foreground">
-                      {profile ? `${formatAllowedTools(profile)} via ${profile.name}` : `Profile ${shortId(gateway.profileId)}`}
+                      {profile ? translateAgentPage("agents:via", { value1: formatAllowedTools(profile), value2: profile.name }) : translateAgentPage("agents:profile_3d4a15", { value1: shortId(gateway.profileId) })}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Last activity</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:last_activity")}</dt>
                     <dd className="mt-0.5 text-foreground">
-                      {lastActivity ? <RelativeTime value={lastActivity} /> : "Never used"}
+                      {lastActivity ? <RelativeTime value={lastActivity} /> : translateAgentPage("agents:never_used")}
                     </dd>
                   </div>
                 </dl>
@@ -417,7 +411,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   <form className="space-y-3 rounded-md border border-border p-3" onSubmit={(event) => submitCreateToken(event, gateway.id)}>
                     <div className="grid gap-3 md:grid-cols-2">
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Token name</span>
+                        <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:token_name")}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.name}
@@ -427,12 +421,12 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, name: event.target.value },
                             }))
                           }
-                          placeholder="Dotta's MacBook"
+                          placeholder={translateAgentPage("agents:dotta_s_macbook")}
                           required
                         />
                       </label>
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Client label</span>
+                        <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:client_label")}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.clientLabel}
@@ -442,14 +436,14 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, clientLabel: event.target.value },
                             }))
                           }
-                          placeholder="Cursor on work laptop"
+                          placeholder={translateAgentPage("agents:cursor_on_work_laptop")}
                           required
                         />
                       </label>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Owner note</span>
+                        <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:owner_note")}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.ownerNote}
@@ -459,12 +453,12 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, ownerNote: event.target.value },
                             }))
                           }
-                          placeholder="Who owns this token and why it exists"
+                          placeholder={translateAgentPage("agents:who_owns_this_token_and_why_it_exists")}
                           required
                         />
                       </label>
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Expires</span>
+                        <span className="text-xs font-medium text-muted-foreground">{translateAgentPage("agents:expires_a99be3")}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           type="date"
@@ -497,9 +491,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                       ))}
                     </div>
                     <div className="flex flex-wrap justify-end gap-2">
-                      <Button type="button" variant="ghost" size="sm" onClick={() => setIssuingGatewayId(null)}>
-                        Cancel
-                      </Button>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setIssuingGatewayId(null)}>{translateAgentPage("agents:cancel")}</Button>
                       <Button
                         type="submit"
                         size="sm"
@@ -511,7 +503,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                           !tokenDraft.expiresAt
                         }
                       >
-                        {createTokenMutation.isPending ? "Issuing..." : "Issue token"}
+                        {createTokenMutation.isPending ? translateAgentPage("agents:issuing") : translateAgentPage("agents:issue_token")}
                       </Button>
                     </div>
                   </form>
@@ -520,11 +512,9 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                 {createdToken ? (
                   <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="font-medium text-foreground">New token for {createdToken.name}</div>
-                      <Button type="button" variant="outline" size="sm" onClick={() => void copyText(createdToken.token, "Gateway bearer token")}>
-                        <Copy className="mr-1.5 h-3.5 w-3.5" />
-                        Copy token
-                      </Button>
+                      <div className="font-medium text-foreground">{translateAgentPage("agents:new_token_for")}{" "}{createdToken.name}</div>
+                      <Button type="button" variant="outline" size="sm" onClick={() => void copyText(createdToken.token, translateAgentPage("agents:gateway_bearer_token"))}>
+                        <Copy className="mr-1.5 h-3.5 w-3.5" />{translateAgentPage("agents:copy_token")}</Button>
                     </div>
                     <div className="break-all rounded bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
                       {createdToken.token}
@@ -535,12 +525,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
                     <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      <KeyRound className="h-3.5 w-3.5" />
-                      Tokens
-                    </div>
+                      <KeyRound className="h-3.5 w-3.5" />{translateAgentPage("agents:tokens")}</div>
                     <div className="space-y-1 text-sm">
                       {gateway.tokens.length === 0 ? (
-                        <p className="text-muted-foreground">No tokens issued.</p>
+                        <p className="text-muted-foreground">{translateAgentPage("agents:no_tokens_issued")}</p>
                       ) : (
                         gateway.tokens.map((token) => {
                           const revoked = Boolean(token.revokedAt);
@@ -557,15 +545,13 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 <div className="flex shrink-0 items-center gap-2">
                                   <span className="text-xs text-muted-foreground">
                                     {token.revokedAt ? (
-                                      <>
-                                        revoked <RelativeTime value={token.revokedAt} />
+                                      <>{translateAgentPage("agents:revoked_8375cd")}{" "}<RelativeTime value={token.revokedAt} />
                                       </>
                                     ) : token.expiresAt ? (
-                                      <>
-                                        expires <RelativeTime value={token.expiresAt} />
+                                      <>{translateAgentPage("agents:expires_ac3c39")}{" "}<RelativeTime value={token.expiresAt} />
                                       </>
                                     ) : (
-                                      "no expiry"
+                                      translateAgentPage("agents:no_expiry")
                                     )}
                                   </span>
                                   {!revoked ? (
@@ -575,17 +561,15 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                       size="sm"
                                       className="h-7 px-2 text-xs text-destructive hover:text-destructive"
                                       onClick={() => setConfirmingRevokeTokenId(token.id)}
-                                      aria-label={`Revoke ${token.name}`}
+                                      aria-label={translateAgentPage("agents:revoke_e88e49", { value1: token.name })}
                                     >
-                                      <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                                      Revoke
-                                    </Button>
+                                      <RotateCcw className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:revoke")}</Button>
                                   ) : null}
                                 </div>
                               </div>
                               {confirming ? (
                                 <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground">
-                                  <span>Revoke this token now?</span>
+                                  <span>{translateAgentPage("agents:revoke_this_token_now")}</span>
                                   <Button
                                     type="button"
                                     variant="ghost"
@@ -593,9 +577,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                     className="h-7 px-2"
                                     onClick={() => setConfirmingRevokeTokenId(null)}
                                   >
-                                    <X className="mr-1 h-3.5 w-3.5" />
-                                    Cancel
-                                  </Button>
+                                    <X className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:cancel")}</Button>
                                   <Button
                                     type="button"
                                     variant="destructive"
@@ -604,9 +586,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                     onClick={() => revokeTokenMutation.mutate(token.id)}
                                     disabled={revokeTokenMutation.isPending}
                                   >
-                                    <Check className="mr-1 h-3.5 w-3.5" />
-                                    Confirm
-                                  </Button>
+                                    <Check className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:confirm")}</Button>
                                 </div>
                               ) : null}
                             </div>
@@ -617,10 +597,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   </div>
 
                   <div>
-                    <div className="mb-1.5 text-xs font-medium text-muted-foreground">Client snippets</div>
+                    <div className="mb-1.5 text-xs font-medium text-muted-foreground">{translateAgentPage("agents:client_snippets")}</div>
                     <div className="space-y-1 text-sm">
                       {snippets.length === 0 ? (
-                        <p className="text-muted-foreground">No snippets available.</p>
+                        <p className="text-muted-foreground">{translateAgentPage("agents:no_snippets_available")}</p>
                       ) : (
                         snippets.map((snippet) => (
                           <details key={snippet.client} className="rounded px-2 py-1 open:bg-muted/40">
@@ -636,12 +616,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 className="h-7 px-2"
                                 onClick={(event) => {
                                   event.preventDefault();
-                                  void copyText(formatSnippetConfig(snippet.config), `${snippet.label} snippet`);
+                                  void copyText(formatSnippetConfig(snippet.config), translateAgentPage("agents:snippet", { value1: snippet.label }));
                                 }}
                               >
-                                <Copy className="mr-1 h-3.5 w-3.5" />
-                                Copy
-                              </Button>
+                                <Copy className="mr-1 h-3.5 w-3.5" />{translateAgentPage("agents:copy")}</Button>
                             </summary>
                             <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 text-xs text-muted-foreground">
                               {formatSnippetConfig(snippet.config)}

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect } from "react";
 import { History } from "lucide-react";
 import { useSearchParams } from "@/lib/router";
@@ -16,6 +17,7 @@ import { auditScopeFromSearchParams } from "./audit-navigation";
  * links can preset it and links stay shareable. The server enforces both tiers.
  */
 export function CompanyActivity() {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -37,8 +39,8 @@ export function CompanyActivity() {
   ].includes(actionParam ?? "") ? actionParam! : "__all";
 
   useEffect(() => {
-    if (!streamlinedUiEnabled) setBreadcrumbs([{ label: "Activity" }]);
-  }, [setBreadcrumbs, streamlinedUiEnabled]);
+    if (!streamlinedUiEnabled) setBreadcrumbs([{ label: translateAgentPage("agents:activity") }]);
+  }, [setBreadcrumbs, streamlinedUiEnabled, translateAgentPage]);
 
   const handleModeChange = useCallback(
     (next: AuditFeedMode) => {
@@ -99,7 +101,7 @@ export function CompanyActivity() {
   if (streamlinedUiEnabled) return <AuditHub section="activity" />;
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select an organization to view activity." />;
+    return <EmptyState icon={History} message={translateAgentPage("agents:select_an_organization_to_view_activity")} />;
   }
 
   return (

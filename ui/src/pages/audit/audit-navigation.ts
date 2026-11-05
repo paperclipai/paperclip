@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 export type AuditSection = "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary";
 
 export const AUDIT_SECTIONS: ReadonlyArray<{
@@ -5,12 +6,12 @@ export const AUDIT_SECTIONS: ReadonlyArray<{
   label: string;
   href: string;
 }> = [
-  { value: "activity", label: "Activity", href: "/activity" },
-  { value: "runs", label: "Runs", href: "/activity/runs" },
-  { value: "commentary", label: "Commentary", href: "/activity/commentary" },
-  { value: "costs", label: "Costs", href: "/activity/costs" },
-  { value: "budgets", label: "Budgets", href: "/activity/budgets" },
-  { value: "timeline", label: "Timeline", href: "/activity/timeline" },
+  { value: "activity", get label() { return translateAgentPage("agents:activity"); }, href: "/activity" },
+  { value: "runs", get label() { return translateAgentPage("agents:runs"); }, href: "/activity/runs" },
+  { value: "commentary", get label() { return translateAgentPage("agents:commentary"); }, href: "/activity/commentary" },
+  { value: "costs", get label() { return translateAgentPage("agents:costs"); }, href: "/activity/costs" },
+  { value: "budgets", get label() { return translateAgentPage("agents:budgets"); }, href: "/activity/budgets" },
+  { value: "timeline", get label() { return translateAgentPage("agents:timeline"); }, href: "/activity/timeline" },
 ];
 
 export interface AuditLinkScope {

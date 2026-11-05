@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { ArtifactUploadContent, type ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
@@ -56,6 +57,7 @@ export type TaskDocumentEditorOptions = Pick<ComponentProps<typeof IssueDocument
 
 /** Shared authoring and signed-in permissions for task and conversation hosts. */
 export function TaskGeneralDocuments({ issue, documentEditor }: { issue: Issue; documentEditor: TaskDocumentEditorOptions }) {
+  useTranslation("task-components");
   const { data: session } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
   return (
     <IssueDocumentsSection
@@ -87,16 +89,16 @@ function workProductStatusBadge(
   switch (status) {
     case "active":
     case "draft":
-      return { label: "In progress", cssVar: "--status-task-in_progress" };
+      return { label: t("task-components:inProgress_c1f88e9d"), cssVar: "--status-task-in_progress" };
     case "ready_for_review":
-      return { label: "For review", cssVar: "--status-task-in_review" };
+      return { label: t("task-components:forReview_1afa6050"), cssVar: "--status-task-in_review" };
     case "approved":
     case "merged":
-      return { label: "Done", cssVar: "--status-task-done" };
+      return { label: t("task-components:done_11a6767d"), cssVar: "--status-task-done" };
     case "changes_requested":
-      return { label: "Changes requested", cssVar: "--status-task-todo" };
+      return { label: t("task-components:changesRequested_10a92a8a"), cssVar: "--status-task-todo" };
     case "failed":
-      return { label: "Failed", cssVar: "--status-task-blocked" };
+      return { label: t("task-components:failed_031a8f0f"), cssVar: "--status-task-blocked" };
     default:
       return null;
   }
@@ -112,6 +114,7 @@ type ArtifactFace = (props: { onOpen: () => void; expanded?: boolean; actions?: 
 
 const v1Face = (subject: ArtifactSubject): ArtifactFace =>
   function V1Face({ onOpen, expanded, actions, statusBadge }) {
+  useTranslation("task-components");
     return (
       <ArtifactRow
         subject={subject}
@@ -153,6 +156,7 @@ function MarkdownWorkProductRow({
   openRequestId?: number;
   face?: ArtifactFace;
 }) {
+  useTranslation("task-components");
   const openTextAttachment = useContext(TextAttachmentContext);
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -208,9 +212,7 @@ function MarkdownWorkProductRow({
   let expandedBody: React.ReactNode;
   if (tooLarge) {
     expandedBody = (
-      <p className="text-sm text-muted-foreground">
-        This Markdown file is too large to preview. Use Raw or Download instead.
-      </p>
+      <p className="text-sm text-muted-foreground">{t("task-components:thisMarkdownFileIsTooLargeTo_c4195ee5")}</p>
     );
   } else if (reviewDoc) {
     expandedBody =
@@ -230,15 +232,15 @@ function MarkdownWorkProductRow({
           <MarkdownBody>{reviewDoc.body}</MarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
-        <p className="text-sm text-muted-foreground">Document is empty.</p>
+        <p className="text-sm text-muted-foreground">{t("task-components:documentIsEmpty_14945822")}</p>
       );
   } else if (ensure.isError) {
     expandedBody = (
       <div className="flex flex-col items-start gap-1.5">
         <p className="text-sm text-muted-foreground">
           {unsupportedError
-            ? "This file can't be previewed as Markdown. Use Raw or Download instead."
-            : "Preview failed to load."}
+            ? t("task-components:thisFileCanTBePreviewedAs_e2d6081f")
+            : t("task-components:previewFailedToLoad_83edf741")}
         </p>
         {!unsupportedError ? (
           <button
@@ -248,15 +250,13 @@ function MarkdownWorkProductRow({
               ensure.reset();
               ensure.mutate();
             }}
-          >
-            Retry
-          </button>
+          >{t("task-components:retry_942087cc")}</button>
         ) : null}
       </div>
     );
   } else {
     expandedBody = (
-      <p className="text-sm text-muted-foreground">Preparing preview…</p>
+      <p className="text-sm text-muted-foreground">{t("task-components:preparingPreview_11e66e1b")}</p>
     );
   }
 
@@ -282,8 +282,8 @@ function MarkdownWorkProductRow({
                 <button
                   type="button"
                   onClick={() => openTextAttachment(metadata.attachmentId, metadata.originalFilename ?? workProduct.title)}
-                  aria-label={`Open in tab: ${workProduct.title}`}
-                  title="Open in tab"
+                  aria-label={t("task-components:openInTab_5d58d268", { value1: workProduct.title })}
+                  title={t("task-components:openInTab_0e5d9596")}
                   className={face ? ROW_ACTION_CLASS : "shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"}
                 >
                   <FileText className="h-3 w-3" />
@@ -293,16 +293,16 @@ function MarkdownWorkProductRow({
                 href={metadata.openPath}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={`Open raw ${workProduct.title}`}
-                title="Open raw"
+                aria-label={t("task-components:openRaw_8f09bc31", { value1: workProduct.title })}
+                title={t("task-components:openRaw_7f57bf8c")}
                 className={face ? ROW_ACTION_CLASS : "shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"}
               >
                 <ExternalLink className="h-3 w-3" />
               </a>
               <a
                 href={metadata.downloadPath}
-                aria-label={`Download ${workProduct.title}`}
-                title="Download"
+                aria-label={t("task-components:download_8fe1a08e", { value1: workProduct.title })}
+                title={t("task-components:download_d6eafe82")}
                 className={face ? ROW_ACTION_CLASS : "shrink-0 py-1.5 pr-2 pl-0.5 text-muted-foreground hover:text-foreground"}
               >
                 <Download className="h-3 w-3" />
@@ -352,6 +352,7 @@ function DocumentRow({
   onOpen?: () => void;
   face?: ArtifactFace;
 }) {
+  useTranslation("task-components");
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -412,7 +413,7 @@ function DocumentRow({
               <MarkdownBody>{doc.body}</MarkdownBody>
             </IssueDocumentAnnotations>
           ) : (
-            <p className="text-sm text-muted-foreground">Document is empty.</p>
+            <p className="text-sm text-muted-foreground">{t("task-components:documentIsEmpty_14945822")}</p>
           )}
         </div>
       ) : null}
@@ -435,6 +436,7 @@ export function IssuePropertiesArtifactsTab({
   onOpenDocument,
   uploadState,
 }: IssuePropertiesArtifactsTabProps) {
+  useTranslation("task-components");
   const { enabled: v1 } = useArtifactsV1Enabled();
   const documentAuthoring = documentEditor !== undefined;
   const {
@@ -564,23 +566,17 @@ export function IssuePropertiesArtifactsTab({
   const loadError = attachmentsError || productsError || documentsError;
   const loading = attachmentsPending || productsPending || documentsPending;
   const feedback = loadError ? (
-    <div role="alert" className="px-1 py-3 text-sm text-muted-foreground">
-      Some artifacts could not be loaded.
-      <button
+    <div role="alert" className="px-1 py-3 text-sm text-muted-foreground">{t("task-components:someArtifactsCouldNotBeLoaded_b440c18e")}<button
         className="ml-2 underline"
         onClick={() => {
           void refetchAttachments();
           void refetchProducts();
           void refetchDocuments();
         }}
-      >
-        Retry
-      </button>
+      >{t("task-components:retry_942087cc")}</button>
     </div>
   ) : loading ? (
-    <p role="status" className="px-1 py-3 text-sm text-muted-foreground">
-      Loading artifacts…
-    </p>
+    <p role="status" className="px-1 py-3 text-sm text-muted-foreground">{t("task-components:loadingArtifacts_11580619")}</p>
   ) : null;
 
   const withUploads = (content: ReactNode, empty = false) => {
@@ -608,10 +604,7 @@ export function IssuePropertiesArtifactsTab({
       return withUploads(null);
     }
     return withUploads(
-      <div className="px-1 py-6 text-sm text-muted-foreground">
-        No artifacts yet. Work products, documents, and agent-produced files
-        will appear here.
-      </div>,
+      <div className="px-1 py-6 text-sm text-muted-foreground">{t("task-components:noArtifactsYetWorkProductsDocumentsAnd_b032412c")}</div>,
       true,
     );
   }
@@ -701,7 +694,7 @@ export function IssuePropertiesArtifactsTab({
             {group.runId !== "other" ? (
               <header className="flex items-baseline justify-between gap-2 px-1">
                 <h3 className="truncate text-xs font-medium text-foreground">
-                  {agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
+                  {agent?.name ?? t("task-components:run_30f5e01f", { value1: group.runId.slice(0, 8) })}
                 </h3>
                 <time
                   className="shrink-0 text-(length:--text-micro) text-muted-foreground"

@@ -1,0 +1,7 @@
+{
+  "clearLocalWorkspaceFolder": "清除此工作区的本地文件夹设置？",
+  "removeLocalWorkspaceFolder": "移除此工作区的本地文件夹设置？",
+  "revealProviderFrame": "此提供方的原始数据帧可能包含提示词、工具参数、密钥或推理内容。现在显示吗？",
+  "downloadRawTrace": "要下载完整的原始跟踪记录吗？其中可能包含敏感提示词、工具参数和仅提供方使用的字段。",
+  "deleteRawTrace": "要立即删除此原始跟踪记录吗？此操作无法撤销。"
+}

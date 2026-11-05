@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -34,9 +35,10 @@ export function ProcessConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation("agent-config");
   return configFieldsForSection(section, (
     <>
-      <Field configSection="advanced" label="Command" hint={help.command}>
+      <Field configSection="advanced" label={t("agent-config:command_8901895")} hint={help.command}>
         <DraftInput
           value={
             isCreate
@@ -50,10 +52,10 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. node, python"
+          placeholder={t("agent-config:eGNodePython_8c90a41")}
         />
       </Field>
-      <Field configSection="advanced" label="Args (comma-separated)" hint={help.args}>
+      <Field configSection="advanced" label={t("agent-config:argsCommaSeparated_fb37abf")} hint={help.args}>
         <DraftInput
           value={
             isCreate
@@ -71,7 +73,7 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. script.js, --flag"
+          placeholder={t("agent-config:eGScriptJsFlag_74f81ca")}
         />
       </Field>
     </>

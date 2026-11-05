@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { accessApi } from "../api/access";
 import { detachInflightGet } from "../api/client";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -13,9 +14,9 @@ export async function stopFailedNativeRun(runId: string, companyId: string) {
   detachInflightGet(`/heartbeat-runs/${runId}`);
   detachInflightGet("/cli-auth/me");
   const [run, access] = await Promise.all([heartbeatsApi.get(runId), accessApi.getCurrentBoardAccess()]);
-  if (run.id !== runId || run.companyId !== companyId) throw new Error("Stop was not accepted because the run changed.");
+  if (run.id !== runId || run.companyId !== companyId) throw localizeUiError(new Error("Stop was not accepted because the run changed."), { key: "integration-errors:stopRunChanged" });
   const actorUserId = access.userId;
-  if (!actorUserId) throw new Error("Stop was not accepted because your session changed.");
+  if (!actorUserId) throw localizeUiError(new Error("Stop was not accepted because your session changed."), { key: "integration-errors:stopSessionChanged" });
   const key = pendingSendKeyFor(`paperclip:native-run-stop:${companyId}:${runId}`, actorUserId);
   const matchesScope = (value: unknown): value is StopScope => {
     const scope = record(value);
@@ -25,8 +26,8 @@ export async function stopFailedNativeRun(runId: string, companyId: string) {
   const canonicalId = startup.cancellationRequestId;
   if (canonicalId !== undefined) {
     const actor = record(startup.requestedBy);
-    if (actor.type !== "board" || actor.userId !== actorUserId) throw new Error("This Stop request belongs to another operator.");
-    if (typeof canonicalId !== "string" || !uuid.test(canonicalId)) throw new Error("Stop was not accepted because the run changed.");
+    if (actor.type !== "board" || actor.userId !== actorUserId) throw localizeUiError(new Error("This Stop request belongs to another operator."), { key: "integration-errors:stopOtherOperator" });
+    if (typeof canonicalId !== "string" || !uuid.test(canonicalId)) throw localizeUiError(new Error("Stop was not accepted because the run changed."), { key: "integration-errors:stopRunChanged" });
   }
   const saved = readPendingSend(key, matchesScope, "session") ?? memoryRequests.get(key);
   const id = typeof canonicalId === "string" ? canonicalId

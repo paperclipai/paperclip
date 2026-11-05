@@ -1,3 +1,4 @@
+import { t, t as translateShell, useTranslation } from "@/i18n";
 import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -68,9 +69,9 @@ const RECENT_AGENT_LIMIT = 3;
 const LIVE_AGENT_LINGER_MS = 120_000;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+  { value: "top", get label() { return translateShell("shell:top"); } },
+  { value: "alphabetical", get label() { return translateShell("shell:alphabetical"); } },
+  { value: "recent", get label() { return translateShell("shell:recent"); } },
 ];
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
@@ -139,6 +140,7 @@ function SidebarAgentItem({
   onToggleStar?: (agent: Agent, starred: boolean) => void;
   starPending?: boolean;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
   const editHref = `${agentUrl(agent)}/configuration`;
@@ -146,19 +148,19 @@ function SidebarAgentItem({
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeLabel = isPaused ? translateShell("shell:resume_agent") : translateShell("shell:pause_agent");
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);
   const pauseResumeDisabledLabel = disabled
-    ? "Updating..."
+    ? translateShell("shell:updating")
     : isBudgetPaused
-      ? "Budget paused"
+      ? translateShell("shell:budget_paused")
       : isPaused && hasInvalidOrgChain
-        ? "Invalid org chain"
+        ? translateShell("shell:invalid_org_chain")
       : pauseResumeLabel;
   const showBuiltInLifecycle = builtInStatus === "needs_setup" || builtInStatus === "pending_approval";
   const trailingLabel = [
-    showBuiltInLifecycle ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
-    hasInvalidOrgChain ? "Invalid reporting chain" : null,
+    showBuiltInLifecycle ? translateShell("shell:built_in_agent", { value1: builtInStatus.replace(/_/g, " ") }) : null,
+    hasInvalidOrgChain ? translateShell("shell:invalid_reporting_chain") : null,
   ].filter(Boolean).join(", ") || undefined;
 
   // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
@@ -182,14 +184,14 @@ function SidebarAgentItem({
           <span className="ml-1 flex shrink-0 items-center gap-1">
             {showBuiltInLifecycle ? <BuiltInLifecycleChip status={builtInStatus} compact /> : null}
             {hasInvalidOrgChain ? (
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={translateShell("shell:invalid_reporting_chain")} />
             ) : null}
           </span>
         ) : undefined
       }
       trailingLabel={trailingLabel}
       liveAccessory={
-        agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
+        agent.pauseReason === "budget" ? <BudgetSidebarMarker title={translateShell("shell:agent_paused_by_budget")} /> : undefined
       }
     />
   );
@@ -229,7 +231,7 @@ function SidebarAgentItem({
                 ? "opacity-100"
                 : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
             )}
-            aria-label={`Open actions for ${agent.name}`}
+            aria-label={translateShell("shell:open_actions_for", { value1: agent.name })}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -249,7 +251,7 @@ function SidebarAgentItem({
                 ) : (
                   <Star className={cn("size-4", starred && "fill-amber-500 text-amber-500")} />
                 )}
-                <span>{starred ? "Remove from starred" : "Star agent"}</span>
+                <span>{starred ? translateShell("shell:remove_from_starred") : translateShell("shell:star_agent")}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
@@ -262,7 +264,7 @@ function SidebarAgentItem({
               }}
             >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>{translateShell("shell:edit_agent")}</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -272,7 +274,7 @@ function SidebarAgentItem({
               onPauseResume(agent, isPaused ? "resume" : "pause");
             }}
             disabled={pauseResumeDisabled}
-            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+            title={isBudgetPaused ? translateShell("shell:agent_was_paused_by_budget_limits") : undefined}
           >
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
@@ -286,7 +288,7 @@ function SidebarAgentItem({
             disabled={leaving}
           >
             {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
-            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+            <span>{leaving ? translateShell("shell:leaving") : translateShell("shell:leave_agent")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -295,6 +297,7 @@ function SidebarAgentItem({
 }
 
 export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
+  const { t: translateShell } = useTranslation("shell");
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const [liveLingerVersion, setLiveLingerVersion] = useState(0);
@@ -331,7 +334,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       if (entry.agentId) map.set(entry.agentId, entry.status);
     }
     return map;
-  }, [builtInAgents, builtInAgentsEnabled]);
+  }, [builtInAgents, builtInAgentsEnabled, translateShell]);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -363,14 +366,14 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
-  }, [liveRuns]);
+  }, [liveRuns, translateShell]);
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [agentId, count] of liveCountByAgent) {
       if (count > 0) ids.add(agentId);
     }
     return ids;
-  }, [liveCountByAgent]);
+  }, [liveCountByAgent, translateShell]);
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
@@ -382,12 +385,12 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         )
     );
     return filtered;
-  }, [agents, membershipsQuery.data, membershipsQuery.isSuccess]);
+  }, [agents, membershipsQuery.data, membershipsQuery.isSuccess, translateShell]);
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const sortModeStorageKey = useMemo(() => {
     if (!selectedCompanyId) return null;
     return getAgentSortModeStorageKey(selectedCompanyId, currentUserId);
-  }, [currentUserId, selectedCompanyId]);
+  }, [currentUserId, selectedCompanyId, translateShell]);
   const [sortMode, setSortMode] = useState<AgentSidebarSortMode>(() => {
     if (!sortModeStorageKey) return "top";
     return readAgentSortMode(sortModeStorageKey);
@@ -399,11 +402,11 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   });
   const sortedAgents = useMemo(
     () => sortAgents(orderedAgents, sortMode),
-    [orderedAgents, sortMode],
+    [orderedAgents, sortMode, translateShell],
   );
   const sortedAgentIdSet = useMemo(
     () => new Set(sortedAgents.map((agent: Agent) => agent.id)),
-    [sortedAgents],
+    [sortedAgents, translateShell],
   );
 
   useEffect(() => {
@@ -433,7 +436,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       const lastSeenLiveAt = lastSeenLiveAtByAgent.get(agent.id);
       return lastSeenLiveAt !== undefined && nowForLiveLinger - lastSeenLiveAt <= LIVE_AGENT_LINGER_MS;
     });
-  }, [liveCountByAgent, liveLingerVersion, sortedAgents]);
+  }, [liveCountByAgent, liveLingerVersion, sortedAgents, translateShell]);
   const hasActiveAgents = runningAgents.length > 0;
   const displayedAgents = !streamlined
     ? sortedAgents
@@ -539,14 +542,14 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
       ]);
       pushToast({
-        title: action === "pause" ? "Agent paused" : "Agent resumed",
+        title: action === "pause" ? translateShell("shell:agent_paused") : translateShell("shell:agent_resumed"),
         body: agent.name,
         tone: "success",
       });
     },
     onError: (error, { agent, action }) => {
       pushToast({
-        title: action === "pause" ? "Could not pause agent" : "Could not resume agent",
+        title: action === "pause" ? translateShell("shell:could_not_pause_agent") : translateShell("shell:could_not_resume_agent"),
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",
       });
@@ -599,15 +602,15 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   // out of the active/recent subset so no agent appears twice.
   const starredAgentIdSet = useMemo(
     () => new Set(starredResourceIds(membershipsQuery.data, "agent")),
-    [membershipsQuery.data],
+    [membershipsQuery.data, translateShell],
   );
   const starredAgents = useMemo(
     () => sortAgents(visibleAgents.filter((agent: Agent) => starredAgentIdSet.has(agent.id)), "alphabetical"),
-    [visibleAgents, starredAgentIdSet],
+    [visibleAgents, starredAgentIdSet, translateShell],
   );
   const dedupedDisplayedAgents = useMemo(
     () => displayedAgents.filter((agent: Agent) => !starredAgentIdSet.has(agent.id)),
-    [displayedAgents, starredAgentIdSet],
+    [displayedAgents, starredAgentIdSet, translateShell],
   );
 
   const primaryAgent = primary && !primary.loading
@@ -637,20 +640,20 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   return (
     <SidebarSection
-      label="Agents"
+      label={translateShell("shell:agents")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New agent",
+        get ariaLabel() { return t("final-components-b:SidebarAgents.New_agent_98a23e"); },
         icon: Plus,
         onClick: openNewAgent,
       }}
       menu={{
-        ariaLabel: "Agents section actions",
+        get ariaLabel() { return t("final-components-b:SidebarAgents.Agents_section_actions_c825fa"); },
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "item", get label() { return t("final-components-b:SidebarAgents.Browse_agents_9c6a7d"); }, icon: Users, href: "/agents/all" },
           { type: "separator" },
         ],
-        radioLabel: "Agent sort",
+        get radioLabel() { return t("final-components-b:SidebarAgents.Agent_sort_b8221c"); },
         radioChoices: AGENT_SORT_CHOICES,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
@@ -668,20 +671,20 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
           <Link
             to="/agents/all"
             state={SIDEBAR_SCROLL_RESET_STATE}
-            aria-label={rail ? "See all agents" : undefined}
+            aria-label={rail ? translateShell("shell:see_all_agents") : undefined}
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
             className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           >
             <Users className="shrink-0 h-4 w-4" />
-            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
+            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>{translateShell("shell:see_all_agents")}</span>
           </Link>
         );
         return rail ? (
           <Tooltip>
             <TooltipTrigger asChild>{seeAllLink}</TooltipTrigger>
-            <TooltipContent side="right">See all agents</TooltipContent>
+            <TooltipContent side="right">{translateShell("shell:see_all_agents")}</TooltipContent>
           </Tooltip>
         ) : (
           seeAllLink

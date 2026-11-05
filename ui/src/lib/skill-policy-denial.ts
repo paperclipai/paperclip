@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * @fileoverview Classifies a failed skill mutation into the four visual states
  * from the Phase 3 UX spec (PAP-13865 / §9.10 Company Skill Policy Contract).
@@ -59,32 +60,30 @@ export interface SkillDenial {
 }
 
 const DEFAULT_POLICY_REMEDIATION =
-  "An organization administrator can change the skill policy to allow this.";
+  "display:policy_remediation";
 const DEFAULT_ADMIN_REMEDIATION =
-  "This requires organization administration access. Ask an administrator to make this change.";
+  "display:admin_remediation";
 
 /** Human-readable titles for the platform-invariant codes (State C). */
 const PLATFORM_TITLES: Record<string, string> = {
-  skill_authentication_required: "Sign in to manage skills.",
-  skill_company_boundary_denied: "This skill belongs to another organization.",
-  skill_workspace_boundary_denied: "This skill source is outside an allowed workspace.",
-  skill_source_validation_failed: "This skill source failed validation.",
-  skill_unsafe_content_blocked: "This skill contains unsafe content.",
-  skill_secret_handling_blocked: "This skill exposes a secret value.",
-  skill_actor_restricted: "This action isn't available for the current actor.",
+  get "skill_authentication_required"() { return t("display:copy_a01251d3a43d"); },
+  get "skill_company_boundary_denied"() { return t("display:copy_d54ae5dcf7d1"); },
+  get "skill_workspace_boundary_denied"() { return t("display:copy_c627ffa9df60"); },
+  get "skill_source_validation_failed"() { return t("display:copy_207f9bf27079"); },
+  get "skill_unsafe_content_blocked"() { return t("display:copy_bcc62eb143a4"); },
+  get "skill_secret_handling_blocked"() { return t("display:copy_179f18e95459"); },
+  get "skill_actor_restricted"() { return t("display:copy_91589010ad77"); },
 };
 
 /** Default remediation copy per platform-invariant code — framed as a fix, never a grant. */
 const PLATFORM_REMEDIATIONS: Record<string, string> = {
-  skill_authentication_required: "Sign in and try again.",
-  skill_company_boundary_denied: "Open the skill from the organization that owns it.",
-  skill_workspace_boundary_denied:
-    "Import from a configured Paperclip workspace or the organization managed-skill directory.",
-  skill_source_validation_failed: "Fix the flagged source and retry.",
-  skill_unsafe_content_blocked:
-    "Remove the fetch-and-execute or unsafe pattern before saving.",
-  skill_secret_handling_blocked: "Remove the secret value before saving.",
-  skill_actor_restricted: "Retry from an account with access to this action.",
+  get "skill_authentication_required"() { return t("display:copy_53f10258b529"); },
+  get "skill_company_boundary_denied"() { return t("display:copy_8a3baefa3288"); },
+  get "skill_workspace_boundary_denied"() { return t("display:copy_670a93a16c2d"); },
+  get "skill_source_validation_failed"() { return t("display:copy_53ff080dcf51"); },
+  get "skill_unsafe_content_blocked"() { return t("display:copy_ee02a99e81b3"); },
+  get "skill_secret_handling_blocked"() { return t("display:copy_aca4c15b598b"); },
+  get "skill_actor_restricted"() { return t("display:copy_ea447cddb574"); },
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -119,14 +118,14 @@ export function classifySkillDenial(
     || reason === "policy_default";
   if (isPolicyDenial) {
     const title = actionLabel
-      ? `${actionLabel} is restricted by your organization policy.`
-      : "This action is restricted by your organization policy.";
+      ? t("display:copy_e0b71ff6fc35", { value0: actionLabel })
+      : t("display:copy_406acfa2fc08");
     return {
       state: "policy",
       code,
       reason,
       title,
-      remediation: remediation ?? DEFAULT_POLICY_REMEDIATION,
+      remediation: remediation ?? t(DEFAULT_POLICY_REMEDIATION),
     };
   }
 
@@ -136,8 +135,8 @@ export function classifySkillDenial(
       state: "platform_admin",
       code,
       reason,
-      title: "This change needs administration access.",
-      remediation: remediation ?? DEFAULT_ADMIN_REMEDIATION,
+      get "title"() { return t("display:copy_087b3b7999d7"); },
+      remediation: remediation ?? t(DEFAULT_ADMIN_REMEDIATION),
     };
   }
 
@@ -150,11 +149,11 @@ export function classifySkillDenial(
       state: "platform",
       code,
       reason,
-      title: (code && PLATFORM_TITLES[code]) ?? "This action is blocked by a platform safety rule.",
+      title: (code && PLATFORM_TITLES[code]) ?? t("display:copy_52547327edeb"),
       remediation:
         remediation
         ?? (code && PLATFORM_REMEDIATIONS[code])
-        ?? "Fix the flagged issue and try again.",
+        ?? t("display:copy_9a944fc1c7ae"),
     };
   }
 

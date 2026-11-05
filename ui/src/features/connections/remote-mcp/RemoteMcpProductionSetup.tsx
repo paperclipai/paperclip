@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -32,6 +33,7 @@ function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
 export function RemoteMcpProductionSetup({ providerId, connection, host = "page", interactionId,
   upstreamServiceName, requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
 }: ConnectionSetupFlowProps & { providerId: RemoteMcpProviderId; connection?: ToolConnection }) {
+  const { t } = useTranslation("connections");
   const provider = remoteMcpProviders[providerId];
   const template = getConnectableAppDefinition(providerId)?.agentInstructions;
   const [instructions, setInstructions] = useState(() => connection
@@ -73,7 +75,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     managementUrl: typeof connection?.config?.managementUrl === "string" ? connection.config.managementUrl : "",
     auth: connection?.config?.mcpAuthMode === "bearer" ? "bearer" : connection?.authKind === "api_key" ? "headers" : provider.supportsBrowserAuth ? "auto" : "none",
     token: "", headers: [], connectStatus: oauthOutcome === "denied" ? "cancelled" : oauthOutcome === "failed" ? "oauth_failed" : "idle", connected: false,
-    identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? "Saved credentials are retained when these fields are left blank. Enter a replacement only to change them." : null, refreshing: false,
+    identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? t("saved_credentials_are_retained_when_these_fields_3122ee4") : null, refreshing: false,
     ...(!connection ? readAccessDraft(accessDraftKey) : {}),
     ...(requestedAgentId ? { allAgents: false, agentIds: [requestedAgentId] } : {}),
   }));
@@ -149,13 +151,13 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       if (state.auth === "headers" || state.auth === "bearer") {
         for (const header of state.headers) {
           if (!header.name.trim() && !header.value) continue;
-          if (!header.name.trim() || !header.value) throw new Error("Enter both a name and value for each header.");
+          if (!header.name.trim() || !header.value) throw new Error(t("enter_both_a_name_and_value_for_d84475d"));
           credentials[`headers.${header.name.trim()}`] = header.value;
         }
       }
       const managementUrl = providerId === "executor" && state.managementUrl?.trim()
         ? aggregatorManagementUrl("executor", state.managementUrl.trim()) : null;
-      if (providerId === "executor" && state.managementUrl?.trim() && !managementUrl) throw new Error("Use an HTTPS console URL without credentials.");
+      if (providerId === "executor" && state.managementUrl?.trim() && !managementUrl) throw new Error(t("use_an_https_console_url_without_credentials_ebae796"));
       const prior = savedConnection.current;
       const result = await toolsApi.connectApp(selectedCompanyId, {
         galleryKey: providerId, connectionMethodKey: REMOTE_MCP_CONNECTOR_METHODS[providerId],
@@ -191,14 +193,14 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         edit({ connectStatus: "sign_in", token: "", headers: [] });
         try {
           if (host === "dialog") {
-            if (!popup.current || popup.current.closed) throw new Error("Sign-in window unavailable");
+            if (!popup.current || popup.current.closed) throw new Error(t("sign_in_window_unavailable_26d2baf"));
             popup.current.location.assign(target.url);
             popup.current.focus();
           } else navigateTopLevel(target.url);
         } catch {
           // The connection and OAuth session already exist. Preserve them and
           // let the native sign-in link recover a blocked browser handoff.
-          edit({ notice: "Paperclip couldn’t open sign-in. Use the sign-in link below to continue." });
+          edit({ notice: t("paperclip_couldn_t_open_sign_in_use_ef45f6b") });
           onPhaseChange?.("needs_retry");
         }
         return;
@@ -258,7 +260,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   // Saved access already loaded stays in place through a transient refetch failure.
   if (connection && !installs.data) return <div className="space-y-3 p-8">{installsView.kind === "error"
     ? <QueryErrorState error={installs.error} action="load saved access" onRetry={installsView.retry} retrying={installsView.isFetching} />
-    : <p>Loading saved access…</p>}</div>;
+    : <p>{t("loading_saved_access_66f925c")}</p>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.
   return <RemoteMcpConnectionSetup additionalSettings={template && instructions ? <ConnectionInstructionsEditor provider={provider.name} template={template} value={instructions} onChange={setInstructions} disabled={state.connectStatus === "connecting"} /> : undefined} settingsValid={instructionsValid} companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;

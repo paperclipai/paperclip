@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { voiceSessionsApi } from "@/api/voiceSessions";
 import { ApiError } from "@/api/client";
 import { VoiceSessionStartError } from "./voice-session-controller";
@@ -71,7 +72,7 @@ export function createVoiceCallAttempt(companyId: string, client: typeof voiceSe
     },
     async end(sessionId: string) {
       const result = await client.end(companyId, sessionId);
-      if (!["ended", "failed", "expired"].includes(result.state)) throw new Error("Speko has not confirmed hangup yet");
+      if (!["ended", "failed", "expired"].includes(result.state)) throw localizeUiError(new Error("Speko has not confirmed hangup yet"), { key: "integration-errors:hangupUnconfirmed" });
       const saved = journal?.read();
       if (!saved || saved.sessionId === sessionId || saved.request.idempotencyKey === attempt?.request.idempotencyKey) journal?.clear();
       attempt = undefined; recovering = false;

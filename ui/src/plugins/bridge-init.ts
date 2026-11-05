@@ -1,3 +1,4 @@
+import { t as finalPagesT, useTranslation } from "@/i18n";
 /**
  * Plugin bridge initialization.
  *
@@ -347,15 +348,16 @@ function PluginSdkAssigneePicker({
   companyId,
   value,
   onChange,
-  placeholder = "Responsible",
-  noneLabel = "No responsible",
-  searchPlaceholder = "Search responsible...",
-  emptyMessage = "No responsible found.",
+  placeholder = finalPagesT("final-pages:Responsible_bc110a"),
+  noneLabel = finalPagesT("final-pages:No_responsible_15abde"),
+  searchPlaceholder = finalPagesT("final-pages:Search_responsible_9cb8d7"),
+  emptyMessage = finalPagesT("final-pages:No_responsible_found_045a8f"),
   includeUsers = true,
   includeTerminatedAgents = false,
   className,
   onConfirm,
 }: PluginAssigneePickerProps) {
+  useTranslation("final-pages");
   const hostContext = useHostContext();
   const resolvedCompanyId = companyId ?? hostContext.companyId ?? null;
   const { data: session } = useQuery({
@@ -457,14 +459,15 @@ function PluginSdkProjectPicker({
   companyId,
   value,
   onChange,
-  placeholder = "Project",
-  noneLabel = "No project",
-  searchPlaceholder = "Search projects...",
-  emptyMessage = "No projects found.",
+  placeholder = finalPagesT("final-pages:Project_985959"),
+  noneLabel = finalPagesT("final-pages:No_project_f34c2b"),
+  searchPlaceholder = finalPagesT("final-pages:Search_projects_c59dd5"),
+  emptyMessage = finalPagesT("final-pages:No_projects_found_26e923"),
   includeArchived = false,
   className,
   onConfirm,
 }: PluginProjectPickerProps) {
+  useTranslation("final-pages");
   const hostContext = useHostContext();
   const resolvedCompanyId = companyId ?? hostContext.companyId ?? null;
   const { data: session } = useQuery({
@@ -579,8 +582,9 @@ type PluginDataTableProps = {
   emptyMessage?: string;
 };
 
-function PluginSdkDataTable({ columns, rows, loading, emptyMessage = "No rows." }: PluginDataTableProps) {
-  if (loading) return createElement("div", { className: "text-sm text-muted-foreground" }, "Loading...");
+function PluginSdkDataTable({ columns, rows, loading, emptyMessage = finalPagesT("final-pages:No_rows_1c6c8e") }: PluginDataTableProps) {
+  useTranslation("final-pages");
+  if (loading) return createElement("div", { className: "text-sm text-muted-foreground" }, finalPagesT("final-pages:Loading_47d2a5"));
   if (!rows.length) return createElement("div", { className: "text-sm text-muted-foreground" }, emptyMessage);
   const gridColumns = columns.map((column) => column.width ?? "minmax(0, 1fr)").join(" ");
   return createElement(
@@ -643,7 +647,8 @@ function PluginSdkJsonTree({ data }: { data: unknown }) {
   return createElement("pre", { className: "max-h-80 overflow-auto rounded-md border bg-muted/30 p-2 text-xs" }, JSON.stringify(data, null, 2));
 }
 
-function PluginSdkSpinner({ label = "Loading" }: { size?: "sm" | "md" | "lg"; label?: string }) {
+function PluginSdkSpinner({ label = finalPagesT("final-pages:Loading_dc3808") }: { size?: "sm" | "md" | "lg"; label?: string }) {
+  useTranslation("final-pages");
   return createElement("span", {
     className: "inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground align-middle",
     role: "status",

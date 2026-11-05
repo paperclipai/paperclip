@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ShortcutEntry {
@@ -15,53 +16,54 @@ interface ShortcutSection {
 
 const sections: ShortcutSection[] = [
   {
-    title: "Inbox",
+    get title() { return t("task-components:inbox_94835ea2"); },
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["←"], label: "Collapse selected group" },
-      { keys: ["→"], label: "Expand selected group" },
-      { keys: ["Enter"], label: "Open selected item" },
-      { keys: ["a"], label: "Archive item" },
-      { keys: ["y"], label: "Archive item" },
-      { keys: ["r"], label: "Mark as read" },
-      { keys: ["U"], label: "Mark as unread" },
+      { keys: ["j"], get label() { return t("task-components:moveDown_40bb50da"); } },
+      { keys: ["↓"], get label() { return t("task-components:moveDown_40bb50da"); } },
+      { keys: ["k"], get label() { return t("task-components:moveUp_c66feb5e"); } },
+      { keys: ["↑"], get label() { return t("task-components:moveUp_c66feb5e"); } },
+      { keys: ["←"], get label() { return t("task-components:collapseSelectedGroup_933a60af"); } },
+      { keys: ["→"], get label() { return t("task-components:expandSelectedGroup_6ecae6bf"); } },
+      { keys: ["Enter"], get label() { return t("task-components:openSelectedItem_948dbc15"); } },
+      { keys: ["a"], get label() { return t("task-components:archiveItem_0fd57cea"); } },
+      { keys: ["y"], get label() { return t("task-components:archiveItem_0fd57cea"); } },
+      { keys: ["r"], get label() { return t("task-components:markAsRead_50c8b81f"); } },
+      { keys: ["U"], get label() { return t("task-components:markAsUnread_2c19d584"); } },
     ],
   },
   {
-    title: "Task detail",
+    get title() { return t("task-components:taskDetail_be4654d6"); },
     shortcuts: [
-      { keys: ["y"], label: "Quick-archive back to inbox" },
-      { keys: ["g", "i"], label: "Go to inbox" },
-      { keys: ["g", "c"], label: "Focus comment composer" },
+      { keys: ["y"], get label() { return t("task-components:quickArchiveBackToInbox_630428a4"); } },
+      { keys: ["g", "i"], get label() { return t("task-components:goToInbox_cde5beda"); } },
+      { keys: ["g", "c"], get label() { return t("task-components:focusCommentComposer_a0f6da74"); } },
     ],
   },
   {
-    title: "Decisions",
+    get title() { return t("task-components:decisions_cfa6a08a"); },
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["Enter"], label: "Open or close selected decision" },
-      { keys: ["x"], label: "Dismiss selected decision" },
+      { keys: ["j"], get label() { return t("task-components:moveDown_40bb50da"); } },
+      { keys: ["↓"], get label() { return t("task-components:moveDown_40bb50da"); } },
+      { keys: ["k"], get label() { return t("task-components:moveUp_c66feb5e"); } },
+      { keys: ["↑"], get label() { return t("task-components:moveUp_c66feb5e"); } },
+      { keys: ["Enter"], get label() { return t("task-components:openOrCloseSelectedDecision_54d2aeda"); } },
+      { keys: ["x"], get label() { return t("task-components:dismissSelectedDecision_371158fa"); } },
     ],
   },
   {
-    title: "Global",
+    get title() { return t("task-components:global_a258b30f"); },
     shortcuts: [
-      { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New task" },
-      { keys: ["["], label: "Toggle sidebar" },
-      { keys: ["]"], label: "Toggle panel" },
-      { keys: ["?"], label: "Show keyboard shortcuts" },
+      { keys: ["/"], get label() { return t("task-components:searchCurrentPageOrQuickSearch_4dac6ee7"); } },
+      { keys: ["c"], get label() { return t("task-components:newTask_3e992276"); } },
+      { keys: ["["], get label() { return t("task-components:toggleSidebar_041aefc4"); } },
+      { keys: ["]"], get label() { return t("task-components:togglePanel_ed988528"); } },
+      { keys: ["?"], get label() { return t("task-components:showKeyboardShortcuts_3d0ced5d"); } },
     ],
   },
 ];
 
 function KeyCap({ children }: { children: string }) {
+  useTranslation("task-components");
   return (
     <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-(--shadow-extract-10)">
       {children}
@@ -70,6 +72,7 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
+  useTranslation("task-components");
   return (
     <>
       <div className="divide-y divide-border border-t border-border">
@@ -90,7 +93,7 @@ export function KeyboardShortcutsCheatsheetContent() {
                       <span key={key} className="flex items-center gap-1">
                         {i > 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {shortcut.combo ? "+" : "then"}
+                            {shortcut.combo ? "+" : t("task-components:then_21af6f12")}
                           </span>
                         )}
                         <KeyCap>{key}</KeyCap>
@@ -105,7 +108,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       </div>
       <div className="border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">
-          Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+          <Trans ns="final-components-b" i18nKey="final-components-b:shortcuts.Press_escape_to_close_Shortcuts_are_disabled_in_text_fields_c8f676" components={{ escape: <KeyCap>Esc</KeyCap> }} />
         </p>
       </div>
     </>
@@ -119,11 +122,12 @@ export function KeyboardShortcutsCheatsheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  useTranslation("task-components");
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("task-components:keyboardShortcuts_e9bef0b0")}</DialogTitle>
         </DialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </DialogContent>

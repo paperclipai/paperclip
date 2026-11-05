@@ -1,0 +1,25 @@
+{
+  "pluginRenderFailed": "{{name}}：渲染失败",
+  "pluginTargetUnavailable": "{{name}}：无法解析启动器目标“{{target}}”。",
+  "close": "关闭",
+  "primaryAgentChangeFailed": "无法更改你的主智能体。",
+  "retry": "重试",
+  "designProposalsOn": "设计方案：开启",
+  "designProposalsOff": "设计方案：关闭",
+  "language": "语言",
+  "account": {
+    "board": "管理端",
+    "signedIn": "已登录",
+    "localBoard": "本地工作区管理端",
+    "openMenu": "打开账号菜单",
+    "title": "账号",
+    "viewProfile": "查看个人资料",
+    "viewCommit": "在 GitHub 查看提交 {{commit}}",
+    "settings": "设置",
+    "invite": "邀请",
+    "documentation": "文档",
+    "signingOut": "正在退出登录…",
+    "signOut": "退出登录",
+    "feedback": "提供反馈"
+  }
+}

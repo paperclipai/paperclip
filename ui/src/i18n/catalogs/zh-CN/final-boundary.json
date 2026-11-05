@@ -1,0 +1,14 @@
+{
+  "missingFileUrl": "上传未返回文件 URL",
+  "attachmentUnsupported": "此处无法附加该类型的文件",
+  "uploadAction": "上传文件",
+  "saveDocumentAction": "保存文档",
+  "deletionUnavailable": "无法删除文档",
+  "restoreUnavailable": "无法恢复文档修订版本",
+  "lockingUnavailable": "无法锁定文档",
+  "runLabel": "运行 {{id}}",
+  "traceSkipped": "已跳过跟踪重跑。",
+  "selectOrganization": "请选择组织以创建密钥",
+  "viewingRevision": "正在查看修订版 {{revision}}",
+  "attemptBudget": "第 {{attempt}} 次尝试，共 {{max}} 次"
+}

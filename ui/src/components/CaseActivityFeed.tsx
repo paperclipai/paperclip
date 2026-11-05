@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { Bot, User, Cog, ChevronDown, ListFilter } from "lucide-react";
@@ -36,22 +37,24 @@ const EVENT_LABEL: Record<CaseEventKind, string> = {
 
 /** Human label for the actor, preferring the resolved agent name. */
 function actorLabel(event: CaseEvent): string {
-  if (event.actorType === "agent") return event.actorAgentName ?? "Agent";
-  if (event.actorType === "user") return "User";
-  return "System";
+  if (event.actorType === "agent") return event.actorAgentName ?? t("task-components:agent_11b39c93");
+  if (event.actorType === "user") return t("task-components:user_b512d97e");
+  return t("task-components:system_6725e7bb");
 }
 
 function ActorIcon({ event }: { event: CaseEvent }) {
+  useTranslation("task-components");
   const Icon = event.actorType === "agent" ? Bot : event.actorType === "user" ? User : Cog;
   return <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />;
 }
 
 function issueRelationLabel(event: CaseEvent): string {
-  return event.kind === "issue_linked" || event.kind === "issue_unlinked" ? "issue" : "via";
+  return event.kind === "issue_linked" || event.kind === "issue_unlinked" ? t("task-components:issue_4a502846") : t("task-components:via_4d327af4");
 }
 
 /** One event with actor + run→issue attribution (P4 §1). */
 export function CaseEventRow({ event, compact = false }: { event: CaseEvent; compact?: boolean }) {
+  useTranslation("task-components");
   const detail =
     event.kind === "status_changed" && event.payload
       ? `${(event.payload.previousStatus as string) ?? "?"} → ${(event.payload.status as string) ?? "?"}`
@@ -91,6 +94,7 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
 
 /** The full activity feed with kind filters (detail-page Activity tab). */
 export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
+  useTranslation("task-components");
   const [active, setActive] = useState<Set<CaseEventKind>>(new Set());
 
   // Only offer filters for kinds actually present, in first-seen order.
@@ -115,21 +119,19 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
   }
 
   const filterLabel = active.size === 0
-    ? "All activity"
+    ? t("task-components:allActivity_29ebb2ef")
     : active.size === 1
       ? EVENT_LABEL[[...active][0]!] ?? [...active][0]!
       : `${active.size} filters`;
 
   if (events.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{t("task-components:noActivityYet_a288d2d0")}</p>;
   }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">
-          {filtered.length} of {events.length} events
-        </p>
+        <p className="text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_4db9290920fc" components={{ part1: <>{filtered.length}</>, part2: <>{events.length}</> }} /></p>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-8 gap-1.5">
@@ -139,10 +141,8 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuLabel>Activity filter</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => setActive(new Set())}>
-              All activity
-            </DropdownMenuItem>
+            <DropdownMenuLabel>{t("task-components:activityFilter_0472750d")}</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => setActive(new Set())}>{t("task-components:allActivity_29ebb2ef")}</DropdownMenuItem>
             <DropdownMenuSeparator />
             {presentKinds.map((kind) => (
               <DropdownMenuCheckboxItem
@@ -157,7 +157,7 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
         </DropdownMenu>
       </div>
       {filtered.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">No events match this filter.</p>
+        <p className="py-6 text-center text-sm text-muted-foreground">{t("task-components:noEventsMatchThisFilter_f5044d66")}</p>
       ) : (
         <div className="divide-y divide-border">
           {filtered.map((event) => (

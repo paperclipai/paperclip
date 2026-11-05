@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
@@ -201,7 +202,7 @@ function runtimeRequestEntry(input: {
     .map(record)
     .flatMap((field, index) => {
       const name = text(field?.name) ?? `answer_${index + 1}`;
-      const label = text(field?.label) ?? text(field?.name) ?? `Answer ${index + 1}`;
+      const label = text(field?.label) ?? text(field?.name) ?? t("final-components-a:answerNumber_ccd5a42a", { number: index + 1 });
       return name && label
         ? [{ name: name.slice(0, 160), label: label.slice(0, 240), placeholder: text(field?.placeholder)?.slice(0, 500) ?? null }]
         : [];
@@ -221,7 +222,7 @@ function runtimeRequestEntry(input: {
     status,
     prompt: text(request.prompt)
       ?? input.previous?.prompt
-      ?? "Runtime approval requested",
+      ?? t("final-components-a:runtimeApprovalRequested_05f76185"),
     choices: choices.length > 0 ? choices : input.previous?.choices ?? [],
     fields: fields.length > 0 ? fields : input.previous?.fields ?? [],
     questionSet: canonicalQuestionSet(request.input)
@@ -250,14 +251,14 @@ function runResultEntry(
     kind: "run_result",
     ts,
     disposition,
-    summary: text(payload.summary) ?? "Run completed",
+    summary: text(payload.summary) ?? t("final-components-a:runCompleted_93429628"),
     objectiveSatisfied: typeof completion.objectiveSatisfied === "boolean"
       ? completion.objectiveSatisfied
       : null,
     verification: (Array.isArray(payload.verification) ? payload.verification : [])
       .map(record)
       .flatMap((item) => item ? [{
-        commandOrCheck: text(item.commandOrCheck) ?? "Verification",
+        commandOrCheck: text(item.commandOrCheck) ?? t("final-components-a:verification_7140f4f1"),
         status: verificationStatus(item.status),
         ...(text(item.detail) ? { detail: text(item.detail)! } : {}),
         ...(text(item.artifactRef) ? { artifactRef: text(item.artifactRef)! } : {}),
@@ -272,7 +273,7 @@ function runResultEntry(
       .slice(0, 64),
     blocker: blocker ? {
       reasonCode: text(blocker.reasonCode) ?? "blocked",
-      unblockAction: text(blocker.unblockAction) ?? "Resolve the blocker to continue.",
+      unblockAction: text(blocker.unblockAction) ?? t("final-components-a:resolveTheBlockerToContinue_98e542c7"),
       scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
     } : null,
     artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : [])
@@ -445,7 +446,7 @@ const PROVIDER_ACTIVITY_PRESENTATIONS = {
   "provider.notice.recorded": {
     schema: "paperclip.provider.notice.v1",
     idKey: "noticeId",
-    name: "Provider notice",
+    get name() { return t("final-components-a:providerNotice_72afcaa8"); },
     summaryKeys: ["summary"],
   },
 } as const;
@@ -834,8 +835,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         family: "provider_notice",
         eventType: event.eventType,
         status: payload.severity === "error" ? "failed" : "informational",
-        title: "Provider notice",
-        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || "Provider notice",
+        title: t("final-components-a:providerNotice_72afcaa8"),
+        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || t("final-components-a:providerNotice_72afcaa8"),
         payload,
       });
       continue;
@@ -1064,7 +1065,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     entries.push({
       kind: "result",
       ...cumulativeUsageSummary,
-      text: "Provider-reported session-cumulative usage; a per-run delta was unavailable.",
+      text: t("final-components-a:providerReportedSessionCumulativeUsage_356cb216"),
       subtype: "paperclip_runner_session_usage",
       isError: false,
       errors: [],

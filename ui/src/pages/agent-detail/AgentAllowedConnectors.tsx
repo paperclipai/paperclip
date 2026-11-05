@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -11,6 +12,7 @@ import { AppLogo } from "../apps/AppLogo";
 const SHOWN_LOGOS = 3;
 
 export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string; companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const effective = useQuery({
     queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agentId),
     queryFn: () => toolsApi.getEffectiveProfilesForAgent(companyId, agentId),
@@ -42,11 +44,11 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
 
   return (
     <AgentPanel
-      title="Allowed connectors"
-      aria-label="Allowed connectors"
+      title={translateAgentPage("agents:allowed_connectors")}
+      aria-label={translateAgentPage("agents:allowed_connectors")}
       action={
         <Button variant="ghost" size="icon-xs" asChild>
-          <Link to="/apps?source=installed" aria-label="Manage connectors" title="Manage connectors">
+          <Link to="/apps?source=installed" aria-label={translateAgentPage("agents:manage_connectors")} title={translateAgentPage("agents:manage_connectors")}>
             <ArrowUpRight className="size-4" />
           </Link>
         </Button>
@@ -54,13 +56,13 @@ export function AgentAllowedConnectors({ agentId, companyId }: { agentId: string
     >
       <div className="flex min-w-0 flex-1 flex-col justify-center px-(--agent-detail-module-inset) pb-(--agent-detail-module-inset)">
         {loading ? (
-          <p role="status" className="text-xs text-muted-foreground">Resolving access…</p>
+          <p role="status" className="text-xs text-muted-foreground">{translateAgentPage("agents:resolving_access")}</p>
         ) : failed ? (
-          <p role="alert" className="text-xs text-destructive">Couldn’t load this agent’s connectors.</p>
+          <p role="alert" className="text-xs text-destructive">{translateAgentPage("agents:couldn_t_load_this_agent_s_connectors")}</p>
         ) : apps.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No connectors are allowed yet.</p>
+          <p className="text-xs text-muted-foreground">{translateAgentPage("agents:no_connectors_are_allowed_yet")}</p>
         ) : (
-          <ul aria-label="Connectors" className="flex max-h-(--agent-detail-logo-rows-h) flex-wrap gap-3 overflow-hidden">
+          <ul aria-label={translateAgentPage("agents:connectors")} className="flex max-h-(--agent-detail-logo-rows-h) flex-wrap gap-3 overflow-hidden">
             {apps.slice(0, SHOWN_LOGOS).map((app) => (
               <li key={app.id} className="flex shrink-0" title={app.name}>
                 <AppLogo name={app.name} brandKey={app.key} size={24} compact />

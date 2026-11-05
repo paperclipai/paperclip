@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { act as reactAct } from "react";
+import { i18n } from "@/i18n";
+import { localizeUiError } from "@/lib/localized-ui-error";
+import { apiErrorFromResponse } from "@/api/api-error";
 import { LinkExtension, LinkNode, $isLinkNode, registerLink, TOGGLE_LINK_COMMAND } from "@lexical/link";
 import { createEditor, $createParagraphNode, $createTextNode, $createLineBreakNode, $getRoot, $getSelection,
   $isRangeSelection, $isElementNode, $createNodeSelection, $setSelection, DecoratorNode,
@@ -25,6 +29,7 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
+  uploadHandler: undefined as undefined | ((file: File) => Promise<string>),
   linkValidator: null as ((url: string) => boolean) | null,
   pluginDefinitions: [] as unknown[],
   emitMountEmptyReset: false,
@@ -205,7 +210,7 @@ vi.mock("@mdxeditor/editor", async () => {
     codeMirrorPlugin: () => ({}),
     createRootEditorSubscription$: Symbol("createRootEditorSubscription$"),
     headingsPlugin: () => ({}),
-    imagePlugin: () => ({}),
+    imagePlugin: (options: { imageUploadHandler?: (file: File) => Promise<string> }) => { mdxEditorMockState.uploadHandler = options.imageUploadHandler; return {}; },
     linkDialogPlugin: () => ({}),
     linkPlugin: (options: { validateUrl: (url: string) => boolean }) => {
       mdxEditorMockState.linkValidator = options.validateUrl;
@@ -349,6 +354,44 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.insertedMarkdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
+  });
+
+  it.each(["local", "api", "raw", "fallback"])("keeps a held %s upload failure reactive with the same editor, raw cause and no repeated upload", async kind => {
+    await i18n.changeLanguage("en");
+    const cause = kind === "local" ? localizeUiError(new Error("Upload did not return a file URL"), { key: "final-boundary:missingFileUrl" })
+      : kind === "api" ? apiErrorFromResponse(new Response("", { status: 403 }), { error: "forbidden" })
+      : kind === "raw" ? new Error("Upload did not return a file URL") : "raw rejection";
+    const original = cause instanceof Error ? Object.getOwnPropertyDescriptors(cause) : cause;
+    const upload = vi.fn().mockRejectedValue(cause); const onChange = vi.fn(); const root = createRoot(container);
+    await reactAct(async () => root.render(<MarkdownEditor value="Unsaved 原文" onChange={onChange} imageUploadHandler={upload} />));
+    await flush(); const editor = container.querySelector('[data-testid="mdx-editor"]'); const file = new File(["raw"], "raw.png", { type: "image/png" });
+    await reactAct(async () => { await expect(mdxEditorMockState.uploadHandler!(file)).rejects.toBe(cause); });
+    const before = container.querySelector("p.text-destructive")?.textContent ?? container.textContent;
+    await reactAct(async () => { await i18n.changeLanguage("zh-CN"); });
+    if (kind === "raw") expect(container.textContent).toContain("Upload did not return a file URL");
+    else if (kind === "local") expect(container.textContent).toContain("上传未返回文件 URL");
+    else if (kind === "api") expect(container.textContent).toContain("你没有执行此操作的权限");
+    else expect(container.textContent).toContain("图片上传失败");
+    expect(container.querySelector('[data-testid="mdx-editor"]')).toBe(editor); expect(container.textContent).toContain("Unsaved 原文");
+    await reactAct(async () => { await i18n.changeLanguage("en"); });
+    expect(container.querySelector("p.text-destructive")?.textContent ?? container.textContent).toBe(before);
+    expect(upload).toHaveBeenCalledExactlyOnceWith(file); expect(onChange).not.toHaveBeenCalled();
+    if (cause instanceof Error) expect(Object.getOwnPropertyDescriptors(cause)).toEqual(original);
+    await reactAct(async () => root.unmount()); await i18n.changeLanguage("en");
+  });
+
+  it("keys the missing-handler fallback at call time while preserving its original English diagnostic", async () => {
+    await i18n.changeLanguage("en"); const root = createRoot(container); const upload = vi.fn().mockResolvedValue("/raw.png");
+    await reactAct(async () => root.render(<MarkdownEditor value="Raw draft" onChange={() => {}} imageUploadHandler={upload} />));
+    const staleHandler = mdxEditorMockState.uploadHandler!;
+    await reactAct(async () => root.render(<MarkdownEditor value="Raw draft" onChange={() => {}} />));
+    await reactAct(async () => { await i18n.changeLanguage("zh-CN"); }); let failure: unknown;
+    await staleHandler(new File(["raw"], "raw.png")).catch(e => { failure = e; });
+    expect(failure).toBeInstanceOf(Error); expect((failure as Error).message).toBe("No image upload handler");
+    const { describeUiError } = await import("@/lib/localized-ui-error");
+    expect(describeUiError(failure).body).toBe("未配置图片上传处理器");
+    await reactAct(async () => { await i18n.changeLanguage("en"); }); expect(describeUiError(failure).body).toBe("No image upload handler");
+    expect(upload).not.toHaveBeenCalled(); await reactAct(async () => root.unmount());
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {

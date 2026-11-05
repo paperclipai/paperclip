@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Client-side "next N schedule fires" helper for the routine Delivery preview (§3.5).
  *
@@ -224,9 +225,9 @@ export interface FirePreviewEntry {
 }
 
 const DISPOSITION_LABEL: Record<FireDisposition, string> = {
-  queued: "queued",
-  coalesced: "would be coalesced",
-  skipped: "would be skipped",
+  get "queued"() { return t("display:copy_4df6397566c8"); },
+  get "coalesced"() { return t("display:copy_6fa27ad6ecde"); },
+  get "skipped"() { return t("display:copy_c12a6de80635"); },
 };
 
 /**
@@ -246,7 +247,7 @@ export function previewFirePolicies(
         at,
         disposition: "queued",
         label: DISPOSITION_LABEL.queued,
-        note: "runs immediately",
+        get "note"() { return t("display:copy_1d40169aae17"); },
       };
     }
     let disposition: FireDisposition;
@@ -266,7 +267,7 @@ export function previewFirePolicies(
       at,
       disposition,
       label: DISPOSITION_LABEL[disposition],
-      note: disposition === "queued" ? null : "if the previous run is still active",
+      note: disposition === "queued" ? null : t("display:copy_f384b80b4e84"),
     };
   });
 }

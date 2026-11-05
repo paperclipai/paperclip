@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translate } from "@/i18n";
 import type {
   ConnectionGrantKind,
   ConnectionAudienceMember,
@@ -26,6 +28,14 @@ export function connectionTypeLabel(
     : credentialPolicy === "per_agent"
       ? "Dedicated agent"
       : "Organization";
+}
+
+export function connectionTypeDisplayLabel(credentialPolicy: ToolConnectionCredentialPolicy): string {
+  return credentialPolicy === "per_user"
+    ? translate("connections:personal_40f0732")
+    : credentialPolicy === "per_agent"
+      ? translate("connections:dedicated_agent_ca7ecba")
+      : translate("connections:organization_519255a");
 }
 
 const ORGANIZATION_NAME_SUFFIX = " for the organization";
@@ -73,15 +83,15 @@ export function connectionNameForCredentialPolicy(
 export function grantStatusLabel(status: ConnectionGrantStatus | null): string {
   switch (status) {
     case "active":
-      return "Connected";
+      return translate("connections:connected_c2f9b7b");
     case "needs_reauthorization":
-      return "Needs attention";
+      return translate("connections:needs_attention_a126722");
     case "expired":
-      return "Expired";
+      return translate("connections:expired_a689a99");
     case "revoked":
-      return "Revoked";
+      return translate("connections:revoked_85f17ac");
     default:
-      return "Not connected";
+      return translate("connections:not_connected_8b02f3d");
   }
 }
 
@@ -112,9 +122,9 @@ export function grantAccountLabel(
 ): string {
   const tenantName = grant?.providerTenant?.name?.trim();
   if (tenantName) return tenantName;
-  if (grant?.kind === "user") return options.subjectLabel?.trim() || "Connected account";
-  if (grant?.kind === "agent") return options.subjectLabel?.trim() || "Dedicated account";
-  return "Shared credential";
+  if (grant?.kind === "user") return options.subjectLabel?.trim() || translate("connections:connected_account_a86f2ef");
+  if (grant?.kind === "agent") return options.subjectLabel?.trim() || translate("connections:dedicated_account_87481cc");
+  return translate("connections:shared_credential_5702709");
 }
 
 /**
@@ -124,8 +134,8 @@ export function grantAccountLabel(
  */
 export function audienceSummary(grant: Pick<ConnectionGrant, "members"> | null): string {
   const count = grant?.members?.length ?? 0;
-  if (count === 0) return "All organization members";
-  return `${count} selected ${count === 1 ? "member" : "members"}`;
+  if (count === 0) return translate("connections:all_organization_members_eef9f93");
+  return finalPagesT("final-pages:selectedMembers", { count: count });
 }
 
 export function audienceUserIds(grant: Pick<ConnectionGrant, "members"> | null): Set<string> {

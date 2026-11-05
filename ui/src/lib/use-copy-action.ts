@@ -1,6 +1,8 @@
+import { t,  useTranslation  } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { copyTextToClipboard } from "./clipboard";
+import { withLiveToastPresentation } from "./live-update-toast";
 import { useOptionalToastActions } from "../context/ToastContext";
 
 export type CopyStatus = "idle" | "copied" | "failed";
@@ -74,26 +76,27 @@ export function useCopyAction(resetMs: number = RESET_MS) {
  * the success toast waits for the write to resolve.
  */
 export function useCopyToast() {
+  useTranslation("display");
   const toastActions = useOptionalToastActions();
   const pushToast = toastActions?.pushToast;
 
   return useCallback(
-    async (text: string, copiedTitle = "Copied") => {
+    async (text: string, copiedTitle?: string) => {
       try {
         await copyTextToClipboard(text);
-        pushToast?.({
-          title: copiedTitle,
+        pushToast?.(withLiveToastPresentation({
+          get title() { return copiedTitle ?? t("final-configuration:copySuccess"); },
           tone: "success",
-          dedupeKey: `copy:${copiedTitle}`,
-        });
+          dedupeKey: `copy:${copiedTitle ?? "Copied"}`,
+        }));
         return true;
       } catch {
-        pushToast?.({
-          title: "Couldn’t copy to clipboard",
-          body: "Select and copy the value manually.",
+        pushToast?.(withLiveToastPresentation({
+          get "title"() { return t("display:copy_1cea87e8dc68"); },
+          get "body"() { return t("display:copy_0f8704b1a7c8"); },
           tone: "error",
           dedupeKey: "copy-failed",
-        });
+        }));
         return false;
       }
     },

@@ -1,38 +1,40 @@
+import { t, useTranslation } from "@/i18n";
 import { InlineBanner } from "@/components/InlineBanner";
 import { webhookUrlWarningReason } from "@/lib/webhook-url-warning";
 
 const warnings = {
   loopback: {
-    title: "Other apps can’t reach this localhost URL",
-    message: "This address points back to the machine sending the request. Services such as GitHub can’t use it to reach Paperclip on your computer.",
+    get title() { return t("task-components:otherAppsCanTReachThisLocalhost_a9a1746f"); },
+    get message() { return t("task-components:thisAddressPointsBackToTheMachine_a9a81db3"); },
   },
   private: {
-    title: "This webhook URL appears to be private",
-    message: "Only senders with access to this network can reach this address. Apps on the public internet, such as GitHub, usually can’t deliver webhooks here.",
+    get title() { return t("task-components:thisWebhookUrlAppearsToBePrivate_c5cb1534"); },
+    get message() { return t("task-components:onlySendersWithAccessToThisNetwork_c29f7cbd"); },
   },
   tailscale: {
-    title: "This Tailscale URL may not be public",
-    message: "Tailscale Serve is private to your tailnet, even with HTTPS. Apps outside your tailnet need Tailscale Funnel or another public HTTPS address. If Funnel is already enabled for this URL, you can continue.",
+    get title() { return t("task-components:thisTailscaleUrlMayNotBePublic_76597a67"); },
+    get message() { return t("task-components:tailscaleServeIsPrivateToYourTailnet_de0c0242"); },
   },
   https: {
-    title: "Use HTTPS for webhooks from other apps",
-    message: "This URL uses HTTP. Many apps require HTTPS, and HTTP does not encrypt webhook credentials or payloads.",
+    get title() { return t("task-components:useHttpsForWebhooksFromOtherApps_9ca07d2c"); },
+    get message() { return t("task-components:thisUrlUsesHttpManyAppsRequire_44225a79"); },
   },
   invalid: {
-    title: "Check the webhook URL",
-    message: "This is not a valid HTTP or HTTPS URL. Your sending app needs a complete address it can reach.",
+    get title() { return t("task-components:checkTheWebhookUrl_4b75da52"); },
+    get message() { return t("task-components:thisIsNotAValidHttpOr_fbf5cdd3"); },
   },
 };
 
 export function WebhookUrlWarning({ url }: { url: string }) {
+  useTranslation("task-components");
   const reason = webhookUrlWarningReason(url);
   if (!reason) return null;
   const warning = warnings[reason];
   return <InlineBanner tone="warning" title={warning.title}>
     <div className="space-y-2">
       <p>{warning.message}</p>
-      <p>You can continue for local or private-network use. For public senders, use a publicly reachable HTTPS URL.</p>
-      <a className="underline underline-offset-4" href="https://docs.paperclip.ing/reference/deploy/https/" target="_blank" rel="noopener noreferrer">Learn how to set up HTTPS and public access</a>
+      <p>{t("task-components:youCanContinueForLocalOrPrivate_588d3cda")}</p>
+      <a className="underline underline-offset-4" href="https://docs.paperclip.ing/reference/deploy/https/" target="_blank" rel="noopener noreferrer">{t("task-components:learnHowToSetUpHttpsAnd_f9d4d69f")}</a>
     </div>
   </InlineBanner>;
 }

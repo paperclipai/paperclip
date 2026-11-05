@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentAvatar } from "./AgentAvatar";
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import type {
@@ -65,6 +66,7 @@ export interface AnnotationPanelProps {
 }
 
 export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
+  useTranslation("task-components");
   if (props.isMobile) {
     return (
       <Sheet open={props.open} onOpenChange={props.onOpenChange}>
@@ -73,9 +75,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
           showCloseButton={false}
           className="paperclip-doc-annotation-sheet z-(--z-60) flex max-h-(--sz-88vh) flex-col rounded-none border-t border-border bg-popover p-0 text-popover-foreground shadow-2xl"
         >
-          <SheetTitle className="sr-only">
-            Comments on {props.documentKey} revision {props.documentRevisionNumber}
-          </SheetTitle>
+          <SheetTitle className="sr-only"><Trans ns="final-components-b" i18nKey="numeric.DocumentAnnotationPanel.70b63173fdf4_67b2b" values={{ documentRevisionNumber: props.documentRevisionNumber }} components={{ part1: <>{props.documentKey}</> }} /></SheetTitle>
           <div className="mx-auto mt-2 h-1.5 w-12 shrink-0 rounded-full bg-muted-foreground/30" aria-hidden="true" />
           <AnnotationPanelBody {...props} />
         </SheetContent>
@@ -88,7 +88,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
   return (
     <aside
       role="complementary"
-      aria-label={`Annotations for ${props.documentKey.toUpperCase()}, revision ${props.documentRevisionNumber}`}
+      aria-label={t("task-components:annotationsForRevision_82e9e10f", { value1: props.documentKey.toUpperCase(), value2: props.documentRevisionNumber })}
       data-testid="document-annotation-panel"
       className={cn(
         "isolate flex h-full max-h-(--sz-80vh) shrink-0 flex-col overflow-hidden rounded-none border border-border bg-popover text-popover-foreground shadow-xl",
@@ -103,6 +103,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
 }
 
 export function AnnotationPanelBody(props: AnnotationPanelProps) {
+  useTranslation("task-components");
   const copyAnnotationLink = useCopyAnnotationLink();
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
@@ -175,9 +176,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
         data-testid={bodyTestId}
         className="flex items-center justify-end gap-1 border-b border-border bg-popover px-2 py-1.5"
       >
-        <span className="text-(length:--text-micro) tabular-nums text-muted-foreground">
-          rev {props.documentRevisionNumber}
-        </span>
+        <span className="text-(length:--text-micro) tabular-nums text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.DocumentAnnotationPanel.136630b66eb2_88d0a" values={{ documentRevisionNumber: props.documentRevisionNumber }} /></span>
         <Button
           type="button"
           size="icon-xs"
@@ -187,7 +186,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
             props.onFocusThread(null);
             props.onOpenChange(false);
           }}
-          aria-label="Close annotation panel"
+          aria-label={t("task-components:closeAnnotationPanel_f3bbe766")}
         >
           <X className="h-4 w-4" />
         </Button>
@@ -277,7 +276,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
                 }
               }
             }}
-            placeholder="Write a comment…"
+            placeholder={t("task-components:writeAComment_d21c3e2f")}
             disabled={props.newCommentDisabled}
             className="resize-y rounded-none text-sm"
           />
@@ -290,9 +289,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
                 props.onClearPendingAnchor();
                 setComposerValue("");
               }}
-            >
-              Cancel
-            </Button>
+            >{t("task-components:cancel_19766ed6")}</Button>
             <Button
               type="button"
               size="sm"
@@ -304,7 +301,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
               }
               onClick={() => createThread.mutate(composerValue.trim())}
             >
-              {createThread.isPending ? "Posting…" : "Comment"}
+              {createThread.isPending ? t("task-components:posting_648a2ef4") : t("task-components:comment_44f5e3fb")}
             </Button>
           </div>
         </div>
@@ -328,6 +325,7 @@ export function ThreadCard(props: {
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
+  useTranslation("task-components");
   const { thread } = props;
   const latestComment = thread.comments[thread.comments.length - 1];
 
@@ -381,7 +379,7 @@ export function ThreadCard(props: {
                   }
                 }
               }}
-              placeholder="Reply…"
+              placeholder={t("task-components:reply_1d627af0")}
               className="resize-y rounded-none text-sm"
               disabled={props.pendingReply}
             />
@@ -396,12 +394,10 @@ export function ThreadCard(props: {
               >
                 {thread.status === "resolved" ? (
                   <>
-                    <RotateCcw className="h-3 w-3" /> Reopen
-                  </>
+                    <RotateCcw className="h-3 w-3" />{" "}{t("task-components:reopen_a886d1dc")}</>
                 ) : (
                   <>
-                    <Check className="h-3 w-3" /> Resolve
-                  </>
+                    <Check className="h-3 w-3" />{" "}{t("task-components:resolve_c8f193b3")}</>
                 )}
               </Button>
               <Button
@@ -410,7 +406,7 @@ export function ThreadCard(props: {
                 disabled={!props.replyDraft.trim() || props.pendingReply}
                 onClick={props.onSubmitReply}
               >
-                {props.pendingReply ? "Sending…" : "Reply"}
+                {props.pendingReply ? t("task-components:sending_b8ed5279") : t("task-components:reply_c253f451")}
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -419,8 +415,8 @@ export function ThreadCard(props: {
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground"
-                    title="More actions"
-                    aria-label="More thread actions"
+                    title={t("task-components:moreActions_f8d46c25")}
+                    aria-label={t("task-components:moreThreadActions_a96a172d")}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>
@@ -432,18 +428,14 @@ export function ThreadCard(props: {
                       props.onCopyLink();
                     }}
                   >
-                    <Copy className="h-3.5 w-3.5" />
-                    Copy link
-                  </DropdownMenuItem>
+                    <Copy className="h-3.5 w-3.5" />{t("task-components:copyLink_dbf362d4")}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
           </div>
         ) : (
           <p className="px-3 py-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">
-              {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
-            </span>
+            <span className="font-medium text-foreground"><Trans ns="final-components-b" i18nKey="numeric.DocumentAnnotationPanel.9c4a43cabf4b_18be9" values={{ count: thread.comments.length }} /></span>
             {latestComment ? <span className="ml-1">· {truncate(latestComment.body, 120)}</span> : null}
           </p>
         )}
@@ -463,6 +455,7 @@ function CommentRow({
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
+  useTranslation("task-components");
   const author = resolveAuthor(comment, { agentMap, userProfileMap });
   return (
     <div
@@ -482,7 +475,7 @@ function CommentRow({
           </Avatar>)}
           <span className="truncate font-medium text-foreground">{author.name}</span>
           {author.role === "agent" ? (
-            <span className="text-muted-foreground">· agent</span>
+            <span className="text-muted-foreground">{t("task-components:agent_b5c454e7")}</span>
           ) : null}
         </span>
         <span className="shrink-0 text-muted-foreground">{relativeTime(comment.createdAt)}</span>

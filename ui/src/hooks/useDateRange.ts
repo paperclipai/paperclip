@@ -1,14 +1,15 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
 export const PRESET_LABELS: Record<DatePreset, string> = {
-  mtd: "Month to Date",
-  "7d": "7 Days",
-  "30d": "30 Days",
-  ytd: "Year to Date",
-  all: "All Time",
-  custom: "Custom",
+  get "mtd"() { return t("display:date_preset_mtd"); },
+  get "7d"() { return t("display:date_preset_7d"); },
+  get "30d"() { return t("display:date_preset_30d"); },
+  get "ytd"() { return t("display:date_preset_ytd"); },
+  get "all"() { return t("display:date_preset_all"); },
+  get "custom"() { return t("display:date_preset_custom"); },
 };
 
 export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
@@ -65,6 +66,7 @@ export interface UseDateRangeResult {
 }
 
 export function useDateRange(): UseDateRangeResult {
+  useTranslation("display");
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");

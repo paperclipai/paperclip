@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
+import { i18n } from "@/i18n";
 import { MemoryRouter } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -644,6 +645,25 @@ async function flushUntil(check: () => boolean, timeoutMs = 4000) {
 
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
+
+  it("keeps unsaved agent edits and canonical save payload intact while switching languages", async () => {
+    const result = await renderForm([], { adapterType: "codex_local", adapterConfig: { model: "private-provider/model-v1" } });
+    roots.push(result.root);
+    try {
+      const name = result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!;
+      await act(async () => setInputValue(name, "My agent 智能体"));
+      await flushReact();
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(result.container.textContent).toContain("未保存的更改");
+      expect(result.container.contains(name)).toBe(true);
+      expect(name.value).toBe("My agent 智能体");
+      expect(result.onSave).not.toHaveBeenCalled();
+      await clickByText(result.container, "保存");
+      expect(result.onSave).toHaveBeenCalledWith({ name: "My agent 智能体" });
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it.each(["paperclip", "legacy"] as const)("uses the resolved %s Claude form to preserve the correct turn limit", async defaultRunner => {
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner }]);

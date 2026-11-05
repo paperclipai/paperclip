@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArchiveRestore, Copy, Pencil, PlugZap, ShieldCheck, Trash2, UserMinus } from "lucide-react";
@@ -42,6 +43,7 @@ interface AllowRow {
   tool: string;
   capabilities: string;
   source: string;
+  sourceIsRule: boolean;
   autoAddedAt: Date | string | null;
   degraded: boolean;
   connectionId: string | null;
@@ -58,6 +60,7 @@ export function ProfileDetail({
   initialCreated?: boolean;
   initialReviewOpen?: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -88,7 +91,7 @@ export function ProfileDetail({
 
   const allowRows = useMemo(
     () => (profile ? buildAllowRows(profile, data.catalog, data.maps.applicationsById, data.maps.connectionsById, data.connections.data?.connections ?? []) : []),
-    [profile, data.catalog, data.maps.applicationsById, data.maps.connectionsById, data.connections.data?.connections],
+    [profile, data.catalog, data.maps.applicationsById, data.maps.connectionsById, data.connections.data?.connections, translateAgentPage],
   );
   const reviewItems = newTools.data?.tools ?? [];
 
@@ -111,29 +114,29 @@ export function ProfileDetail({
     mutationFn: (input: Parameters<typeof toolsApi.updateProfile>[1]) => toolsApi.updateProfile(profileId, input),
     onSuccess: () => {
       invalidate();
-      pushToast({ title: "Profile updated", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_updated"), tone: "success" });
     },
-    onError: (error: unknown) => pushToast({ title: "Could not update profile", body: errorBody(error), tone: "error" }),
+    onError: (error: unknown) => pushToast({ title: translateAgentPage("agents:could_not_update_profile"), body: errorBody(error), tone: "error" }),
   });
 
   const duplicateProfile = useMutation({
     mutationFn: (input: { name: string; includeAssignments: boolean }) => toolsApi.duplicateProfile(profileId, input),
     onSuccess: (copy) => {
       invalidate();
-      pushToast({ title: "Profile duplicated", body: "The copy is not assigned to anyone yet.", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_duplicated"), body: translateAgentPage("agents:the_copy_is_not_assigned_to_anyone_yet"), tone: "success" });
       navigate(`/apps/advanced/profiles/${copy.id}?created=1`);
     },
-    onError: (error: unknown) => pushToast({ title: "Could not duplicate", body: errorBody(error), tone: "error" }),
+    onError: (error: unknown) => pushToast({ title: translateAgentPage("agents:could_not_duplicate"), body: errorBody(error), tone: "error" }),
   });
 
   const deleteProfile = useMutation({
     mutationFn: () => toolsApi.deleteProfile(profileId),
     onSuccess: () => {
       invalidate();
-      pushToast({ title: "Profile deleted", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:profile_deleted"), tone: "success" });
       navigate("/apps/advanced/profiles");
     },
-    onError: (error: unknown) => pushToast({ title: "Could not delete", body: errorBody(error), tone: "error" }),
+    onError: (error: unknown) => pushToast({ title: translateAgentPage("agents:could_not_delete"), body: errorBody(error), tone: "error" }),
   });
 
   const removeAssignment = useMutation({
@@ -142,9 +145,9 @@ export function ProfileDetail({
     onSuccess: () => {
       setAssignmentToRemove(null);
       invalidate();
-      pushToast({ title: "Assignment removed", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:assignment_removed"), tone: "success" });
     },
-    onError: (error: unknown) => pushToast({ title: "Could not remove assignment", body: errorBody(error), tone: "error" }),
+    onError: (error: unknown) => pushToast({ title: translateAgentPage("agents:could_not_remove_assignment"), body: errorBody(error), tone: "error" }),
   });
 
   const reviewNewTools = useMutation({
@@ -160,18 +163,18 @@ export function ProfileDetail({
       setSearchParams({});
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.profileNewTools(profileId) });
-      pushToast({ title: "New tools reviewed", tone: "success" });
+      pushToast({ title: translateAgentPage("agents:new_tools_reviewed"), tone: "success" });
     },
-    onError: (error: unknown) => pushToast({ title: "Could not submit review", body: errorBody(error), tone: "error" }),
+    onError: (error: unknown) => pushToast({ title: translateAgentPage("agents:could_not_submit_review"), body: errorBody(error), tone: "error" }),
   });
 
-  if (data.profiles.isLoading || profilesView.kind === "reconnecting") return <LoadingState label="Loading profile..." />;
+  if (data.profiles.isLoading || profilesView.kind === "reconnecting") return <LoadingState label={translateAgentPage("agents:loading_profile")} />;
   if (profilesView.kind === "error") {
     return (
       <QueryErrorState
         size="page"
         error={data.profiles.error}
-        action="load the profile"
+        action={translateAgentPage("agents:load_the_profile")}
         onRetry={profilesView.retry}
         retrying={profilesView.isFetching}
       />
@@ -180,8 +183,8 @@ export function ProfileDetail({
   if (!profile) {
     return (
       <div className="space-y-4">
-        <ToolsPageHeader title="Profile not found" description="This access profile may have been deleted." />
-        <Button variant="outline" onClick={() => navigate("/apps/advanced/profiles")}>Back to profiles</Button>
+        <ToolsPageHeader title={translateAgentPage("agents:profile_not_found")} description={translateAgentPage("agents:this_access_profile_may_have_been_deleted")} />
+        <Button variant="outline" onClick={() => navigate("/apps/advanced/profiles")}>{translateAgentPage("agents:back_to_profiles")}</Button>
       </div>
     );
   }
@@ -193,62 +196,48 @@ export function ProfileDetail({
     <div className="space-y-6">
       <ToolsPageHeader
         title={profile.name}
-        description={profile.description ?? "No description yet."}
+        description={profile.description ?? translateAgentPage("agents:no_description_yet")}
         actions={
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" disabled={archived} onClick={() => setDialog("edit")}>
-              <Pencil className="mr-1.5 h-4 w-4" />
-              Edit
-            </Button>
+              <Pencil className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:edit_530164")}</Button>
             <Button variant="outline" disabled={archived} onClick={() => setDialog("duplicate")}>
-              <Copy className="mr-1.5 h-4 w-4" />
-              Duplicate
-            </Button>
+              <Copy className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:duplicate")}</Button>
             {archived ? (
               <Button variant="outline" onClick={() => setDialog("restore")}>
-                <ArchiveRestore className="mr-1.5 h-4 w-4" />
-                Restore
-              </Button>
+                <ArchiveRestore className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:restore")}</Button>
             ) : (
-              <Button variant="outline" onClick={() => setDialog("archive")}>Archive</Button>
+              <Button variant="outline" onClick={() => setDialog("archive")}>{translateAgentPage("agents:archive")}</Button>
             )}
             <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setDialog("delete")}>
-              <Trash2 className="mr-1.5 h-4 w-4" />
-              Delete
-            </Button>
+              <Trash2 className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:delete_f6fdbe")}</Button>
           </div>
         }
       />
 
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <Badge variant={archived ? "outline" : "default"}>{STATUS_LABEL[profile.status]}</Badge>
-        <span className="text-muted-foreground">Updated <RelativeTime value={profile.updatedAt} /></span>
+        <span className="text-muted-foreground">{translateAgentPage("agents:updated_f2f857")}{" "}<RelativeTime value={profile.updatedAt} /></span>
         <span className="text-muted-foreground">{allowsLabel(profile.summary)}</span>
       </div>
 
       {created ? (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3">
           <div>
-            <p className="text-sm font-medium text-foreground">Profile saved</p>
+            <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:profile_saved")}</p>
             <p className="text-sm text-muted-foreground">
-              {unassigned ? "Assign it to agents before it changes their access." : "Assignments are active now."}
+              {unassigned ? translateAgentPage("agents:assign_it_to_agents_before_it_changes_their") : translateAgentPage("agents:assignments_are_active_now")}
             </p>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=3`)}>
-              Assign
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setSearchParams({})}>
-              Dismiss
-            </Button>
+            <Button size="sm" onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=3`)}>{translateAgentPage("agents:assign")}</Button>
+            <Button size="sm" variant="ghost" onClick={() => setSearchParams({})}>{translateAgentPage("agents:dismiss")}</Button>
           </div>
         </div>
       ) : null}
 
       {archived ? (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          This profile is archived. It does not apply to agents until it is restored.
-        </div>
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">{translateAgentPage("agents:this_profile_is_archived_it_does_not_apply")}</div>
       ) : null}
 
       {pendingNewTools > 0 ? (
@@ -262,20 +251,16 @@ export function ProfileDetail({
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold text-foreground">What it allows</h2>
-          <Button variant="outline" size="sm" disabled={archived} onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=2`)}>
-            Edit tools
-          </Button>
+          <h2 className="text-base font-semibold text-foreground">{translateAgentPage("agents:what_it_allows")}</h2>
+          <Button variant="outline" size="sm" disabled={archived} onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=2`)}>{translateAgentPage("agents:edit_tools")}</Button>
         </div>
         <AllowList rows={allowRows} total={profile.summary.totalToolCount} />
       </section>
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold text-foreground">Who has it</h2>
-          <Button variant="outline" size="sm" disabled={archived} onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=3`)}>
-            Assign
-          </Button>
+          <h2 className="text-base font-semibold text-foreground">{translateAgentPage("agents:who_has_it")}</h2>
+          <Button variant="outline" size="sm" disabled={archived} onClick={() => navigate(`/apps/advanced/profiles/${profile.id}/edit?step=3`)}>{translateAgentPage("agents:assign")}</Button>
         </div>
         <Assignments
           profile={profile}
@@ -287,7 +272,7 @@ export function ProfileDetail({
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-base font-semibold text-foreground">New tools that appear later</h2>
+        <h2 className="text-base font-semibold text-foreground">{translateAgentPage("agents:new_tools_that_appear_later")}</h2>
         <NewToolsSetting
           value={profile.defaultAction}
           disabled={archived || updateProfile.isPending}
@@ -296,9 +281,7 @@ export function ProfileDetail({
       </section>
 
       <Button variant="link" className="h-auto px-0" onClick={() => navigate("/apps/advanced/profiles?check=1")}>
-        <ShieldCheck className="mr-1.5 h-4 w-4" />
-        Check what an agent can actually do
-      </Button>
+        <ShieldCheck className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:check_what_an_agent_can_actually_do")}</Button>
 
       <ProfileDialogs
         kind={dialog}
@@ -351,16 +334,17 @@ function NewToolsReviewBanner({
   loading: boolean;
   onReview: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const appLabel = newToolsAppLabel(tools);
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
       <div>
         <p className="font-medium">
-          {loading ? "New tools need review" : `${appLabel} added ${count} new ${count === 1 ? "tool" : "tools"} since your last review`}
+          {loading ? translateAgentPage("agents:new_tools_need_review") : translateAgentPage("agents:added_new_since_your_last_review", { value1: appLabel, value2: count, value3: count === 1 ? translateAgentPage("agents:tool") : translateAgentPage("agents:tools_0284c6") })}
         </p>
-        <p className="text-amber-900/80">Choose which ones this profile should allow.</p>
+        <p className="text-amber-900/80">{translateAgentPage("agents:choose_which_ones_this_profile_should_allow")}</p>
       </div>
-      <Button size="sm" onClick={onReview}>Review</Button>
+      <Button size="sm" onClick={onReview}>{translateAgentPage("agents:review")}</Button>
     </div>
   );
 }
@@ -391,23 +375,20 @@ function NewToolsReviewDialog({
   onDecision: (catalogEntryId: string, decision: ToolProfileNewToolReviewDecision) => void;
   onSubmit: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Review new tools</DialogTitle>
-          <DialogDescription>
-            Allow the tools this profile should use. Keep the rest blocked.
-          </DialogDescription>
+          <DialogTitle>{translateAgentPage("agents:review_new_tools")}</DialogTitle>
+          <DialogDescription>{translateAgentPage("agents:allow_the_tools_this_profile_should_use_keep")}</DialogDescription>
         </DialogHeader>
         {loading ? (
-          <LoadingState label="Loading new tools..." />
+          <LoadingState label={translateAgentPage("agents:loading_new_tools")} />
         ) : error ? (
-          <QueryErrorState error={error} action="load new tools" onRetry={onRetry} retrying={retrying} />
+          <QueryErrorState error={error} action={translateAgentPage("agents:load_new_tools")} onRetry={onRetry} retrying={retrying} />
         ) : tools.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
-            There are no new tools waiting for review.
-          </div>
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{translateAgentPage("agents:there_are_no_new_tools_waiting_for_review")}</div>
         ) : (
           <div className="max-h-(--sz-52vh) divide-y divide-border overflow-y-auto rounded-lg border border-border">
             {tools.map((tool) => (
@@ -423,7 +404,7 @@ function NewToolsReviewDialog({
                     <p className="mt-1 text-sm text-muted-foreground">{tool.description}</p>
                   ) : null}
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {tool.applicationName ?? tool.connectionName ?? "App tool"} · added {formatShortDate(tool.addedAt)}
+                    {tool.applicationName ?? tool.connectionName ?? translateAgentPage("agents:app_tool")}{" "}{translateAgentPage("agents:added")}{" "}{formatShortDate(tool.addedAt)}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 sm:justify-end">
@@ -433,28 +414,22 @@ function NewToolsReviewDialog({
                       name={`review-${tool.catalogEntryId}`}
                       checked={(decisions[tool.catalogEntryId] ?? "keep_blocked") === "allow"}
                       onChange={() => onDecision(tool.catalogEntryId, "allow")}
-                    />
-                    Allow
-                  </label>
+                    />{translateAgentPage("agents:allow")}</label>
                   <label className="inline-flex items-center gap-1.5 text-sm">
                     <input
                       type="radio"
                       name={`review-${tool.catalogEntryId}`}
                       checked={(decisions[tool.catalogEntryId] ?? "keep_blocked") === "keep_blocked"}
                       onChange={() => onDecision(tool.catalogEntryId, "keep_blocked")}
-                    />
-                    Keep blocked
-                  </label>
+                    />{translateAgentPage("agents:keep_blocked")}</label>
                 </div>
               </div>
             ))}
           </div>
         )}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={pending || loading || tools.length === 0} onClick={onSubmit}>
-            Submit review
-          </Button>
+          <Button variant="ghost" onClick={onClose}>{translateAgentPage("agents:cancel")}</Button>
+          <Button disabled={pending || loading || tools.length === 0} onClick={onSubmit}>{translateAgentPage("agents:submit_review")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -462,11 +437,10 @@ function NewToolsReviewDialog({
 }
 
 function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   if (rows.length === 0) {
     return (
-      <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-        This profile allows 0 tools. Agents with only this profile will not be able to use app tools.
-      </div>
+      <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">{translateAgentPage("agents:this_profile_allows_0_tools_agents_with_only")}</div>
     );
   }
   return (
@@ -474,10 +448,10 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
-            <th className="px-3 py-2 font-medium">Tool</th>
-            <th className="px-3 py-2 font-medium">App</th>
-            <th className="px-3 py-2 font-medium">Capabilities</th>
-            <th className="px-3 py-2 font-medium">Source</th>
+            <th className="px-3 py-2 font-medium">{translateAgentPage("agents:tool_9a830c")}</th>
+            <th className="px-3 py-2 font-medium">{translateAgentPage("agents:app")}</th>
+            <th className="px-3 py-2 font-medium">{translateAgentPage("agents:capabilities")}</th>
+            <th className="px-3 py-2 font-medium">{translateAgentPage("agents:source")}</th>
           </tr>
         </thead>
         <tbody>
@@ -488,26 +462,23 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
                   <span className="font-medium text-foreground">{row.tool}</span>
                   {row.degraded ? (
                     <a className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline" href={`/apps/${row.connectionId}`}>
-                      <PlugZap className="h-3 w-3" />
-                      Reconnect
-                    </a>
+                      <PlugZap className="h-3 w-3" />{translateAgentPage("agents:reconnect")}</a>
                   ) : null}
                 </div>
               </td>
               <td className="px-3 py-2">
                 <span>{row.app}</span>
-                {row.degraded ? <span className="ml-2 text-xs text-muted-foreground">{row.app} is disconnected</span> : null}
+                {row.degraded ? <span className="ml-2 text-xs text-muted-foreground">{row.app}{" "}{translateAgentPage("agents:is_disconnected")}</span> : null}
               </td>
               <td className="px-3 py-2 text-muted-foreground">{row.capabilities}</td>
               <td className="px-3 py-2">
-                {row.source.startsWith("added by rule") ? (
+                {row.sourceIsRule ? (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-950">{row.source}</span>
                 ) : (
                   <span className="text-muted-foreground">{row.source}</span>
                 )}
                 {row.autoAddedAt ? (
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    added automatically · {formatShortDate(row.autoAddedAt)}
+                  <div className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:added_automatically")}{" "}{formatShortDate(row.autoAddedAt)}
                   </div>
                 ) : null}
               </td>
@@ -516,13 +487,9 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
         </tbody>
       </table>
       {rows.length > 80 ? (
-        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-          Showing 80 of {rows.length} allowed tools.
-        </p>
+        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{translateAgentPage("agents:showing_80_of")}{" "}{rows.length}{" "}{translateAgentPage("agents:allowed_tools_78b6de")}</p>
       ) : (
-        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-          Allows {rows.length} of {total} known tools.
-        </p>
+        <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{translateAgentPage("agents:allows")}{" "}{rows.length}{" "}{translateAgentPage("agents:of")}{" "}{total}{" "}{translateAgentPage("agents:known_tools")}</p>
       )}
     </div>
   );
@@ -541,11 +508,12 @@ function Assignments({
   archived: boolean;
   onRemove: (binding: ToolProfileBinding) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   if (profile.bindings.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border px-4 py-5">
-        <p className="text-sm font-medium text-foreground">Not assigned yet</p>
-        <p className="text-sm text-muted-foreground">Assign this profile before it changes access.</p>
+        <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:not_assigned_yet")}</p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:assign_this_profile_before_it_changes_access")}</p>
       </div>
     );
   }
@@ -555,7 +523,7 @@ function Assignments({
         <div key={binding.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-              {binding.targetType === "company" ? "Or" : binding.targetType.slice(0, 2).toUpperCase()}
+              {binding.targetType === "company" ? translateAgentPage("agents:or") : binding.targetType.slice(0, 2).toUpperCase()}
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-foreground">{assignmentLabel(binding, companyId, maps)}</p>
@@ -563,9 +531,7 @@ function Assignments({
             </div>
           </div>
           <Button variant="ghost" size="sm" disabled={archived} onClick={() => onRemove(binding)}>
-            <UserMinus className="mr-1.5 h-4 w-4" />
-            Remove
-          </Button>
+            <UserMinus className="mr-1.5 h-4 w-4" />{translateAgentPage("agents:remove")}</Button>
         </div>
       ))}
     </div>
@@ -581,9 +547,10 @@ function NewToolsSetting({
   disabled: boolean;
   onChange: (value: ToolProfileDefaultAction) => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const options: Array<{ value: ToolProfileDefaultAction; title: string; body: string }> = [
-    { value: "deny", title: "Stay blocked until reviewed", body: "New tools do not become available automatically." },
-    { value: "allow", title: "Allowed automatically", body: "New tools from selected apps become available right away." },
+    { value: "deny", title: translateAgentPage("agents:stay_blocked_until_reviewed"), body: translateAgentPage("agents:new_tools_do_not_become_available_automatically") },
+    { value: "allow", title: translateAgentPage("agents:allowed_automatically"), body: translateAgentPage("agents:new_tools_from_selected_apps_become_available_right") },
   ];
   return (
     <div className="grid gap-2 sm:grid-cols-2">
@@ -636,6 +603,7 @@ function ProfileDialogs({
   onRestore: () => void;
   onDelete: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [name, setName] = useState(profile.name);
   const [description, setDescription] = useState(profile.description ?? "");
   const [profileKey, setProfileKey] = useState(profile.profileKey);
@@ -654,34 +622,30 @@ function ProfileDialogs({
       <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit profile</DialogTitle>
-            <DialogDescription>Update the profile name and description.</DialogDescription>
+            <DialogTitle>{translateAgentPage("agents:edit_profile")}</DialogTitle>
+            <DialogDescription>{translateAgentPage("agents:update_the_profile_name_and_description")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="edit-profile-name">Name</Label>
+              <Label htmlFor="edit-profile-name">{translateAgentPage("agents:name")}</Label>
               <Input id="edit-profile-name" value={name} onChange={(e) => setName(e.target.value)} />
-              {duplicateName ? <p className="text-xs text-destructive">Another profile already uses this name.</p> : null}
+              {duplicateName ? <p className="text-xs text-destructive">{translateAgentPage("agents:another_profile_already_uses_this_name")}</p> : null}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="edit-profile-description">Description</Label>
+              <Label htmlFor="edit-profile-description">{translateAgentPage("agents:description")}</Label>
               <Textarea id="edit-profile-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
             </div>
-            <button type="button" className="text-sm font-medium text-muted-foreground hover:text-foreground" onClick={() => setAdvancedOpen((v) => !v)}>
-              Advanced
-            </button>
+            <button type="button" className="text-sm font-medium text-muted-foreground hover:text-foreground" onClick={() => setAdvancedOpen((v) => !v)}>{translateAgentPage("agents:advanced")}</button>
             {advancedOpen ? (
               <div className="space-y-1.5">
-                <Label htmlFor="edit-profile-key">Identifier</Label>
+                <Label htmlFor="edit-profile-key">{translateAgentPage("agents:identifier")}</Label>
                 <Input id="edit-profile-key" value={profileKey} onChange={(e) => setProfileKey(e.target.value)} className="font-mono text-xs" />
               </div>
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button disabled={!name.trim() || duplicateName || pending} onClick={() => onUpdate({ name: name.trim(), description: description.trim() || null, profileKey: profileKey.trim() })}>
-              Save
-            </Button>
+            <Button variant="ghost" onClick={onClose}>{translateAgentPage("agents:cancel")}</Button>
+            <Button disabled={!name.trim() || duplicateName || pending} onClick={() => onUpdate({ name: name.trim(), description: description.trim() || null, profileKey: profileKey.trim() })}>{translateAgentPage("agents:save")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -693,25 +657,21 @@ function ProfileDialogs({
       <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Duplicate profile</DialogTitle>
-            <DialogDescription>The copy starts unassigned unless you choose to copy assignments too.</DialogDescription>
+            <DialogTitle>{translateAgentPage("agents:duplicate_profile")}</DialogTitle>
+            <DialogDescription>{translateAgentPage("agents:the_copy_starts_unassigned_unless_you_choose_to")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="copy-profile-name">Name</Label>
+              <Label htmlFor="copy-profile-name">{translateAgentPage("agents:name")}</Label>
               <Input id="copy-profile-name" value={copyName} onChange={(e) => setCopyName(e.target.value)} />
-              {duplicateCopyName ? <p className="text-xs text-destructive">Another profile already uses this name.</p> : null}
+              {duplicateCopyName ? <p className="text-xs text-destructive">{translateAgentPage("agents:another_profile_already_uses_this_name")}</p> : null}
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={copyAssignments} onChange={(e) => setCopyAssignments(e.target.checked)} />
-              Also copy assignments?
-            </label>
+              <input type="checkbox" checked={copyAssignments} onChange={(e) => setCopyAssignments(e.target.checked)} />{translateAgentPage("agents:also_copy_assignments")}</label>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button disabled={!copyName.trim() || duplicateCopyName || pending} onClick={() => onDuplicate({ name: copyName.trim(), includeAssignments: copyAssignments })}>
-              Duplicate
-            </Button>
+            <Button variant="ghost" onClick={onClose}>{translateAgentPage("agents:cancel")}</Button>
+            <Button disabled={!copyName.trim() || duplicateCopyName || pending} onClick={() => onDuplicate({ name: copyName.trim(), includeAssignments: copyAssignments })}>{translateAgentPage("agents:duplicate")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -744,20 +704,21 @@ function RemoveAssignmentDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   return (
     <Dialog open={Boolean(binding)} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Remove assignment</DialogTitle>
+          <DialogTitle>{translateAgentPage("agents:remove_assignment")}</DialogTitle>
           <DialogDescription>
             {binding?.targetType === "company"
-              ? "Removing the organization default changes access for every agent that relies on it."
-              : `Remove this profile from ${label}.`}
+              ? translateAgentPage("agents:removing_the_organization_default_changes_access_for_every")
+              : translateAgentPage("agents:remove_this_profile_from", { value1: label })}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={pending} onClick={onConfirm}>Remove</Button>
+          <Button variant="ghost" onClick={onClose}>{translateAgentPage("agents:cancel")}</Button>
+          <Button disabled={pending} onClick={onConfirm}>{translateAgentPage("agents:remove")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -779,7 +740,7 @@ function buildAllowRows(
     .filter((tool) => includeAllExcept || included.some((entry) => entryMatchesTool(entry, tool)))
     .map((tool) => {
       const match = includeAllExcept ? null : included.find((entry) => entryMatchesTool(entry, tool)) ?? null;
-      const app = appNames.get(tool.applicationId ?? "") ?? connectionNames.get(tool.connectionId) ?? "Unknown app";
+      const app = appNames.get(tool.applicationId ?? "") ?? connectionNames.get(tool.connectionId) ?? translateAgentPage("agents:unknown_app");
       const connection = connections.find((item) => item.id === tool.connectionId);
       return {
         id: tool.id,
@@ -787,6 +748,7 @@ function buildAllowRows(
         tool: tool.title || tool.toolName,
         capabilities: capabilityLabel(tool),
         source: sourceLabel(match, app),
+        sourceIsRule: Boolean(match && ["application", "connection", "risk_level"].includes(match.selectorType)),
         autoAddedAt: profile.defaultAction === "allow" && isRecentTool(tool) ? (tool.addedAt ?? tool.firstSeenAt) : null,
         degraded: Boolean(connection && (connection.status !== "active" || connection.healthStatus === "error")),
         connectionId: tool.connectionId,
@@ -812,31 +774,31 @@ function entryMatchesTool(entry: ToolProfileEntry, tool: ToolCatalogEntry): bool
 }
 
 function sourceLabel(entry: ToolProfileEntry | null, app: string): string {
-  if (!entry) return "added directly";
-  if (entry.selectorType === "application" || entry.selectorType === "connection") return `added by rule: all ${app}`;
-  if (entry.selectorType === "risk_level" && entry.riskLevel) return `added by rule: ${entry.riskLevel} tools`;
-  return "added directly";
+  if (!entry) return translateAgentPage("agents:added_directly");
+  if (entry.selectorType === "application" || entry.selectorType === "connection") return translateAgentPage("agents:added_by_rule_all", { value1: app });
+  if (entry.selectorType === "risk_level" && entry.riskLevel) return translateAgentPage("agents:added_by_rule_tools", { value1: entry.riskLevel });
+  return translateAgentPage("agents:added_directly");
 }
 
 function capabilityLabel(tool: ToolCatalogEntry): string {
-  if (tool.isDestructive) return "Destructive";
-  if (tool.isWrite) return "Write";
-  return "Read";
+  if (tool.isDestructive) return translateAgentPage("agents:destructive");
+  if (tool.isWrite) return translateAgentPage("agents:write_4a4893");
+  return translateAgentPage("agents:read_852b43");
 }
 
 function capabilityText(tool: ToolProfileNewToolReviewItem): string {
-  if (tool.riskLevel === "destructive") return "Destructive";
-  if (tool.riskLevel === "write") return "Write";
-  if (tool.riskLevel === "read") return "Read";
+  if (tool.riskLevel === "destructive") return translateAgentPage("agents:destructive");
+  if (tool.riskLevel === "write") return translateAgentPage("agents:write_4a4893");
+  if (tool.riskLevel === "read") return translateAgentPage("agents:read_852b43");
   return tool.capability;
 }
 
 function newToolsAppLabel(tools: ToolProfileNewToolReviewItem[]): string {
   const names = [...new Set(tools.map((tool) => tool.applicationName ?? tool.connectionName).filter(Boolean))] as string[];
-  if (names.length === 0) return "An app";
-  if (names.length === 1) return names[0] ?? "An app";
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names[0]} and ${names.length - 1} more apps`;
+  if (names.length === 0) return translateAgentPage("agents:an_app");
+  if (names.length === 1) return names[0] ?? translateAgentPage("agents:an_app");
+  if (names.length === 2) return translateAgentPage("agents:and_38c2f9", { value1: names[0], value2: names[1] });
+  return translateAgentPage("agents:and_more_apps", { value1: names[0], value2: names.length - 1 });
 }
 
 function isRecentTool(tool: ToolCatalogEntry): boolean {
@@ -852,18 +814,18 @@ function assignmentLabel(
   companyId: string,
   maps: ReturnType<typeof useProfilesData>["maps"],
 ): string {
-  if (binding.targetType === "company") return "Organization default";
-  if (binding.targetType === "agent") return maps.agentsById.get(binding.targetId) ?? "Unknown agent";
-  if (binding.targetType === "project") return maps.projectsById.get(binding.targetId) ?? "Unknown project";
-  if (binding.targetType === "routine") return maps.routinesById.get(binding.targetId) ?? "Unknown routine";
-  if (binding.targetId === companyId) return "Organization";
+  if (binding.targetType === "company") return translateAgentPage("agents:organization_default");
+  if (binding.targetType === "agent") return maps.agentsById.get(binding.targetId) ?? translateAgentPage("agents:unknown_agent");
+  if (binding.targetType === "project") return maps.projectsById.get(binding.targetId) ?? translateAgentPage("agents:unknown_project");
+  if (binding.targetType === "routine") return maps.routinesById.get(binding.targetId) ?? translateAgentPage("agents:unknown_routine");
+  if (binding.targetId === companyId) return translateAgentPage("agents:organization");
   return binding.targetId;
 }
 
 function assignmentTypeLabel(type: ToolProfileBinding["targetType"]): string {
-  if (type === "company") return "Organization default";
-  if (type === "agent") return "Agent";
-  if (type === "project") return "Project";
-  if (type === "routine") return "Routine";
-  return "Scoped assignment";
+  if (type === "company") return translateAgentPage("agents:organization_default");
+  if (type === "agent") return translateAgentPage("agents:agent_5ce2e6");
+  if (type === "project") return translateAgentPage("agents:project_f6f4da");
+  if (type === "routine") return translateAgentPage("agents:routine_482273");
+  return translateAgentPage("agents:scoped_assignment");
 }

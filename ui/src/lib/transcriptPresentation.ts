@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 type TranscriptDensity = "comfortable" | "compact";
 
 type TranscriptActivity = {
@@ -118,7 +119,7 @@ export function isCommandTool(name: string, input: unknown): boolean {
 }
 
 export function displayToolName(name: string, input: unknown): string {
-  if (isCommandTool(name, input)) return "Executing command";
+  if (isCommandTool(name, input)) return t("display:copy_90dae7f68658");
   return humanizeLabel(name);
 }
 
@@ -135,7 +136,7 @@ export function summarizeToolInput(
   const record = asRecord(input);
   if (!record) {
     const serialized = compactWhitespace(formatUnknown(input));
-    return serialized ? truncate(serialized, compactMax) : `Inspect ${name} input`;
+    return serialized ? truncate(serialized, compactMax) : t("display:copy_bf41ff238dbc", { value0: name });
   }
 
   const command = typeof record.command === "string"
@@ -162,14 +163,14 @@ export function summarizeToolInput(
   if (Array.isArray(record.paths) && record.paths.length > 0) {
     const first = record.paths.find((value): value is string => typeof value === "string" && value.trim().length > 0);
     if (first) {
-      return truncate(`${record.paths.length} paths, starting with ${first}`, compactMax);
+      return truncate(t("display:copy_9315d08d151e", { value0: record.paths.length, value1: first }), compactMax);
     }
   }
 
   const keys = Object.keys(record);
-  if (keys.length === 0) return `No ${name} input`;
-  if (keys.length === 1) return truncate(`${keys[0]} payload`, compactMax);
-  return truncate(`${keys.length} fields: ${keys.slice(0, 3).join(", ")}`, compactMax);
+  if (keys.length === 0) return t("display:copy_0725480963fd", { value0: name });
+  if (keys.length === 1) return truncate(t("display:copy_48a93c252b3b", { value0: keys[0] }), compactMax);
+  return truncate(t("display:copy_c3683e6e9267", { value0: keys.length, value1: keys.slice(0, 3).join(", ") }), compactMax);
 }
 
 function readToolDetailValue(value: unknown, max = 200): string | null {
@@ -186,7 +187,7 @@ function readToolDetailValue(value: unknown, max = 200): string | null {
 export function describeToolInput(name: string, input: unknown): ToolInputDetail[] {
   if (typeof input === "string") {
     const summary = compactWhitespace(isCommandTool(name, input) ? stripWrappedShell(input) : input);
-    return summary ? [{ label: isCommandTool(name, input) ? "Command" : "Input", value: truncate(summary, 200), tone: "code" }] : [];
+    return summary ? [{ label: isCommandTool(name, input) ? t("display:copy_859e4eb8582e") : t("display:copy_0ddac2948bdf"), value: truncate(summary, 200), tone: "code" }] : [];
   }
 
   const record = asRecord(input);
@@ -220,7 +221,7 @@ export function describeToolInput(name: string, input: unknown): ToolInputDetail
       .slice(0, 3)
       .join(", ");
     if (paths) {
-      const suffix = record.paths.length > 3 ? `, +${record.paths.length - 3} more` : "";
+      const suffix = record.paths.length > 3 ? t("display:copy_65541b76b186", { value0: record.paths.length - 3 }) : "";
       pushDetail("Paths", `${paths}${suffix}`);
     }
   }
@@ -231,7 +232,7 @@ export function describeToolInput(name: string, input: unknown): ToolInputDetail
       ? record.cmd
       : null;
   if (command && isCommandTool(name, record) && !details.some((detail) => detail.label === "Intent")) {
-    pushDetail("Command", truncate(stripWrappedShell(command), 200), "code");
+    pushDetail(t("display:copy_859e4eb8582e"), truncate(stripWrappedShell(command), 200), "code");
   }
 
   return details;
@@ -242,15 +243,15 @@ export function summarizeToolResult(
   isError: boolean | undefined,
   density: TranscriptDensity = "comfortable",
 ): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result"; // query-error-ok: tool-result flag, not a query read
+  if (!result) return isError ? t("display:copy_3b3fb9b5633e") : t("display:copy_9afc4390a41e"); // query-error-ok: tool-result flag, not a query read
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {
       return truncate(structured.body.split("\n")[0] ?? structured.body, density === "compact" ? 84 : 140);
     }
-    if (structured.status === "completed") return "Completed";
+    if (structured.status === "completed") return t("display:copy_3c83b269d910");
     if (structured.status === "failed" || structured.status === "error") {
-      return structured.exitCode ? `Failed with exit code ${structured.exitCode}` : "Failed";
+      return structured.exitCode ? t("display:copy_5088e0eda5c3", { value0: structured.exitCode }) : t("display:copy_875bfaf20dd0");
     }
   }
   const lines = result

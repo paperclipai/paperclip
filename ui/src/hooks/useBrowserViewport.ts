@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -45,12 +46,13 @@ export function useBrowserViewport({
   active: boolean;
   frameRef: RefObject<HTMLIFrameElement | null>;
 }) {
+  useTranslation("final-components-a");
   const [viewerId] = useState(() => crypto.randomUUID());
   const [state, setState] = useState<BrowserUseViewportState>({
     preset: "fit",
   });
   const stateRef = useRef(state);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [resizing, setResizing] = useState(false);
   const version = useRef(0);
   // Includes release operations, so hiding/reopening cannot race an old resize.
@@ -71,7 +73,7 @@ export function useBrowserViewport({
     version.current++;
     stateRef.current = { preset: "fit" };
     setState(stateRef.current);
-    setError(null);
+    setError(false);
   }, [browserId]);
 
   useEffect(() => {
@@ -129,15 +131,13 @@ export function useBrowserViewport({
               stateRef.current = result;
               desiredMode = result.preset;
               setState(result);
-              setError(null);
+              setError(false);
             } catch {
               if (!disposed && revision === version.current) {
                 paused = true;
                 desiredMode = stateRef.current.preset;
                 pending = null;
-                setError(
-                  "Browser size could not be changed. Choose a size in Browser options to try again.",
-                );
+                setError(true);
               }
             } finally {
               if (revision === version.current) version.current++;
@@ -199,7 +199,7 @@ export function useBrowserViewport({
       pending = null;
       paused = false;
       desiredMode = preset;
-      setError(null);
+      setError(false);
       if (preset === "fit") fit(true);
       else enqueue({ preset, viewerId });
     };
@@ -248,7 +248,7 @@ export function useBrowserViewport({
 
   return {
     state,
-    error,
+    error: error ? t("final-components-a:browserSizeFailed") : null,
     resizing,
     viewerId,
     version,

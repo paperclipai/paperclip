@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -17,14 +18,15 @@ import { Diff } from "lucide-react";
 
 /** Author + via-issue attribution line for a revision. */
 function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
-  const author = revision.actorAgentName ?? (revision.createdByAgentId ? "Agent" : revision.createdByUserId ? "User" : "System");
+  useTranslation("task-components");
+  const author = revision.actorAgentName ?? (revision.createdByAgentId ? t("final-components-a:agent_11b39c93") : revision.createdByUserId ? t("final-components-a:user_b512d97e") : t("final-components-a:system_6725e7bb"));
   return (
     <span className="flex flex-wrap items-center gap-x-1 text-(length:--text-micro) text-muted-foreground">
       <span>{author}</span>
       {revision.issue && (
         <>
           <span aria-hidden>·</span>
-          <span>via</span>
+          <span>{t("task-components:via_4d327af4")}</span>
           <Link
             to={`/issues/${revision.issue.identifier}`}
             className="font-mono text-foreground/80 hover:underline"
@@ -40,8 +42,8 @@ function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
 }
 
 function getRevisionLabel(revision: CaseDocumentRevision) {
-  const actor = revision.actorAgentName ?? (revision.createdByAgentId ? "agent" : revision.createdByUserId ? "board" : "system");
-  return `rev ${revision.revisionNumber} - ${relativeTime(revision.createdAt)} - ${actor}`;
+  const actor = revision.actorAgentName ?? (revision.createdByAgentId ? t("final-components-a:agent_d4f0bc5a") : revision.createdByUserId ? t("final-components-a:board_859169b3") : t("final-components-a:system_bbc5e661"));
+  return t("final-components-a:revRevisionTimeActor_bfcf554c", { revision: revision.revisionNumber, time: relativeTime(revision.createdAt), actor: actor });
 }
 
 function CaseDocumentDiffModal({
@@ -57,6 +59,7 @@ function CaseDocumentDiffModal({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  useTranslation("task-components");
   const [leftRevisionId, setLeftRevisionId] = useState<string | null>(null);
   const [rightRevisionId, setRightRevisionId] = useState<string | null>(null);
 
@@ -85,16 +88,15 @@ function CaseDocumentDiffModal({
       <DialogContent className="!max-w-(--pct-90) flex max-h-(--sz-85vh) w-full flex-col overflow-hidden">
         <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <DialogHeader className="min-w-0">
-            <DialogTitle className="break-words pr-6">
-              Diff - <span className="font-mono text-sm">{documentKey}</span>
+            <DialogTitle className="break-words pr-6">{t("task-components:diff_196d9491")}{" "}<span className="font-mono text-sm">{documentKey}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:gap-4">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">Old</span>
+              <span className="shrink-0 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">{t("task-components:old_bca97160")}</span>
               <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
-                <SelectTrigger aria-label="Old revision" className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
-                  <SelectValue className="min-w-0 truncate" placeholder="Select revision" />
+                <SelectTrigger aria-label={t("task-components:oldRevision_6d17d8df")} className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
+                  <SelectValue className="min-w-0 truncate" placeholder={t("task-components:selectRevision_4c843151")} />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -106,10 +108,10 @@ function CaseDocumentDiffModal({
               </Select>
             </div>
             <div className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">New</span>
+              <span className="shrink-0 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">{t("task-components:new_18fdd549")}</span>
               <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
-                <SelectTrigger aria-label="New revision" className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
-                  <SelectValue className="min-w-0 truncate" placeholder="Select revision" />
+                <SelectTrigger aria-label={t("task-components:newRevision_2ef58f8a")} className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
+                  <SelectValue className="min-w-0 truncate" placeholder={t("task-components:selectRevision_4c843151")} />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -125,16 +127,16 @@ function CaseDocumentDiffModal({
 
         <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border text-xs">
           {!leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">Select two revisions to compare.</div>
+            <div className="p-6 text-center text-sm text-muted-foreground">{t("task-components:selectTwoRevisionsToCompare_e64fab56")}</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">Both sides are the same revision.</div>
+            <div className="p-6 text-center text-sm text-muted-foreground">{t("task-components:bothSidesAreTheSameRevision_5c3e0d37")}</div>
           ) : (
             <div className="font-mono text-xs leading-6">
               <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-                <span>Old</span>
-                <span>New</span>
+                <span>{t("task-components:old_bca97160")}</span>
+                <span>{t("task-components:new_18fdd549")}</span>
                 <span />
-                <span>Content</span>
+                <span>{t("task-components:content_47bd2907")}</span>
               </div>
               {diffRows.map((row, index) => (
                 <div
@@ -177,6 +179,7 @@ export function CaseRevisionRail({
   documentKey?: string;
   taskId?: string;
 }) {
+  useTranslation("task-components");
   const revisionsQuery = useQuery<CaseDocumentRevisions | DocumentRevision[]>({
     queryKey: taskId ? queryKeys.issues.documentRevisions(taskId, documentKey) : queryKeys.cases.revisions(caseIdentifier, documentKey),
     queryFn: () => taskId ? issuesApi.listDocumentRevisions(taskId, documentKey) : casesApi.listRevisions(caseIdentifier, documentKey),
@@ -200,7 +203,7 @@ export function CaseRevisionRail({
   }, [revisions, selectedId]);
 
   if (revisionsQuery.isLoading || revisionsView.kind === "reconnecting") {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Loading revisions…</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{t("task-components:loadingRevisions_c5c85196")}</p>;
   }
   if (revisionsView.kind === "error") {
     return (
@@ -216,7 +219,7 @@ export function CaseRevisionRail({
     );
   }
   if (revisions.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No revisions yet.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{t("task-components:noRevisionsYet_db4f9639")}</p>;
   }
 
   const selected = revisions.find((r) => r.id === selectedId) ?? revisions[0]!;
@@ -226,9 +229,7 @@ export function CaseRevisionRail({
     <div className="grid gap-4 md:grid-cols-(--gtc-case-revisions)">
       <aside className="min-w-0 space-y-1">
         <div className="flex items-center justify-between gap-2 px-1">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Revisions
-          </h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("task-components:revisions_da80b1d5")}</h3>
           {revisions.length > 1 ? (
             <Button
               type="button"
@@ -237,9 +238,7 @@ export function CaseRevisionRail({
               className="h-7 gap-1 px-2 text-xs"
               onClick={() => setDiffOpen(true)}
             >
-              <Diff className="h-3.5 w-3.5" />
-              Diff
-            </Button>
+              <Diff className="h-3.5 w-3.5" />{t("task-components:diff_7ecf4628")}</Button>
           ) : null}
         </div>
         <ol className="space-y-1">
@@ -258,11 +257,9 @@ export function CaseRevisionRail({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium">
-                    rev {rev.revisionNumber}
+                    {t("final-components-a:revRevision_c27a0e82", { revision: rev.revisionNumber })}
                     {index === 0 && (
-                      <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-(length:--text-nano) text-muted-foreground">
-                        latest
-                      </span>
+                      <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-(length:--text-nano) text-muted-foreground">{t("task-components:latest_5e1e2bca")}</span>
                     )}
                   </span>
                   <span className="text-(length:--text-micro) text-muted-foreground">{relativeTime(rev.createdAt)}</span>
@@ -281,7 +278,7 @@ export function CaseRevisionRail({
 
       <Card className="min-w-0 px-4 py-3">
         <div className="mb-2 flex items-baseline justify-between border-b border-border pb-2">
-          <span className="text-sm font-medium">rev {selected.revisionNumber}</span>
+          <span className="text-sm font-medium"><Trans ns="final-components-a" i18nKey="numeric_a21beeba7cff" values={{ revisionNumber: selected.revisionNumber }} /></span>
           <RevisionByline revision={selected} />
         </div>
         {selected.body ? (
@@ -289,7 +286,7 @@ export function CaseRevisionRail({
             {selected.body}
           </MarkdownBody>
         ) : (
-          <p className="text-sm text-muted-foreground">This revision has no body.</p>
+          <p className="text-sm text-muted-foreground">{t("task-components:thisRevisionHasNoBody_73e89038")}</p>
         )}
       </Card>
       {revisions.length > 1 ? (

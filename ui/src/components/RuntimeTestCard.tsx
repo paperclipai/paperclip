@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   CircleCheck,
   CircleAlert,
@@ -12,38 +13,38 @@ export type TestState = "idle" | "running" | "pass" | "fail";
 
 const copy = {
   idle: {
-    title: "Test your agent",
-    description: "Check that your runtime and model can respond.",
+    get title() { return t("task-components:testYourAgent_bcf9391c"); },
+    get description() { return t("task-components:checkThatYourRuntimeAndModelCan_0325fd6d"); },
     action: "Run test",
   },
   running: {
-    title: "Testing connection",
-    description: "Checking the runtime and waiting for a model response…",
+    get title() { return t("task-components:testingConnection_04dfed9c"); },
+    get description() { return t("task-components:checkingTheRuntimeAndWaitingForA_a1c61e07"); },
     action: "Testing…",
   },
   pass: {
-    title: "Connection successful",
-    description: "Your runtime checks passed. Review the details below.",
-    action: "Test again",
+    get title() { return t("task-components:connectionSuccessful_856dd8c8"); },
+    get description() { return t("task-components:yourRuntimeChecksPassedReviewTheDetails_4edd5666"); },
+    get action() { return t("final-components-a:testAgain_022f6c3d"); },
   },
   warn: {
-    title: "Connection needs attention",
-    description: "Review the test details before running your agent.",
-    action: "Test again",
+    get title() { return t("task-components:connectionNeedsAttention_4f1fc01d"); },
+    get description() { return t("task-components:reviewTheTestDetailsBeforeRunningYour_a186aaf2"); },
+    get action() { return t("final-components-a:testAgain_022f6c3d"); },
   },
   fail: {
-    title: "Couldn't connect",
-    description: "Check your model and provider connection, then try again.",
-    action: "Retry test",
+    get title() { return t("task-components:couldnTConnect_babe5b38"); },
+    get description() { return t("task-components:checkYourModelAndProviderConnectionThen_c7c75083"); },
+    get action() { return t("final-components-a:retryTest_1fa8f72f"); },
   },
 } as const;
 
 const prerequisiteCopy = {
-  idle: { title: "Check prerequisites", description: "Check instance settings and public connection configuration.", action: "Check setup" },
-  running: { title: "Checking prerequisites", description: "Checking instance settings and public connection configuration…", action: "Checking…" },
-  pass: { title: "Setup checks passed", description: "Review the setup details before assigning work.", action: "Check again" },
-  warn: { title: "Pairing required", description: "Create this agent, then pair it and verify event delivery.", action: "Check again" },
-  fail: { title: "Prerequisite check failed", description: "Review the setup details and retry.", action: "Retry check" },
+  idle: { get title() { return t("task-components:checkPrerequisites_4124f184"); }, get description() { return t("task-components:checkInstanceSettingsAndPublicConnectionConfiguration_14f52a04"); }, action: "Check setup" },
+  running: { get title() { return t("task-components:checkingPrerequisites_bed2352f"); }, get description() { return t("task-components:checkingInstanceSettingsAndPublicConnectionConfiguration_bfe563cc"); }, action: "Checking…" },
+  pass: { get title() { return t("task-components:setupChecksPassed_a3a23e98"); }, get description() { return t("task-components:reviewTheSetupDetailsBeforeAssigningWork_a82920ef"); }, action: "Check again" },
+  warn: { get title() { return t("task-components:pairingRequired_4fd15e65"); }, get description() { return t("task-components:createThisAgentThenPairItAnd_ab95a97d"); }, action: "Check again" },
+  fail: { get title() { return t("task-components:prerequisiteCheckFailed_b9631792"); }, get description() { return t("task-components:reviewTheSetupDetailsAndRetry_61e8d3c9"); }, action: "Retry check" },
 } as const;
 
 export function RuntimeTestCard({
@@ -65,16 +66,17 @@ export function RuntimeTestCard({
   metadataOnly?: boolean;
   tone?: "card" | "tile";
 }) {
+  useTranslation("task-components");
   const missingRuntime = state === "fail"
     ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
     : undefined;
   const content = missingRuntime
-    ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    ? { ...copy.fail, title: t("task-components:runtimeMissing_7649ce73"), description: missingRuntime.message }
     : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
   const description = metadataOnly && state === "idle"
-    ? "Verify your saved token, runtime installation, and selected model without sending a model prompt."
+    ? t("final-components-a:verifyYourSavedTokenRuntime_1618aa2b")
     : metadataOnly && state === "running"
-      ? "Checking the saved token, runtime, and selected model…"
+      ? t("final-components-a:checkingTheSavedTokenRuntime_9df0383a")
       : content.description;
   const Icon =
     state === "running"
@@ -86,7 +88,7 @@ export function RuntimeTestCard({
           : Play;
   return (
     <section
-      aria-label="Runtime test"
+      aria-label={t("task-components:runtimeTest_a3b5b907")}
       data-agent-tile={tone === "tile" ? "" : undefined}
       className={tone === "tile" ? "rounded-lg bg-(--agent-detail-tile)" : "rounded-lg border border-border bg-card"}
     >
@@ -141,9 +143,7 @@ export function RuntimeTestCard({
             <ChevronRight
               aria-hidden="true"
               className="size-3 transition-transform group-open:rotate-90"
-            />
-            Test details
-          </summary>
+            />{t("task-components:testDetails_7cc561a5")}</summary>
           <ul className="space-y-3 px-4 pb-4">
             {result.checks.map((check) => (
               <li

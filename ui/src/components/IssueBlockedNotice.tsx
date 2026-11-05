@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import type {
   IssueBlockerAttention,
   IssueRecoveryAction,
@@ -42,6 +43,7 @@ function BlockerRecoveryIndicator({
   /** The blocker's own scheduled retry, used to verify that the stored attempt is in flight. */
   scheduledRetry?: IssueScheduledRetry | null;
 }) {
+  useTranslation("task-components");
   const liveness = { scheduledRetry: scheduledRetry ?? null };
   const state = deriveActiveRecoveryDisplayState(action, liveness);
   if (!state) return null;
@@ -61,8 +63,8 @@ function BlockerRecoveryIndicator({
       role="status"
       aria-label={detail ? `${label} — ${detail}` : label}
       title={detail
-        ? `${label} — ${detail}. Open the source task to act.`
-        : `${label} — open the source task to act.`}
+        ? t("task-components:openTheSourceTaskToAct_969abe57", { value1: label, value2: detail })
+        : t("task-components:openTheSourceTaskToAct_4cb02e32", { value1: label })}
       className={`[&>svg]:size-2.5 gap-0.5 px-1.5 text-(length:--text-nano) ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
@@ -78,16 +80,17 @@ function SuccessfulRunRetryNowControl({
   issueId: string;
   scheduledRetry: IssueScheduledRetry;
 }) {
+  useTranslation("task-components");
   const retryNow = useRetryNowMutation(issueId);
   const dueAtIso = scheduledRetry.scheduledRetryAt
     ? new Date(scheduledRetry.scheduledRetryAt).toISOString()
     : null;
   const relative = dueAtIso ? formatMonitorOffset(dueAtIso) : null;
-  const scheduleLabel = relative === "now"
-    ? "due now"
+  const scheduleLabel = dueAtIso && Math.round(Math.abs(new Date(dueAtIso).getTime() - Date.now()) / 60_000) === 0
+    ? t("final-components-b:IssueBlockedNotice.due_now_cfc76a")
     : relative
-      ? `scheduled ${relative}`
-      : "scheduled";
+      ? t("final-components-b:scheduled_time_198490", { time: relative })
+      : t("final-components-b:IssueBlockedNotice.scheduled_6aef76");
   const success = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
 
@@ -97,7 +100,7 @@ function SuccessfulRunRetryNowControl({
         <div className="min-w-0 text-xs leading-5 text-amber-900 dark:text-amber-100">
           {retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
             ? retryNow.data.message
-            : <>Paperclip will ask the assignee to choose the next step {scheduleLabel}. Retry now starts that follow-up immediately.</>}
+            : <><Trans ns="task-components" i18nKey="sentence_ac94a4117c88" components={{ part1: <>{scheduleLabel}</> }} /></>}
         </div>
         <Button
           type="button"
@@ -110,19 +113,15 @@ function SuccessfulRunRetryNowControl({
         >
           {retryNow.isPending ? (
             <span className="inline-flex items-center gap-1.5">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Retrying...
-            </span>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />{t("task-components:retrying_84a657bc")}</span>
           ) : success ? (
             <span className="inline-flex items-center gap-1.5">
               <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-              {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+              {retryNow.data?.outcome === "already_promoted" ? t("task-components:alreadyPromoted_8a7ece83") : t("task-components:promoted_0cf04463")}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5">
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry now
-            </span>
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{t("task-components:retryNow_5148c3e2")}</span>
           )}
         </Button>
       </div>
@@ -151,6 +150,7 @@ function WaitingChipLink({
   blocker: IssueRelationIssueSummary;
   running?: boolean;
 }) {
+  useTranslation("task-components");
   const issuePathId = blocker.identifier ?? blocker.id;
   return (
     <IssueLinkQuicklook
@@ -161,22 +161,21 @@ function WaitingChipLink({
       <StatusGlyph
         status={blocker.status}
         size="sm"
-        title={`${waitingTaskStatusLabel(blocker.status)} status`}
+        title={t("task-components:status_92af2161", { value1: waitingTaskStatusLabel(blocker.status) })}
       />
       <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
       <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-blue-800 dark:text-blue-200">
         {blocker.title}
       </span>
       {running ? (
-        <span className="ml-0.5 rounded-full bg-blue-500/15 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-blue-700 dark:bg-blue-400/20 dark:text-blue-200">
-          running
-        </span>
+        <span className="ml-0.5 rounded-full bg-blue-500/15 px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-blue-700 dark:bg-blue-400/20 dark:text-blue-200">{t("task-components:sentence_c071cf5f5ed6")}</span>
       ) : null}
     </IssueLinkQuicklook>
   );
 }
 
 function WaitingStepGlyph({ status }: { status: WaitingBlockerStatus }) {
+  useTranslation("task-components");
   if (status === "done") {
     return <CheckCircle2 className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" aria-hidden />;
   }
@@ -205,6 +204,7 @@ function SuccessfulRunHandoffInFlightNotice({
   liveRunId?: string | null;
   assigneeAgentId?: string | null;
 }) {
+  useTranslation("task-components");
   const shortRunId = liveRunId ? liveRunId.slice(0, 8) : null;
   return (
     <div
@@ -216,21 +216,16 @@ function SuccessfulRunHandoffInFlightNotice({
         <span className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
           <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
         </span>
-        <p className="min-w-0 leading-5">
-          A correction run is in progress — the agent is working. This alert returns if the run
-          stops without choosing a next step.
-          {shortRunId ? (
+        <p className="min-w-0 leading-5">{t("task-components:aCorrectionRunIsInProgressThe_a5988eb1")}{shortRunId ? (
             <>
               {" "}
               {assigneeAgentId ? (
                 <Link
                   to={`/agents/${assigneeAgentId}/runs/${liveRunId}`}
                   className="font-mono underline underline-offset-2 hover:text-foreground"
-                >
-                  run {shortRunId}
-                </Link>
+                ><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{shortRunId}</> }} /></Link>
               ) : (
-                <span className="font-mono">run {shortRunId}</span>
+                <span className="font-mono"><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{shortRunId}</> }} /></span>
               )}
             </>
           ) : null}
@@ -260,6 +255,7 @@ function WaitingOnLiveWorkNotice({
   parkedBlockers: IssueRelationIssueSummary[];
   renderParkedChip: (blocker: IssueRelationIssueSummary) => ReactNode;
 }) {
+  useTranslation("task-components");
   const steps = orderWaitingBlockers(chainBlockers, liveIds);
   const total = steps.length;
   const doneCount = steps.filter((step) => step.status === "done").length;
@@ -278,7 +274,6 @@ function WaitingOnLiveWorkNotice({
     nowRunning.push(blocker);
   }
 
-  const queuedNoun = total === 1 ? "task" : "tasks";
 
   return (
     <div
@@ -292,22 +287,15 @@ function WaitingOnLiveWorkNotice({
         </span>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-1">
-            <p className="font-medium leading-5">Waiting on live work</p>
-            <p className="leading-5">
-              Queued behind {total} {queuedNoun} being worked in order. This task
-              resumes automatically when the chain is done. Comments still notify the
-              assignee.
-            </p>
+            <p className="font-medium leading-5">{t("task-components:waitingOnLiveWork_54a2de10")}</p>
+            <p className="leading-5"><Trans ns="final-components-b" i18nKey="numeric.IssueBlockedNotice.3381ff0a96e2_2bb02" values={{ count: total }} /></p>
           </div>
 
           <div className="space-y-1" data-testid="issue-blocked-notice-progress">
-            <div className="text-xs font-medium text-blue-800 dark:text-blue-200">
-              {doneCount} of {total} done
-              {runningCount > 0 ? ` · ${runningCount} running` : null}
-            </div>
+            <div className="text-xs font-medium text-blue-800 dark:text-blue-200"><Trans ns="final-components-b" i18nKey="numeric.IssueBlockedNotice.02dfef3524c6_187cd" values={{ doneCount: doneCount, total: total }} components={{ part3: <>{runningCount > 0 ? t("final-components-b:count_running_a976a0", { count: runningCount }) : null}</> }} /></div>
             <div
               role="progressbar"
-              aria-label="Blocker chain progress"
+              aria-label={t("task-components:blockerChainProgress_e381a27e")}
               aria-valuemin={0}
               aria-valuenow={doneCount}
               aria-valuemax={total}
@@ -357,9 +345,7 @@ function WaitingOnLiveWorkNotice({
                 />
               </div>
               <div className="min-w-0 pb-0.5">
-                <span className="inline-block rounded-md border border-dashed border-blue-300/70 px-2 py-1 text-xs text-blue-800 dark:border-blue-500/40 dark:text-blue-200">
-                  This task — resumes automatically when the chain is done
-                </span>
+                <span className="inline-block rounded-md border border-dashed border-blue-300/70 px-2 py-1 text-xs text-blue-800 dark:border-blue-500/40 dark:text-blue-200">{t("task-components:thisTaskResumesAutomaticallyWhenTheChain_30e6fd94")}</span>
               </div>
             </div>
           </div>
@@ -369,9 +355,7 @@ function WaitingOnLiveWorkNotice({
               data-testid="issue-blocked-notice-now-running"
               className="space-y-1 pt-0.5"
             >
-              <div className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                Now running
-              </div>
+              <div className="text-xs font-medium text-blue-800 dark:text-blue-200">{t("task-components:nowRunning_44cdf357")}</div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {nowRunning.map((blocker) => (
                   <WaitingChipLink key={blocker.id} blocker={blocker} running />
@@ -386,9 +370,7 @@ function WaitingOnLiveWorkNotice({
               className="flex flex-wrap items-center gap-1.5 pt-0.5"
             >
               <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
-                <Flag className="h-3 w-3" aria-hidden />
-                Blocked by parked work
-              </span>
+                <Flag className="h-3 w-3" aria-hidden />{t("task-components:blockedByParkedWork_8b239473")}</span>
               {parkedBlockers.map((blocker) => renderParkedChip(blocker))}
             </div>
           ) : null}
@@ -426,6 +408,7 @@ export function IssueBlockedNotice({
   scheduledRetry?: IssueScheduledRetry | null;
   agentName?: string | null;
 }) {
+  useTranslation("task-components");
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   // A live run on this issue means an agent is already handling it — the
   // missing-disposition complaint only applies when the issue is stuck.
@@ -464,7 +447,7 @@ export function IssueBlockedNotice({
       ? { issueId, scheduledRetry }
       : null;
 
-  const blockerLabel = blockers.length === 1 ? "the linked task" : "the linked tasks";
+  const blockerLabel = blockers.length === 1 ? t("final-components-b:IssueBlockedNotice.the_linked_task_bd7597") : t("final-components-b:IssueBlockedNotice.the_linked_tasks_a90141");
   const terminalBlockers = blockers
     .flatMap((blocker) => blocker.terminalBlockers ?? [])
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
@@ -518,7 +501,7 @@ export function IssueBlockedNotice({
   // Rule B reopen path — we must not claim "a message won't reopen" for those.
   // Name the deepest unresolved leaf (prefer terminal leaves) with its status
   // so "I sent a message and nothing happened" can't recur silently.
-  const responsibleName = agentName ?? "the assignee";
+  const responsibleName = agentName ?? t("final-components-b:IssueBlockedNotice.the_assignee_f584ae");
   const reopenSuppressed = issueStatus === "blocked" && !isStalled && blockers.length > 0;
   const unresolvedLeafBlockers = (() => {
     if (!reopenSuppressed) return [] as IssueRelationIssueSummary[];
@@ -542,7 +525,7 @@ export function IssueBlockedNotice({
     ? reopenSuppressedLeaf.identifier ?? reopenSuppressedLeaf.id.slice(0, 8)
     : null;
   const reopenSuppressedLeafStatus = reopenSuppressedLeaf
-    ? isLockedIssueStub(reopenSuppressedLeaf) ? "unavailable" : reopenSuppressedLeaf.status.replace(/_/g, " ")
+    ? isLockedIssueStub(reopenSuppressedLeaf) ? t("final-components-b:IssueBlockedNotice.unavailable_ba691b") : reopenSuppressedLeaf.status.replace(/_/g, " ")
     : null;
   const reopenSuppressedOtherCount = Math.max(unresolvedLeafBlockers.length - 1, 0);
 
@@ -553,9 +536,7 @@ export function IssueBlockedNotice({
       return (
         <span key={blocker.id} className="inline-flex max-w-full items-center gap-1.5">
           <LockedIssueChip identifier={blocker.identifier} />
-          <span className="text-(length:--text-micro) text-muted-foreground">
-            Private — you don't have access
-          </span>
+          <span className="text-(length:--text-micro) text-muted-foreground">{t("task-components:privateYouDonTHaveAccess_f6e45426")}</span>
         </span>
       );
     }
@@ -622,38 +603,27 @@ export function IssueBlockedNotice({
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
-              <p className="font-medium leading-5">This task still needs a next step.</p>
-              <p className="leading-5">
-                A run finished successfully, but the task is still open. Paperclip needs someone to choose
-                what happens next.
-              </p>
+              <p className="font-medium leading-5">{t("task-components:thisTaskStillNeedsANextStep_1ada26e3")}</p>
+              <p className="leading-5">{t("task-components:aRunFinishedSuccessfullyButTheTask_51ed8189")}</p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
-                <li>Mark it done or cancelled.</li>
-                <li>Send it for review or ask for input.</li>
-                <li>Record what is blocking it and who owns that blocker.</li>
-                <li>Delegate follow-up work or queue a continuation.</li>
+                <li>{t("task-components:markItDoneOrCancelled_5cbd6466")}</li>
+                <li>{t("task-components:sendItForReviewOrAskFor_fa883fca")}</li>
+                <li>{t("task-components:recordWhatIsBlockingItAndWho_6b236d4d")}</li>
+                <li>{t("task-components:delegateFollowUpWorkOrQueueA_19ff3fa4")}</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (
                   <Link
                     to={`/agents/${successfulRunHandoff.assigneeAgentId}/runs/${successfulRunHandoff.sourceRunId}`}
                     className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
-                  >
-                    run {successfulRunHandoff.sourceRunId.slice(0, 8)}
-                  </Link>
+                  ><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{successfulRunHandoff.sourceRunId.slice(0, 8)}</> }} /></Link>
                 ) : successfulRunHandoff.sourceRunId ? (
-                  <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                    run {successfulRunHandoff.sourceRunId.slice(0, 8)}
-                  </span>
+                  <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100"><Trans ns="task-components" i18nKey="sentence_ae3de501253b" components={{ part1: <>{successfulRunHandoff.sourceRunId.slice(0, 8)}</> }} /></span>
                 ) : null}
-                <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Asked {agentName ?? "the assignee"} to choose the next step
-                </span>
+                <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100"><Trans ns="task-components" i18nKey="sentence_b4d6d34d7fa0" components={{ part1: <>{agentName ?? t("task-components:theAssignee_f584ae3a")}</> }} /></span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
-                <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-                  Detected progress: {successfulRunHandoff.detectedProgressSummary}
-                </p>
+                <p className="text-xs leading-5 text-amber-800 dark:text-amber-200"><Trans ns="task-components" i18nKey="sentence_0fcde7b66596" components={{ part1: <>{successfulRunHandoff.detectedProgressSummary}</> }} /></p>
               ) : null}
               {successfulRunRetryNow ? (
                 <SuccessfulRunRetryNowControl
@@ -672,28 +642,20 @@ export function IssueBlockedNotice({
                 {blockers.length > 0
                   ? isStalled
                     ? stalledLeafBlockers.length > 1
-                      ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
+                      ? <><Trans ns="task-components" i18nKey="sentence_4d0b8ac28b40" components={{ part1: <>{blockerLabel}</> }} /></>
+                      : <><Trans ns="task-components" i18nKey="sentence_60f84603a8e3" components={{ part1: <>{blockerLabel}</> }} /></>
                     : reopenSuppressed
-                      ? <>A message won&rsquo;t restart this task yet — it stays blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} done, then it reopens automatically. Comments still notify {responsibleName} for questions or triage in the meantime.</>
-                      : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still notify the assignee for questions or triage.</>
-                  : <>Work on this task is blocked until someone moves it back to To do. Comments still notify the assignee for questions or triage.</>}
+                      ? <><Trans ns="task-components" i18nKey="sentence_7afa9ee52a64" components={{ part1: <>{blockerLabel}</>, part2: <>{blockers.length === 1 ? t("task-components:itIs_1aa0be92") : t("task-components:theyAre_4f616d6e")}</>, part3: <>{responsibleName}</> }} /></>
+                      : <><Trans ns="task-components" i18nKey="sentence_e96248b01f7e" components={{ part1: <>{blockerLabel}</>, part2: <>{blockers.length === 1 ? t("task-components:itIs_1aa0be92") : t("task-components:theyAre_4f616d6e")}</> }} /></>
+                  : <>{t("task-components:workOnThisTaskIsBlockedUntil_6d2d0cb4")}</>}
               </p>
               {reopenSuppressed && reopenSuppressedLeafId ? (
                 <p
                   data-testid="issue-blocked-notice-reopen-suppressed"
                   className="text-xs font-medium leading-5 text-amber-900 dark:text-amber-100"
-                >
-                  Still blocked by{" "}
-                  <span className="font-mono">{reopenSuppressedLeafId}</span>
-                  {reopenSuppressedLeafStatus ? <> ({reopenSuppressedLeafStatus})</> : null}
-                  {reopenSuppressedOtherCount > 0
-                    ? ` and ${reopenSuppressedOtherCount} other ${
-                        reopenSuppressedOtherCount === 1 ? "task" : "tasks"
-                      }`
-                    : null}
-                  .
-                </p>
+                ><Trans ns="task-components" i18nKey="sentence_c6f67e9d7207" components={{ part1: <>{<span className="font-mono">{reopenSuppressedLeafId}</span>}</>, part2: <>{reopenSuppressedLeafStatus ? <> ({reopenSuppressedLeafStatus})</> : null}</>, part3: <>{reopenSuppressedOtherCount > 0
+                    ? t("final-components-b:and_count_other_tasks_33d111", { count: reopenSuppressedOtherCount })
+                    : null}</> }} /></p>
               ) : null}
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -702,16 +664,12 @@ export function IssueBlockedNotice({
               ) : null}
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Stalled in review
-                  </span>
+                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">{t("task-components:stalledInReview_0fc03143")}</span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Ultimately waiting on
-                  </span>
+                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">{t("task-components:ultimatelyWaitingOn_ae937d06")}</span>
                   {terminalBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
@@ -721,9 +679,7 @@ export function IssueBlockedNotice({
                   className="flex flex-wrap items-center gap-1.5 pt-0.5"
                 >
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
-                    <Flag className="h-3 w-3" aria-hidden />
-                    Blocked by parked work
-                  </span>
+                    <Flag className="h-3 w-3" aria-hidden />{t("task-components:blockedByParkedWork_8b239473")}</span>
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}

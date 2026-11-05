@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 import { useMemo, useRef } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { ConversationTaskHandoff, ConversationTaskHandoffPage, IssueThreadInteraction } from "@paperclipai/shared";
@@ -8,6 +9,7 @@ import { CoordinatorCreatedTaskLink, CoordinatorTaskMotion } from "./Coordinator
 
 /** Bounded, viewer-scoped source-chat projection, shared by chat and its Tasks tab. */
 export function useCoordinatorChatTaskHandoffs(issueId: string | null, conversationMode = true) {
+  const { t: translateShell } = useTranslation("shell");
   const { enabled, userId } = useCoordinatorWorkspaceEnabled();
   const query = useInfiniteQuery({
     queryKey: ["issues", "chat-handoffs", issueId, userId],
@@ -28,7 +30,7 @@ export function useCoordinatorChatTaskHandoffs(issueId: string | null, conversat
   const handoffs = useMemo(() => {
     if (!enabled || !conversationMode || accessUnavailable) return [];
     return [...new Map((query.data?.pages ?? []).flatMap(page => page.items).map(item => [item.id, item])).values()];
-  }, [enabled, conversationMode, query.data, accessUnavailable]);
+  }, [enabled, conversationMode, query.data, accessUnavailable, translateShell]);
   return { ...query, handoffs, enabled: enabled && conversationMode };
 }
 
@@ -39,6 +41,7 @@ export function standaloneChatHandoffs(handoffs: ConversationTaskHandoff[], inte
 
 /** First load and loading older pages are historical, not new task events. */
 export function useLiveChatHandoffIds(scope: string, handoffs: ConversationTaskHandoff[], fetched: boolean) {
+  const { t: translateShell } = useTranslation("shell");
   const observed = useRef<{ scope: string; initialized: boolean; ids: Set<string>; live: Set<string>; newest: number }>({ scope, initialized: false, ids: new Set(), live: new Set(), newest: 0 });
   return useMemo(() => {
     if (observed.current.scope !== scope) observed.current = { scope, initialized: false, ids: new Set(), live: new Set(), newest: 0 };
@@ -51,22 +54,24 @@ export function useLiveChatHandoffIds(scope: string, handoffs: ConversationTaskH
     state.newest = Math.max(state.newest, ...handoffs.map(item => new Date(item.createdAt).getTime()));
     state.initialized = true;
     return new Set(state.live);
-  }, [scope, handoffs, fetched]);
+  }, [scope, handoffs, fetched, translateShell]);
 }
 
 export function CoordinatorChatTaskHandoff({ handoff, animateEntry = false }: { handoff: ConversationTaskHandoff; animateEntry?: boolean }) {
+  const { t: translateShell } = useTranslation("shell");
   return <CoordinatorTaskMotion eventId={handoff.id} phase="created" createdAt={handoff.createdAt} animateCreatedEntry={animateEntry}>
     <CoordinatorCreatedTaskLink task={handoff} createdAt={handoff.createdAt} />
   </CoordinatorTaskMotion>;
 }
 
 export function CoordinatorChatHandoffStatus({ query, scroll = false }: { scroll?: boolean; query: ReturnType<typeof useCoordinatorChatTaskHandoffs> }) {
+  const { t: translateShell } = useTranslation("shell");
   if (!query.enabled) return null;
   if (query.isError) return <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-    <span>Created tasks couldn’t load.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button>
+    <span>{translateShell("shell:created_tasks_couldn_t_load")}</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>{translateShell("shell:retry")}</Button>
   </div>;
   if (!scroll && query.hasNextPage) return <Button size="sm" variant="ghost" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
-    {query.isFetchingNextPage ? "Loading earlier tasks…" : "Load earlier tasks"}
+    {query.isFetchingNextPage ? translateShell("shell:loading_earlier_tasks") : translateShell("shell:load_earlier_tasks")}
   </Button>;
   return null;
 }

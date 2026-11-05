@@ -7,6 +7,7 @@ import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
+import { i18n } from "@/i18n";
 
 const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: { recoveryActions: api.inspect, recoverWorkspace: api.recover } }));
@@ -62,6 +63,14 @@ describe("governed retained-file recovery", () => {
     const target = button(label); expect(target, `missing ${label}`).toBeDefined();
     await act(async () => target!.click()); await settle();
   }
+
+  it("updates retained-file copy without issuing recovery or repeating inspection", async () => {
+    await mount(); const inspections = api.inspect.mock.calls.length;
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("恢复已保存的文件"); expect(api.recover).not.toHaveBeenCalled(); expect(api.inspect).toHaveBeenCalledTimes(inspections); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+    expect(button("Recover saved files")).toBeDefined();
+  });
 
   it("offers the existing preservation operation for a stopped, exhausted system-owned export", async () => {
     await mount();

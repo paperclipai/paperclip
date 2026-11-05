@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useAccountIdentity } from "@/api/companies-query";
 import type { HealthStatus } from "@/api/health";
@@ -23,6 +24,7 @@ function useModalOpen(enabled: boolean) {
 }
 
 export function AnnouncementWell({ health }: { health?: HealthStatus }) {
+  useTranslation("task-components");
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
@@ -32,16 +34,16 @@ export function AnnouncementWell({ health }: { health?: HealthStatus }) {
   const { announcement, dismiss } = useAnnouncement({
     userId, companyId: selectedCompanyId,
     enabled: Boolean(userId && !loading && selectedCompanyId && !onboardingOpen),
-    onSaveFailure: (savedLocally) => toastActions?.pushToast({
-      title: savedLocally ? "Dismissed in this browser" : "Dismissed for this visit",
-      body: "Couldn’t save across devices. We’ll retry when you reconnect or return.",
+    onSaveFailure: (savedLocally) => toastActions?.pushToast({ presentation: { title: savedLocally ? { key: "final-components-a:dismissedInThisBrowser_eaa3e484" } : { key: "final-components-a:dismissedForThisVisit_4f556bd8" }, body: { key: "final-components-a:couldnTSaveAcrossDevices_0dee8850" } }, 
+      title: savedLocally ? t("final-components-a:dismissedInThisBrowser_eaa3e484") : t("final-components-a:dismissedForThisVisit_4f556bd8"),
+      body: t("final-components-a:couldnTSaveAcrossDevices_0dee8850"),
       tone: "info", dedupeKey: "announcement-dismissal-sync",
     }),
   });
   const modalOpen = useModalOpen(Boolean(announcement));
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
-    <aside aria-label="Paperclip announcements" className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)">
+    <aside aria-label={t("task-components:paperclipAnnouncements_0f9b3c82")} className="announcement-well fixed left-3 bottom-(--announcement-mobile-bottom) z-40 w-(--announcement-available-width) max-w-(--announcement-width) max-h-(--announcement-mobile-max-height) overflow-y-auto md:bottom-3 md:max-h-(--announcement-max-height)">
       <AnnouncementCard key={announcement.id} announcement={announcement} onDismiss={() => dismiss(announcement.id)} />
     </aside>
   );

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { agentRuntimeSettingsHarness, aiRuntimeConnectionBindingSchema, type Agent, type AiConnectionBinding, type AiConnectionList, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
 
 export const bulkAgentHarness = (agent: Agent) => agentRuntimeSettingsHarness(agent.adapterType, agent.adapterConfig);
@@ -9,9 +10,9 @@ export const sameBinding = (a: AiRuntimeConnectionBinding | undefined, b: AiRunt
 };
 
 export function bulkAgentDisabledReason(agent: Agent): string | undefined {
-  if (["terminated", "pending_approval"].includes(agent.status)) return "This agent is not available for bulk edits";
-  if (agentConnection(agent)?.mode === "router") return "Edit connection pool members on the agent's configuration page";
-  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "antigravity_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return "Connection and model are managed externally";
+  if (["terminated", "pending_approval"].includes(agent.status)) return t("display:copy_714d5a99e12f");
+  if (agentConnection(agent)?.mode === "router") return t("display:copy_24588199bb99");
+  if (!["codex_local", "claude_local", "gemini_local", "grok_local", "opencode_local", "hermes_local", "pi_local", "copilot_runtime", "antigravity_runtime", "cursor_local"].includes(bulkAgentHarness(agent))) return t("display:copy_162f294ba02e");
 }
 
 export function resolveBulkConnection(binding: AiConnectionBinding | undefined, accounts: AiConnectionList) {
@@ -21,9 +22,9 @@ export function resolveBulkConnection(binding: AiConnectionBinding | undefined, 
 }
 
 export function bulkConnectionName(binding: AiRuntimeConnectionBinding | undefined, accounts?: AiConnectionList) {
-  if (!binding) return "Local credentials";
-  if (binding.mode === "router") return "Connection pool";
-  if (binding.mode === "responsible_user") return "Responsible user's default";
+  if (!binding) return t("display:copy_d70c66cc4ced");
+  if (binding.mode === "router") return t("display:copy_c4a7d283a8fc");
+  if (binding.mode === "responsible_user") return t("display:copy_e46172b4d0e0");
   return accounts?.connections.find(c => c.id === binding.connectionId && c.grantId === binding.grantId)?.name ?? "Assigned connection";
 }
 

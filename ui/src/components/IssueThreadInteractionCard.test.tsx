@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
+import { i18n } from "@/i18n";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
@@ -55,6 +56,43 @@ import {
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
+it("localizes mounted checkbox count without submitting or losing selection", async () => {
+  const accept = vi.fn();
+  const element = renderCard({ interaction: pendingRequestCheckboxConfirmationInteraction, onAcceptInteraction: accept });
+  await act(async () => { await i18n.changeLanguage("zh-CN"); });
+  try {
+    expect(element.textContent).toContain("个选项");
+    expect(element.textContent).not.toContain("options selected");
+    expect(accept).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(element.textContent).toContain("options selected"); expect(accept).not.toHaveBeenCalled();
+  } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+});
+it("retranslates a held interaction fallback without repeating the rejected action", async () => {
+  const accept = vi.fn().mockRejectedValue(null);
+  const element = renderCard({ interaction: pendingRequestCheckboxConfirmationInteraction, onAcceptInteraction: accept });
+  await act(async () => { [...element.querySelectorAll('button')].find(b => b.textContent === "Delete selected")?.click(); });
+  const error = element.querySelector('[data-testid="interaction-action-error"]');
+  const english = error?.textContent; expect(english).toBeTruthy(); expect(accept).toHaveBeenCalledTimes(1);
+  await act(async () => { await i18n.changeLanguage("zh-CN"); });
+  try { expect(error?.textContent).not.toBe(english); expect(accept).toHaveBeenCalledTimes(1); }
+  finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+  expect(error?.textContent).toBe(english); expect(accept).toHaveBeenCalledTimes(1);
+});
+it("keeps zero verdict progress and translates verdict accessibility on the same mount", async () => {
+  const submit = vi.fn();
+  const element = renderCard({ interaction: pendingRequestItemVerdictsInteraction, onSubmitInteractionVerdicts: submit });
+  const progress = element.querySelector('[role="progressbar"]');
+  expect(element.textContent).toContain("0 of 5 decided");
+  await act(async () => { await i18n.changeLanguage("zh-CN"); });
+  try {
+    expect(element.querySelector('[role="progressbar"]')).toBe(progress);
+    expect(progress?.getAttribute("aria-valuenow")).toBe("0");
+    expect(element.querySelector('[data-verdict="approve"]')?.getAttribute("aria-label")).toBe("批准此项");
+    expect(element.textContent).toContain("应用 0 项决定");
+    expect(submit).not.toHaveBeenCalled();
+  } finally { await act(async () => { await i18n.changeLanguage("en"); }); }
+});
 let container: HTMLDivElement | null = null;
 
 const connectionIntentsApiMocks = vi.hoisted(() => ({

@@ -1,3 +1,5 @@
+import { resolveUiMessage, uiErrorDescriptor, type UiMessageDescriptor } from "@/lib/localized-ui-error";
+import { t, i18n, useTranslation, Trans } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -47,11 +49,11 @@ function issueLabel(issue: SummarySlotIssueRef) {
 }
 
 function revisionLabel(revision: SummarySlotRevision) {
-  return `Rev ${revision.revisionNumber}`;
+  return t("task-components:rev_29a104d8", { value1: revision.revisionNumber });
 }
 
 function formatRevisionTimestamp(date: Date | string) {
-  return new Intl.DateTimeFormat("en-US", {
+  return new Intl.DateTimeFormat(i18n.language, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -68,9 +70,7 @@ function latestRevisionOptionLabel(
   document: SummarySlotDocument,
   revision: SummarySlotRevision | null,
 ) {
-  return `Latest (Rev ${document.latestRevisionNumber}) - ${
-    formatRevisionTimestamp(revision?.createdAt ?? document.updatedAt)
-  }`;
+  return t("final-components-a:latestRevRevisionTime_beb5054d", { revision: document.latestRevisionNumber, time: formatRevisionTimestamp(revision?.createdAt ?? document.updatedAt) });
 }
 
 interface LiveGenerationStatus {
@@ -93,7 +93,7 @@ export function resolveGenerationStatusLine(status: LiveGenerationStatus | null)
   if (!status) return null;
   if (status.message) return status.message;
   if (status.lastAssistantSnippet) return status.lastAssistantSnippet;
-  if (status.currentToolName) return `Working with ${status.currentToolName}`;
+  if (status.currentToolName) return t("final-components-a:workingWithTool_c1f9088c", { tool: status.currentToolName });
   return null;
 }
 
@@ -143,10 +143,11 @@ export function SummarySlotCard({
   description,
   className,
 }: SummarySlotCardProps) {
+  useTranslation("task-components");
   const queryClient = useQueryClient();
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
   const [configureOpen, setConfigureOpen] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<UiMessageDescriptor | { raw: string } | null>(null);
   const selector: SummarySlotSelector | null = companyId
     ? { companyId, scopeKind, scopeId, slotKey }
     : null;
@@ -202,7 +203,7 @@ export function SummarySlotCard({
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Summary generation could not be started.");
+      setActionError(error instanceof Error ? uiErrorDescriptor(error) ?? { raw: error.message } : { key: "final-components-a:summaryGenerationFailed" });
     },
   });
 
@@ -235,7 +236,7 @@ export function SummarySlotCard({
     .toSorted((left, right) => right.revisionNumber - left.revisionNumber)
     .slice(0, MAX_REVISION_OPTIONS - (latestDocument ? 1 : 0));
   const revisionSelectValue = historicalRevision?.id ?? LATEST_REVISION_SELECT_VALUE;
-  const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : "Latest";
+  const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : t("task-components:latest_8730d3c2");
   const generatingIssue = slotQuery.data?.generatingIssue ?? null;
   const liveStatusLine = resolveGenerationStatusLine(useGenerationStatus(generatingIssue?.id ?? null));
   const draftStream = useSummaryDraftStream(companyId, generatingIssue);
@@ -262,9 +263,9 @@ export function SummarySlotCard({
           <div className="flex flex-wrap items-center gap-2">
             <Sparkles className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
             <h2 className="text-sm font-semibold">{title}</h2>
-            {isGenerating ? <Badge variant="secondary">Generating</Badge> : null}
-            {displayingHistoricalRevision ? <Badge variant="outline">Historical revision</Badge> : null}
-            {latestDocument && !displayingHistoricalRevision ? <Badge variant="outline">Latest revision</Badge> : null}
+            {isGenerating ? <Badge variant="secondary">{t("task-components:generating_3607d4f4")}</Badge> : null}
+            {displayingHistoricalRevision ? <Badge variant="outline">{t("task-components:historicalRevision_d7c7ad26")}</Badge> : null}
+            {latestDocument && !displayingHistoricalRevision ? <Badge variant="outline">{t("task-components:latestRevision_305ad7b9")}</Badge> : null}
           </div>
           {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </div>
@@ -275,9 +276,7 @@ export function SummarySlotCard({
               size="sm"
               variant="outline"
               onClick={() => setSelectedRevisionId(null)}
-            >
-              Latest
-            </Button>
+            >{t("task-components:latest_8730d3c2")}</Button>
           ) : null}
           {latestDocument && !generationFailed ? (
             <Button
@@ -287,9 +286,7 @@ export function SummarySlotCard({
               onClick={startGeneration}
               disabled={!selector || generateMutation.isPending || Boolean(isGenerating)}
             >
-              {generateMutation.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              Refresh
-            </Button>
+              {generateMutation.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}{t("task-components:refresh_0e916101")}</Button>
           ) : null}
         </div>
       </div>
@@ -306,19 +303,14 @@ export function SummarySlotCard({
               <div className="space-y-1 text-sm">
                 <p className="font-medium text-foreground">
                   {needsSetup.status === "pending_approval"
-                    ? "Summarizer setup is pending approval"
-                    : "Set up the Summarizer"}
+                    ? t("task-components:summarizerSetupIsPendingApproval_5b2d45d4")
+                    : t("task-components:setUpTheSummarizer_9606ead9")}
                 </p>
-                <p className="text-muted-foreground">
-                  Summaries are generated by Paperclip's built-in Summarizer agent. Configure its adapter and model
-                  before requesting this summary.
-                </p>
+                <p className="text-muted-foreground">{t("task-components:summariesAreGeneratedByPaperclipSBuilt_df756a3d")}</p>
               </div>
             </div>
             {needsSetup.status === "pending_approval" ? null : (
-              <Button type="button" size="sm" onClick={() => setConfigureOpen(true)}>
-                Set up Summarizer
-              </Button>
+              <Button type="button" size="sm" onClick={() => setConfigureOpen(true)}>{t("task-components:setUpSummarizer_3d691da8")}</Button>
             )}
           </div>
           {companyId ? (
@@ -336,7 +328,7 @@ export function SummarySlotCard({
       {!needsSetup && summarizerState?.status === "paused" && summarizerState.agent ? (
         <InlineBanner
           tone="warning"
-          title="Summarizer is paused"
+          title={t("task-components:summarizerIsPaused_f20b36c3")}
           actions={
             <Button
               type="button"
@@ -344,17 +336,15 @@ export function SummarySlotCard({
               onClick={() => summarizerState.agent && resumeSummarizer.mutate(summarizerState.agent.id)}
               disabled={resumeSummarizer.isPending}
             >
-              {resumeSummarizer.isPending ? "Resuming..." : "Resume agent"}
+              {resumeSummarizer.isPending ? t("task-components:resuming_4414358c") : t("task-components:resumeAgent_0bb60c45")}
             </Button>
           }
-        >
-          Existing summaries remain readable, but new summaries will not be generated until the agent resumes.
-        </InlineBanner>
+        >{t("task-components:existingSummariesRemainReadableButNewSummaries_819e45c3")}</InlineBanner>
       ) : null}
 
       {actionError ? (
-        <InlineBanner tone="warning" title="Summary request failed">
-          {actionError}
+        <InlineBanner tone="warning" title={t("task-components:summaryRequestFailed_0fdb9c43")}>
+          {"raw" in actionError ? actionError.raw : resolveUiMessage(actionError)}
         </InlineBanner>
       ) : null}
 
@@ -371,7 +361,7 @@ export function SummarySlotCard({
       {slotReady && generationFailed ? (
         <InlineBanner
           tone="danger"
-          title="Summary generation failed"
+          title={t("task-components:summaryGenerationFailed_3b09cc4b")}
           actions={
             <Button
               type="button"
@@ -379,11 +369,11 @@ export function SummarySlotCard({
               onClick={startGeneration}
               disabled={!selector || generateMutation.isPending}
             >
-              {generateMutation.isPending ? "Retrying..." : "Retry"}
+              {generateMutation.isPending ? t("task-components:retrying_84a657bc") : t("task-components:retry_942087cc")}
             </Button>
           }
         >
-          {slotQuery.data?.slot?.failureReason ?? "The generation task ended before writing a summary."}
+          {slotQuery.data?.slot?.failureReason ?? t("task-components:theGenerationTaskEndedBeforeWritingA_1fa12fb6")}
         </InlineBanner>
       ) : null}
 
@@ -391,7 +381,7 @@ export function SummarySlotCard({
         <div className="flex items-start gap-3 text-sm">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           <div className="min-w-0 space-y-1">
-            <p className="font-medium text-foreground">Generating summary</p>
+            <p className="font-medium text-foreground">{t("task-components:generatingSummary_d60065d5")}</p>
             {generationStatusLine ? (
               <p
                 className="animate-pulse truncate text-muted-foreground"
@@ -420,13 +410,9 @@ export function SummarySlotCard({
                 ) : null}
               </div>
             ) : null}
-            <p className="text-muted-foreground">
-              Summarizer is working in{" "}
-              <Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`}>
+            <p className="text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_6f079beb7494" components={{ part1: <>{<Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`}>
                 {issueLabel(generatingIssue)}
-              </Link>
-              .
-            </p>
+              </Link>}</> }} /></p>
           </div>
         </div>
       ) : null}
@@ -434,8 +420,8 @@ export function SummarySlotCard({
       {slotReady && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">No summary yet</p>
-            <p className="text-muted-foreground">Generate a concise status snapshot for this surface.</p>
+            <p className="font-medium text-foreground">{t("task-components:noSummaryYet_f098ecd6")}</p>
+            <p className="text-muted-foreground">{t("task-components:generateAConciseStatusSnapshotForThis_7923cb41")}</p>
           </div>
           <Button
             type="button"
@@ -444,7 +430,7 @@ export function SummarySlotCard({
             disabled={!selector || generateMutation.isPending}
           >
             {generateMutation.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {generateMutation.isPending ? "Generating..." : "Generate summary"}
+            {generateMutation.isPending ? t("task-components:generating_49286f33") : t("task-components:generateSummary_ab35d87b")}
           </Button>
         </div>
       ) : null}
@@ -456,9 +442,7 @@ export function SummarySlotCard({
           </MarkdownBody>
 
           <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <span title={formatDateTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}>
-              Updated {relativeTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}
-            </span>
+            <span title={formatDateTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}><Trans ns="task-components" i18nKey="sentence_44d29d05f92a" components={{ part1: <>{relativeTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}</> }} /></span>
 
             {revisions.length > 1 ? (
               <Select
@@ -470,12 +454,12 @@ export function SummarySlotCard({
                 <SelectTrigger
                   size="sm"
                   className="h-auto border-0 bg-transparent p-0 text-xs shadow-none hover:text-foreground focus-visible:ring-0"
-                  aria-label="Select summary revision"
+                  aria-label={t("task-components:selectSummaryRevision_e9e258ba")}
                   title={historicalRevision ? revisionOptionLabel(historicalRevision) : latestSelectLabel}
                 >
                   <SelectValue>
                     <History className="size-3.5" aria-hidden="true" />
-                    <span>{revisions.length} revisions</span>
+                    <span><Trans ns="final-components-a" i18nKey="numeric_1124afd9574e" values={{ length: revisions.length }} /></span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="end" position="popper">

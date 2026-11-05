@@ -1,3 +1,4 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
 import { useAccountBoundMutation } from "./useAccountBoundMutation";
@@ -36,7 +37,7 @@ export function useCoordinatorWorkspaceEnabled() {
   const mutation = useAccountBoundMutation({
     mutationFn: async ({ companyId, enabled, owner }: { companyId: string; enabled: boolean; owner: string }) => {
       const result = await workspacePreferencesApi.update(companyId, { coordinatorWorkspaceEnabled: enabled });
-      if (result.userId !== owner) throw new Error("Your account changed. Reload your workspace preference and try again.");
+      if (result.userId !== owner) throw localizeUiError(new Error("Your account changed. Reload your workspace preference and try again."), { key: "final-components-b:error.Your_account_changed_Reload_your_workspace_preference_and_try_again_ff6b10" });
       return result;
     },
     onSuccess: (result) => {
@@ -54,7 +55,7 @@ export function useCoordinatorWorkspaceEnabled() {
       ?? (mutation.variables?.owner === userId ? mutation.error : null),
     isSaving: mutation.isPending && mutation.variables?.owner === userId,
     setEnabled: async (companyId: string, enabled: boolean) => {
-      if (!contextClient || !userId) throw new Error("Sign in before changing your workspace.");
+      if (!contextClient || !userId) throw localizeUiError(new Error("Sign in before changing your workspace."), { key: "final-components-b:error.Sign_in_before_changing_your_workspace_bd3349" });
       return mutation.mutateAsync({ companyId, enabled, owner: userId });
     },
     retry: async () => {

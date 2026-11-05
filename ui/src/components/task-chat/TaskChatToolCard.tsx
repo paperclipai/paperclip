@@ -1,3 +1,6 @@
+import { t, useTranslation } from "@/i18n";
+import { enumDisplayLabel } from "./task-chat-display";
+import { toolDisplayLabel } from "./task-chat-display";
 import { useTaskChatExpansion } from "./expansion-state";
 import { cn } from "@/lib/utils";
 import {
@@ -31,6 +34,7 @@ const STATUS_ICON = {
  * inset). Full diff bodies stay out of the activity feed.
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
+  useTranslation("task-components");
   const { Icon, spin, tone } = STATUS_ICON[item.status];
   const shimmer = useTaskChatShimmer(item.id);
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
@@ -58,7 +62,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           />
         </span>
         <span data-conversation-tool-running={item.status === "in_progress" && shimmer ? "true" : undefined} className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
-          <span className="shrink-0 font-medium leading-4">{item.name}</span>
+          <span className="shrink-0 font-medium leading-4">{toolDisplayLabel(item)}</span>
           {item.target ? (
             <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro) leading-4">
               {item.target}
@@ -80,7 +84,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
               ) : (
                 <ShieldX className="h-3 w-3" />
               )}
-              {item.decision}
+              {enumDisplayLabel(item.decision)}
             </span>
           ) : null}
           {expandable ? (
@@ -97,9 +101,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
             aria-hidden
           />
           {item.status === "interrupted" ? (
-            <span className="text-(length:--text-micro) text-muted-foreground">
-              Interrupted
-            </span>
+            <span className="text-(length:--text-micro) text-muted-foreground">{t("task-components:interrupted_132d124d")}</span>
           ) : null}
         </span>
       </button>
@@ -122,7 +124,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           data-testid="task-chat-tool-change-summary"
         >
           <div className="flex min-w-0 items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-            <span className="shrink-0">Changed</span>
+            <span className="shrink-0">{t("task-components:changed_2a6141e4")}</span>
             {item.diff.path ? (
               <span className="min-w-0 truncate font-mono text-foreground">
                 {item.diff.path}

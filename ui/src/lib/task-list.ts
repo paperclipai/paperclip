@@ -1,16 +1,17 @@
+import { t } from "@/i18n";
 import { readIssueSortParams, type IssueSort, type IssueSortField } from "./issue-sort";
 
 /** Ordered columns and token references shared by the proposed header and rows. */
 export const taskListColumns = [
-  { id: "task", label: "Task", width: "var(--task-list-column-task)" },
-  { id: "taskId", label: "Task ID", width: "var(--task-list-column-task-id)" },
-  { id: "createdBy", label: "Created by", width: "var(--task-list-column-created-by)" },
-  { id: "assignee", label: "Assignee", width: "var(--task-list-column-assignee)" },
-  { id: "project", label: "Project", width: "var(--task-list-column-project)" },
-  { id: "parentTask", label: "Parent Task", width: "var(--task-list-column-parent)" },
-  { id: "tags", label: "Tags", width: "var(--task-list-column-tags)" },
-  { id: "worktree", label: "Worktree", width: "var(--task-list-column-worktree)" },
-  { id: "lastUpdated", label: "Last updated", width: "var(--task-list-column-updated)" },
+  { id: "task", get "label"() { return t("display:meta_7bb0ddf9221c"); }, width: "var(--task-list-column-task)" },
+  { id: "taskId", get "label"() { return t("display:meta_0491c6d47e2d"); }, width: "var(--task-list-column-task-id)" },
+  { id: "createdBy", get "label"() { return t("display:meta_5d73cc30510c"); }, width: "var(--task-list-column-created-by)" },
+  { id: "assignee", get "label"() { return t("display:meta_049e3ce5476a"); }, width: "var(--task-list-column-assignee)" },
+  { id: "project", get "label"() { return t("display:meta_f6f4da8d93e8"); }, width: "var(--task-list-column-project)" },
+  { id: "parentTask", get "label"() { return t("display:meta_915a5dd07c55"); }, width: "var(--task-list-column-parent)" },
+  { id: "tags", get "label"() { return t("display:meta_848eed0fbd54"); }, width: "var(--task-list-column-tags)" },
+  { id: "worktree", get "label"() { return t("display:meta_fad0554cb2ea"); }, width: "var(--task-list-column-worktree)" },
+  { id: "lastUpdated", get "label"() { return t("display:meta_583c9e23574a"); }, width: "var(--task-list-column-updated)" },
 ] as const;
 
 export type TaskListColumnId = (typeof taskListColumns)[number]["id"];

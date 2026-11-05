@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import { useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -39,7 +40,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
     return () => { current.mounted = false; };
   }, [companyId, userId]);
   return useCallback(async (agent: Agent, signal?: AbortSignal) => {
-    if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
+    if (!companyId || agent.companyId !== companyId) throw localizeUiError(new Error("Choose an agent from this company."), { key: "final-components-a:chooseAnAgentFromThis_000ce28d" });
     const current = scope.current;
     const chat = await agentChatsApi.ensure(companyId, agent.id);
     client.setQueryData(queryKeys.agentChats.detail(companyId, userId, agent.id), chat);

@@ -1,3 +1,5 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download } from "lucide-react";
@@ -18,8 +20,8 @@ export const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
 /** Bound the actual response, not just producer-supplied attachment metadata. */
 export async function readTextPreview(response: Response) {
   // Carry the status so the shared classification can tell an outage (503) from a real failure.
-  if (!response.ok) throw Object.assign(new Error(`Could not load file (${response.status}).`), { status: response.status });
-  if (!response.body) throw new Error("The file response is empty.");
+  if (!response.ok) throw Object.assign(localizeUiError(new Error(`Could not load file (${response.status}).`), { key: "final-components-b:error.Could_not_load_file_status_cd4474", values: { status: response.status } }), { status: response.status });
+  if (!response.body) throw localizeUiError(new Error("The file response is empty."), { key: "final-components-b:error.The_file_response_is_empty_5a3162" });
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let bytes = 0;
@@ -29,11 +31,11 @@ export async function readTextPreview(response: Response) {
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > TEXT_PREVIEW_MAX_BYTES) throw new Error("This file is too large to preview. Download it instead.");
+      if (bytes > TEXT_PREVIEW_MAX_BYTES) throw localizeUiError(new Error("This file is too large to preview. Download it instead."), { key: "final-components-b:error.This_file_is_too_large_to_preview_Download_it_instead_7731ca" });
       text += decoder.decode(chunk.value, { stream: true });
     }
     text += decoder.decode();
-    if (text.includes("\0")) throw new Error("This file contains binary data. Download it instead.");
+    if (text.includes("\0")) throw localizeUiError(new Error("This file contains binary data. Download it instead."), { key: "final-components-b:error.This_file_contains_binary_data_Download_it_instead_7e7a9a" });
     return text;
   } finally {
     await reader.cancel();
@@ -49,6 +51,7 @@ export function TextAttachmentPreview({ title, text, markdown, html = false, csv
   csv?: boolean;
   downloadUrl: string;
 }) {
+  useTranslation("task-components");
   const [mode, setMode] = useState<FilePreviewMode>("rendered");
   useEffect(() => setMode("rendered"), [title]);
   const renderCsv = csv && mode === "rendered" && text.length > 0;
@@ -57,23 +60,24 @@ export function TextAttachmentPreview({ title, text, markdown, html = false, csv
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h2>
-        {markdown || html || csv ? <FilePreviewModeToggle mode={mode} onChange={setMode} label={html ? "HTML view" : csv ? "CSV view" : "Markdown view"} /> : null}
+        {markdown || html || csv ? <FilePreviewModeToggle mode={mode} onChange={setMode} label={html ? t("task-components:htmlView_765d02e6") : csv ? t("task-components:csvView_cc2c8ad3") : t("task-components:markdownView_4baf040e")} /> : null}
         <Button asChild variant="ghost" size="icon-sm">
-          <a href={downloadUrl} download aria-label={`Download ${title}`} title={`Download ${title}`}><Download aria-hidden /></a>
+          <a href={downloadUrl} download aria-label={t("task-components:download_8fe1a08e", { value1: title })} title={t("task-components:download_8fe1a08e", { value1: title })}><Download aria-hidden /></a>
         </Button>
       </header>
       <div className={renderHtml || renderCsv ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4"}>
-        {text.length === 0 ? <p className="text-sm text-muted-foreground">File is empty.</p>
+        {text.length === 0 ? <p className="text-sm text-muted-foreground">{t("task-components:fileIsEmpty_912dda30")}</p>
           : renderCsv ? <CsvPreview text={text} title={title} />
           : renderHtml ? <HtmlArtifactPreview html={text} title={title} />
           : markdown && mode === "rendered" ? <MarkdownBody mediaMode="reference">{text}</MarkdownBody>
-          : <pre className="whitespace-pre-wrap break-words font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
+          : <pre className="whitespace-pre-wrap break-words font-mono text-sm" aria-label={t("task-components:rawText_36254db4", { value1: title })}>{text}</pre>}
       </div>
     </div>
   );
 }
 
 export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string; attachmentId: string }) {
+  useTranslation("task-components");
   const attachments = useQuery({
     queryKey: queryKeys.issues.attachments(issueId),
     queryFn: () => issuesApi.listAttachments(issueId),
@@ -91,7 +95,7 @@ export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string
   });
   const attachmentsView = useQueryView(attachments);
   const contentView = useQueryView(content);
-  if (attachments.isLoading || attachmentsView.kind === "reconnecting") return <p className="p-4 text-sm" role="status">Loading file…</p>;
+  if (attachments.isLoading || attachmentsView.kind === "reconnecting") return <p className="p-4 text-sm" role="status">{t("task-components:loadingFile_e937adaa")}</p>;
   if (attachmentsView.kind === "error") {
     return (
       <QueryErrorState
@@ -103,17 +107,17 @@ export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string
       />
     );
   }
-  if (!attachment) return <p className="p-4 text-sm" role="status">File no longer available. Close this tab or choose another file.</p>;
+  if (!attachment) return <p className="p-4 text-sm" role="status">{t("task-components:fileNoLongerAvailableCloseThisTab_e33f3900")}</p>;
   const downloadUrl = attachmentDownloadPath(attachment);
   if (!eligible || contentView.kind === "error") {
     return (
       <div className="space-y-3 p-4" role="alert">
-        <p className="text-sm">{contentView.kind === "error" ? "Could not preview this file. Retry or download it." : "This file is too large or is not supported for text preview. Download it instead."}</p>
-        {eligible ? <Button onClick={() => void content.refetch()}>Retry</Button> : null}
-        <Button asChild variant="outline"><a href={downloadUrl} download>Download file</a></Button>
+        <p className="text-sm">{contentView.kind === "error" ? t("task-components:couldNotPreviewThisFileRetryOr_d928e7da") : t("task-components:thisFileIsTooLargeOrIs_ff7f7c37")}</p>
+        {eligible ? <Button onClick={() => void content.refetch()}>{t("task-components:retry_942087cc")}</Button> : null}
+        <Button asChild variant="outline"><a href={downloadUrl} download>{t("task-components:downloadFile_9de4149f")}</a></Button>
       </div>
     );
   }
-  if (content.data === undefined) return <p className="p-4 text-sm" role="status">Loading file…</p>;
+  if (content.data === undefined) return <p className="p-4 text-sm" role="status">{t("task-components:loadingFile_e937adaa")}</p>;
   return <TextAttachmentPreview key={attachment.id} title={attachment.originalFilename ?? attachment.id} text={content.data} csv={isCsvFile(attachment.originalFilename ?? "", attachment.contentType)} markdown={isMarkdownAttachment(attachment)} html={isHtmlPreview(attachment.contentType, attachment.originalFilename)} downloadUrl={downloadUrl} />;
 }

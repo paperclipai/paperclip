@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -5,6 +6,7 @@ import { describeError } from "@/api/errors";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
+  const { t } = useTranslation("connections");
   const isolated = true;
   const active = Boolean(companyId && enabled);
   const [attempt, setAttempt] = useState<LocalAiLoginAttempt | null>(null);
@@ -64,7 +66,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         setAuthorizationUrl(next.authorizationUrl ?? null);
         setCode(next.code ?? null);
         setAccountLabel(next.accountLabel ?? null);
-        setError(next.error ?? (next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null));
+        setError(next.error ?? (next.status === "expired" ? t("this_sign_in_attempt_expired_start_sign_f63cc14") : null));
         // Stop polling a verified account. Focus rechecks after the provider
         // browser visit; sign-in never requires repeated Connect clicks.
         if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
@@ -84,7 +86,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
       // Navigation is not cancellation. The server resumes this bounded attempt
       // when the user returns and reaps abandoned attempts after expiry.
     };
-  }, [companyId, active, isolated, target, generation]);
+  }, [companyId, active, isolated, target, generation, t]);
   return {
     isolated,
     command: attempt?.command,
@@ -96,17 +98,17 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     error,
     retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
     submitCode: async (browserCode: string) => {
-      if (!companyId || !attempt) throw new Error("Start sign-in before submitting a code.");
+      if (!companyId || !attempt) throw new Error(t("start_sign_in_before_submitting_a_code_1b0d3d8"));
       try {
         await aiConnectionsApi.submitLocalLoginCode(companyId, attempt.sessionId, browserCode);
       } catch (cause) {
-        setError("Could not submit the authorization code. Start sign-in again.");
+        setError(t("could_not_submit_the_authorization_code_start_755d40e"));
         throw cause;
       }
     },
     connect: (input = intent) => {
-      if (!companyId) throw new Error("Choose a company before connecting.");
-      if (isolated && !attempt) throw new Error("Prepare local sign-in before connecting.");
+      if (!companyId) throw new Error(t("choose_a_company_before_connecting_85f30d0"));
+      if (isolated && !attempt) throw new Error(t("prepare_local_sign_in_before_connecting_ece9c0c"));
       return aiConnectionsApi.connectLocal(companyId, { ...input, ...(attempt ? { localSessionId: attempt.sessionId } : {}) });
     },
   };

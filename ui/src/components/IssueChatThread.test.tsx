@@ -419,6 +419,14 @@ describe("IssueChatThread", () => {
     expect(selector().value).toBe("agent:first");
     act(() => root.unmount());
   });
+  it("updates the empty conversation without sending on a locale round trip", async () => {
+    const { i18n } = await import("@/i18n");
+    const root = createRoot(container); const add = vi.fn();
+    act(() => renderIssueThread(root, { onAdd: add }));
+    await act(async () => { await i18n.changeLanguage("zh-CN"); });
+    try { expect(container.textContent).toContain("此任务对话为空，请在下方发送消息开始。"); expect(add).not.toHaveBeenCalled(); }
+    finally { await act(async () => { await i18n.changeLanguage("en"); root.unmount(); }); }
+  });
   function renderIssueThread(root: ReturnType<typeof createRoot>, props: Partial<ComponentProps<typeof IssueChatThread>> = {}) {
     root.render(
       <MemoryRouter>

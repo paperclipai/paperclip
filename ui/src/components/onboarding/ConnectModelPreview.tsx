@@ -1,3 +1,4 @@
+import { useTranslation, t as translate } from "@/i18n";
 import { AgentCharacter } from "../AgentCharacter";
 import { useState } from "react";
 import { MotionConfig } from "motion/react";
@@ -47,12 +48,12 @@ import { Stepper } from "./Stepper";
 const MODEL_SOURCES: ModelSource[] = [
   {
     id: "claude_local",
-    label: "Claude Code",
+    get label() { return translate("connections:claude_code_61f2de2"); },
     icon: <img src="/brands/claude-color.svg" alt="" className="size-full" />,
   },
   {
     id: "codex_local",
-    label: "Codex",
+    get label() { return translate("connections:codex_2c5d5b8"); },
     icon: <img src="/brands/codex-color.svg" alt="" className="size-full" />,
   },
 ];
@@ -80,6 +81,7 @@ export function ConnectModelPreview({
   initialUseApiKeys?: boolean;
   control?: CredentialControl;
 }) {
+  const { t } = useTranslation("connections");
   const [selectedId, setSelectedId] = useState<string | null>(initialSourceId);
   const [useApiKeys, setUseApiKeys] = useState(initialUseApiKeys);
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
@@ -106,14 +108,14 @@ export function ConnectModelPreview({
         <div className="pt-6">
           <OnboardingHeading
             center
-            title="Connect a model"
+            title={t("connect_a_model_aaf2b3e")}
             lede="Paperclip works with your existing subscription or API keys."
           />
         </div>
 
         <div className="space-y-2 pt-12">
           <ModelSourceTiles
-            label="Model source"
+            label={t("model_source_60d88e7")}
             sources={MODEL_SOURCES}
             mode={mode}
             selectedId={selectedId}
@@ -132,9 +134,7 @@ export function ConnectModelPreview({
                 checked={useApiKeys}
                 onCheckedChange={(checked) => setUseApiKeys(checked === true)}
               />
-              <span className="text-sm font-medium text-foreground">
-                Use API keys instead
-              </span>
+              <span className="text-sm font-medium text-foreground">{t("use_api_keys_instead_9873e3a")}</span>
             </label>
           )}
         </div>

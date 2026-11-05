@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ArtifactGroupBy, ArtifactKindFilter } from "@/api/artifacts";
 import { TabFilters, type TabBarItem } from "@/components/TabBar";
 
@@ -9,18 +10,19 @@ import { TabFilters, type TabBarItem } from "@/components/TabBar";
 export type ArtifactsV1View = "tasks" | Exclude<ArtifactKindFilter, never>;
 
 export const ARTIFACTS_V1_VIEWS: TabBarItem<ArtifactsV1View>[] = [
-  { value: "tasks", label: "Tasks" },
-  { value: "all", label: "All files" },
-  { value: "image", label: "Images" },
-  { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
-  { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
+  { value: "tasks", get label() { return t("task-components:tasks_b3a60e61"); } },
+  { value: "all", get label() { return t("final-components-b:artifacts.v1.ArtifactsV1Filters.All_files_866956"); } },
+  { value: "image", get label() { return t("task-components:images_be7e2f20"); } },
+  { value: "video", get label() { return t("task-components:videos_c9a96394"); } },
+  { value: "document", get label() { return t("task-components:documents_b4e929d8"); } },
+  { value: "text", get label() { return t("task-components:text_71988c4d"); } },
+  { value: "file", get label() { return t("task-components:files_abc7e989"); } },
 ];
 
 /** Any grouping reads as the Tasks view; flat views are named by their kind. */
 export const artifactsV1View = (groupBy: ArtifactGroupBy, kind: ArtifactKindFilter): ArtifactsV1View => (groupBy !== "none" ? "tasks" : kind);
 
 export function ArtifactsV1Filters({ view, onViewChange }: { view: ArtifactsV1View; onViewChange: (view: ArtifactsV1View) => void }) {
-  return <TabFilters items={ARTIFACTS_V1_VIEWS} value={view} onValueChange={onViewChange} size="standard" label="Show artifacts by task or by type" />;
+  useTranslation("task-components");
+  return <TabFilters items={ARTIFACTS_V1_VIEWS} value={view} onValueChange={onViewChange} size="standard" label={t("final-components-b:artifacts.v1.ArtifactsV1Filters.Show_artifacts_by_task_or_by_type_faa1d8")} />;
 }

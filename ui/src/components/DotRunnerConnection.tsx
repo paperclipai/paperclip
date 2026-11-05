@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
@@ -18,6 +19,7 @@ interface Connection {
 export function DotRunnerConnection({ companyId, agentId, bindingId, onBinding }: {
   companyId?: string; agentId?: string; bindingId?: string; onBinding: (id: string) => void;
 }) {
+  const { t } = useTranslation("connections");
   const client = useQueryClient();
   const [pairing, setPairing] = useState<{ pairingCode: string; expiresAt: string } | null>(null);
   const path = `/companies/${companyId}/agents/${agentId}/dot-binding`;
@@ -51,38 +53,38 @@ export function DotRunnerConnection({ companyId, agentId, bindingId, onBinding }
   useEffect(() => {
     if (existingBindingId && existingBindingId !== bindingId && !revoke.isPending) onBinding(existingBindingId);
   }, [existingBindingId, bindingId, onBinding, revoke.isPending]);
-  if (!agentId) return <p className="text-sm text-muted-foreground">Save the agent, then return here to pair your Dot.</p>;
+  if (!agentId) return <p className="text-sm text-muted-foreground">{t("save_the_agent_then_return_here_to_34c9a5d")}</p>;
   const mutationError = pair.error ?? test.error ?? revoke.error;
   const b = state.data?.binding;
   const setupPrompt = pairing && state.data?.resourceUrl && companyId && agentId
     ? buildDotSetupPrompt({ companyId, agentId, resourceUrl: state.data.resourceUrl, ...pairing })
     : "";
   return <div className="space-y-3">
-    <p className="text-sm text-muted-foreground">Dot manages its model and external tools. Paperclip supplies task coordination, people, assigned skills, and connected app tools. Dot can start a task directly from its conversation. Enable Read task attachments below to send assigned task file contents to OpenAI. Enable workspace files and commands for work in the assigned workspace. Provider usage and cost are unavailable; stopping a Paperclip run revokes access without confirming an external stop.</p>
-    {state.data && !state.data.enabled && <p className="text-sm text-muted-foreground">Enable OpenAI Dot and Assistant connections (MCP) in experimental settings.</p>}
-    {state.data?.resourceUrl && <p className="text-sm break-all">Private plugin MCP URL: <code>{state.data.resourceUrl}</code></p>}
-    {b && <p className="text-sm">Connection: {b.status}. Event subscription: {b.subscriptionVerified ? "verified" : "required"}.</p>}
-    {b?.assignment && <p className="text-sm">Assignment: {b.assignment.status === "offered" ? "waiting for Dot to accept" : "accepted by Dot"}.</p>}
-    {b?.assignment?.attentionRequired && <p className="text-sm text-destructive" role="alert">Dot has not reported useful activity for 15 minutes. Inspect the Dot before assigning replacement work; Paperclip cannot confirm its external stop.</p>}
+    <p className="text-sm text-muted-foreground">{t("dot_manages_its_model_and_external_tools_64ed9e1")}</p>
+    {state.data && !state.data.enabled && <p className="text-sm text-muted-foreground">{t("enable_openai_dot_and_assistant_connections_mcp_b4d6bb4")}</p>}
+    {state.data?.resourceUrl && <p className="text-sm break-all">{t("private_plugin_mcp_url_fd23387")}<code>{state.data.resourceUrl}</code></p>}
+    {b && <p className="text-sm">{t("connection_eeb4784")}{b.status}{t("event_subscription_1f3d5c5")}{b.subscriptionVerified ? t("final-components-a:verified_1c34f887") : t("final-components-a:required_d0a36305")}.</p>}
+    {b?.assignment && <p className="text-sm">{t("assignment_fb694c7")}{b.assignment.status === "offered" ? t("waiting_for_dot_to_accept_f750c4f") : t("accepted_by_dot_6290c22")}.</p>}
+    {b?.assignment?.attentionRequired && <p className="text-sm text-destructive" role="alert">{t("dot_has_not_reported_useful_activity_for_f658aef")}</p>}
     {pairing && setupPrompt && b?.status === "pairing" && <div className="space-y-2">
       <AgentSetupPrompt
         prompt={setupPrompt}
-        label="Set up with Dot"
+        label={t("set_up_with_dot_e6ac096")}
         agent={{ name: "Dot", src: "/brands/adapters/openai-dot.svg" }}
-        title="Connect your Dot"
-        description="Paste into your Dot to connect this agent."
+        title={t("connect_your_dot_d7cfc6a")}
+        description={t("paste_into_your_dot_to_connect_this_858acd0")}
         side="bottom"
       />
-      <p className="text-xs text-muted-foreground">Setup prompt expires {new Date(pairing.expiresAt).toLocaleTimeString()}.</p>
+      <p className="text-xs text-muted-foreground">{t("setup_prompt_expires_0725ffd", { value: new Date(pairing.expiresAt).toLocaleTimeString() })}</p>
     </div>}
-    {!pairing && b?.status === "pairing" && <p className="text-sm text-muted-foreground">Revoke the pending connection and pair again to generate a fresh setup prompt.</p>}
+    {!pairing && b?.status === "pairing" && <p className="text-sm text-muted-foreground">{t("revoke_the_pending_connection_and_pair_again_5b9e179")}</p>}
     <div className="flex flex-wrap items-center gap-2">
-      {!b && <Button type="button" variant="outline" disabled={!state.data?.enabled || !state.data?.resourceUrl || pair.isPending} onClick={() => pair.mutate()}>Pair Dot</Button>}
-      {b?.subscriptionVerified && <Button type="button" variant="outline" disabled={test.isPending || b.hasPendingChallenge} onClick={() => test.mutate()}>Test event delivery</Button>}
-      <Button type="button" variant="outline" onClick={() => { void state.refetch(); }}>Refresh connection</Button>
-      {b && <Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Revoke connection</Button>}
+      {!b && <Button type="button" variant="outline" disabled={!state.data?.enabled || !state.data?.resourceUrl || pair.isPending} onClick={() => pair.mutate()}>{t("pair_dot_2947908")}</Button>}
+      {b?.subscriptionVerified && <Button type="button" variant="outline" disabled={test.isPending || b.hasPendingChallenge} onClick={() => test.mutate()}>{t("test_event_delivery_823e325")}</Button>}
+      <Button type="button" variant="outline" onClick={() => { void state.refetch(); }}>{t("refresh_connection_e260210")}</Button>
+      {b && <Button type="button" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>{t("revoke_connection_d6f480f")}</Button>}
     </div>
-    {b?.hasPendingChallenge && <p className="text-sm text-muted-foreground">Waiting for Dot to read and confirm the harmless mailbox challenge.</p>}
+    {b?.hasPendingChallenge && <p className="text-sm text-muted-foreground">{t("waiting_for_dot_to_read_and_confirm_edb996a")}</p>}
     {stateView.kind === "error" && (
       <QueryErrorState
         size="inline"

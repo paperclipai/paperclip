@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import type { IssueSummary } from "@paperclipai/shared";
@@ -555,7 +556,7 @@ export const issuesApi = {
   interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
     const queue = await issuesApi.getQueuedComments(id);
     if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
-      throw new Error("The queued messages changed. Refresh and try again.");
+      throw localizeUiError(new Error("The queued messages changed. Refresh and try again."), { key: "final-components-a:theQueuedMessagesChangedRefresh_299ad838" });
     }
     return issuesApi.interruptQueuedComments(id, {
       queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,

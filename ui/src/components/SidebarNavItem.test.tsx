@@ -4,6 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { Inbox } from "lucide-react";
 import { SidebarNavItem, SidebarNavExpandedProvider } from "./SidebarNavItem";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -71,6 +72,21 @@ describe("SidebarNavItem", () => {
   function classTokens(element: Element | null | undefined) {
     return element?.className.toString().split(/\s+/).filter(Boolean) ?? [];
   }
+
+  it("localizes live and attention indicators on language changes while preserving names", async () => {
+    sidebarState.collapsed = true;
+    render(<SidebarNavItem to="/agents/MyAgent" label="MyAgent" liveCount={2} />);
+    expect(link().getAttribute("aria-label")).toBe("MyAgent, 2 live");
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(link().getAttribute("aria-label")).toBe("MyAgent，2 个正在运行");
+      expect(link().getAttribute("href")).toBe("/agents/MyAgent");
+      render(<SidebarNavItem to="/agents/MyAgent" label="MyAgent" alert />);
+      expect(link().getAttribute("aria-label")).toBe("MyAgent，需要关注");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("shows the full label and numeric badge when expanded", () => {
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);

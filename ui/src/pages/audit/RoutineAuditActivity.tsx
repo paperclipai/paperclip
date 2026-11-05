@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
 import { routinesApi } from "@/api/routines";
@@ -13,6 +14,7 @@ export function RoutineAuditActivity({
   companyId: string;
   routineId: string;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const activity = useQuery({
     queryKey: [...queryKeys.routines.activity(companyId, routineId), "audit"],
     queryFn: async () => {
@@ -32,9 +34,7 @@ export function RoutineAuditActivity({
   // the first load reads as loading, and only a real failure shows copy.
   if (activityView.kind === "loading" || activityView.kind === "reconnecting") {
     return (
-      <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
-        Loading routine activity…
-      </div>
+      <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">{translateAgentPage("agents:loading_routine_activity")}</div>
     );
   }
 
@@ -42,7 +42,7 @@ export function RoutineAuditActivity({
     return (
       <QueryErrorState
         error={activityView.error}
-        action="load routine activity"
+        action={translateAgentPage("agents:load_routine_activity")}
         onRetry={activityView.retry}
         retrying={activityView.isFetching}
       />
@@ -51,11 +51,11 @@ export function RoutineAuditActivity({
 
   const events = activityView.data ?? [];
   if (events.length === 0) {
-    return <EmptyState icon={Activity} message="No routine activity yet." />;
+    return <EmptyState icon={Activity} message={translateAgentPage("agents:no_routine_activity_yet")} />;
   }
 
   return (
-    <div className="border-y border-border" aria-label="Routine activity">
+    <div className="border-y border-border" aria-label={translateAgentPage("agents:routine_activity")}>
       {events.map((event) => (
         <RoutineActivityRow key={event.id} event={event} />
       ))}

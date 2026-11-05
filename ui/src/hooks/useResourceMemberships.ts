@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   ResourceMembershipResourceType,
@@ -145,13 +146,14 @@ export function useResourceMemberships(companyId: string | null | undefined) {
 }
 
 export function useResourceMembershipMutation(companyId: string | null | undefined) {
+  useTranslation("display");
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const queryKey = queryKeys.resourceMemberships.mine(companyId ?? "__none__");
 
   return useMutation({
     mutationFn: (variables: MutationVariables) => {
-      if (!companyId) throw new Error("Select an organization first.");
+      if (!companyId) throw new Error(t("display:membership_select_organization"));
       const body = { state: variables.state, starred: variables.starred };
       return variables.resourceType === "project"
         ? resourceMembershipsApi.updateProject(companyId, variables.resourceId, body)
@@ -177,8 +179,8 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
         ? variables.starred ? "star" : "unstar"
         : variables.state === "left" ? "leave" : "join";
       pushToast({
-        title: `Couldn't ${verb} ${variables.resourceName}.`,
-        body: error instanceof Error ? error.message : "Try again.",
+        title: t(`display:membership_${verb}`, { name: variables.resourceName }),
+        body: error instanceof Error ? error.message : t("display:try_again"),
         tone: "error",
       });
     },

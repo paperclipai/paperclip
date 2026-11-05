@@ -1543,6 +1543,7 @@ describe("NewIssueDialog", () => {
     });
     expect(toastState.pushToast).toHaveBeenCalledWith({
       title: "Created PAP-2",
+      presentation: { title: { key: "task-components:created_54213967", values: { value1: "PAP-2" } } },
       tone: "success",
       action: { label: "Open PAP-2", href: "/PAP/issues/PAP-2" },
     });

@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { useTranslation, t as translate } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, ShieldQuestion, X } from "lucide-react";
@@ -29,7 +31,7 @@ import { describeError } from "@/api/errors";
 export function ReviewQueueCard({
   connectionId,
   emptyState = "hidden",
-  heading = "Waiting for your OK",
+  heading = translate("connections:waiting_for_your_ok_9911c4f"),
   plain = false,
 }: {
   connectionId?: string;
@@ -37,6 +39,7 @@ export function ReviewQueueCard({
   heading?: string;
   plain?: boolean;
 }) {
+  const { t } = useTranslation("connections");
   const { selectedCompanyId } = useCompany();
 
   const query = useQuery({
@@ -50,7 +53,7 @@ export function ReviewQueueCard({
   const items = useMemo(() => {
     const all = query.data?.actionRequests ?? [];
     return connectionId ? all.filter((item) => item.connectionId === connectionId) : all;
-  }, [query.data, connectionId]);
+  }, [query.data, connectionId, t]);
 
   if (!selectedCompanyId) return null;
   if (query.isLoading || view.kind === "reconnecting") return null;
@@ -59,9 +62,7 @@ export function ReviewQueueCard({
   if (items.length === 0) {
     if (emptyState === "hidden") return null;
     return (
-      <div className={plain ? "py-5 text-sm text-muted-foreground" : "rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground"}>
-        Nothing is waiting for your OK right now.
-      </div>
+      <div className={plain ? "py-5 text-sm text-muted-foreground" : "rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground"}>{t("nothing_is_waiting_for_your_ok_right_68de894")}</div>
     );
   }
 
@@ -92,6 +93,7 @@ function ReviewRow({
   item: ToolActionRequestListItem;
   plain: boolean;
 }) {
+  const { t } = useTranslation("connections");
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [resolving, setResolving] = useState<null | "allow" | "always" | "decline">(null);
@@ -114,7 +116,7 @@ function ReviewRow({
     mutationFn: () => toolsApi.approveActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("allow"),
     onSuccess: () => {
-      pushToast({ title: "Allowed once", body: `${actionLabel(item)} can run this time.`, tone: "success" });
+      pushToast({ title: t("allowed_once_1b24bcc"), body: t("can_run_this_time_8a9db9e", { actionLabel: actionLabel(item) }), tone: "success" });
       invalidate();
     },
     onError: (error) => {
@@ -131,8 +133,8 @@ function ReviewRow({
     onMutate: () => setResolving("always"),
     onSuccess: () => {
       pushToast({
-        title: "Always allowed",
-        body: `${actionLabel(item)} won’t ask again.`,
+        title: t("always_allowed_297470e"),
+        body: t("won_t_ask_again_85928fa", { actionLabel: actionLabel(item) }),
         tone: "success",
       });
       invalidate();
@@ -149,7 +151,7 @@ function ReviewRow({
     mutationFn: () => toolsApi.declineActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("decline"),
     onSuccess: () => {
-      pushToast({ title: "Declined", body: `${actionLabel(item)} won’t run.`, tone: "info" });
+      pushToast({ title: t("declined_ff59b80"), body: t("won_t_run_6d0c2c8", { actionLabel: actionLabel(item) }), tone: "info" });
       invalidate();
     },
     onError: (error) => {
@@ -180,10 +182,10 @@ function ReviewRow({
         <span className="font-bold text-foreground">{actionLabel(item)}</span>
         {item.applicationName && (
           <span className="text-muted-foreground">
-            in {humanizeConnectionDisplayName(item.applicationName)}
+            {finalPagesT("final-pages:in_application_a5fd2a", { application: humanizeConnectionDisplayName(item.applicationName) })}
           </span>
         )}
-        <span className="text-xs text-muted-foreground">· asked {timeAgo(item.request.createdAt)}</span>
+        <span className="text-xs text-muted-foreground">{t("asked_1fe4fe8", { value: timeAgo(item.request.createdAt) })}</span>
       </div>
 
       {preview ? (
@@ -191,32 +193,24 @@ function ReviewRow({
           <MarkdownBody>{preview}</MarkdownBody>
         </div>
       ) : (
-        <p className="mt-1 text-sm text-muted-foreground">
-          An agent wants to run this action. Your connection policy requires approval first.
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("an_agent_wants_to_run_this_action_4cbe26b")}</p>
       )}
 
-      {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <p className="mt-2 text-xs text-muted-foreground">Always allow lets this agent use this action with different arguments on this connection, within the current project when present.</p> : null}
+      {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <p className="mt-2 text-xs text-muted-foreground">{t("always_allow_lets_this_agent_use_this_12e5f25")}</p> : null}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => allowOnce.mutate()} disabled={busy}>
-          {resolving === "allow" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1.5 h-3.5 w-3.5" />}
-          Allow once
-        </Button>
+          {resolving === "allow" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1.5 h-3.5 w-3.5" />}{t("allow_once_014533e")}</Button>
         {item.requestedByAgentId && item.connectionId && !item.request.approvalId ? <Button size="sm" variant="outline" onClick={() => alwaysAllow.mutate()} disabled={busy}>
-          {resolving === "always" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-          Always allow
-        </Button> : null}
+          {resolving === "always" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{t("always_allow_773f83b")}</Button> : null}
         <Button size="sm" variant="ghost" onClick={() => decline.mutate()} disabled={busy}>
-          {resolving === "decline" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <X className="mr-1.5 h-3.5 w-3.5" />}
-          Decline
-        </Button>
+          {resolving === "decline" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <X className="mr-1.5 h-3.5 w-3.5" />}{t("decline_288fca0")}</Button>
       </div>
     </div>
   );
 }
 
 function actionLabel(item: ToolActionRequestListItem): string {
-  if (!item.toolTitle && !item.toolName) return "This action";
+  if (!item.toolTitle && !item.toolName) return translate("connections:this_action_4287d24");
   return humanizeConnectionDisplayName(item.toolName ?? "", { title: item.toolTitle });
 }
 
@@ -225,7 +219,7 @@ function failToast(
   error: unknown,
 ) {
   pushToast({
-    title: "Couldn’t save that",
+    title: translate("connections:couldn_t_save_that_6a7300e"),
     body: describeError(error).body,
     tone: "error",
   });

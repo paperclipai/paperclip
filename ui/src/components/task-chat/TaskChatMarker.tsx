@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleDot, OctagonX, Square, Flag, KeyRound } from "lucide-react";
@@ -27,6 +28,7 @@ export function TaskChatMarker({
   onTryAgain?: () => Promise<void> | void;
   tryAgainPending?: boolean;
 }) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const streamlined = useStreamlinedTaskChatPresentation();
@@ -47,16 +49,20 @@ export function TaskChatMarker({
         className="tc-enter-marker flex w-full items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
         <KeyRound className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <p className="font-semibold text-destructive">{agentName} couldn’t start</p>
+          <p className="font-semibold text-destructive"><Trans ns="task-components" i18nKey="sentence_ce77441e54ac" components={{ part1: <>{agentName}</> }} /></p>
           <p className="break-words font-medium text-foreground">
-            {agentName} is configured to use {credentialName || "an AI credential"}, but {deniedUser === "you" ? "you don’t" : `${deniedUser} doesn’t`} have access to that credential.
+            {deniedUser === "you"
+              ? t("task-chat-ui:credentialDeniedYou", { agent: agentName, credential: credentialName || t("task-components:anAiCredential_9d4ded42") })
+              : t("task-chat-ui:credentialDeniedUser", { agent: agentName, credential: credentialName || t("task-components:anAiCredential_9d4ded42"), user: deniedUser })}
           </p>
           <p className="text-muted-foreground">
-            Choose an AI connection {deniedUser === "you" ? "you can" : `${deniedUser} can`} use, or ask an administrator to update {agentName}’s connection. Then try again.
+            {deniedUser === "you"
+              ? t("task-chat-ui:credentialNextYou", { agent: agentName })
+              : t("task-chat-ui:credentialNextUser", { agent: agentName, user: deniedUser })}
           </p>
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button asChild variant="outline" size="sm"><Link to={settingsHref}>Change AI connection</Link></Button>
-            {item.runHref && <Button asChild variant="ghost" size="sm"><Link to={item.runHref}>View run</Link></Button>}
+            <Button asChild variant="outline" size="sm"><Link to={settingsHref}>{t("task-components:changeAiConnection_1dae4a98")}</Link></Button>
+            {item.runHref && <Button asChild variant="ghost" size="sm"><Link to={item.runHref}>{t("task-components:viewRun_aaf7fccc")}</Link></Button>}
           </div>
         </div>
       </div>
@@ -105,7 +111,7 @@ export function TaskChatMarker({
               disabled={tryAgainPending}
               data-testid="task-chat-run-failed-try-again"
             >
-              {tryAgainPending ? "Trying again..." : "Try again"}
+              {tryAgainPending ? t("task-components:tryingAgain_80804141") : t("task-components:tryAgain_d8b8392e")}
             </Button>
           ) : null}
         </div>
@@ -124,12 +130,12 @@ export function TaskChatMarker({
               <div className="flex items-center justify-end gap-2 border-t border-border/70 bg-background/50 px-3 py-2 dark:bg-background/30">
                 {item.planHref ? (
                   <Button asChild variant="ghost" size="xs">
-                    <Link to={item.planHref}>View saved plan</Link>
+                    <Link to={item.planHref}>{t("task-components:viewSavedPlan_33ea4b19")}</Link>
                   </Button>
                 ) : null}
                 {item.runHref ? (
                   <Button asChild variant="ghost" size="xs">
-                    <Link to={item.runHref}>View run</Link>
+                    <Link to={item.runHref}>{t("task-components:viewRun_aaf7fccc")}</Link>
                   </Button>
                 ) : null}
                 {onTryAgain ? (
@@ -140,7 +146,7 @@ export function TaskChatMarker({
                     disabled={tryAgainPending}
                     data-testid="task-chat-run-failed-try-again"
                   >
-                    {tryAgainPending ? "Trying again..." : "Try again"}
+                    {tryAgainPending ? t("task-components:tryingAgain_80804141") : t("task-components:tryAgain_d8b8392e")}
                   </Button>
                 ) : null}
               </div>
@@ -179,7 +185,7 @@ export function TaskChatMarker({
             disabled={tryAgainPending}
             data-testid="task-chat-run-failed-try-again"
           >
-            {tryAgainPending ? "Trying again..." : "Try again"}
+            {tryAgainPending ? t("task-components:tryingAgain_80804141") : t("task-components:tryAgain_d8b8392e")}
           </Button>
         ) : null}
       </span>

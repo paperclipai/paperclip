@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Coins, DollarSign, PlayCircle, ReceiptText } from "lucide-react";
@@ -23,6 +24,7 @@ export function agentModelCostRows(rows: readonly CostByAgentModel[] | undefined
 }
 
 export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: string; agentName: string; companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const { preset, setPreset, customFrom, setCustomFrom, customTo, setCustomTo, from, to, customReady } = useDateRange();
   const reportFrom = ["custom", "mtd", "ytd"].includes(preset) ? from || undefined : undefined;
   const reportTo = preset === "custom" ? to || undefined : preset;
@@ -47,7 +49,7 @@ export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: st
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Cost period">
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label={translateAgentPage("agents:cost_period")}>
         {PRESET_KEYS.map((key) => (
           <Button key={key} variant={preset === key ? "secondary" : "ghost"} size="sm" onClick={() => setPreset(key)} aria-pressed={preset === key}>
             {PRESET_LABELS[key]}
@@ -56,30 +58,30 @@ export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: st
       </div>
       {preset === "custom" ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-3">
-          <input type="date" aria-label="From" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground" />
-          <span className="text-sm text-muted-foreground">to</span>
-          <input type="date" aria-label="To" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground" />
+          <input type="date" aria-label={translateAgentPage("agents:from")} value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground" />
+          <span className="text-sm text-muted-foreground">{translateAgentPage("agents:to")}</span>
+          <input type="date" aria-label={translateAgentPage("agents:to_ae79ea")} value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground" />
         </div>
       ) : null}
       {!customReady ? (
-        <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+        <p className="text-sm text-muted-foreground">{translateAgentPage("agents:select_a_start_and_end_date_to_load")}</p>
       ) : spend.isLoading ? (
         <PageSkeleton variant="costs" />
       ) : spend.error && !spend.data ? (
-        <p role="alert" className="text-sm text-destructive">{agentName}'s costs could not be loaded. Please try again shortly.</p>
+        <p role="alert" className="text-sm text-destructive">{agentName}{translateAgentPage("agents:s_costs_could_not_be_loaded_please_try")}</p>
       ) : !row ? (
-        <EmptyState icon={DollarSign} message={`No cost events for ${agentName} in this period.`} />
+        <EmptyState icon={DollarSign} message={translateAgentPage("agents:no_cost_events_for_in_this_period", { value1: agentName })} />
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-3">
-            <MetricCard appearance="card" icon={ReceiptText} value={formatCents(row.costCents)} label="Spend" description={`${row.eventCount} ledger events`} />
-            <MetricCard appearance="card" icon={Coins} value={formatTokens(totalTokens)} label="Tokens" description={`in ${formatTokens(row.inputTokens + row.cachedInputTokens)} (${formatTokens(row.cachedInputTokens)} cached) · out ${formatTokens(row.outputTokens)}`} />
-            <MetricCard appearance="card" icon={PlayCircle} value={row.apiRunCount + row.subscriptionRunCount} label="Runs" description={`${row.apiRunCount} api · ${row.subscriptionRunCount} subscription`} />
+            <MetricCard appearance="card" icon={ReceiptText} value={formatCents(row.costCents)} label={translateAgentPage("agents:spend")} description={translateAgentPage("agents:ledger_events", { value1: row.eventCount })} />
+            <MetricCard appearance="card" icon={Coins} value={formatTokens(totalTokens)} label={translateAgentPage("agents:tokens")} description={translateAgentPage("agents:in_cached_out", { value1: formatTokens(row.inputTokens + row.cachedInputTokens), value2: formatTokens(row.cachedInputTokens), value3: formatTokens(row.outputTokens) })} />
+            <MetricCard appearance="card" icon={PlayCircle} value={row.apiRunCount + row.subscriptionRunCount} label={translateAgentPage("agents:runs")} description={translateAgentPage("agents:api_subscription", { value1: row.apiRunCount, value2: row.subscriptionRunCount })} />
           </div>
           <section className="space-y-3" aria-labelledby="agent-cost-models-heading">
-            <h3 id="agent-cost-models-heading" className="text-sm font-medium text-foreground">By model</h3>
+            <h3 id="agent-cost-models-heading" className="text-sm font-medium text-foreground">{translateAgentPage("agents:by_model")}</h3>
             {models.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No model breakdown for this period.</p>
+              <p className="text-sm text-muted-foreground">{translateAgentPage("agents:no_model_breakdown_for_this_period")}</p>
             ) : (
               <ul className="divide-y divide-border rounded-lg border border-border">
                 {models.map((model) => {
@@ -104,8 +106,7 @@ export function AgentCostsPanel({ agentId, agentName, companyId }: { agentId: st
                           suffix={<span className="ml-1 font-normal text-muted-foreground">({share}%)</span>}
                         />
                         <div className="text-xs text-muted-foreground">
-                          {formatTokens(model.inputTokens + model.cachedInputTokens + model.outputTokens)} tok
-                        </div>
+                          {formatTokens(model.inputTokens + model.cachedInputTokens + model.outputTokens)}{" "}{translateAgentPage("agents:tok")}</div>
                       </div>
                     </li>
                   );

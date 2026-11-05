@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
@@ -32,23 +33,24 @@ export function CloudAccessError({
   retrying: boolean;
   onRetry: () => void;
 }) {
+  useTranslation("task-components");
   useSuppressConnectionBanner(temporary);
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4 px-4 py-16">
       <RefreshCw className="size-6 text-muted-foreground" aria-hidden="true" />
       <div className="flex flex-col gap-2" role="status">
         <h1 className="text-xl font-semibold">
-          {temporary ? "Reconnecting to Paperclip" : "Unable to load Paperclip"}
+          {temporary ? t("task-components:reconnectingToPaperclip_b11ca004") : t("task-components:unableToLoadPaperclip_e28227a9")}
         </h1>
         <p className="text-sm text-muted-foreground">
           {temporary
-            ? "The server may be restarting or your connection was interrupted. We’ll try again every few seconds and reconnect automatically."
-            : "We couldn’t check your access to this instance. Try again, or contact your instance administrator if this continues."}
+            ? t("task-components:theServerMayBeRestartingOrYour_a0bc2bfc")
+            : t("task-components:weCouldnTCheckYourAccessTo_c7f5fa9b")}
         </p>
       </div>
       <div>
         <Button variant="outline" onClick={onRetry} disabled={retrying}>
-          {retrying ? "Connecting…" : "Try again"}
+          {retrying ? t("task-components:connecting_72021eb7") : t("task-components:tryAgain_d8b8392e")}
         </Button>
       </div>
     </div>
@@ -56,23 +58,20 @@ export function CloudAccessError({
 }
 
 function NoBoardAccessPage() {
+  useTranslation("task-components");
   return (
     <div className="mx-auto max-w-xl py-10">
       <Card className="block p-6">
-        <h1 className="text-xl font-semibold">No organization access</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This account is signed in, but it does not have an active organization membership or instance-admin access on
-          this Paperclip instance.
-        </p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Use an organization invite or sign in with an account that already belongs to this org.
-        </p>
+        <h1 className="text-xl font-semibold">{t("task-components:noOrganizationAccess_c6136206")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("task-components:thisAccountIsSignedInButIt_628f031d")}</p>
+        <p className="mt-2 text-sm text-muted-foreground">{t("task-components:useAnOrganizationInviteOrSignIn_1473bb22")}</p>
       </Card>
     </div>
   );
 }
 
 export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembershipRequest?: boolean } = {}) {
+  useTranslation("task-components");
   const location = useLocation();
   const queryClient = useQueryClient();
   const connectivity = useConnectivityStore();

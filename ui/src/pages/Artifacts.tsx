@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ArrowLeft, Layers, Package } from "lucide-react";
@@ -38,6 +39,7 @@ function parseKind(value: string | null): ArtifactKindFilter {
 }
 
 export function Artifacts() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -90,7 +92,7 @@ export function Artifacts() {
         return next;
       });
     },
-    [setSearchParams],
+    [setSearchParams, t],
   );
 
   const selectKind = useCallback(
@@ -100,7 +102,7 @@ export function Artifacts() {
         else next.set("kind", value);
       });
     },
-    [updateParams],
+    [updateParams, t],
   );
 
   // Artifacts V1: one row of views. Tasks is the task grouping; every other
@@ -119,7 +121,7 @@ export function Artifacts() {
         else next.set("kind", view);
       });
     },
-    [updateParams],
+    [updateParams, t],
   );
 
   const selectGroupBy = useCallback(
@@ -133,7 +135,7 @@ export function Artifacts() {
         if (v1 && value !== "none") next.delete("kind");
       });
     },
-    [updateParams, v1],
+    [updateParams, v1, t],
   );
 
   // Build a relative `To` that preserves the active filters/search while
@@ -146,7 +148,7 @@ export function Artifacts() {
       const serialized = next.toString();
       return serialized ? `?${serialized}` : "?";
     },
-    [searchParams],
+    [searchParams, t],
   );
 
   const stackTo = useCallback(
@@ -156,7 +158,7 @@ export function Artifacts() {
         else if (groupBy !== "none") next.set("groupBy", groupBy);
         next.set("groupIssueId", issueId);
       }),
-    [buildTo, groupBy],
+    [buildTo, groupBy, t],
   );
 
   const backToStacksTo = useMemo<To>(
@@ -165,7 +167,7 @@ export function Artifacts() {
         if (groupBy === "task") next.delete("groupBy");
         next.delete("groupIssueId");
       }),
-    [buildTo, groupBy],
+    [buildTo, groupBy, t],
   );
 
   const artifactsQuery = useInfiniteQuery({
@@ -204,30 +206,30 @@ export function Artifacts() {
     return () => observer.disconnect();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const artifacts = useMemo(() => data?.pages.flatMap((page) => page.artifacts) ?? [], [data]);
+  const artifacts = useMemo(() => data?.pages.flatMap((page) => page.artifacts) ?? [], [data, t]);
   const groups = useMemo(
     () => data?.pages.flatMap((page) => page.groups ?? []) ?? [],
-    [data],
+    [data, t],
   );
   const selectedGroup = useMemo(
     () => data?.pages.map((page) => page.selectedGroup).find(Boolean) ?? null,
-    [data],
+    [data, t],
   );
   const searching = query.length > 0;
 
   useEffect(() => {
     if (viewingSelectedStack && selectedGroup) {
       setBreadcrumbs([
-        { label: "Artifacts", href: "/artifacts" },
+        { label: t("work:copy.artifacts_314ae7"), href: "/artifacts" },
         { label: `${selectedGroup.issue.identifier} · ${selectedGroup.title}` },
       ]);
     } else {
-      setBreadcrumbs([{ label: "Artifacts" }]);
+      setBreadcrumbs([{ label: t("work:copy.artifacts_314ae7") }]);
     }
-  }, [setBreadcrumbs, viewingSelectedStack, selectedGroup]);
+  }, [setBreadcrumbs, viewingSelectedStack, selectedGroup, t]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select an organization to view artifacts." />;
+    return <EmptyState icon={Package} message={t("work:copy.selectAnOrganizationToViewArtifacts_f28735")} />;
   }
 
   const showGroupCards = viewingStackList;
@@ -235,15 +237,15 @@ export function Artifacts() {
 
   const emptyMessage = showGroupCards
     ? searching
-      ? "No artifact stacks match this search."
-      : "No artifact stacks yet."
+      ? t("work:copy.noArtifactStacksMatchThisSearch_a3b3dd")
+      : t("work:copy.noArtifactStacksYet_7f21bb")
     : searching
-      ? "No artifacts match this search."
+      ? t("work:copy.noArtifactsMatchThisSearch_c4e7a9")
       : viewingSelectedStack
-        ? "No artifacts in this stack match the current filters."
+        ? t("work:copy.noArtifactsInThisStackMatchTheCurrentFilters_16f4a2")
         : kind === "all"
-          ? "No artifacts yet. Outputs attached to issues will appear here."
-          : "No artifacts of this type yet.";
+          ? t("work:copy.noArtifactsYetOutputsAttachedToIssuesWillAppear_440470")
+          : t("work:copy.noArtifactsOfThisTypeYet_4ced60");
 
   return (
     <div className="w-full max-w-6xl space-y-5">
@@ -264,9 +266,7 @@ export function Artifacts() {
             data-testid="artifact-stack-back"
             className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            All stacks
-          </Link>
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />{t("work:copy.allStacks_278e10")}</Link>
           {selectedGroup ? (
             <span className="truncate text-muted-foreground">
               <span className="text-foreground/80">{selectedGroup.issue.identifier}</span>{" "}
@@ -283,7 +283,7 @@ export function Artifacts() {
       ) : artifactsView.kind === "error" ? (
         <QueryErrorState
           error={artifactsView.error}
-          action="load artifacts"
+          action={t("work:copy.loadArtifacts_fbeb38")}
           onRetry={artifactsView.retry}
           retrying={artifactsView.isFetching}
         />
@@ -317,7 +317,7 @@ export function Artifacts() {
                 ))}
           </ArtifactTileGrid>
           <div ref={loadMoreRef} className="flex min-h-10 items-center justify-center pb-2 text-xs text-muted-foreground">
-            {isFetchingNextPage ? "Loading more artifacts..." : hasNextPage ? null : isFetching ? "Updating artifacts..." : null}
+            {isFetchingNextPage ? t("work:copy.loadingMoreArtifacts_ad61c5") : hasNextPage ? null : isFetching ? t("work:copy.updatingArtifacts_e40329") : null}
           </div>
         </>
       ) : (
@@ -333,11 +333,11 @@ export function Artifacts() {
           </div>
           <div ref={loadMoreRef} className="flex min-h-10 items-center justify-center pb-2 text-xs text-muted-foreground">
             {isFetchingNextPage
-              ? "Loading more artifacts..."
+              ? t("work:copy.loadingMoreArtifacts_ad61c5")
               : hasNextPage
                 ? null
                 : isFetching
-                  ? "Updating artifacts..."
+                  ? t("work:copy.updatingArtifacts_e40329")
                   : null}
           </div>
         </>

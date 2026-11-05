@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
@@ -39,6 +40,7 @@ const pageSize = 200;
 /** Coordinator's existing IA and attention feed, rendered with the production
  * components reviewed in Design proposals / Pages / Tasks. */
 export function CoordinatorTasks() {
+  const { t } = useTranslation("work");
   const { selectedCompanyId: companyId } = useCompany();
   const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
   const { openNewIssue } = useDialogActions();
@@ -109,7 +111,7 @@ export function CoordinatorTasks() {
     next.set("view", nextView === "blocked" ? "needs_attention" : nextView);
     return next;
   });
-  useEffect(() => { setBreadcrumbs([{ label: "Tasks" }]); }, [setBreadcrumbs]);
+  useEffect(() => { setBreadcrumbs([{ label: t("work:copy.tasks_b3a60e") }]); }, [setBreadcrumbs, t]);
 
   const tasks = useInfiniteQuery({
     queryKey: [...queryKeys.issues.list(companyId!), "coordinator-table", "index", userId, deferredQuery, participantAgentId, workspaceIds, originKind, serverSortField, serverSortDir, includeBlockedBy, view === "unread"],
@@ -140,7 +142,7 @@ export function CoordinatorTasks() {
         includeAgentCreatedTasks: true, includeRoutineExecutions: true,
       }, { signal });
       if (!deferredQuery && !participantAgentId && !originKind && ids.some(id => !rows.some(row => row.id === id))) {
-        throw new Error("Some tasks with pending decisions couldn’t load.");
+        throw new Error(t("work:copy.someTasksWithPendingDecisionsCouldnTLoad_1030ba"));
       }
       return rows;
     },
@@ -188,8 +190,8 @@ export function CoordinatorTasks() {
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
     unread: unreadIds.has(issue.id),
-    createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? "Board",
-    assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
+    createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? t("work:copy.unknownAgent_342b4a") : users.get(issue.createdByUserId ?? "") ?? t("work:copy.board_4816cb"),
+    assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? t("work:copy.unknownAgent_342b4a") : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: needsAttention ? "all" : view,
     layout, onLayoutChange: setLayout,
@@ -259,10 +261,10 @@ export function CoordinatorTasks() {
   const enrichItem = (item: TaskListItem): TaskListItem => ({ ...item, issue: enrichIssueRow(item.issue) });
   const narrowed = query || collection.activeFilterCount || view === "inbox" || view === "unread";
   const empty = <EmptyState icon={narrowed ? SearchX : ListChecks}
-    message={narrowed ? "No tasks match this view" : needsAttention ? "No tasks need a decision." : "No tasks in this organization"}
-    action={narrowed ? "Clear filters" : needsAttention ? undefined : "New Task"}
+    message={narrowed ? t("work:copy.noTasksMatchThisView_1a4645") : needsAttention ? t("work:copy.noTasksNeedADecision_149b7b") : t("work:copy.noTasksInThisOrganization_90b552")}
+    action={narrowed ? t("work:copy.clearFilters_7179ea") : needsAttention ? undefined : t("work:copy.newTask_718e58")}
     onAction={narrowed ? clearFilters : () => openNewIssue()} />;
-  const issueLinkState = createIssueDetailLocationState("Tasks", `${location.pathname}${location.search}`, "issues");
+  const issueLinkState = createIssueDetailLocationState(t("work:copy.tasks_b3a60e"), `${location.pathname}${location.search}`, "issues");
   const retry = () => {
     update.reset();
     void (needsAttention ? attention.refetch() : tasks.refetch());
@@ -272,16 +274,16 @@ export function CoordinatorTasks() {
     if (collection.filters.liveOnly) void liveRuns.refetch();
   };
 
-  if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
-  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
+  if (!companyId) return <EmptyState icon={ListChecks} message={t("work:copy.selectAnOrganizationToViewTasks_93fc0c")} />;
+  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label={t("work:copy.tasks_b3a60e")}>
     <TaskListToolbar view={view} onViewChange={setView}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
       filters={{ enableRoutineTasksFilter: true, state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
         agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
-    {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={retry}>Retry</Button></div> : null}
-    {rowDetailsError ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><span>Task details couldn’t load.</span><Button variant="ghost" size="sm" onClick={() => void retryRowDetails()}>Retry</Button></div> : null}
-    {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>
+    {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : t("work:copy.couldNotLoadTasks_5d18de")}</span><Button variant="outline" size="sm" onClick={retry}>{t("work:copy.retry_942087")}</Button></div> : null}
+    {rowDetailsError ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><span>{t("work:copy.taskDetailsCouldnTLoad_2d9553")}</span><Button variant="ghost" size="sm" onClick={() => void retryRowDetails()}>{t("work:copy.retry_942087")}</Button></div> : null}
+    {pending ? <p role="status" className="text-sm text-muted-foreground">{t("work:copy.loadingTasks_9ae9f7")}</p> : !error && <>
       <div hidden={collection.layout !== "list"} className="design-task-list-panel">{collection.matchingItems.length ? <TaskList key={companyId}
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
@@ -289,7 +291,7 @@ export function CoordinatorTasks() {
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
-      {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{view === "unread" ? unreadIds.size : items.length} tasks loaded. Load more to include them in filters.</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button></div> : null}
+      {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{t("work:messages.tasksLoaded", { count: view === "unread" ? unreadIds.size : items.length })}</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? t("work:extra.message_ba3bbbe10d") : t("work:copy.loadMoreTasks_af07ba")}</Button></div> : null}
     </>}
   </section></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }

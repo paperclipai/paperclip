@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
@@ -96,6 +97,7 @@ export function AgentCapsule({
   "aria-label": ariaLabel,
   ...rest
 }: AgentCapsuleProps) {
+  const { t } = useTranslation("final-configuration");
   const dims = typeof size === "string" ? SIZE_PRESETS[size] : size;
   const reducedMotion = useReducedMotion();
   const drawn = state === "configured" || state === "online";
@@ -105,7 +107,7 @@ export function AgentCapsule({
   return (
     <div
       role="img"
-      aria-label={ariaLabel ?? STATE_ARIA[state]}
+      aria-label={ariaLabel ?? t(`capsule.${state}`, { defaultValue: STATE_ARIA[state] })}
       data-state={state}
       data-gradient={idx}
       data-glow={glow}

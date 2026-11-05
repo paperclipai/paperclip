@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
+import { i18n } from "@/i18n";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
@@ -171,6 +172,26 @@ describe("Sidebar", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("switches navigation labels between Chinese and English without changing routes", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableGoalsSidebarLink: true });
+    const root = await renderSidebar();
+    try {
+      expect(container.querySelector('a[href="/dashboard"]')?.textContent).toContain("Dashboard");
+      await i18n.changeLanguage("zh-CN");
+      await flushReact();
+      expect(container.querySelector('a[href="/dashboard"]')?.textContent).toContain("仪表盘");
+      expect(container.querySelector('a[href="/issues"]')?.textContent).toContain("任务");
+      expect(container.querySelector('a[href="/routines"]')?.textContent).toContain("例行任务");
+      expect(container.querySelector('a[href="/apps"]')?.textContent).toContain("连接器");
+      await i18n.changeLanguage("en");
+      await flushReact();
+      expect(container.querySelector('a[href="/dashboard"]')?.textContent).toContain("Dashboard");
+    } finally {
+      flushSync(() => root.unmount());
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("keeps the default sidebar edge borderless", async () => {

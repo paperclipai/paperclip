@@ -1,3 +1,6 @@
+import { t as finalPagesT } from "@/i18n";
+import { getPageValueLabel } from "@/pages/tools/shared";
+import { t as translateShell, useTranslation, Trans } from "@/i18n";
 import { SpekoPhoneLineForm } from "@/components/voice/SpekoPhoneLine";
 import { SpekoIncomingCallCard } from "@/components/voice/SpekoIncomingCalls";
 import { SpekoCallHistoryView, SpekoCallActivityItem, SpekoUnapprovedCallActivityItem } from "@/components/voice/SpekoCallHistory";
@@ -245,7 +248,7 @@ function sampleOutput(
     status: "active",
     reviewState: "none",
     isPrimary: Boolean(opts.isPrimary),
-    healthStatus: "unknown",
+    healthStatus: translateShell("shell:unknown"),
     summary: null,
     createdByRunId: null,
     createdAt: new Date(opts.createdAt),
@@ -300,6 +303,7 @@ const DESIGN_GUIDE_TASK = {
 /* ------------------------------------------------------------------ */
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <section className="space-y-4">
       <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -312,6 +316,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium">{title}</h4>
@@ -323,6 +328,7 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
 // Onboarding seam (design §6 + §12.5): the TeamCard tile in its "Pick a starter
 // team" 3-col grid, with the first defaultInstall tile selected.
 function TeamCardShowcase() {
+  const { t: translateShell } = useTranslation("shell");
   const [selectedId, setSelectedId] = useState(onboardingTeams[0]?.id ?? null);
   return (
     <div className="grid max-w-2xl gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -392,6 +398,7 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
 ];
 
 function EnvironmentVariablesEditorShowcase() {
+  const { t: translateShell } = useTranslation("shell");
   const [env, setEnv] = useState<Record<string, EnvBinding>>({
     NODE_ENV: { type: "plain", value: "production" },
     GH_TOKEN: { type: "secret_ref", secretId: "dg-github", version: "latest" },
@@ -421,6 +428,7 @@ function EnvironmentVariablesEditorShowcase() {
 /* ------------------------------------------------------------------ */
 
 function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
+  const { t: translateShell } = useTranslation("shell");
   return (
     <div className="flex items-center gap-3">
       <div
@@ -440,6 +448,7 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /* ------------------------------------------------------------------ */
 
 function TaskExecutionControlsExample() {
+  const { t: translateShell } = useTranslation("shell");
   const [running, setRunning] = useState(true);
   const [dialogMode, setDialogMode] = useState<"resume" | "cancel" | "restore" | null>(null);
   const [wake, setWake] = useState(true);
@@ -449,9 +458,9 @@ function TaskExecutionControlsExample() {
         onPause={() => setRunning(false)} onResume={() => setDialogMode("resume")}
         onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
     </div>
-    <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
+    <p className="text-sm text-muted-foreground">{running ? translateShell("shell:running_type_to_switch_stop_to_send") : translateShell("shell:paused_resume_from_the_menu")}</p>
     <TaskChatProjectCreatedCard item={{ id: "design-project", kind: "project_created", projectId: "example-project", name: "Onboarding improvements", description: "Help new teams reach their first useful result.", timestamp: "2026-09-11T00:00:00Z", repositories: [{ id: "1", name: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip" }] }} />
-    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
+    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: finalPagesT("final-pages:Run_cancelled_2d34c9"), detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
     <TaskChatComposer pause={!running ? { scope: "subtree", onResume: () => setDialogMode("resume") } : null} onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
     <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
       mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
@@ -461,6 +470,7 @@ function TaskExecutionControlsExample() {
 }
 
 function TaskPendingInputExample() {
+  const { t: translateShell } = useTranslation("shell");
   const [open, setOpen] = useState(true);
   const [pending, setPending] = useState(true);
   return <div className="max-w-xl">
@@ -469,44 +479,47 @@ function TaskPendingInputExample() {
       workMode="standard"
       takeover={pending && open ? {
         id: "design-question",
-        label: "Question",
+        label: finalPagesT("final-pages:Question_289aff"),
         pendingCount: 1,
         content: <div className="space-y-3 text-sm">
-          <p>Should the agent use the existing draft?</p>
+          <p>{translateShell("shell:should_the_agent_use_the_existing_draft")}</p>
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => setPending(false)}>Use draft</Button>
-            <Button size="sm" variant="outline" onClick={() => setPending(false)}>Start fresh</Button>
+            <Button size="sm" onClick={() => setPending(false)}>{translateShell("shell:use_draft")}</Button>
+            <Button size="sm" variant="outline" onClick={() => setPending(false)}>{translateShell("shell:start_fresh")}</Button>
           </div>
         </div>,
         onDismiss: () => setOpen(false),
         onSkip: () => setPending(false),
       } : null}
-      pendingTakeover={pending ? { count: 1, label: "Question", onOpen: () => setOpen(true) } : null}
+      pendingTakeover={pending ? { count: 1, label: finalPagesT("final-pages:Question_289aff"), onOpen: () => setOpen(true) } : null}
     />
   </div>;
 }
 
 function AgentChatPickerExample() {
+  const { t: translateShell } = useTranslation("shell");
   const [state, setState] = useState<"closed" | "empty" | "loading" | "error">("closed");
   return <div className="flex flex-wrap gap-2">
-    <Button variant="outline" onClick={() => setState("empty")}>Empty picker</Button>
-    <Button variant="outline" onClick={() => setState("loading")}>Loading picker</Button>
-    <Button variant="outline" onClick={() => setState("error")}>Failed picker</Button>
+    <Button variant="outline" onClick={() => setState("empty")}>{translateShell("shell:empty_picker")}</Button>
+    <Button variant="outline" onClick={() => setState("loading")}>{translateShell("shell:loading_picker")}</Button>
+    <Button variant="outline" onClick={() => setState("error")}>{translateShell("shell:failed_picker")}</Button>
     <AgentChatPicker agents={[]} open={state !== "closed"} onOpenChange={(open) => { if (!open) setState("closed"); }} onSelect={() => {}}
-      loading={state === "loading"} error={state === "error" ? new Error("Unavailable") : null} onRetry={() => setState("empty")} />
+      loading={state === "loading"} error={state === "error" ? new Error(translateShell("shell:unavailable")) : null} onRetry={() => setState("empty")} />
   </div>;
 }
 
 function ComposerActionsExample() {
+  const { t: translateShell } = useTranslation("shell");
   const [mode, setMode] = useState<IssueWorkMode>("standard");
   return <div className="flex max-w-xl items-center gap-2 rounded-xl border border-border bg-card p-3">
     <ComposerAddMenu mode={mode} onModeChange={setMode} onAttachFile={() => {}} onGoal={() => {}} />
     <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} />
-    <span className="ml-auto text-xs text-muted-foreground">Plus menu · removable mode chip</span>
+    <span className="ml-auto text-xs text-muted-foreground">{translateShell("shell:plus_menu_removable_mode_chip")}</span>
   </div>;
 }
 
 export function DesignGuide() {
+  const { t: translateShell } = useTranslation("shell");
   const [agentmailDemoKey, setAgentmailDemoKey] = useState("");
   const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
@@ -514,16 +527,16 @@ export function DesignGuide() {
   const [selectValue, setSelectValue] = useState("in_progress");
   const [menuChecked, setMenuChecked] = useState(true);
   const [collapsibleOpen, setCollapsibleOpen] = useState(false);
-  const [inlineText, setInlineText] = useState("Click to edit this text");
-  const [inlineTitle, setInlineTitle] = useState("Editable Title");
+  const [inlineText, setInlineText] = useState(translateShell("shell:click_to_edit_this_text"));
+  const [inlineTitle, setInlineTitle] = useState(translateShell("shell:editable_title"));
   const [inlineDesc, setInlineDesc] = useState(
-    "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift."
+    translateShell("shell:this_is_an_editable_description_click_to")
   );
   const [filters, setFilters] = useState<FilterValue[]>([
-    { key: "status", label: "Status", value: "Active" },
+    { key: "status", label: translateShell("shell:status"), value: "Active" },
     // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
     ...(SHOW_TASK_PRIORITY_UI
-      ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+      ? [{ key: "priority", label: translateShell("shell:priority"), value: "High" } as FilterValue]
       : []),
   ]);
   const [allowExternal, setAllowExternal] = useState(false);
@@ -534,21 +547,17 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
-        </p>
+        <h2 className="text-xl font-bold">{translateShell("shell:design_guide")}</h2>
+        <p className="text-sm text-muted-foreground mt-1">{translateShell("shell:every_component_style_and_pattern_used_across")}</p>
       </div>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Component Coverage">
-        <p className="text-sm text-muted-foreground">
-          This page should be updated when new UI primitives or app-level patterns ship.
-        </p>
+      <Section title={translateShell("shell:component_coverage")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:this_page_should_be_updated_when_new")}</p>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="UI primitives">
+          <SubSection title={translateShell("shell:ui_primitives")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
@@ -561,12 +570,12 @@ export function DesignGuide() {
               ))}
             </div>
           </SubSection>
-          <SubSection title="App components">
+          <SubSection title={translateShell("shell:app_components")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
-                "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
+                "FilterBar", "InlineEditor", "PageSkeleton", translateShell("shell:identity"), "CommentThread", "MarkdownEditor",
+                "PropertiesPanel", translateShell("shell:sidebar"), "CommandPalette", "EnvironmentVariablesEditor",
                 "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip", "CollectionToolbar",
                 "IssueRow", "ContextualSidebarFrame",
               ].map((name) => (
@@ -579,7 +588,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Announcements">
+      <Section title={translateShell("shell:announcements")}>
         <div className="grid gap-4 md:grid-cols-2">
           <AnnouncementCard announcement={announcementAnimationPreview} imageSrc="/announcement-preview.svg" animationSrc={announcementAnimationPreviewSrc} onDismiss={() => {}} />
           <AnnouncementCard announcement={announcementPreview} imageSrc="/announcement-preview.svg" onDismiss={() => {}} />
@@ -587,40 +596,36 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Task Execution Controls">
+      <Section title={translateShell("shell:task_execution_controls")}>
         <TaskExecutionControlsExample />
       </Section>
 
-      <Section title="Composer actions">
+      <Section title={translateShell("shell:composer_actions")}>
         <ComposerActionsExample />
       </Section>
 
-      <Section title="Task Collection">
-        <p className="max-w-prose text-sm text-muted-foreground">
-          CollectionToolbar owns shared geometry while each page owns its state and behavior.
-          The canonical task row is opt-in during migration: status leads, unread work uses
-          title emphasis, metadata remains stable, and the task identifier trails.
-        </p>
+      <Section title={translateShell("shell:task_collection")}>
+        <p className="max-w-prose text-sm text-muted-foreground">{translateShell("shell:collectiontoolbar_owns_shared_geometry_while_each_page")}</p>
         <CollectionToolbar
-          context={<span className="text-sm font-medium">Recent tasks</span>}
-          search={<Input aria-label="Search task collection example" placeholder="Search tasks..." />}
-          controls={<Button variant="outline" size="sm">Filter</Button>}
-          actions={<Button size="sm">New task</Button>}
-          feedback={<span className="text-xs text-muted-foreground">1 task · Updated newest first</span>}
+          context={<span className="text-sm font-medium">{translateShell("shell:recent_tasks")}</span>}
+          search={<Input aria-label={translateShell("shell:search_task_collection_example")} placeholder={translateShell("shell:search_tasks_c1af83")} />}
+          controls={<Button variant="outline" size="sm">{translateShell("shell:filter")}</Button>}
+          actions={<Button size="sm">{translateShell("shell:new_task_3e9922")}</Button>}
+          feedback={<span className="text-xs text-muted-foreground">{translateShell("shell:1_task_updated_newest_first")}</span>}
         />
         <div className="overflow-hidden rounded-lg border border-border">
           <IssueRow
             issue={DESIGN_GUIDE_TASK}
             presentation="task"
             unreadState="visible"
-            metadata={<span className="text-xs text-muted-foreground">Updated 12m ago</span>}
-            actions={<Button variant="ghost" size="xs">More</Button>}
+            metadata={<span className="text-xs text-muted-foreground">{translateShell("shell:updated_12m_ago")}</span>}
+            actions={<Button variant="ghost" size="xs">{translateShell("shell:more")}</Button>}
           />
         </div>
       </Section>
 
-      <Section title="Theme Toggle">
-        <SubSection title="Variants">
+      <Section title={translateShell("shell:theme_toggle")}>
+        <SubSection title={translateShell("shell:variants")}>
           <div className="flex max-w-sm flex-col items-start gap-3">
             <ThemeToggle />
             <ThemeToggle variant="menu-action" />
@@ -632,8 +637,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLORS                                                       */}
       {/* ============================================================ */}
-      <Section title="Colors">
-        <SubSection title="Core">
+      <Section title={translateShell("shell:colors")}>
+        <SubSection title={translateShell("shell:core")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Background" cssVar="--background" />
             <Swatch name="Foreground" cssVar="--foreground" />
@@ -650,14 +655,14 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Sidebar">
+        <SubSection title={translateShell("shell:sidebar")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Sidebar" cssVar="--sidebar" />
             <Swatch name="Sidebar border" cssVar="--sidebar-border" />
           </div>
         </SubSection>
 
-        <SubSection title="Chart">
+        <SubSection title={translateShell("shell:chart")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Chart 1" cssVar="--chart-1" />
             <Swatch name="Chart 2" cssVar="--chart-2" />
@@ -671,7 +676,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Runner activity">
+      <Section title={translateShell("shell:runner_activity")}>
         <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
           { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
           { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
@@ -682,34 +687,26 @@ export function DesignGuide() {
         ] }} />
       </Section>
 
-      <Section title="Typography">
+      <Section title={translateShell("shell:typography")}>
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
-          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
-          </h3>
-          <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
-          <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
-          <p className="text-sm">Body text — text-sm</p>
-          <p className="text-sm text-muted-foreground">
-            Muted description — text-sm text-muted-foreground
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Tiny label — text-xs text-muted-foreground
-          </p>
-          <p className="text-sm font-mono text-muted-foreground">
-            Mono identifier — text-sm font-mono text-muted-foreground
-          </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+          <h2 className="text-xl font-bold">{translateShell("shell:page_title_text_xl_font_bold")}</h2>
+          <h2 className="text-lg font-semibold">{translateShell("shell:section_title_text_lg_font_semibold")}</h2>
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{translateShell("shell:section_heading_text_sm_font_semibold_uppercase")}</h3>
+          <p className="text-sm font-medium">{translateShell("shell:card_title_text_sm_font_medium")}</p>
+          <p className="text-sm font-semibold">{translateShell("shell:card_title_alt_text_sm_font_semibold")}</p>
+          <p className="text-sm">{translateShell("shell:body_text_text_sm")}</p>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:muted_description_text_sm_text_muted_foreground")}</p>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:tiny_label_text_xs_text_muted_foreground")}</p>
+          <p className="text-sm font-mono text-muted-foreground">{translateShell("shell:mono_identifier_text_sm_font_mono_text")}</p>
+          <p className="text-2xl font-bold">{translateShell("shell:large_stat_text_2xl_font_bold")}</p>
+          <p className="font-mono text-xs">{translateShell("shell:log_code_text_font_mono_text_xs")}</p>
         </div>
       </Section>
 
       {/* ============================================================ */}
       {/*  SPACING & RADIUS                                             */}
       {/* ============================================================ */}
-      <Section title="Radius">
+      <Section title={translateShell("shell:radius")}>
         <div className="flex items-end gap-4 flex-wrap">
           {[
             ["sm", "var(--radius-sm)"],
@@ -732,28 +729,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BUTTONS                                                      */}
       {/* ============================================================ */}
-      <Section title="Buttons">
-        <SubSection title="Variants">
+      <Section title={translateShell("shell:buttons")}>
+        <SubSection title={translateShell("shell:variants")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="default">Default</Button>
-            <Button variant="secondary">Secondary</Button>
-            <Button variant="outline">Outline</Button>
-            <Button variant="ghost">Ghost</Button>
-            <Button variant="destructive">Destructive</Button>
-            <Button variant="link">Link</Button>
+            <Button variant="default">{translateShell("shell:default")}</Button>
+            <Button variant="secondary">{translateShell("shell:secondary")}</Button>
+            <Button variant="outline">{translateShell("shell:outline")}</Button>
+            <Button variant="ghost">{translateShell("shell:ghost")}</Button>
+            <Button variant="destructive">{translateShell("shell:destructive")}</Button>
+            <Button variant="link">{translateShell("shell:link")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Sizes">
+        <SubSection title={translateShell("shell:sizes")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="xs">Extra Small</Button>
-            <Button size="sm">Small</Button>
-            <Button size="default">Default</Button>
-            <Button size="lg">Large</Button>
+            <Button size="xs">{translateShell("shell:extra_small")}</Button>
+            <Button size="sm">{translateShell("shell:small")}</Button>
+            <Button size="default">{translateShell("shell:default")}</Button>
+            <Button size="lg">{translateShell("shell:large")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Icon buttons">
+        <SubSection title={translateShell("shell:icon_buttons")}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" size="icon-xs"><Search /></Button>
             <Button variant="ghost" size="icon-sm"><Search /></Button>
@@ -762,19 +759,19 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="With icons">
+        <SubSection title={translateShell("shell:with_icons")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
-            <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button><Plus />{" "}{translateShell("shell:new_issue")}</Button>
+            <Button variant="outline"><Upload />{" "}{translateShell("shell:upload")}</Button>
+            <Button variant="destructive"><Trash2 />{" "}{translateShell("shell:delete")}</Button>
+            <Button size="sm"><Plus />{" "}{translateShell("shell:add")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="States">
+        <SubSection title={translateShell("shell:states")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button disabled>Disabled</Button>
-            <Button variant="outline" disabled>Disabled Outline</Button>
+            <Button disabled>{translateShell("shell:disabled")}</Button>
+            <Button variant="outline" disabled>{translateShell("shell:disabled_outline")}</Button>
           </div>
         </SubSection>
       </Section>
@@ -782,14 +779,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BADGES                                                       */}
       {/* ============================================================ */}
-      <Section title="Badges">
-        <SubSection title="Variants">
+      <Section title={translateShell("shell:badges")}>
+        <SubSection title={translateShell("shell:variants")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="default">Default</Badge>
-            <Badge variant="secondary">Secondary</Badge>
-            <Badge variant="outline">Outline</Badge>
-            <Badge variant="destructive">Destructive</Badge>
-            <Badge variant="ghost">Ghost</Badge>
+            <Badge variant="default">{translateShell("shell:default")}</Badge>
+            <Badge variant="secondary">{translateShell("shell:secondary")}</Badge>
+            <Badge variant="outline">{translateShell("shell:outline")}</Badge>
+            <Badge variant="destructive">{translateShell("shell:destructive")}</Badge>
+            <Badge variant="ghost">{translateShell("shell:ghost")}</Badge>
           </div>
         </SubSection>
       </Section>
@@ -797,14 +794,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
-      <Section title="Status System">
-        <SubSection title="StatusBadge (all statuses)">
+      <Section title={translateShell("shell:status_system")}>
+        <SubSection title={translateShell("shell:statusbadge_all_statuses")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               "active", "running", "paused", "idle", "archived", "planned",
               "achieved", "completed", "failed", "timed_out", "succeeded", "error",
               "pending_approval", "backlog", "todo", "in_progress", "in_review", "blocked",
-              "done", "terminated", "cancelled", "pending", "revision_requested",
+              "done", "terminated", "cancelled", translateShell("shell:pending_62a2fe"), "revision_requested",
               "approved", "rejected",
             ].map((s) => (
               <StatusBadge key={s} status={s} />
@@ -812,7 +809,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
+        <SubSection title={translateShell("shell:issuestatusbadge_brand_chip_glyph_pap_75")}>
           <div className="flex items-center gap-2 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
               (s) => (
@@ -822,15 +819,15 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Monitoring task">
+        <SubSection title={translateShell("shell:monitoring_task")}>
           <StatusIcon status="in_progress" displayStatus="monitoring" showLabel />
           <IssueStatusBadge status="in_progress" displayStatus="monitoring" />
         </SubSection>
-        <SubSection title="Idle Slack conversation">
+        <SubSection title={translateShell("shell:idle_slack_conversation")}>
           <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
           <IssueStatusBadge status="in_review" externalConversationState="waiting" />
         </SubSection>
-        <SubSection title="StatusIcon (interactive)">
+        <SubSection title={translateShell("shell:statusicon_interactive")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
               (s) => (
@@ -843,13 +840,13 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <StatusIcon status={status} onChange={setStatus} />
-            <span className="text-sm">Click the icon to change status (current: {status})</span>
+            <span className="text-sm">{translateShell("shell:click_the_icon_to_change_status_current", { value1: status })}</span>
           </div>
         </SubSection>
 
         {/* PAP-411: PriorityIcon showcase gated behind SHOW_TASK_PRIORITY_UI per board decision. */}
         {SHOW_TASK_PRIORITY_UI && (
-        <SubSection title="PriorityIcon (interactive)">
+        <SubSection title={translateShell("shell:priorityicon_interactive")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
@@ -860,12 +857,12 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <PriorityIcon priority={priority} onChange={setPriority} />
-            <span className="text-sm">Click the icon to change (current: {priority})</span>
+            <span className="text-sm">{translateShell("shell:click_the_icon_to_change_current", { value1: priority })}</span>
           </div>
         </SubSection>
         )}
 
-        <SubSection title="Agent status dots">
+        <SubSection title={translateShell("shell:agent_status_dots")}>
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
@@ -878,7 +875,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Run invocation badges">
+        <SubSection title={translateShell("shell:run_invocation_badges")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
@@ -894,30 +891,19 @@ export function DesignGuide() {
         </SubSection>
 
         <SubSection title="IssueReferencePill">
-          <p className="text-xs text-muted-foreground">
-            Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
-            Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
-            Use <code className="font-mono">variant="property"</code> for compact badges with direct navigation.
-            Pass <code className="font-mono">onRemove</code> for a separate blocker removal control with reserved space.
-            Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
-          </p>
+          <p className="text-xs text-muted-foreground"><Trans ns="shell" i18nKey="used_wherever_a_task_is_referenced_in" components={{ part1: <>{<code className="font-mono">status</code>}</>, part2: <>{<code className="font-mono">variant="property"</code>}</>, part3: <>{<code className="font-mono">onRemove</code>}</>, part4: <>{<code className="font-mono">strikethrough</code>}</> }} /></p>
           <div className="flex items-center gap-2 flex-wrap">
-            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: "Identifier only — no status yet" }} />
-            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
-            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
-            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
-            <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
-            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: finalPagesT("final-pages:Identifier_only_no_status_yet_ceaa35") }} />
+            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: finalPagesT("final-pages:With_in_progress_status_b0a7b6"), status: "in_progress" }} />
+            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: finalPagesT("final-pages:Done_status_a2c1d1"), status: "done" }} />
+            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: finalPagesT("final-pages:Blocked_status_31b37c"), status: "blocked" }} />
+            <IssueReferencePill onRemove={() => window.alert(finalPagesT("final-pages:Blocker_removed_e79254"))} issue={{ id: "demo-blocker", identifier: "PAP-303", title: finalPagesT("final-pages:Hover_or_focus_to_remove_blocker_7407b8"), status: "in_review" }} />
+            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: finalPagesT("final-pages:Removed_strikethrough_009f6b"), status: "todo" }} />
           </div>
         </SubSection>
 
         <SubSection title="LockedIssueChip">
-          <p className="text-xs text-muted-foreground">
-            Existence-only reference to a private task shown from a surface the viewer can see
-            (a blocker edge, a mention). Mono id + lock, dashed muted border,{" "}
-            <strong>no title, never a link</strong>. Falls back to &quot;Private&quot; when even the
-            identifier is withheld.
-          </p>
+          <p className="text-xs text-muted-foreground"><Trans ns="shell" i18nKey="existence_only_reference_to_a_private_task" components={{ part1: <>{<strong>{finalPagesT("final-pages:no_title_never_a_link_8eaf63")}</strong>}</> }} /></p>
           <div className="flex items-center gap-2 flex-wrap">
             <LockedIssueChip identifier="PAP-1234" />
             <LockedIssueChip identifier={null} />
@@ -928,43 +914,37 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  AGENT CAPSULE                                                */}
       {/* ============================================================ */}
-      <Section title="Agent Capsule">
-        <p className="text-sm text-muted-foreground max-w-prose">
-          The brand &quot;capsule is the agent&quot; motif. A single agent reads as a tall
-          pill that moves through three states as it comes to life. The online fill uses
-          the live brand agent-gradient tokens (<code className="font-mono">--agent-Na</code> →{" "}
-          <code className="font-mono">--agent-Nb</code>); <code className="font-mono">prefers-reduced-motion</code>{" "}
-          skips the liquid rise and pulses and renders the final state.
-        </p>
-        <SubSection title="States">
+      <Section title={translateShell("shell:agent_capsule")}>
+        <p className="text-sm text-muted-foreground max-w-prose"><Trans ns="shell" i18nKey="the_brand_capsule_is_the_agent_motif" components={{ part1: <>{<code className="font-mono">--agent-Na</code>}</>, part2: <>{<code className="font-mono">--agent-Nb</code>}</>, part3: <>{<code className="font-mono">prefers-reduced-motion</code>}</> }} /></p>
+        <SubSection title={translateShell("shell:states")}>
           <div className="flex items-end gap-10">
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="slot" />
-              <span className="text-xs text-muted-foreground">slot</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:slot")}</span>
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="configured" />
-              <span className="text-xs text-muted-foreground">configured</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:configured")}</span>
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" gradient={5} />
-              <span className="text-xs text-muted-foreground">online</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:online")}</span>
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" gradient={5} glow="blue" />
-              <span className="text-xs text-muted-foreground">online · blue glow</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:online_blue_glow")}</span>
             </div>
           </div>
         </SubSection>
-        <SubSection title="Sizes">
+        <SubSection title={translateShell("shell:sizes")}>
           <div className="flex items-end gap-8">
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size="sm" gradient={1} />
-              <span className="text-xs text-muted-foreground">sm</span>
+              <span className="text-xs text-muted-foreground">{"sm"}</span>
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size="md" gradient={4} />
-              <span className="text-xs text-muted-foreground">md</span>
+              <span className="text-xs text-muted-foreground">{"md"}</span>
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size="lg" gradient={8} />
@@ -972,11 +952,11 @@ export function DesignGuide() {
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size={{ width: 28, height: 96 }} gradient={6} />
-              <span className="text-xs text-muted-foreground">custom px</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:custom_px")}</span>
             </div>
           </div>
         </SubSection>
-        <SubSection title="Gradients">
+        <SubSection title={translateShell("shell:gradients")}>
           <div className="flex items-end gap-3 flex-wrap">
             {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5">
@@ -991,38 +971,38 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
-      <Section title="Form Elements">
+      <Section title={translateShell("shell:form_elements")}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Input">
-            <Input placeholder="Default input" />
-            <Input placeholder="Disabled input" disabled className="mt-2" />
+          <SubSection title={translateShell("shell:input")}>
+            <Input placeholder={translateShell("shell:default_input")} />
+            <Input placeholder={translateShell("shell:disabled_input")} disabled className="mt-2" />
           </SubSection>
 
-          <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+          <SubSection title={translateShell("shell:textarea")}>
+            <Textarea placeholder={translateShell("shell:write_something")} />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title={translateShell("shell:checkbox_label")}>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Checkbox id="check1" defaultChecked />
-                <Label htmlFor="check1">Checked item</Label>
+                <Label htmlFor="check1">{translateShell("shell:checked_item")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check2" />
-                <Label htmlFor="check2">Unchecked item</Label>
+                <Label htmlFor="check2">{translateShell("shell:unchecked_item")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check3" disabled />
-                <Label htmlFor="check3">Disabled item</Label>
+                <Label htmlFor="check3">{translateShell("shell:disabled_item")}</Label>
               </div>
             </div>
           </SubSection>
 
-          <SubSection title="Inline Editor">
+          <SubSection title={translateShell("shell:inline_editor")}>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Title (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{translateShell("shell:title_single_line")}</p>
                 <InlineEditor
                   value={inlineTitle}
                   onSave={setInlineTitle}
@@ -1031,7 +1011,7 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Body text (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{translateShell("shell:body_text_single_line")}</p>
                 <InlineEditor
                   value={inlineText}
                   onSave={setInlineText}
@@ -1040,13 +1020,13 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Description (multiline, auto-sizing)</p>
+                <p className="text-xs text-muted-foreground mb-1">{translateShell("shell:description_multiline_auto_sizing")}</p>
                 <InlineEditor
                   value={inlineDesc}
                   onSave={setInlineDesc}
                   as="p"
                   className="text-sm text-muted-foreground"
-                  placeholder="Add a description..."
+                  placeholder={translateShell("shell:add_a_description")}
                   multiline
                 />
               </div>
@@ -1058,34 +1038,34 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
-      <Section title="Select">
-        <p className="mb-4 text-sm text-muted-foreground">Native single-value dropdowns share an inset, theme-aware caret and reserve room for it in the base stylesheet. Multiple-selection lists and controls with a custom icon keep their own appearance.</p>
+      <Section title={translateShell("shell:select_2a7802")}>
+        <p className="mb-4 text-sm text-muted-foreground">{translateShell("shell:native_single_value_dropdowns_share_an_inset")}</p>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Default size">
+          <SubSection title={translateShell("shell:default_size")}>
             <Select value={selectValue} onValueChange={setSelectValue}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={translateShell("shell:select_status")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="backlog">Backlog</SelectItem>
-                <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
+                <SelectItem value="backlog">{translateShell("shell:backlog")}</SelectItem>
+                <SelectItem value="todo">{translateShell("shell:todo")}</SelectItem>
+                <SelectItem value="in_progress">{translateShell("shell:in_progress_b4cc4b")}</SelectItem>
+                <SelectItem value="in_review">{translateShell("shell:in_review")}</SelectItem>
+                <SelectItem value="done">{translateShell("shell:done")}</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
+            <p className="text-xs text-muted-foreground">{translateShell("shell:current_value", { value1: selectValue })}</p>
           </SubSection>
-          <SubSection title="Small trigger">
+          <SubSection title={translateShell("shell:small_trigger")}>
             <Select defaultValue="high">
               <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="critical">{translateShell("shell:critical")}</SelectItem>
+                <SelectItem value="high">{translateShell("shell:high")}</SelectItem>
+                <SelectItem value="medium">{translateShell("shell:medium")}</SelectItem>
+                <SelectItem value="low">{translateShell("shell:low")}</SelectItem>
               </SelectContent>
             </Select>
           </SubSection>
@@ -1095,35 +1075,25 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
-      <Section title="Dropdown Menu">
+      <Section title={translateShell("shell:dropdown_menu")}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm">
-              Quick Actions
-              <ChevronDown className="h-4 w-4" />
+            <Button variant="outline" size="sm">{translateShell("shell:quick_actions")}<ChevronDown className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem>
-              <Check className="h-4 w-4" />
-              Mark as done
-              <DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
+              <Check className="h-4 w-4" />{translateShell("shell:mark_as_done")}<DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem>
-              <BookOpen className="h-4 w-4" />
-              Open docs
-            </DropdownMenuItem>
+              <BookOpen className="h-4 w-4" />{translateShell("shell:open_docs")}</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
-            >
-              Watch issue
-            </DropdownMenuCheckboxItem>
+            >{translateShell("shell:watch_issue")}</DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
-              <Trash2 className="h-4 w-4" />
-              Delete issue
-            </DropdownMenuItem>
+              <Trash2 className="h-4 w-4" />{translateShell("shell:delete_issue")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </Section>
@@ -1131,17 +1101,15 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  POPOVER                                                      */}
       {/* ============================================================ */}
-      <Section title="Popover">
+      <Section title={translateShell("shell:popover")}>
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="outline" size="sm">Open Popover</Button>
+            <Button variant="outline" size="sm">{translateShell("shell:open_popover")}</Button>
           </PopoverTrigger>
           <PopoverContent className="space-y-2">
-            <p className="text-sm font-medium">Agent heartbeat</p>
-            <p className="text-xs text-muted-foreground">
-              Last run succeeded 24s ago. Next timer run in 9m.
-            </p>
-            <Button size="xs">Wake now</Button>
+            <p className="text-sm font-medium">{translateShell("shell:agent_heartbeat")}</p>
+            <p className="text-xs text-muted-foreground">{translateShell("shell:last_run_succeeded_24s_ago_next_timer")}</p>
+            <Button size="xs">{translateShell("shell:wake_now")}</Button>
           </PopoverContent>
         </Popover>
       </Section>
@@ -1149,17 +1117,16 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLLAPSIBLE                                                  */}
       {/* ============================================================ */}
-      <Section title="Collapsible">
+      <Section title={translateShell("shell:collapsible")}>
         <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
           <CollapsibleTrigger asChild>
             <Button variant="outline" size="sm">
-              {collapsibleOpen ? "Hide" : "Show"} advanced filters
-            </Button>
+              {collapsibleOpen ? translateShell("shell:hide") : translateShell("shell:show")}{" "}{translateShell("shell:advanced_filters")}</Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="rounded-md border border-border p-3">
             <div className="space-y-2">
-              <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+              <Label htmlFor="owner-filter">{translateShell("shell:owner")}</Label>
+              <Input id="owner-filter" placeholder={translateShell("shell:filter_by_agent_name")} />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -1168,29 +1135,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SHEET                                                        */}
       {/* ============================================================ */}
-      <Section title="Sheet">
+      <Section title={translateShell("shell:sheet")}>
         <Sheet>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm">Open Side Panel</Button>
+            <Button variant="outline" size="sm">{translateShell("shell:open_side_panel")}</Button>
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
-              <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
+              <SheetTitle>{translateShell("shell:issue_properties")}</SheetTitle>
+              <SheetDescription>{translateShell("shell:edit_metadata_without_leaving_the_current_page")}</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
               <div className="space-y-1">
-                <Label htmlFor="sheet-title">Title</Label>
+                <Label htmlFor="sheet-title">{translateShell("shell:title")}</Label>
                 <Input id="sheet-title" defaultValue="Improve onboarding docs" />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="sheet-description">Description</Label>
+                <Label htmlFor="sheet-description">{translateShell("shell:description")}</Label>
                 <Textarea id="sheet-description" defaultValue="Capture setup pitfalls and screenshots." />
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{translateShell("shell:cancel")}</Button>
+              <Button>{translateShell("shell:save")}</Button>
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -1199,13 +1166,11 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
-      <Section title="Scroll Area">
+      <Section title={translateShell("shell:scroll_area")}>
         <ScrollArea className="h-36 rounded-md border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
-              <div key={i} className="rounded-md border border-border p-2 text-sm">
-                Heartbeat run #{i + 1}: completed successfully
-              </div>
+              <div key={i} className="rounded-md border border-border p-2 text-sm">{translateShell("shell:heartbeat_run_completed_successfully", { value1: i + 1 })}</div>
             ))}
           </div>
         </ScrollArea>
@@ -1214,32 +1179,24 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
-      <Section title="Command (CMDK)">
+      <Section title={translateShell("shell:command_cmdk")}>
         <div className="rounded-md border border-border">
           <Command>
-            <CommandInput placeholder="Type a command or search..." />
+            <CommandInput placeholder={translateShell("shell:type_a_command_or_search")} />
             <CommandList>
-              <CommandEmpty>No results found.</CommandEmpty>
-              <CommandGroup heading="Pages">
+              <CommandEmpty>{translateShell("shell:no_results_found")}</CommandEmpty>
+              <CommandGroup heading={finalPagesT("final-pages:Pages_9046da")}>
                 <CommandItem>
-                  <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
-                </CommandItem>
+                  <LayoutDashboard className="h-4 w-4" />{translateShell("shell:dashboard")}</CommandItem>
                 <CommandItem>
-                  <CircleDot className="h-4 w-4" />
-                  Issues
-                </CommandItem>
+                  <CircleDot className="h-4 w-4" />{translateShell("shell:issues")}</CommandItem>
               </CommandGroup>
               <CommandSeparator />
-              <CommandGroup heading="Actions">
+              <CommandGroup heading={finalPagesT("final-pages:Actions_ff8059")}>
                 <CommandItem>
-                  <CommandIcon className="h-4 w-4" />
-                  Open command palette
-                </CommandItem>
+                  <CommandIcon className="h-4 w-4" />{translateShell("shell:open_command_palette")}</CommandItem>
                 <CommandItem>
-                  <Plus className="h-4 w-4" />
-                  Create new issue
-                </CommandItem>
+                  <Plus className="h-4 w-4" />{translateShell("shell:create_new_issue")}</CommandItem>
               </CommandGroup>
             </CommandList>
           </Command>
@@ -1249,19 +1206,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BREADCRUMB                                                   */}
       {/* ============================================================ */}
-      <Section title="Breadcrumb">
+      <Section title={translateShell("shell:breadcrumb")}>
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Projects</BreadcrumbLink>
+              <BreadcrumbLink href="#">{translateShell("shell:projects")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">{translateShell("shell:paperclip_app")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>{translateShell("shell:issue_list")}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -1270,8 +1227,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
-      <Section title="Cards">
-        <SubSection title="Dashboard agent runs">
+      <Section title={translateShell("shell:cards")}>
+        <SubSection title={translateShell("shell:dashboard_agent_runs")}>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
               <AgentRunCard
@@ -1286,30 +1243,30 @@ export function DesignGuide() {
               />
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:the_dashboard_and_live_runs_page_use")}</p>
         </SubSection>
-        <SubSection title="Standard Card">
+        <SubSection title={translateShell("shell:standard_card")}>
           <Card>
             <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
+              <CardTitle>{translateShell("shell:card_title")}</CardTitle>
+              <CardDescription>{translateShell("shell:card_description_with_supporting_text")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Card content goes here. This is the main body area.</p>
+              <p className="text-sm">{translateShell("shell:card_content_goes_here_this_is_the")}</p>
             </CardContent>
             <CardFooter className="gap-2">
-              <Button size="sm">Action</Button>
-              <Button variant="outline" size="sm">Cancel</Button>
+              <Button size="sm">{translateShell("shell:action")}</Button>
+              <Button variant="outline" size="sm">{translateShell("shell:cancel")}</Button>
             </CardFooter>
           </Card>
         </SubSection>
 
-        <SubSection title="Metric Cards">
+        <SubSection title={translateShell("shell:metric_cards")}>
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
-            <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
-            <MetricCard icon={Zap} value="99.9%" label="Uptime" />
+            <MetricCard icon={Bot} value={12} label={translateShell("shell:active_agents")} description={translateShell("shell:3_this_week")} />
+            <MetricCard icon={CircleDot} value={48} label={translateShell("shell:open_issues")} />
+            <MetricCard icon={DollarSign} value="$1,234" label={translateShell("shell:monthly_cost")} description={translateShell("shell:under_budget")} />
+            <MetricCard icon={Zap} value="99.9%" label={translateShell("shell:uptime")} />
           </div>
         </SubSection>
       </Section>
@@ -1317,45 +1274,45 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TABS                                                         */}
       {/* ============================================================ */}
-      <Section title="Tabs">
-        <SubSection title="Default (pill) variant">
+      <Section title={translateShell("shell:tabs")}>
+        <SubSection title={translateShell("shell:default_pill_variant")}>
           <Tabs defaultValue="overview">
             <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="runs">Runs</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="costs">Costs</TabsTrigger>
+              <TabsTrigger value="overview">{translateShell("shell:overview")}</TabsTrigger>
+              <TabsTrigger value="runs">{translateShell("shell:runs")}</TabsTrigger>
+              <TabsTrigger value="config">{translateShell("shell:config")}</TabsTrigger>
+              <TabsTrigger value="costs">{translateShell("shell:costs")}</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
-              <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:overview_tab_content")}</p>
             </TabsContent>
             <TabsContent value="runs">
-              <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:runs_tab_content")}</p>
             </TabsContent>
             <TabsContent value="config">
-              <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:config_tab_content")}</p>
             </TabsContent>
             <TabsContent value="costs">
-              <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:costs_tab_content")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
 
-        <SubSection title="Line variant">
+        <SubSection title={translateShell("shell:line_variant")}>
           <Tabs defaultValue="summary">
             <TabsList variant="line">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="comments">Comments</TabsTrigger>
+              <TabsTrigger value="summary">{translateShell("shell:summary")}</TabsTrigger>
+              <TabsTrigger value="details">{translateShell("shell:details")}</TabsTrigger>
+              <TabsTrigger value="comments">{translateShell("shell:comments")}</TabsTrigger>
             </TabsList>
             <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:summary_content_with_underline_tabs")}</p>
             </TabsContent>
             <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:details_content")}</p>
             </TabsContent>
             <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
+              <p className="text-sm text-muted-foreground py-4">{translateShell("shell:comments_content")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
@@ -1364,7 +1321,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
-      <Section title="Entity Rows">
+      <Section title={translateShell("shell:entity_rows")}>
         <div className="border border-border rounded-md">
           <EntityRow
             leading={
@@ -1375,8 +1332,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-001"
-            title="Implement authentication flow"
-            subtitle="Responsible: Agent Alpha"
+            title={translateShell("shell:implement_authentication_flow")}
+            subtitle={translateShell("shell:extra_24_responsible_agent_alpha")}
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1388,8 +1345,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-002"
-            title="Set up CI/CD pipeline"
-            subtitle="Completed 2 days ago"
+            title={translateShell("shell:set_up_ci_cd_pipeline")}
+            subtitle={translateShell("shell:extra_23_completed_2_days_ago")}
             trailing={<IssueStatusBadge status="done" />}
             onClick={() => {}}
           />
@@ -1401,7 +1358,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-003"
-            title="Write API documentation"
+            title={translateShell("shell:write_api_documentation")}
             trailing={<IssueStatusBadge status="todo" />}
             onClick={() => {}}
           />
@@ -1413,65 +1370,65 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-004"
-            title="Deploy to production"
-            subtitle="Blocked by PAP-001"
+            title={translateShell("shell:deploy_to_production")}
+            subtitle={translateShell("shell:extra_22_blocked_by_pap_001")}
             trailing={<IssueStatusBadge status="blocked" />}
             selected
           />
         </div>
-        <SubSection title="Membership action">
+        <SubSection title={translateShell("shell:membership_action")}>
           <div className="border border-border rounded-md">
             <EntityRow
-              title="Joined resource"
-              subtitle="Hover or focus the row to reveal the reserved action slot."
+              title={translateShell("shell:joined_resource")}
+              subtitle={translateShell("shell:extra_21_hover_or_focus_the_row_to_reveal_the_reserved")}
               className="group"
               trailing={
                 <MembershipAction
                   state="joined"
-                  resourceName="Joined resource"
+                  resourceName={finalPagesT("final-pages:Joined_resource_33c4f6")}
                   onJoin={() => {}}
                   onLeave={() => {}}
                 />
               }
             />
             <EntityRow
-              title="Left resource"
-              subtitle="Persistent action with dimmed row content."
+              title={translateShell("shell:left_resource")}
+              subtitle={translateShell("shell:extra_20_persistent_action_with_dimmed_row_content_")}
               className="group text-foreground/55"
               trailing={
                 <MembershipAction
                   state="left"
-                  resourceName="Left resource"
+                  resourceName={finalPagesT("final-pages:Left_resource_cdd43b")}
                   onJoin={() => {}}
                   onLeave={() => {}}
                 />
               }
             />
             <EntityRow
-              title="Leaving resource"
-              subtitle="Disabled while the optimistic mutation is pending."
+              title={translateShell("shell:leaving_resource")}
+              subtitle={translateShell("shell:extra_19_disabled_while_the_optimistic_mutation_is_pen")}
               className="group text-foreground/55"
               trailing={
                 <MembershipAction
                   state="left"
                   pending
                   pendingState="left"
-                  resourceName="Leaving resource"
+                  resourceName={finalPagesT("final-pages:Leaving_resource_64205c")}
                   onJoin={() => {}}
                   onLeave={() => {}}
                 />
               }
             />
             <EntityRow
-              title="Joining resource"
-              subtitle="The target state is visible immediately while the server confirms."
+              title={translateShell("shell:joining_resource")}
+              subtitle={translateShell("shell:extra_18_the_target_state_is_visible_immediately_while")}
               className="group"
               trailing={
                 <MembershipAction
                   state="joined"
                   pending
                   pendingState="joined"
-                  resourceName="Joining resource"
+                  resourceName={finalPagesT("final-pages:Joining_resource_6dcacc")}
                   onJoin={() => {}}
                   onLeave={() => {}}
                 />
@@ -1484,7 +1441,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FILTER BAR                                                   */}
       {/* ============================================================ */}
-      <Section title="Filter Bar">
+      <Section title={translateShell("shell:filter_bar")}>
         <FilterBar
           filters={filters}
           onRemove={(key) => setFilters((f) => f.filter((x) => x.key !== key))}
@@ -1496,24 +1453,22 @@ export function DesignGuide() {
             size="sm"
             onClick={() =>
               setFilters([
-                { key: "status", label: "Status", value: "Active" },
+                { key: "status", label: finalPagesT("final-pages:Status_920e41"), value: "Active" },
                 // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
                 ...(SHOW_TASK_PRIORITY_UI
-                  ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+                  ? [{ key: "priority", label: finalPagesT("final-pages:Priority_d60dbb"), value: "High" } as FilterValue]
                   : []),
               ])
             }
-          >
-            Reset filters
-          </Button>
+          >{translateShell("shell:reset_filters")}</Button>
         )}
       </Section>
 
       {/* ============================================================ */}
       {/*  AVATARS                                                      */}
       {/* ============================================================ */}
-      <Section title="Avatars">
-        <SubSection title="Sizes">
+      <Section title={translateShell("shell:avatars")}>
+        <SubSection title={translateShell("shell:sizes")}>
           <div className="flex items-center gap-3">
             <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>DF</AvatarFallback></Avatar>
@@ -1521,7 +1476,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Group">
+        <SubSection title={translateShell("shell:group")}>
           <AvatarGroup>
             <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>
@@ -1531,8 +1486,8 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
-      <Section title="App logos">
-        <SubSection title="Official marks and runtime fallback">
+      <Section title={translateShell("shell:app_logos")}>
+        <SubSection title={translateShell("shell:official_marks_and_runtime_fallback")}>
           <div className="flex items-center gap-3">
             <AppLogo
               name="Notion"
@@ -1549,17 +1504,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Agent personas">
-        <SubSection title="Stable palette identities">
+      <Section title={translateShell("shell:agent_personas")}>
+        <SubSection title={translateShell("shell:stable_palette_identities")}>
           <div className="flex flex-wrap gap-3">{AGENT_PALETTE_IDS.map(palette => <AgentAvatar key={palette} appearance={appearanceForPalette(palette)} size={48} label={palette} />)}</div>
         </SubSection>
-        <SubSection title="Onboarding and live character">
-          <p className="text-sm text-muted-foreground">Place one live character beside the agent name. Onboarding uses a larger padded frame. Onboarding and agent headers follow the pointer across the page; other placements track within their region. Full-page examples are in Storybook under Agents / Personas / Full pages.</p>
+        <SubSection title={translateShell("shell:onboarding_and_live_character")}>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:place_one_live_character_beside_the_agent")}</p>
           <div className="flex gap-4"><AgentCharacter muted state="sleepy" motion="still" size={128} /><AgentCharacter size={128} /></div>
         </SubSection>
       </Section>
-      <Section title="Human identity">
-        <SubSection title="Sizes">
+      <Section title={translateShell("shell:human_identity")}>
+        <SubSection title={translateShell("shell:sizes")}>
           <div className="flex items-center gap-6">
             <Identity name="Alex Morgan" size="sm" />
             <Identity name="Alex Morgan" />
@@ -1567,7 +1522,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Initials derivation">
+        <SubSection title={translateShell("shell:initials_derivation")}>
           <div className="flex flex-col gap-2">
             <Identity name="Casey Jordan" size="sm" />
             <Identity name="Alpha" size="sm" />
@@ -1575,7 +1530,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Custom initials">
+        <SubSection title={translateShell("shell:custom_initials")}>
           <Identity name="Backend Service" initials="BS" size="sm" />
         </SubSection>
       </Section>
@@ -1583,19 +1538,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TOOLTIPS                                                     */}
       {/* ============================================================ */}
-      <Section title="Tooltips">
+      <Section title={translateShell("shell:tooltips")}>
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm">Hover me</Button>
+              <Button variant="outline" size="sm">{translateShell("shell:hover_me")}</Button>
             </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            <TooltipContent>{translateShell("shell:this_is_a_tooltip")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm"><Settings /></Button>
             </TooltipTrigger>
-            <TooltipContent>Settings</TooltipContent>
+            <TooltipContent>{translateShell("shell:settings")}</TooltipContent>
           </Tooltip>
         </div>
       </Section>
@@ -1603,31 +1558,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DIALOG                                                       */}
       {/* ============================================================ */}
-      <Section title="Dialog">
+      <Section title={translateShell("shell:dialog")}>
         <Dialog>
           <DialogTrigger asChild>
-            <Button variant="outline">Open Dialog</Button>
+            <Button variant="outline">{translateShell("shell:open_dialog")}</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
-              <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
-              </DialogDescription>
+              <DialogTitle>{translateShell("shell:dialog_title")}</DialogTitle>
+              <DialogDescription>{translateShell("shell:this_is_a_sample_dialog_showing_the")}</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+                <Label>{translateShell("shell:name")}</Label>
+                <Input placeholder={translateShell("shell:enter_a_name")} className="mt-1.5" />
               </div>
               <div>
-                <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
+                <Label>{translateShell("shell:description")}</Label>
+                <Textarea placeholder={translateShell("shell:describe")} className="mt-1.5" />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{translateShell("shell:cancel")}</Button>
+              <Button>{translateShell("shell:save")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1636,12 +1589,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
-      <Section title="Empty State">
+      <Section title={translateShell("shell:empty_state")}>
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
-            message="No items to show. Create your first one to get started."
-            action="Create Item"
+            message={translateShell("shell:extra_17_no_items_to_show_create_your_first_one_to_get")}
+            action={translateShell("shell:extra_16_create_item")}
             onAction={() => {}}
           />
         </div>
@@ -1650,12 +1603,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROGRESS BARS                                                */}
       {/* ============================================================ */}
-      <Section title="Progress Bars (Budget)">
+      <Section title={translateShell("shell:progress_bars_budget")}>
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: translateShell("shell:under_budget_40"), pct: 40, color: "bg-green-400" },
+            { label: translateShell("shell:warning_75"), pct: 75, color: "bg-yellow-400" },
+            { label: translateShell("shell:over_budget_95"), pct: 95, color: "bg-red-400" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -1676,7 +1629,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
-      <Section title="Log Viewer">
+      <Section title={translateShell("shell:log_viewer")}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
           <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
           <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
@@ -1690,7 +1643,7 @@ export function DesignGuide() {
               <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 animate-pulse" />
               <span className="inline-flex h-full w-full rounded-full bg-blue-500" />
             </span>
-            <span className="text-blue-600 dark:text-blue-400">Live</span>
+            <span className="text-blue-600 dark:text-blue-400">{translateShell("shell:live_b64ac0")}</span>
           </div>
         </div>
       </Section>
@@ -1698,28 +1651,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
-      <Section title="Property Row Pattern">
+      <Section title={translateShell("shell:property_row_pattern")}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Status</span>
+            <span className="text-xs text-muted-foreground">{translateShell("shell:status")}</span>
             <StatusBadge status="active" />
           </div>
           {/* PAP-411: priority metadata row hidden behind SHOW_TASK_PRIORITY_UI. */}
           {SHOW_TASK_PRIORITY_UI && (
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-xs text-muted-foreground">Priority</span>
+              <span className="text-xs text-muted-foreground">{translateShell("shell:priority")}</span>
               <PriorityIcon priority="high" />
             </div>
           )}
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Responsible</span>
+            <span className="text-xs text-muted-foreground">{translateShell("shell:responsible")}</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>
             </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Created</span>
+            <span className="text-xs text-muted-foreground">{translateShell("shell:created_d70b9e")}</span>
             <span className="text-xs">Jan 15, 2025</span>
           </div>
         </div>
@@ -1728,67 +1681,51 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
-      <Section title="Navigation Patterns">
-        <SubSection title="Independent MCP connections">
-          <p className="text-sm text-muted-foreground">Zapier, Arcade, Composio and Executor each own a connection. Their controlled setup views share Access → Connect. Tool discovery completes setup. Saved connections reuse the standard Permissions action list and per-action Test dialog. Storybook’s Apps / Connections groups use in-memory provider fixtures.</p>
+      <Section title={translateShell("shell:navigation_patterns")}>
+        <SubSection title={translateShell("shell:independent_mcp_connections")}>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:zapier_arcade_composio_and_executor_each_own")}</p>
           <RemoteMcpDesignExample />
         </SubSection>
-        <SubSection title="Setup wizard">
-          <p className="text-sm text-muted-foreground">Shared by connection setup and trigger previews. Setup navigation takes over the section sidebar; each step owns a single footer.</p>
+        <SubSection title={translateShell("shell:setup_wizard")}>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:shared_by_connection_setup_and_trigger_previews")}</p>
           <div className="max-w-sm space-y-6">
             <SetupWizardNavigation inline labels={["Choose trigger", "Configure", "Review"]} step={wizardStep} availableStep={2} onSelect={setWizardStep} />
-            <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>Continue</Button></SetupWizardFooter>
+            <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>{translateShell("shell:continue")}</Button></SetupWizardFooter>
           </div>
         </SubSection>
-        <SubSection title="Agent chat picker">
+        <SubSection title={translateShell("shell:agent_chat_picker")}>
           <AgentChatPickerExample />
-          <SubSection title="Agent conversation sidebar">
+          <SubSection title={translateShell("shell:agent_conversation_sidebar")}>
             <div className="flex flex-wrap gap-4">
               <div className="h-96 w-60"><AgentConversationSidebar agents={[]} onSelect={() => {}} onBrowse={() => {}} /></div>
               <div className="h-96 w-60"><AgentConversationSidebar agents={[]} loading /></div>
-              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} error={new Error("Unavailable")} onRetry={() => {}} /></div>
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} error={new Error(translateShell("shell:unavailable"))} onRetry={() => {}} /></div>
             </div>
           </SubSection>
         </SubSection>
-        <SubSection title="Sidebar nav items">
-          <p className="text-sm text-muted-foreground">
-            Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
-            Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
-            The Chats section shows starred agents, the earliest-created agent when unstarred, then four recent agents without duplicates. Compose and star controls share a vertical column. Compose appears on hover or keyboard focus and remains visible on touch; starred icons remain visible. The picker searches all company agents by name or role without a subtitle, count, continuation labels, or footer. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
-          </p>
+        <SubSection title={translateShell("shell:sidebar_nav_items")}>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:layout_accepts_sidebarsections_to_compose_additional_sidebarsection")}</p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
-              <LayoutDashboard className="h-4 w-4" />
-              Dashboard
-            </div>
+              <LayoutDashboard className="h-4 w-4" />{translateShell("shell:dashboard")}</div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
-              <CircleDot className="h-4 w-4" />
-              Issues
-              <Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
+              <CircleDot className="h-4 w-4" />{translateShell("shell:issues")}<Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
                 12
               </Badge>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
-              <Bot className="h-4 w-4" />
-              Agents
-            </div>
+              <Bot className="h-4 w-4" />{translateShell("shell:agents")}</div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
-              <Hexagon className="h-4 w-4" />
-              Projects
-            </div>
+              <Hexagon className="h-4 w-4" />{translateShell("shell:projects")}</div>
           </Card>
         </SubSection>
 
-        <SubSection title="View toggle">
+        <SubSection title={translateShell("shell:view_toggle")}>
           <div className="flex items-center border border-border rounded-md w-fit">
             <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
-              <ListTodo className="h-3.5 w-3.5 inline mr-1" />
-              List
-            </button>
+              <ListTodo className="h-3.5 w-3.5 inline mr-1" />{translateShell("shell:list")}</button>
             <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
-              <Target className="h-3.5 w-3.5 inline mr-1" />
-              Org
-            </button>
+              <Target className="h-3.5 w-3.5 inline mr-1" />{translateShell("shell:org")}</button>
           </div>
         </SubSection>
       </Section>
@@ -1796,11 +1733,11 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title={translateShell("shell:grouped_list_issues_pattern")}>
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
-            <span className="text-sm font-medium">In Progress</span>
+            <span className="text-sm font-medium">{translateShell("shell:in_progress_b4cc4b")}</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
@@ -1808,13 +1745,13 @@ export function DesignGuide() {
             <EntityRow
               leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="high" /> : undefined}
               identifier="PAP-101"
-              title="Build agent heartbeat system"
+              title={translateShell("shell:build_agent_heartbeat_system")}
               onClick={() => {}}
             />
             <EntityRow
               leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="medium" /> : undefined}
               identifier="PAP-102"
-              title="Add cost tracking dashboard"
+              title={translateShell("shell:add_cost_tracking_dashboard")}
               onClick={() => {}}
             />
           </div>
@@ -1824,28 +1761,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMENT THREAD PATTERN                                       */}
       {/* ============================================================ */}
-      <Section title="Comment Thread Pattern">
+      <Section title={translateShell("shell:comment_thread_pattern")}>
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="text-sm font-semibold">{translateShell("shell:comments_2")}</h3>
           <div className="space-y-3">
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Agent</span>
+                <span className="text-xs font-medium text-muted-foreground">{translateShell("shell:agent_11b39c")}</span>
                 <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
               </div>
-              <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
+              <p className="text-sm">{translateShell("shell:started_working_on_the_authentication_module_will")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Human</span>
-                <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
+                <span className="text-xs font-medium text-muted-foreground">{translateShell("shell:human")}</span>
+                <span className="text-xs text-muted-foreground">{"Jan 16, 2025"}</span>
               </div>
-              <p className="text-sm">API keys have been added to the vault. Please proceed.</p>
+              <p className="text-sm">{translateShell("shell:api_keys_have_been_added_to_the")}</p>
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
-            <Button size="sm">Comment</Button>
+            <Textarea placeholder={translateShell("shell:leave_a_comment")} rows={3} />
+            <Button size="sm">{translateShell("shell:comment")}</Button>
           </div>
         </div>
       </Section>
@@ -1853,14 +1790,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
-      <Section title="Cost Table Pattern">
+      <Section title={translateShell("shell:cost_table_pattern")}>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
               <tr>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Tokens</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{translateShell("shell:model")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{translateShell("shell:tokens")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{translateShell("shell:cost")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1875,7 +1812,7 @@ export function DesignGuide() {
                 <td className="px-3 py-2 font-mono">$1.25</td>
               </tr>
               <tr>
-                <td className="px-3 py-2 font-medium">Total</td>
+                <td className="px-3 py-2 font-medium">{translateShell("shell:total")}</td>
                 <td className="px-3 py-2 font-mono">1.7M</td>
                 <td className="px-3 py-2 font-mono font-medium">$19.25</td>
               </tr>
@@ -1887,8 +1824,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SKELETONS                                                    */}
       {/* ============================================================ */}
-      <Section title="Skeletons">
-        <SubSection title="Individual">
+      <Section title={translateShell("shell:skeletons")}>
+        <SubSection title={translateShell("shell:individual")}>
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-8 w-full max-w-sm" />
@@ -1896,18 +1833,18 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (list)">
+        <SubSection title={translateShell("shell:page_skeleton_list")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="list" />
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (detail)">
+        <SubSection title={translateShell("shell:page_skeleton_detail")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
           </div>
         </SubSection>
-        <SubSection title="Task conversation loading">
+        <SubSection title={translateShell("shell:task_conversation_loading")}>
           <div className="grid gap-6 md:grid-cols-2">
             <div className="relative h-96 overflow-hidden rounded-md border border-border">
               <TaskChatLoadingShell mobile={false} streamlined coordinator={false} />
@@ -1922,14 +1859,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SEPARATOR                                                    */}
       {/* ============================================================ */}
-      <Section title="Separator">
+      <Section title={translateShell("shell:separator")}>
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">Horizontal</p>
+          <p className="text-sm text-muted-foreground">{translateShell("shell:horizontal")}</p>
           <Separator />
           <div className="flex items-center gap-4 h-8">
-            <span className="text-sm">Left</span>
+            <span className="text-sm">{translateShell("shell:left")}</span>
             <Separator orientation="vertical" />
-            <span className="text-sm">Right</span>
+            <span className="text-sm">{translateShell("shell:right")}</span>
           </div>
         </div>
       </Section>
@@ -1939,41 +1876,24 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TEAM CATALOG                                                 */}
       {/* ============================================================ */}
-      <Section title="Team Catalog">
-        <p className="text-sm text-muted-foreground">
-          Components from the Team Catalog browse/install surface (<code className="font-mono text-xs">/teams-catalog</code>).
-          Fixtures are shared with the Storybook stories.
-        </p>
+      <Section title={translateShell("shell:team_catalog")}>
+        <p className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="components_from_the_team_catalog_browse_install" components={{ part1: <>{<code className="font-mono text-xs">/teams-catalog</code>}</> }} /></p>
 
-        <SubSection title="TeamRow (browse list)">
+        <SubSection title={translateShell("shell:teamrow_browse_list")}>
           <div className="w-(--sz-28rem) rounded-md border border-border">
-            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Bundled · 1
-            </div>
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">{translateShell("shell:bundled_1")}</div>
             <TeamRow team={sampleTeam} selected onSelect={() => {}} />
-            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Optional · 2
-            </div>
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">{translateShell("shell:optional_2")}</div>
             <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
-            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Installed · 2
-            </div>
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">{translateShell("shell:installed_2")}</div>
             <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
             <TeamRow team={warnTeam} selected={false} onSelect={() => {}} installed={currentInstalledState} />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Installed teams collapse under <code className="font-mono">INSTALLED · N</code>; an out-of-date
-            install (server <code className="font-mono">originHash</code> ≠ catalog <code className="font-mono">contentHash</code>)
-            shows the amber <code className="font-mono">↑</code> badge (PAP-10256).
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="installed_teams_collapse_under_an_out_of" components={{ part1: <>{<code className="font-mono">{finalPagesT("final-pages:INSTALLED_N_4d29db")}</code>}</>, part2: <>{<code className="font-mono">originHash</code>}</>, part3: <>{<code className="font-mono">contentHash</code>}</>, part4: <>{<code className="font-mono">↑</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="TeamCard (onboarding grid)">
-          <p className="text-xs text-muted-foreground">
-            Square tile for the onboarding &ldquo;Pick a starter team&rdquo; grid. Selected tile gets{" "}
-            <code className="font-mono">ring-2 ring-ring</code>. Drives the{" "}
-            <code className="font-mono">useInstallTeamCatalogEntry</code> simplified flow.
-          </p>
+        <SubSection title={finalPagesT("final-pages:TeamCard_onboarding_grid_74466b")}>
+          <p className="text-xs text-muted-foreground"><Trans ns="shell" i18nKey="square_tile_for_the_onboarding_pick_a" components={{ part1: <>{<code className="font-mono">ring-2 ring-ring</code>}</>, part2: <>{<code className="font-mono">useInstallTeamCatalogEntry</code>}</> }} /></p>
           <TeamCardShowcase />
         </SubSection>
 
@@ -2001,7 +1921,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Source policy step (StepSourcePolicy)">
+        <SubSection title={translateShell("shell:source_policy_step_stepsourcepolicy")}>
           <div className="max-w-xl rounded-md border border-border p-4">
             <StepSourcePolicy
               team={warnTeam}
@@ -2017,7 +1937,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Skill plan step (StepSkillPlan)">
+        <SubSection title={translateShell("shell:skill_plan_step_stepskillplan")}>
           <div className="max-w-xl rounded-md border border-border p-4">
             <StepSkillPlan team={sampleTeam} preparations={sampleSkillPreparations} />
           </div>
@@ -2025,25 +1945,25 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
-      <Section title="Common Icons (Lucide)">
+      <Section title={translateShell("shell:common_icons_lucide")}>
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
           {[
-            ["Inbox", Inbox],
+            [translateShell("shell:inbox"), Inbox],
             ["ListTodo", ListTodo],
             ["CircleDot", CircleDot],
-            ["Hexagon", Hexagon],
-            ["Target", Target],
+            [translateShell("shell:hexagon"), Hexagon],
+            [translateShell("shell:target"), Target],
             ["LayoutDashboard", LayoutDashboard],
-            ["Bot", Bot],
+            [translateShell("shell:bot"), Bot],
             ["DollarSign", DollarSign],
-            ["History", History],
-            ["Search", Search],
-            ["Plus", Plus],
+            [translateShell("shell:history"), History],
+            [translateShell("shell:search"), Search],
+            [translateShell("shell:plus"), Plus],
             ["Trash2", Trash2],
-            ["Settings", Settings],
-            ["User", User],
-            ["Mail", Mail],
-            ["Upload", Upload],
+            [translateShell("shell:settings"), Settings],
+            [translateShell("shell:user"), User],
+            [translateShell("shell:mail"), Mail],
+            [translateShell("shell:upload"), Upload],
             ["Zap", Zap],
           ].map(([name, Icon]) => {
             const LucideIcon = Icon as React.FC<{ className?: string }>;
@@ -2060,15 +1980,15 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
-      <Section title="Keyboard Shortcuts">
+      <Section title={translateShell("shell:keyboard_shortcuts")}>
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
-            ["Cmd+K / Ctrl+K", "Open Command Palette"],
-            ["C", "New Issue (outside inputs)"],
-            ["[", "Toggle Sidebar"],
-            ["]", "Toggle Properties Panel"],
+            ["Cmd+K / Ctrl+K", translateShell("shell:open_command_palette_581096")],
+            ["C", translateShell("shell:new_issue_outside_inputs")],
+            ["[", translateShell("shell:toggle_sidebar")],
+            ["]", translateShell("shell:toggle_properties_panel")],
 
-            ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
+            ["Cmd+Enter / Ctrl+Enter", translateShell("shell:submit_markdown_comment")],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>
@@ -2080,63 +2000,52 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Issue Output Surface">
-        <SubSection title="Multiple outputs (primary video + 'Also produced')">
+      <Section title={translateShell("shell:issue_output_surface")}>
+        <SubSection title={translateShell("shell:multiple_outputs_primary_video_also_produced")}>
           <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
         </SubSection>
-        <SubSection title="Degraded output (invalid / failed attachment metadata)">
+        <SubSection title={translateShell("shell:degraded_output_invalid_failed_attachment_metadata")}>
           <IssueOutputSection workProducts={DESIGN_GUIDE_DEGRADED_OUTPUTS} />
         </SubSection>
-        <SubSection title="Empty state">
-          <p className="text-xs text-muted-foreground">
-            When an issue has produced no artifact work products, the Output section renders nothing
-            at all (no placeholder card).
-          </p>
+        <SubSection title={translateShell("shell:empty_state_b72556")}>
+          <p className="text-xs text-muted-foreground">{translateShell("shell:when_an_issue_has_produced_no_artifact")}</p>
         </SubSection>
       </Section>
 
       {/* ============================================================ */}
       {/*  TOOLS & ACCESS (PAP-10389)                                   */}
       {/* ============================================================ */}
-      <Section title="Tools & Access">
-        <SubSection title="EnforcementBanner — default / denied-detected">
+      <Section title={translateShell("shell:tools_access")}>
+        <SubSection title={translateShell("shell:enforcementbanner_default_denied_detected")}>
           <div className="space-y-3">
             <EnforcementBanner companyId="" forceVariant="default" recentDenialCount={0} />
             <EnforcementBanner companyId="" forceVariant="denied-detected" recentDenialCount={3} />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Persistent at the top of the Tools &amp; Access surface. Tints to <code>denied-detected</code> when
-            governed tool calls were denied or failed in the last hour. Observability only — enforcement lives
-            in the tool gateway.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="persistent_at_the_top_of_the_tools" components={{ part1: <>{<code>denied-detected</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="EnforcementBanner — presentational tones (info / warning / error)">
+        <SubSection title={translateShell("shell:enforcementbanner_presentational_tones_info_warning_error")}>
           <div className="space-y-3">
             <EnforcementBanner
               tone="info"
-              title="Effective access — server resolved."
-              body="This is exactly what the tool gateway will accept. Profile and policy edits reflect within ~5s; the prompt cannot expand it."
+              title={translateShell("shell:effective_access_server_resolved")}
+              body={finalPagesT("final-pages:This_is_exactly_what_the_tool_gateway_will_accept_Profile_and_pol_f7e93a")}
             />
             <EnforcementBanner
               tone="warning"
-              title="Local stdio is local code execution, not a security sandbox."
-              body="A local-stdio slot runs with the orchestrator's privileges. Only bind trusted commands; quarantine anything you would not run yourself."
+              title={translateShell("shell:local_stdio_is_local_code_execution_not")}
+              body={finalPagesT("final-pages:A_local_stdio_slot_runs_with_the_orchestrator_s_privileges_Only_b_c73d33")}
             />
             <EnforcementBanner
               tone="error"
-              title="Runtime failed closed."
-              body="The supervisor is restarting (attempt 2/3). The gateway returns runtime-error and the agent does not see partial output."
+              title={translateShell("shell:runtime_failed_closed")}
+              body={finalPagesT("final-pages:The_supervisor_is_restarting_attempt_2_3_The_gateway_returns_runt_3210e8")}
             />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Static governance copy with a tone. Used for the PAP-10400 trust-tier banner on Runtime and the
-            effective-access banner on Agent → Tools. Pass <code>title</code>/<code>body</code> and an optional{" "}
-            <code>icon</code>.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="static_governance_copy_with_a_tone_used" components={{ part1: <>{<code>title</code>}</>, part2: <>{<code>body</code>}</>, part3: <>{<code>icon</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="Action approval card — pending / stale (surfaces 11/12)">
+        <SubSection title={translateShell("shell:action_approval_card_pending_stale_surfaces_11")}>
           <div className="grid gap-4 lg:grid-cols-2">
             <ActionCard
               toolName="slack.post_message"
@@ -2150,9 +2059,9 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason={translateShell("shell:extra_15_this_tool_can_write_to_your_workspace_so_a_hu")}
               policyNumber={7}
-              expiresInLabel="expires in 23h 51m"
+              expiresInLabel={finalPagesT("final-pages:expires_in_23h_51m_88e51d")}
             />
             <ActionCard
               variant="stale"
@@ -2168,20 +2077,15 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason={translateShell("shell:extra_15_this_tool_can_write_to_your_workspace_so_a_hu")}
               policyNumber={7}
-              expiresInLabel="expires in 18h 02m"
+              expiresInLabel={finalPagesT("final-pages:expires_in_18h_02m_e165b7")}
             />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Signed payload sha256 + expiry surface on every variant (PAP-10400). The{" "}
-            <code>stale</code> variant tints the border amber, banners the catalog-hash mismatch, strikes through
-            the previous hash next to the current one, and renders <code>Approve</code> disabled until the request
-            is re-issued.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="signed_payload_sha256_expiry_surface_on_every" components={{ part1: <>{<code>stale</code>}</>, part2: <>{<code>{finalPagesT("final-pages:Approve_6007ac")}</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="Action approval card — mobile (390×844, surface 99)">
+        <SubSection title={translateShell("shell:action_approval_card_mobile_390_844_surface")}>
           <div className="w-(--sz-390px) max-w-full rounded-xl border border-border bg-background p-3">
             <ActionCardMobile
               toolName="slack.post_message"
@@ -2195,33 +2099,27 @@ export function DesignGuide() {
                 payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
               }}
               input={{ channel: "#launch", text: "Deploy v2 is live 🎉" }}
-              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              reason={translateShell("shell:extra_15_this_tool_can_write_to_your_workspace_so_a_hu")}
               policyNumber={7}
-              expiresInLabel="expires in 23h 51m"
+              expiresInLabel={finalPagesT("final-pages:expires_in_23h_51m_88e51d")}
             />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Identical content; the three buttons stack full-width in the order Approve / Deny / Edit &amp; re-sign,
-            and the bindings table uses a 70px label column.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground">{translateShell("shell:identical_content_the_three_buttons_stack_full")}</p>
         </SubSection>
 
-        <SubSection title="BindingsTable (reused in the audit row drilldown)">
+        <SubSection title={translateShell("shell:bindingstable_reused_in_the_audit_row_drilldown")}>
           <BindingsTable
             rows={[
-              { label: "Application", value: "Slack · manifest v2.4.1" },
-              { label: "Connection", value: "https://slack.com/api · acme-workspace", mono: true },
-              { label: "Catalog", value: "sha256:9f86d081…f00a08", mono: true },
-              { label: "Payload", value: "sha256:2c26b46b…66e7ae", mono: true },
+              { label: finalPagesT("final-pages:Application_e7ad52"), value: "Slack · manifest v2.4.1" },
+              { label: finalPagesT("final-pages:Connection_639a40"), value: "https://slack.com/api · acme-workspace", mono: true },
+              { label: finalPagesT("final-pages:Catalog_3877d1"), value: "sha256:9f86d081…f00a08", mono: true },
+              { label: finalPagesT("final-pages:Payload_997333"), value: "sha256:2c26b46b…66e7ae", mono: true },
             ]}
           />
-          <p className="mt-2 text-xs text-muted-foreground">
-            Two-column key/value block with mono values. Lives inside <code>ActionCard</code> and is reused
-            standalone in the audit row drilldown.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="two_column_key_value_block_with_mono" components={{ part1: <>{<code>ActionCard</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="Tool-access status keys (StatusBadge)">
+        <SubSection title={translateShell("shell:tool_access_status_keys_statusbadge")}>
           <div className="flex flex-wrap items-center gap-2">
             {[
               "allowed", "denied", "block", "require-approval", "redacted", "rate-limit",
@@ -2230,54 +2128,45 @@ export function DesignGuide() {
               <StatusBadge key={s} status={s} />
             ))}
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Policy decisions, connection/runtime health, and catalog quarantine all route through the canonical{" "}
-            <code>StatusBadge</code> keys defined in <code>lib/status-colors</code>.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground"><Trans ns="shell" i18nKey="policy_decisions_connection_runtime_health_and_catalog" components={{ part1: <>{<code>StatusBadge</code>}</>, part2: <>{<code>lib/status-colors</code>}</> }} /></p>
         </SubSection>
 
-        <SubSection title="EmptyState (canonical, with description + action)">
+        <SubSection title={translateShell("shell:emptystate_canonical_with_description_action")}>
           <EmptyState
             icon={Inbox}
-            message="No connections yet"
-            description="Add a connection to an application to configure credentials and discover its tools."
-            action="New connection"
+            message={translateShell("shell:extra_14_no_connections_yet")}
+            description={translateShell("shell:add_a_connection_to_an_application_to")}
+            action={translateShell("shell:extra_13_new_connection")}
             onAction={() => {}}
           />
         </SubSection>
       </Section>
 
-      <Section title="GitHub skill sources">
-        <p className="text-sm text-muted-foreground">The shared FileTree explorer layout puts disclosure controls beside selection, with compact folder chains, equal-height rows, inline skill descriptions, and trailing status badges. Folders select descendant packages; package checkboxes select only that package, independently of nested skills. Included files use aligned rows without individual checkboxes (`getCheckboxState` returns null); package rows use `renderNodeExtra` for file counts and inspection. Use arrow keys to navigate and Space to select.</p>
+      <Section title={translateShell("shell:github_skill_sources")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:the_shared_filetree_explorer_layout_puts_disclosure")}</p>
         <SkillSourceTreeShowcase />
         <SkillBinaryFile file={{ skillId: "example", path: "assets/example.bin", kind: "asset", content: "AAECAw==", encoding: "base64", language: null, markdown: false, editable: false }} />
       </Section>
 
-      <Section title="Source Repositories">
-        <SubSection title="Empty and disconnected">
+      <Section title={translateShell("shell:source_repositories")}>
+        <SubSection title={translateShell("shell:empty_and_disconnected")}>
           <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
         </SubSection>
-        <SubSection title="Selected and searchable">
+        <SubSection title={translateShell("shell:selected_and_searchable")}>
           <RepositoryEditor selected={[{ id: "1", fullName: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip", connections: ["Your GitHub"] }]}
             available={[{ id: "2", fullName: "paperclipai/docs", url: "https://github.com/paperclipai/docs", connections: ["Company GitHub"] }]}
             onChange={() => {}} onConnect={() => {}} onRetry={() => {}} />
         </SubSection>
-        <p className="text-sm text-muted-foreground">Loading, errors, empty search, mobile, and short viewports are covered in the Project repos Storybook stories.</p>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:loading_errors_empty_search_mobile_and_short")}</p>
       </Section>
 
-      <Section title="Environment Variables Editor">
-        <p className="text-sm text-muted-foreground">
-          Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
-          in-field Text/Secret source switch, a fuzzy secret picker with a pinned “Create secret”
-          item, automatic sensitive-value detection, and inline secret-health warnings. See the
-          Storybook <span className="font-mono">Product/Environment Variables Editor</span> stories
-          for all 10 states.
-        </p>
+      <Section title={translateShell("shell:environment_variables_editor")}>
+        <p className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="reusable_env_var_editor_agents_projects_environments" components={{ part1: <>{<span className="font-mono">{finalPagesT("final-pages:Product_Environment_Variables_Editor_732eaa")}</span>}</> }} /></p>
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
-      <Section title="Tasks created from a task">
-        <SubSection title="Subtasks and created work are independent">
+      <Section title={translateShell("shell:tasks_created_from_a_task")}>
+        <SubSection title={translateShell("shell:subtasks_and_created_work_are_independent")}>
           <div className="max-w-xl">
             <TaskDetailTasksPanel
               subtasks={[DESIGN_GUIDE_TASK]}
@@ -2289,54 +2178,44 @@ export function DesignGuide() {
             />
           </div>
         </SubSection>
-        <SubSection title="Empty, loading and failed">
+        <SubSection title={translateShell("shell:empty_loading_and_failed")}>
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
         </SubSection>
       </Section>
 
-      <Section title="Disposition recovery notice">
-        <SubSection title="Needs attention, with inspectable details">
+      <Section title={translateShell("shell:disposition_recovery_notice")}>
+        <SubSection title={translateShell("shell:needs_attention_with_inspectable_details")}>
           <DispositionRecoveryNotice snapshot={{ kind: "disposition_repair_escalated", actionId: "design-recovery", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null }} defaultExpanded />
         </SubSection>
-        <p className="text-sm text-muted-foreground">Storybook’s Recovery notice stories show the actionable, pending, acknowledged, unavailable, failed, and mobile states using this production component.</p>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:storybook_s_recovery_notice_stories_show_the")}</p>
       </Section>
 
-      <Section title="Pending task input above composer">
-        <p className="mb-3 text-sm text-muted-foreground">A decision card sits above the ordinary message composer. Dismiss the card to keep a reopen control, or resolve it to clear the pending state.</p>
+      <Section title={translateShell("shell:pending_task_input_above_composer")}>
+        <p className="mb-3 text-sm text-muted-foreground">{translateShell("shell:a_decision_card_sits_above_the_ordinary")}</p>
         <TaskPendingInputExample />
       </Section>
 
-      <Section title="Execution recovery">
-        <p className="text-sm text-muted-foreground">
-          Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. Active transcript headers keep saying Working during automatic
-          recovery. Recovery decisions and attempts belong in the run log;
-          there is no execution status card or reconciliation form.
-        </p>
-        <p className="text-sm text-muted-foreground">
-          When retained-file recovery needs another authorized request, the source task and
-          run inspector offer Recover saved files. This queues the existing file-preservation
-          worker. Work remains held until the server verifies the saved files; a queued
-          acknowledgement does not mean that recovery finished.
-        </p>
+      <Section title={translateShell("shell:execution_recovery")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:recovery_runs_in_the_background_task_lists")}</p>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:when_retained_file_recovery_needs_another_authorized")}</p>
       </Section>
 
-      <Section title="Cloud sign-in unavailable">
+      <Section title={translateShell("shell:cloud_sign_in_unavailable")}>
         <CloudSignIn cloud={{ managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: null, stackSlug: null }} returnTo="/" />
       </Section>
 
-      <Section title="Saved provider API keys">
+      <Section title={translateShell("shell:saved_provider_api_keys")}>
         <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
       </Section>
 
-      <Section title="Voice conversations">
+      <Section title={translateShell("shell:voice_conversations")}>
         <div className="flex flex-col gap-6">
           <VoiceControls state="working" agentName="Company Phone Agent" onStart={() => {}} onMute={() => {}} onEnd={() => {}} onResumeAudio={() => {}} />
-          <VoiceControls state="failed" agentName="Company Phone Agent" error="Microphone access was denied. Allow access in your browser, then try again." onStart={() => {}} onMute={() => {}} onEnd={() => {}} onResumeAudio={() => {}} />
+          <VoiceControls state="failed" agentName="Company Phone Agent" error={translateShell("shell:extra_12_microphone_access_was_denied_allow_access_in_")} onStart={() => {}} onMute={() => {}} onEnd={() => {}} onResumeAudio={() => {}} />
           <VoiceTranscript agentName="Company Phone Agent" entries={[
             { id: "ack", source: "agent", text: "I’m checking that now.", final: true },
             { id: "followup", source: "user", text: "Include the revised delivery address too.", final: true },
@@ -2344,7 +2223,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Speko provider setup">
+      <Section title={translateShell("shell:speko_provider_setup")}>
         <SpekoPhoneCallbackForm onSave={() => {}} />
         <SpekoCallHistoryView onRetry={() => {}} />
         <div className="divide-y divide-border border-y border-border">
@@ -2356,8 +2235,8 @@ export function DesignGuide() {
         <SpekoProviderSetup agentName="Company Phone Agent" callbackUrl="https://paperclip.example/api/voice-webhooks/example/tools" credentials={{}} onChange={() => {}} onConnect={() => {}} />
       </Section>
 
-      <Section title="External agent invitation">
-        <p className="text-sm text-muted-foreground">Match the harness picker with provider cards. Connection checks reflect confirmed server evidence. AnimatedDialogContent resizes to its content using motion tokens and respects reduced motion.</p>
+      <Section title={translateShell("shell:external_agent_invitation")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:match_the_harness_picker_with_provider_cards")}</p>
         <ExternalAgentPresetPicker onSelect={() => {}} />
         <DotConnectionChecks state={{ phase: "testing" }} />
         <ExternalAgentPresetPicker museEnabled onSelect={() => {}} />
@@ -2365,28 +2244,20 @@ export function DesignGuide() {
         <MuseConnectionChecks state={{ paired: true, receiverDetected: true, backgroundReplyVerified: true, ready: false, problem: "agent_unavailable" }} />
         <MuseConnectionChecks state={{ paired: true, receiverDetected: true, backgroundReplyVerified: true, ready: true }} />
         <MuseConnectionDetails connection={{ enabled: false, publicOrigin: null, agentStatus: "idle", agentLifecycleState: "ready", canConfigureConnection: true, binding: null, usage: null, cost: null }} onTest={() => {}} onRepair={() => {}} onPause={() => {}} onDisconnect={() => {}} onRefresh={() => {}} onAttest={() => {}} />
-        <Dialog><DialogTrigger asChild><Button variant="outline">Preview invitation modal</Button></DialogTrigger>
-          <AnimatedDialogContent><div className="space-y-4 p-6"><DialogTitle>Invite an external agent</DialogTitle><DialogDescription>Choose an agent you already use.</DialogDescription><ExternalAgentPresetPicker onSelect={() => {}} /></div></AnimatedDialogContent>
+        <Dialog><DialogTrigger asChild><Button variant="outline">{translateShell("shell:preview_invitation_modal")}</Button></DialogTrigger>
+          <AnimatedDialogContent><div className="space-y-4 p-6"><DialogTitle>{translateShell("shell:invite_an_external_agent")}</DialogTitle><DialogDescription>{translateShell("shell:choose_an_agent_you_already_use")}</DialogDescription><ExternalAgentPresetPicker onSelect={() => {}} /></div></AnimatedDialogContent>
         </Dialog>
       </Section>
 
-      <Section title="Browser setup prompt">
-        <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
-        <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
-        <p className="text-sm text-muted-foreground">For a named recipient, pass the optional agent name and logo. The same copy feedback, preview, and manual clipboard recovery apply.</p>
-        <SetupPrompt prompt="Design guide example for Dot. No live pairing code." label="Copy setup prompt" title="Connect your Dot" agent={{ name: "Dot", src: "/brands/adapters/openai-dot.svg" }} />
+      <Section title={translateShell("shell:browser_setup_prompt")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:use_agentsetupprompt_for_prompts_handed_to_an")}</p>
+        <SetupPrompt prompt={finalPagesT("final-pages:Design_guide_example_This_is_a_preview_not_a_real_provider_setup__54722e")} />
+        <p className="text-sm text-muted-foreground">{translateShell("shell:for_a_named_recipient_pass_the_optional")}</p>
+        <SetupPrompt prompt={finalPagesT("final-pages:Design_guide_example_for_Dot_No_live_pairing_code_32c680")} label={translateShell("shell:copy_setup_prompt")} title={translateShell("shell:connect_your_dot")} agent={{ name: "Dot", src: "/brands/adapters/openai-dot.svg" }} />
       </Section>
 
-      <Section title="Connection Intent">
-        <p className="text-sm text-muted-foreground">
-          The task card is the dialog host for the shared connection setup flow. Provider forms,
-          validation, OAuth, access selection, and completion come from the same feature module as
-          the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
-          Pending connections stay in the timeline beside a usable composer. The independently
-          addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
-          layouts, completion, and historical outcomes. AgentMail uses an inline API-key field
-          with fixed access defaults; its field and direct key-page link are shared with Apps setup.
-        </p>
+      <Section title={translateShell("shell:connection_intent")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:the_task_card_is_the_dialog_host")}</p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard
             interaction={pendingConnectionIntentInteraction}
@@ -2403,39 +2274,28 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="AgentMail API key">
-        <p className="text-sm text-muted-foreground">AgentMail setup has two steps: pick an agent, then pick an email address. Ask for the API key alongside the agent only when needed. Keep address errors beside the field and additional settings under Advanced options.</p>
-        <p className="text-sm text-muted-foreground">Preview only. This field does not save or submit a credential.</p>
+      <Section title={translateShell("shell:agentmail_api_key")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:agentmail_setup_has_two_steps_pick_an")}</p>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:preview_only_this_field_does_not_save")}</p>
         <div className="max-w-md">
           <AgentMailApiKeyField value={agentmailDemoKey} onChange={setAgentmailDemoKey} />
         </div>
       </Section>
 
-      <Section title="Resizable Panels">
-        <p className="text-sm text-muted-foreground">
-          Design-system wrapper over <span className="font-mono">react-resizable-panels</span>{" "}
-          (Skill Studio D2). Drag a handle to resize; panels accept percentage or pixel
-          (<span className="font-mono">minSize="240px"</span>) constraints and the middle panel is
-          collapsible. Use anywhere a split view is needed.
-        </p>
+      <Section title={translateShell("shell:resizable_panels")}>
+        <p className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="design_system_wrapper_over_skill_studio_d2" components={{ part1: <>{<span className="font-mono">react-resizable-panels</span>}</>, part2: <>{<span className="font-mono">minSize="240px"</span>}</> }} /></p>
         <div className="h-48 max-w-2xl overflow-hidden rounded-md border border-border">
           <ResizablePanelGroup>
             <ResizablePanel id="a" minSize="120px" className="bg-muted/30">
-              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel A
-              </div>
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{translateShell("shell:panel_a")}</div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id="b" minSize="120px" collapsible collapsedSize="40px" className="bg-muted/10">
-              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel B (collapsible)
-              </div>
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{translateShell("shell:panel_b_collapsible")}</div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id="c" minSize="120px" className="bg-muted/30">
-              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel C
-              </div>
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{translateShell("shell:panel_c")}</div>
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
@@ -2444,78 +2304,63 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
       {/* ============================================================ */}
-      <Section title="Webhook URL warnings">
+      <Section title={translateShell("shell:webhook_url_warnings")}>
         <div className="space-y-3">
           {["http://localhost:3100", "https://paperclip.internal", "https://paperclip.example-tailnet.ts.net", "http://paperclip.example.com", "not-a-url"].map((url) => <WebhookUrlWarning key={url} url={url} />)}
         </div>
       </Section>
 
-      <Section title="Inline Banner">
-        <p className="text-sm text-muted-foreground">
-          Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
-          <span className="font-mono">info</span> for provenance/context and{" "}
-          <span className="font-mono">warning</span> for paused/attention. Supports an optional bold
-          title and a trailing actions slot. Replaces hand-rolled{" "}
-          <span className="font-mono">bg-yellow-*</span>/<span className="font-mono">bg-blue-*</span>{" "}
-          banners.
-        </p>
+      <Section title={translateShell("shell:inline_banner")}>
+        <p className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="token_backed_full_width_notice_tones_use" components={{ part1: <>{<span className="font-mono">brandBanner</span>}</>, part2: <>{<span className="font-mono">info</span>}</>, part3: <>{<span className="font-mono">warning</span>}</>, part4: <>{<span className="font-mono">bg-yellow-*</span>}</>, part5: <>{<span className="font-mono">bg-blue-*</span>}</> }} /></p>
         <div className="space-y-3">
           <InlineBanner
             tone="info"
-            title="Built-in agent"
-            actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
-          >
-            Ships with Paperclip and powers <strong>Briefs</strong>. It can be paused but not deleted.
-          </InlineBanner>
+            title={translateShell("shell:built_in_agent_4bdd28")}
+            actions={<Button variant="outline" size="sm">{translateShell("shell:reset_to_defaults")}</Button>}
+          ><Trans ns="shell" i18nKey="ships_with_paperclip_and_powers_it_can" components={{ part1: <>{<strong>{finalPagesT("final-pages:Briefs_997b20")}</strong>}</> }} /></InlineBanner>
           <InlineBanner
             tone="warning"
-            title="Briefs is paused."
+            title={translateShell("shell:briefs_is_paused")}
             actions={
               <>
-                <Button variant="ghost" size="sm">View agent</Button>
-                <Button size="sm">Resume agent</Button>
+                <Button variant="ghost" size="sm">{translateShell("shell:view_agent")}</Button>
+                <Button size="sm">{translateShell("shell:resume_agent")}</Button>
               </>
             }
-          >
-            Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
-          </InlineBanner>
+          >{translateShell("shell:its_built_in_agent_was_paused_2")}</InlineBanner>
           <InlineBanner
             tone="danger"
-            title="Summary generation failed."
-            actions={<Button size="sm">Retry</Button>}
-          >
-            The linked issue reached a terminal state before a summary was written.
-          </InlineBanner>
-          <InlineBanner tone="info" compact>
-            Compact variant for embedding inside dialogs and modals.
-          </InlineBanner>
+            title={translateShell("shell:summary_generation_failed")}
+            actions={<Button size="sm">{translateShell("shell:retry")}</Button>}
+          >{translateShell("shell:the_linked_issue_reached_a_terminal_state")}</InlineBanner>
+          <InlineBanner tone="info" compact>{translateShell("shell:compact_variant_for_embedding_inside_dialogs_and")}</InlineBanner>
         </div>
       </Section>
 
-      <Section title="Text attachment tabs">
-        <p className="text-sm text-muted-foreground">Uploaded text opens in a named task tab. Markdown offers Rendered and Raw icon controls; every text file has a download action.</p>
+      <Section title={translateShell("shell:text_attachment_tabs")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:uploaded_text_opens_in_a_named_task")}</p>
         <div className="grid gap-4 md:grid-cols-2">
           <TextAttachmentPreview title="README.md" text={"# Project notes\n\nReview the **original** file."} markdown downloadUrl="data:text/markdown,%23%20Project%20notes" />
           <TextAttachmentPreview title="notes.txt" text="Plain text stays literal: <example>" markdown={false} downloadUrl="data:text/plain,Plain%20text" />
         </div>
       </Section>
 
-      <Section title="Connection recovery">
-        <SubSection title="Waiting for server">
+      <Section title={translateShell("shell:connection_recovery")}>
+        <SubSection title={translateShell("shell:waiting_for_server")}>
           <CloudAccessError temporary retrying={false} onRetry={() => undefined} />
         </SubSection>
-        <SubSection title="Checking connection">
+        <SubSection title={translateShell("shell:checking_connection")}>
           <CloudAccessError temporary retrying onRetry={() => undefined} />
         </SubSection>
-        <SubSection title="Access check failed">
+        <SubSection title={translateShell("shell:access_check_failed")}>
           <CloudAccessError temporary={false} retrying={false} onRetry={() => undefined} />
         </SubSection>
       </Section>
 
-      <Section title="Browser session footer">
-        <p className="text-sm text-muted-foreground">Fit to pane follows the visible panel. Fixed viewport presets and session actions live in the footer menu. Costs stay in task reporting. The idle countdown appears only in the final five minutes. Full panel, activity, and settings states are in Storybook under Browser Use.</p>
+      <Section title={translateShell("shell:browser_session_footer")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:fit_to_pane_follows_the_visible_panel")}</p>
         {(["running", "idle", "closing-soon", "closed"] as const).map((state) => (
-          <SubSection key={state} title={state === "closing-soon" ? "Closing soon" : state}>
+          <SubSection key={state} title={state === "closing-soon" ? translateShell("shell:closing_soon") : getPageValueLabel(state)}>
             <TaskBrowserFooter
               browser={{
                 id: "design-browser", sessionId: "design-session", issueId: "design-task",
@@ -2533,10 +2378,10 @@ export function DesignGuide() {
         ))}
       </Section>
 
-      <Section title="Browser activity in the task feed">
-        <p className="text-sm text-muted-foreground">Each browser appears once at its opening time among the task messages. Its status updates in place; the action opens its side-panel tab.</p>
+      <Section title={translateShell("shell:browser_activity_in_the_task_feed")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:each_browser_appears_once_at_its_opening")}</p>
         {(["starting", "running", "idle", "closed", "failed"] as const).map((status) => (
-          <SubSection key={status} title={status}>
+          <SubSection key={status} title={getPageValueLabel(status)}>
             <TaskBrowserActivity browser={{
               id: `design-${status}`, sessionId: `design-${status}`, issueId: "design-task", status,
               runStatus: "completed", progress: null, error: null, costCents: 0,
@@ -2546,48 +2391,40 @@ export function DesignGuide() {
         ))}
       </Section>
 
-      <Section title="Media artifacts">
-        <p className="text-sm text-muted-foreground">Images and videos use gallery tiles. The whole tile opens the task gallery; files and links keep compact, fully clickable rows. Task/Artifact Gallery in Storybook covers playable videos, mixed files, narrow panels, and unavailable previews.</p>
+      <Section title={translateShell("shell:media_artifacts")}>
+        <p className="text-sm text-muted-foreground">{translateShell("shell:images_and_videos_use_gallery_tiles_the")}</p>
         <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
-          <MediaArtifactCard id="design-image" title="Launch artwork" contentPath="/announcement-preview.svg" contentType="image/svg+xml" originalFilename="launch.svg" detail="Image" />
-          <MediaArtifactCard id="design-video" title="Video preview unavailable" contentPath="" contentType="video/mp4" originalFilename="preview.mp4" detail="Video" />
+          <MediaArtifactCard id="design-image" title={translateShell("shell:launch_artwork")} contentPath="/announcement-preview.svg" contentType="image/svg+xml" originalFilename="launch.svg" detail={finalPagesT("final-pages:Image_1aa4cb")} />
+          <MediaArtifactCard id="design-video" title={translateShell("shell:video_preview_unavailable")} contentPath="" contentType="video/mp4" originalFilename="preview.mp4" detail={finalPagesT("final-pages:Video_d534be")} />
         </div>
       </Section>
 
-      <Section title="AI Connections">
+      <Section title={translateShell("shell:ai_connections")}>
         <AiConnectionDesignExamples />
       </Section>
 
-      <Section title="Built-in Agent Lifecycle Chips">
-        <p className="text-sm text-muted-foreground">
-          A derived lifecycle chip (amber) for attention states. The lifecycle chip is separate from
-          the agent status vocabulary and only shows for{" "}
-          <span className="font-mono">needs_setup</span> / <span className="font-mono">pending_approval</span>.
-        </p>
+      <Section title={translateShell("shell:built_in_agent_lifecycle_chips")}>
+        <p className="text-sm text-muted-foreground"><Trans ns="shell" i18nKey="a_derived_lifecycle_chip_amber_for_attention" components={{ part1: <>{<span className="font-mono">needs_setup</span>}</>, part2: <>{<span className="font-mono">pending_approval</span>}</> }} /></p>
         <div className="flex flex-wrap items-center gap-4">
           <BuiltInLifecycleChip status="needs_setup" />
           <BuiltInLifecycleChip status="pending_approval" />
           <BuiltInLifecycleChip status="needs_setup" compact />
         </div>
-        <p className="mt-3 text-sm text-muted-foreground">
-          <span className="font-mono">&lt;BuiltInAgentGate agentKey&gt;</span> composes{" "}
-          <span className="font-mono">PageSkeleton</span> + <span className="font-mono">EmptyState</span>{" "}
-          + <span className="font-mono">InlineBanner</span> to render the loading / setup /
-          pending-approval / paused / ready states of a feature that depends on a built-in agent.
-        </p>
+        <p className="mt-3 text-sm text-muted-foreground"><Trans ns="shell" i18nKey="composes_to_render_the_loading_setup_pending" components={{ part1: <>{<span className="font-mono">&lt;BuiltInAgentGate agentKey&gt;</span>}</>, part2: <>{<span className="font-mono">PageSkeleton</span>}</>, part3: <>{<span className="font-mono">EmptyState</span>}</>, part4: <>{<span className="font-mono">InlineBanner</span>}</> }} /></p>
       </Section>
     </div>
   );
 }
 
 function SkillSourceTreeShowcase() {
+  const { t: translateShell } = useTranslation("shell");
   const candidates = [
     { path: ".agents/review/SKILL.md", name: "Review", description: "Review changes before release.", error: null, inspection: { requirements: null, references: [], warnings: [], files: [
       { path: "SKILL.md", kind: "skill", sizeBytes: 120, encoding: "utf8" as const, executable: false },
       { path: "scripts/check.sh", kind: "script", sizeBytes: 45, encoding: "utf8" as const, executable: true },
     ] } },
-    { path: ".agents/review/nested/SKILL.md", name: "Nested skill", description: "An independently selected package.", error: null, note: "New skill" },
-    { path: "broken/SKILL.md", name: "Needs attention", description: null, error: "Missing required description." },
+    { path: ".agents/review/nested/SKILL.md", name: "Nested skill", description: "An independently selected package.", error: null, note: translateShell("shell:new_skill") },
+    { path: "broken/SKILL.md", name: "Needs attention", description: null, error: translateShell("shell:missing_required_description") },
   ];
   const [selected, setSelected] = useState(new Set(candidates.map(skill => skill.path)));
   const [excluded, setExcluded] = useState<string[]>([]);

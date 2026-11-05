@@ -4,7 +4,7 @@ import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { useTranslation } from "@/i18n";
+import { useTranslation, t as translateShell } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
@@ -142,6 +142,7 @@ const ProductionCompanyActivity = lazy(() => import("./pages/audit/CompanyActivi
 const ProductionOrgChart = lazy(() => import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })));
 
 function ProductionSurface({ children }: { children: ReactNode }) {
+  const { t: translateShell } = useTranslation("shell");
   return <Suspense fallback={<PaperclipLoading />}>{children}</Suspense>;
 }
 
@@ -452,6 +453,7 @@ function AppsConnectEntryRoute({
 }: {
   credentialSource?: ToolConnectionCredentialSource;
 } = {}) {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const { enabled: chatConnectorsEnabled, githubEnabled: githubReviewBotsEnabled } = useChatConnectorsEnabled();
@@ -461,6 +463,7 @@ function AppsConnectEntryRoute({
 }
 
 function InboxRootRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   return streamlinedUiEnabled && combinedInboxTasksEnabled
@@ -470,6 +473,7 @@ function InboxRootRedirect() {
 
 /** Sends a retired Inbox/Tasks URL to its view on the merged Tasks surface. */
 function TaskViewRedirect({ view }: { view: TaskViewKey }) {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const params = new URLSearchParams(location.search);
   params.set(TASK_VIEW_PARAM, view);
@@ -477,6 +481,7 @@ function TaskViewRedirect({ view }: { view: TaskViewKey }) {
 }
 
 function LegacySkillStudioRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
   const { companyPrefix, skillId } = useParams<{ companyPrefix?: string; skillId?: string }>();
@@ -504,6 +509,7 @@ function LegacySkillStudioRedirect() {
 }
 
 function LegacySettingsRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
@@ -549,6 +555,7 @@ function LegacySettingsRedirect() {
 }
 
 function LegacyToolsSettingsRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const { tab } = useParams<{ tab?: string }>();
   return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
 }
@@ -556,6 +563,7 @@ function LegacyToolsSettingsRedirect() {
 // The developer "Tools" surface moved under the Apps "Advanced setup" door
 // (PAP-10862). `/tools` and `/tools/:tab` redirect to their new home.
 function LegacyToolsRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const { tab } = useParams<{ tab?: string }>();
   return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
 }
@@ -569,6 +577,7 @@ function legacyToolsRedirectTarget(tab?: string) {
 }
 
 export function OnboardingRoutePage() {
+  const { t: translateShell } = useTranslation("shell");
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
@@ -589,15 +598,15 @@ export function OnboardingRoutePage() {
   }
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? translateShell("shell:add_another_agent_to", { value1: matchedCompany.name })
     : companies.length > 0
-      ? "Create another organization"
-      : "Create your first organization";
+      ? translateShell("shell:create_another_organization")
+      : translateShell("shell:create_your_first_organization");
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this organization."
+    ? translateShell("shell:run_onboarding_again_to_add_an_agent")
     : companies.length > 0
-      ? "Run onboarding again to create another organization and seed its first agent."
-      : "Get started by creating an organization and your first agent.";
+      ? translateShell("shell:run_onboarding_again_to_create_another_organization")
+      : translateShell("shell:get_started_by_creating_an_organization_and");
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -611,7 +620,7 @@ export function OnboardingRoutePage() {
               say why instead of rendering an inert control. */}
           {!matchedCompany && cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
-              {t("app.cloudCreateUnavailable", {
+              {translateShell("shell:cloudCreateUnavailable", {
                 defaultValue:
                   "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
@@ -635,7 +644,7 @@ export function OnboardingRoutePage() {
                     : openOnboarding()
               }
             >
-              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+              {matchedCompany ? translateShell("shell:add_agent") : translateShell("shell:start_onboarding")}
             </Button>
           )}
         </div>
@@ -645,6 +654,7 @@ export function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const { companies, selectedCompany, loading } = useCompany();
   const location = useLocation();
 
@@ -669,6 +679,7 @@ function CompanyRootRedirect() {
 }
 
 function StatusCardsLegacyRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const { cardId } = useParams<{ cardId?: string }>();
   const prefix = useActiveCompanyPrefix();
   const base = prefix ? `/${prefix}` : "";
@@ -682,6 +693,7 @@ function AuditCompatibilityRedirect({
   to: string;
   forceAgentMode?: boolean;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   if (forceAgentMode) searchParams.set("mode", "agents");
@@ -690,6 +702,7 @@ function AuditCompatibilityRedirect({
 }
 
 function UnprefixedBoardRedirect() {
+  const { t: translateShell } = useTranslation("shell");
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
 
@@ -719,6 +732,7 @@ function UnprefixedBoardRedirect() {
 }
 
 function NoCompaniesStartPage() {
+  const { t: translateShell } = useTranslation("shell");
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
   // A managed stack with no visible companies is a loading or error state, not
@@ -740,7 +754,7 @@ function NoCompaniesStartPage() {
               send the click, and in-app creation is a 403 floor here. */}
           {cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
-              {t("app.cloudCreateUnavailable", {
+              {translateShell("shell:cloudCreateUnavailable", {
                 defaultValue:
                   "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
@@ -763,6 +777,7 @@ function NoCompaniesStartPage() {
 }
 
 export function App() {
+  const { t: translateShell } = useTranslation("shell");
   const { pathname } = useLocation();
   const { enabled: classicStreamlinedUiEnabled, loaded: classicStreamlinedUiLoaded } = useStreamlinedUiEnabled();
   const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded } = useCoordinatorWorkspaceEnabled();

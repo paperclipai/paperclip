@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import {
   agentConfigurationSpec, canonicalAgentConfiguration,
   type AgentConfigurationDocument, type AgentInstructionsFileDetail, type ToolProfileWithDetails, type ToolPolicy,
@@ -53,7 +54,7 @@ export async function loadAgentConfiguration(id: string, companyId: string) {
       const [detail, resources, principals] = await Promise.all([
         chatEndpointsApi.get(endpoint.id), chatEndpointsApi.listResources(endpoint.id), chatEndpointsApi.listPrincipals(endpoint.id),
       ]);
-      if (detail.assignedAgentId !== id || detail.companyId !== companyId) throw new Error("Channel ownership changed. Reload configuration.");
+      if (detail.assignedAgentId !== id || detail.companyId !== companyId) throw new Error(t("display:config_a254932bd7d7"));
       return { detail, resources, principals };
     }),
   ]);

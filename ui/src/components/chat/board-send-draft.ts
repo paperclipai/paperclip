@@ -1,3 +1,4 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
 import {
   CHAT_PUBLICATION_STATES,
   type ChatPublicationSummary,
@@ -118,9 +119,9 @@ export function readBoardSendDraft(key: string): RetainedBoardSend | null {
         !Number.isSafeInteger(value.publication.attempts) ||
         value.publication.attempts < 0))
   )
-    throw new Error(
+    throw localizeUiError(new Error(
       "Saved channel delivery identity could not be read. Check Activity before starting another send.",
-    );
+    ), { key: "final-components-b:error.Saved_channel_delivery_identity_could_not_be_read_Check_Activity_befor_be4714" });
   return value as RetainedBoardSend;
 }
 

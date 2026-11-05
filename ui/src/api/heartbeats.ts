@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { AgentAppearance } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
@@ -226,7 +227,7 @@ export const heartbeatsApi = {
         && intent.intentId === `native-cancellation:${options.cancellationRequestId}` && intent.scope === "run"
         && intent.dispatchState === "pending" && intent.dispatched === false
         && typeof intent.intentAuditId === "string" && intent.intentAuditId.length > 0;
-      if (!pending) throw new Error("Stop was not accepted because the run changed.");
+      if (!pending) throw localizeUiError(new Error("Stop was not accepted because the run changed."), { key: "integration-errors:stopRunChanged" });
     }
     return run;
   },

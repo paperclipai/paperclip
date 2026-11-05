@@ -1,3 +1,4 @@
+import { t as translateShell, useTranslation } from "@/i18n";
 /**
  * @fileoverview Core Skill Studio permission surfaces (PAP-13865, Phase 3).
  *
@@ -40,6 +41,7 @@ export interface SkillPolicyDenialController {
  * reach the banner — they stay on the caller's toast path.
  */
 export function useSkillPolicyDenial(): SkillPolicyDenialController {
+  const { t: translateShell } = useTranslation("shell");
   const [denial, setDenial] = useState<SkillDenial | null>(null);
   const capture = useCallback((error: unknown, actionLabel?: string) => {
     const classified = classifySkillDenial(error, actionLabel);
@@ -71,10 +73,9 @@ export function SkillPolicyDenialNotice({
   onDismiss?: () => void;
   className?: string;
 }) {
+  const { t: translateShell } = useTranslation("shell");
   const actions = onDismiss ? (
-    <Button variant="ghost" size="sm" onClick={onDismiss}>
-      Dismiss
-    </Button>
+    <Button variant="ghost" size="sm" onClick={onDismiss}>{translateShell("shell:dismiss")}</Button>
   ) : undefined;
 
   return (

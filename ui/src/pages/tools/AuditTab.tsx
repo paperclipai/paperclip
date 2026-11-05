@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, ScrollText } from "lucide-react";
@@ -31,29 +32,29 @@ const ALL = "__all";
 
 /** Outcome chip vocabulary (spec §4C / §5): Allowed · Blocked · Asked first · Failed · Waiting. */
 const OUTCOME_META: Record<ToolAuditOutcome, { label: string; status: string }> = {
-  allowed: { label: "Allowed", status: "allowed" },
-  blocked: { label: "Blocked", status: "denied" },
-  asked_first: { label: "Asked first", status: "require-approval" },
-  waiting: { label: "Waiting", status: "deferred" },
-  failed: { label: "Failed", status: "failed" },
-  unknown: { label: "Recorded", status: "unchecked" },
+  allowed: { get label() { return translateAgentPage("agents:allowed"); }, status: "allowed" },
+  blocked: { get label() { return translateAgentPage("agents:blocked"); }, status: "denied" },
+  asked_first: { get label() { return translateAgentPage("agents:asked_first"); }, status: "require-approval" },
+  waiting: { get label() { return translateAgentPage("agents:waiting"); }, status: "deferred" },
+  failed: { get label() { return translateAgentPage("agents:failed_09fef5"); }, status: "failed" },
+  unknown: { get label() { return translateAgentPage("agents:recorded"); }, status: "unchecked" },
 };
 
 const OUTCOME_FILTERS: { value: string; label: string }[] = [
-  { value: ALL, label: "All outcomes" },
-  { value: "allowed", label: "Allowed" },
-  { value: "blocked", label: "Blocked" },
-  { value: "asked_first", label: "Asked first" },
-  { value: "waiting", label: "Waiting" },
-  { value: "failed", label: "Failed" },
+  { value: ALL, get label() { return translateAgentPage("agents:all_outcomes"); } },
+  { value: "allowed", get label() { return translateAgentPage("agents:allowed"); } },
+  { value: "blocked", get label() { return translateAgentPage("agents:blocked"); } },
+  { value: "asked_first", get label() { return translateAgentPage("agents:asked_first"); } },
+  { value: "waiting", get label() { return translateAgentPage("agents:waiting"); } },
+  { value: "failed", get label() { return translateAgentPage("agents:failed_09fef5"); } },
 ];
 
 const WINDOW_FILTERS: { value: ToolAuditWindow; label: string }[] = [
-  { value: "all", label: "All time" },
-  { value: "1h", label: "Last 1 hour" },
-  { value: "24h", label: "Last 24 hours" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
+  { value: "all", get label() { return translateAgentPage("agents:all_time"); } },
+  { value: "1h", get label() { return translateAgentPage("agents:last_1_hour"); } },
+  { value: "24h", get label() { return translateAgentPage("agents:last_24_hours"); } },
+  { value: "7d", get label() { return translateAgentPage("agents:last_7_days"); } },
+  { value: "30d", get label() { return translateAgentPage("agents:last_30_days"); } },
 ];
 
 function detailString(details: Record<string, unknown> | null, key: string): string | undefined {
@@ -90,55 +91,55 @@ function formattedArguments(details: Record<string, unknown> | null): string | u
 
 function lifecycleSummary(event: ToolGatewayActivityEvent): string | null {
   if (!event.lifecycleType) return null;
-  const who = event.actorDisplayName ?? event.agentDisplayName ?? "Someone";
-  const app = event.appDisplayName ?? event.connectionDisplayName ?? "this app";
+  const who = event.actorDisplayName ?? event.agentDisplayName ?? translateAgentPage("agents:someone");
+  const app = event.appDisplayName ?? event.connectionDisplayName ?? translateAgentPage("agents:this_app");
   const count = detailNumber(event.details, "count") ?? 0;
   const added = detailNumber(event.details, "added") ?? 0;
   const removed = detailNumber(event.details, "removed") ?? 0;
   switch (event.lifecycleType) {
     case "app_connected":
-      return `${who} connected ${app}`;
+      return translateAgentPage("agents:connected_193944", { value1: who, value2: app });
     case "app_paused":
-      return `${who} paused ${app}`;
+      return translateAgentPage("agents:paused_403e22", { value1: who, value2: app });
     case "app_resumed":
-      return `${who} resumed ${app}`;
+      return translateAgentPage("agents:resumed", { value1: who, value2: app });
     case "reconnected":
-      return `${who} reconnected ${app}`;
+      return translateAgentPage("agents:reconnected", { value1: who, value2: app });
     case "disconnected":
-      return `${who} disconnected ${app}`;
+      return translateAgentPage("agents:disconnected_48d3fb", { value1: who, value2: app });
     case "allowlist_changed":
-      if (added > 0 && removed === 0) return `${who} added ${added} allowed ${added === 1 ? "item" : "items"} in ${app}`;
-      if (removed > 0 && added === 0) return `${who} removed ${removed} allowed ${removed === 1 ? "item" : "items"} in ${app}`;
-      return `${who} updated the allowlist for ${app}`;
+      if (added > 0 && removed === 0) return translateAgentPage("agents:added_allowed_in_count", { value1: who, value2: added, value4: app, count: added });
+      if (removed > 0 && added === 0) return translateAgentPage("agents:removed_allowed_in_count", { value1: who, value2: removed, value4: app, count: removed });
+      return translateAgentPage("agents:updated_the_allowlist_for", { value1: who, value2: app });
     case "actions_quarantined":
-      return `${count} new ${count === 1 ? "action needs" : "actions need"} review in ${app}`;
+      return translateAgentPage("agents:new_review_in", { value1: count, value2: count === 1 ? translateAgentPage("agents:action_needs") : translateAgentPage("agents:actions_need"), value3: app });
     default:
-      return `${who} updated ${app}`;
+      return translateAgentPage("agents:updated_b2dd7f", { value1: who, value2: app });
   }
 }
 
 /** Plain-words "why" for the row expander, keyed off the reason code. */
 function plainReason(event: ToolGatewayActivityEvent): string {
-  if (event.lifecycleType) return "This connection change was recorded in the app's activity history.";
+  if (event.lifecycleType) return translateAgentPage("agents:this_connection_change_was_recorded_in_the_app");
   const code = detailString(event.details, "reasonCode");
   if (code === "permitted_connections_not_installed") {
-    return "Permitted connections were not installed, so their tools were not added to this run.";
+    return translateAgentPage("agents:permitted_connections_were_not_installed_so_their_tools");
   }
   switch (event.normalizedOutcome) {
     case "allowed":
-      return "Allowed by your rules.";
+      return translateAgentPage("agents:allowed_by_your_rules");
     case "blocked":
-      if (code === "rate_limited") return "Blocked because it ran too many times in a short window.";
-      if (code?.includes("secret")) return "Blocked to keep a sensitive value from leaving.";
-      return "Blocked by a rule.";
+      if (code === "rate_limited") return translateAgentPage("agents:blocked_because_it_ran_too_many_times_in");
+      if (code?.includes("secret")) return translateAgentPage("agents:blocked_to_keep_a_sensitive_value_from_leaving");
+      return translateAgentPage("agents:blocked_by_a_rule");
     case "asked_first":
-      return "Held for someone to approve before it could run.";
+      return translateAgentPage("agents:held_for_someone_to_approve_before_it_could");
     case "waiting":
-      return "Waiting — the app it needs wasn't ready yet.";
+      return translateAgentPage("agents:waiting_the_app_it_needs_wasn_t_ready");
     case "failed":
-      return "The app was allowed to run it, but returned an error.";
+      return translateAgentPage("agents:the_app_was_allowed_to_run_it_but");
     default:
-      return "Recorded by Paperclip.";
+      return translateAgentPage("agents:recorded_by_paperclip");
   }
 }
 
@@ -164,11 +165,12 @@ function ActivityRow({
   event: ToolGatewayActivityEvent;
   ruleNamesById: Map<string, string>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [open, setOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const who = event.agentDisplayName ?? "An agent";
-  const action = event.toolDisplayName ?? "an action";
+  const who = event.agentDisplayName ?? translateAgentPage("agents:an_agent");
+  const action = event.toolDisplayName ?? translateAgentPage("agents:an_action");
   const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? null;
   const lifecycle = lifecycleSummary(event);
   const rawTool = detailString(event.details, "tool") ?? detailString(event.details, "toolName");
@@ -217,17 +219,14 @@ function ActivityRow({
             <span className="block text-foreground">{lifecycle}</span>
           ) : isRuntimeMcpDeliveryDiagnostic ? (
             <span className="block text-foreground">
-              <span className="font-medium">{who}</span>'s run received 0 MCP servers —{" "}
-              <span className="font-medium">{permittedNotInstalledCount ?? permittedNotInstalledConnections.length}</span>{" "}
-              permitted {(permittedNotInstalledCount ?? permittedNotInstalledConnections.length) === 1 ? "connection" : "connections"} not installed
-            </span>
+              <span className="font-medium">{who}</span>{translateAgentPage("agents:s_run_received_0_mcp_servers")}{" "}
+              <span className="font-medium">{permittedNotInstalledCount ?? permittedNotInstalledConnections.length}</span>{" "}{translateAgentPage("agents:permitted")}{" "}{(permittedNotInstalledCount ?? permittedNotInstalledConnections.length) === 1 ? "connection" : translateAgentPage("agents:connections_c0e3ce")}{" "}{translateAgentPage("agents:not_installed_d49fe2")}</span>
           ) : (
             <span className="block text-foreground">
-              <span className="font-medium">{who}</span> used <span className="font-medium">{action}</span>
+              <span className="font-medium">{who}</span>{" "}{translateAgentPage("agents:used")}{" "}<span className="font-medium">{action}</span>
               {app ? (
                 <>
-                  {" "}
-                  in <span className="font-medium">{app}</span>
+                  {" "}{translateAgentPage("agents:in")}{" "}<span className="font-medium">{app}</span>
                 </>
               ) : null}
             </span>
@@ -255,14 +254,10 @@ function ActivityRow({
 
           <div className="flex flex-wrap gap-3 text-xs">
             {issueId ? (
-              <Link to={`/issues/${issueId}`} className="text-primary hover:underline">
-                View task
-              </Link>
+              <Link to={`/issues/${issueId}`} className="text-primary hover:underline">{translateAgentPage("agents:view_task")}</Link>
             ) : null}
             {runId && agentId ? (
-              <Link to={`/agents/${agentId}/runs/${runId}`} className="text-primary hover:underline">
-                View run
-              </Link>
+              <Link to={`/agents/${agentId}/runs/${runId}`} className="text-primary hover:underline">{translateAgentPage("agents:view_run")}</Link>
             ) : null}
           </div>
 
@@ -272,33 +267,31 @@ function ActivityRow({
               onClick={() => setDetailsOpen((v) => !v)}
               className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
-              {detailsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              Details
-            </button>
+              {detailsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}{translateAgentPage("agents:details")}</button>
             {detailsOpen ? (
               <div className="mt-2 space-y-1.5 text-xs">
-                {rawTool ? <DetailFact label="Action name" value={rawTool} mono /> : null}
-                <DetailFact label="Reason code" value={reasonCode} mono />
-                <DetailFact label="Actor type" value={event.actorType ?? "—"} />
-                {runId ? <DetailFact label="Run ID" value={runId} mono /> : null}
-                {transport ? <DetailFact label="Transport" value={transport} mono /> : null}
-                {requestMethod && endpoint ? <DetailFact label="HTTP request" value={`${requestMethod} ${endpoint}`} mono /> : null}
-                {mcpMethod ? <DetailFact label="MCP method" value={mcpMethod} mono /> : null}
-                {requestId ? <DetailFact label="Request ID" value={requestId} mono /> : null}
-                {request ? <DetailFact label="Dispatched" value={request.dispatched === true ? "Yes" : "No"} /> : null}
-                {httpStatus !== undefined ? <DetailFact label="HTTP status" value={String(httpStatus)} mono /> : null}
-                {contentType ? <DetailFact label="Content type" value={contentType} mono /> : null}
-                {responseBytes !== undefined ? <DetailFact label="Response size" value={`${responseBytes} bytes`} /> : null}
-                {upstreamRequestId ? <DetailFact label="Upstream ID" value={upstreamRequestId} mono /> : null}
+                {rawTool ? <DetailFact label={translateAgentPage("agents:action_name")} value={rawTool} mono /> : null}
+                <DetailFact label={translateAgentPage("agents:reason_code")} value={reasonCode} mono />
+                <DetailFact label={translateAgentPage("agents:actor_type")} value={event.actorType ?? "—"} />
+                {runId ? <DetailFact label={translateAgentPage("agents:run_id")} value={runId} mono /> : null}
+                {transport ? <DetailFact label={translateAgentPage("agents:transport")} value={transport} mono /> : null}
+                {requestMethod && endpoint ? <DetailFact label={translateAgentPage("agents:http_request")} value={`${requestMethod} ${endpoint}`} mono /> : null}
+                {mcpMethod ? <DetailFact label={translateAgentPage("agents:mcp_method")} value={mcpMethod} mono /> : null}
+                {requestId ? <DetailFact label={translateAgentPage("agents:request_id")} value={requestId} mono /> : null}
+                {request ? <DetailFact label={translateAgentPage("agents:dispatched")} value={request.dispatched === true ? "Yes" : "No"} /> : null}
+                {httpStatus !== undefined ? <DetailFact label={translateAgentPage("agents:http_status")} value={String(httpStatus)} mono /> : null}
+                {contentType ? <DetailFact label={translateAgentPage("agents:content_type")} value={contentType} mono /> : null}
+                {responseBytes !== undefined ? <DetailFact label={translateAgentPage("agents:response_size")} value={`${responseBytes} bytes`} /> : null}
+                {upstreamRequestId ? <DetailFact label={translateAgentPage("agents:upstream_id")} value={upstreamRequestId} mono /> : null}
                 {isRuntimeMcpDeliveryDiagnostic ? (
                   <>
-                    <DetailFact label="Delivered MCP servers" value="0" mono />
+                    <DetailFact label={translateAgentPage("agents:delivered_mcp_servers")} value="0" mono />
                     {permittedNotInstalledConnections.map((connection) => {
                       const connectionId = detailString(connection, "id");
-                      const connectionName = detailString(connection, "name") ?? "Unnamed connection";
+                      const connectionName = detailString(connection, "name") ?? translateAgentPage("agents:unnamed_connection");
                       return connectionId ? (
                         <div key={connectionId} className="flex gap-2">
-                          <span className="shrink-0 text-muted-foreground">Not installed</span>
+                          <span className="shrink-0 text-muted-foreground">{translateAgentPage("agents:not_installed")}</span>
                           <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
                             {connectionName}
                           </Link>
@@ -309,7 +302,7 @@ function ActivityRow({
                 ) : null}
                 {argumentsText ? (
                   <div className="space-y-1">
-                    <span className="text-muted-foreground">Parameters (redacted)</span>
+                    <span className="text-muted-foreground">{translateAgentPage("agents:parameters_redacted")}</span>
                     <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                       {argumentsText}
                     </pre>
@@ -325,6 +318,7 @@ function ActivityRow({
 }
 
 export function AuditTab({ companyId }: { companyId: string }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [app, setApp] = useState<string>(ALL);
   const [agent, setAgent] = useState<string>(ALL);
   const [outcome, setOutcome] = useState<string>(ALL);
@@ -399,17 +393,17 @@ export function AuditTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-4">
       <ToolsPageHeader
-        title="Activity"
-        description="What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed."
+        title={translateAgentPage("agents:activity")}
+        description={translateAgentPage("agents:what_your_agents_actually_did_with_your_apps")}
       />
 
       <div className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
-            <SelectValue placeholder="App" />
+            <SelectValue placeholder={translateAgentPage("agents:app")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All apps</SelectItem>
+            <SelectItem value={ALL}>{translateAgentPage("agents:all_apps")}</SelectItem>
             {(apps.data?.applications ?? []).map((a) => (
               <SelectItem key={a.id} value={a.id}>
                 {a.name}
@@ -448,15 +442,13 @@ export function AuditTab({ companyId }: { companyId: string }) {
           </SelectContent>
         </Select>
         <Input
-          placeholder="Search activity…"
+          placeholder={translateAgentPage("agents:search_activity")}
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           className="max-w-xs"
         />
         {hasActiveFilters ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
+          <Button variant="ghost" size="sm" onClick={clearFilters}>{translateAgentPage("agents:clear_filters")}</Button>
         ) : null}
       </div>
 
@@ -465,7 +457,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
       ) : activityView.kind === "error" ? (
         <QueryErrorState
           error={activity.error}
-          action="load activity"
+          action={translateAgentPage("agents:load_activity")}
           onRetry={activityView.retry}
           retrying={activityView.isFetching}
         />
@@ -475,14 +467,10 @@ export function AuditTab({ companyId }: { companyId: string }) {
             <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
               <ScrollText className="h-10 w-10 text-muted-foreground/40" />
               <div>
-                <p className="text-sm font-medium text-foreground">No activity matches these filters</p>
-                <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                  Try a wider time window or different filters.
-                </p>
+                <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:no_activity_matches_these_filters")}</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">{translateAgentPage("agents:try_a_wider_time_window_or_different_filters")}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={clearFilters}>
-                Clear filters
-              </Button>
+              <Button variant="outline" size="sm" onClick={clearFilters}>{translateAgentPage("agents:clear_filters")}</Button>
             </CardContent>
           </Card>
         ) : (
@@ -490,10 +478,8 @@ export function AuditTab({ companyId }: { companyId: string }) {
             <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
               <ScrollText className="h-10 w-10 text-muted-foreground/40" />
               <div>
-                <p className="text-sm font-medium text-foreground">Nothing here yet</p>
-                <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                  As soon as your agents start using connected apps, what they do shows up here.
-                </p>
+                <p className="text-sm font-medium text-foreground">{translateAgentPage("agents:nothing_here_yet")}</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">{translateAgentPage("agents:as_soon_as_your_agents_start_using_connected")}</p>
               </div>
             </CardContent>
           </Card>
@@ -518,7 +504,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
             onClick={() => activity.fetchNextPage()}
             disabled={activity.isFetchingNextPage}
           >
-            {activity.isFetchingNextPage ? "Loading…" : "Load more"}
+            {activity.isFetchingNextPage ? translateAgentPage("agents:loading") : translateAgentPage("agents:load_more")}
           </Button>
         </div>
       ) : null}

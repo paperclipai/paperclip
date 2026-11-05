@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans, i18n } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History as HistoryIcon, RotateCcw, Search } from "lucide-react";
@@ -73,6 +74,7 @@ export function RoutineHistoryTab({
   onRestoreSecretMaterials,
   onRestored,
 }: Props) {
+  useTranslation("task-components");
   const secretLookup = useMemo<SecretLookup>(
     () => new Map((secrets ?? []).map((secret) => [secret.id, secret])),
     [secrets],
@@ -127,7 +129,8 @@ export function RoutineHistoryTab({
       const restoredFromNumber = data.restoredFromRevisionNumber;
       const newNumber = data.revision.revisionNumber;
       pushToast({
-        title: `Restored revision ${restoredFromNumber} as revision ${newNumber}`,
+        presentation: { title: { key: "task-components:restoredRevisionAsRevision_0104e4a8", values: { value1: restoredFromNumber, value2: newNumber } }, body: data.secretMaterials.length > 0 ? { key: "final-components-b:historyFeedback.Trigger_enabled_state_was_restored_from_the_snapshot_New_webhook_secre_acff3e" } : { key: "final-components-b:historyFeedback.Trigger_enabled_state_was_restored_from_the_snapshot_80ea8a" } },
+        title: t("task-components:restoredRevisionAsRevision_0104e4a8", { value1: restoredFromNumber, value2: newNumber }),
         body: data.secretMaterials.length > 0
           ? "Trigger enabled state was restored from the snapshot. New webhook secrets are available in the banner above."
           : "Trigger enabled state was restored from the snapshot.",
@@ -156,7 +159,8 @@ export function RoutineHistoryTab({
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to restore revision",
+        presentation: { title: { key: "task-components:failedToRestoreRevision_2dcf4f54" } },
+        title: t("task-components:failedToRestoreRevision_2dcf4f54"),
         body: describeError(error, { action: "restore the revision" }).body,
         tone: "error",
       });
@@ -239,12 +243,9 @@ export function RoutineHistoryTab({
           <div className="space-y-2">
             <EmptyState
               icon={HistoryIcon}
-              message="No edits yet"
+              message={t("final-components-b:RoutineHistoryTab.No_edits_yet_961468")}
             />
-            <p className="text-center text-xs text-muted-foreground">
-              Revision 1 is the only history this routine has. Saving an edit creates the first
-              additional revision.
-            </p>
+            <p className="text-center text-xs text-muted-foreground">{t("task-components:revision1IsTheOnlyHistoryThis_44654bed")}</p>
           </div>
         ) : (
           selectedRevision && (
@@ -330,26 +331,18 @@ function HistoricalPreviewBanner({
   onRestore: () => void;
   pending: boolean;
 }) {
+  useTranslation("task-components");
   return (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-            Viewing revision {revisionNumber} (read-only)
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Restoring this revision creates a new revision {nextRevisionNumber} with the same content.
-            History stays append-only.
-          </p>
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.4ea4c0acaf5b_b7132" values={{ revisionNumber: revisionNumber }} /></p>
+          <p className="text-xs text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.4303b7d5d7e9_7b3ca" values={{ nextRevisionNumber: nextRevisionNumber }} /></p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onReturn} disabled={pending}>
-            Return to current
-          </Button>
+          <Button variant="outline" size="sm" onClick={onReturn} disabled={pending}>{t("task-components:returnToCurrent_2e6cf99a")}</Button>
           <Button size="sm" onClick={onRestore} disabled={pending}>
-            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            Restore as new revision
-          </Button>
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />{t("task-components:restoreAsNewRevision_b5a56640")}</Button>
         </div>
       </div>
     </div>
@@ -365,27 +358,21 @@ function ConflictBanner({
   onDiscard: () => void;
   onSave: () => void;
 }) {
+  useTranslation("task-components");
   const labels = dirtyFields.length > 0
     ? dirtyFields.map((field) => field.label)
-    : ["the routine"];
+    : [t("final-components-b:RoutineHistoryTab.the_routine_af1ec2")];
   const fieldsText = formatDirtyFieldList(labels);
   return (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Unsaved routine edits</p>
-          <p className="text-xs text-muted-foreground">
-            You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
-            restoring an older revision.
-          </p>
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">{t("task-components:unsavedRoutineEdits_16e48398")}</p>
+          <p className="text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_a1779582bbcc" components={{ part1: <>{fieldsText}</> }} /></p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onDiscard}>
-            Discard changes
-          </Button>
-          <Button size="sm" onClick={onSave}>
-            Save and continue
-          </Button>
+          <Button variant="outline" size="sm" onClick={onDiscard}>{t("task-components:discardChanges_f9bfa3dc")}</Button>
+          <Button size="sm" onClick={onSave}>{t("task-components:saveAndContinue_6880daf1")}</Button>
         </div>
       </div>
       {dirtyFields.length > 0 && (
@@ -423,13 +410,12 @@ function RevisionList({
   onShowOlder: () => void;
   showOlder: boolean;
 }) {
+  useTranslation("task-components");
   return (
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Revisions
-        </p>
-        <span className="text-(length:--text-micro) text-muted-foreground">{totalRevisions} total</span>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:revisions_da80b1d5")}</p>
+        <span className="text-(length:--text-micro) text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.8d34cb941496_1af9d" values={{ totalRevisions: totalRevisions }} /></span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -457,16 +443,12 @@ function RevisionList({
             data-testid={`revision-row-${revision.revisionNumber}`}
           >
             <div className="flex items-center gap-2 text-sm font-medium">
-              <span>rev {revision.revisionNumber}</span>
+              <span><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.136630b66eb2_77b70" values={{ revisionNumber: revision.revisionNumber }} /></span>
               {isCurrent && (
-                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                  Current
-                </Badge>
+                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("task-components:current_e0d1b682")}</Badge>
               )}
               {revision.restoredFromRevisionId && (
-                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
-                  Restored
-                </Badge>
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">{t("task-components:restored_5d561a1e")}</Badge>
               )}
             </div>
             <div className="text-xs text-muted-foreground truncate">
@@ -477,9 +459,7 @@ function RevisionList({
         );
       })}
       {totalRevisions > revisions.length && !showOlder && (
-        <Button variant="ghost" size="sm" className="w-full" onClick={onShowOlder}>
-          Show {totalRevisions - revisions.length} older…
-        </Button>
+        <Button variant="ghost" size="sm" className="w-full" onClick={onShowOlder}><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.49db236a63fc_82be2" values={{ count: totalRevisions - revisions.length }} /></Button>
       )}
     </aside>
   );
@@ -506,10 +486,11 @@ function RevisionPreview({
   restorePending: boolean;
   highlighted: boolean;
 }) {
+  useTranslation("task-components");
   const snapshot = revision.snapshot.routine;
   const triggers = revision.snapshot.triggers;
   const currentSnapshot = currentRevision?.snapshot.routine ?? null;
-  const restoreLabel = isHistorical ? "Restore this revision" : "Restore this revision";
+  const restoreLabel = isHistorical ? t("task-components:restoreThisRevision_e0a9d24c") : t("task-components:restoreThisRevision_e0a9d24c");
   const cardWrapper = `rounded-md border transition-colors duration-1000 ${
     highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
   }`;
@@ -521,49 +502,49 @@ function RevisionPreview({
   const fieldRows: Array<{ key: string; label: string; value: string; differs: boolean }> = [
     {
       key: "title",
-      label: "Title",
+      label: t("task-components:title_7e8cd205"),
       value: snapshot.title,
       differs: !!currentSnapshot && currentSnapshot.title !== snapshot.title,
     },
     {
       key: "priority",
-      label: "Priority",
+      label: t("task-components:priority_d60dbba0"),
       value: snapshot.priority,
       differs: !!currentSnapshot && currentSnapshot.priority !== snapshot.priority,
     },
     {
       key: "status",
-      label: "Status",
+      label: t("task-components:status_920e413c"),
       value: snapshot.status,
       differs: !!currentSnapshot && currentSnapshot.status !== snapshot.status,
     },
     {
       key: "assigneeAgentId",
-      label: "Default agent",
+      label: t("task-components:defaultAgent_94da52ec"),
       value: resolveAgentName(snapshot.assigneeAgentId, agents),
       differs: !!currentSnapshot && currentSnapshot.assigneeAgentId !== snapshot.assigneeAgentId,
     },
     {
       key: "projectId",
-      label: "Project",
+      label: t("task-components:project_98595978"),
       value: resolveProjectName(snapshot.projectId, projects),
       differs: !!currentSnapshot && currentSnapshot.projectId !== snapshot.projectId,
     },
     {
       key: "concurrencyPolicy",
-      label: "Concurrency",
+      label: t("task-components:concurrency_8708492f"),
       value: snapshot.concurrencyPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.concurrencyPolicy !== snapshot.concurrencyPolicy,
     },
     {
       key: "catchUpPolicy",
-      label: "Catch-up",
+      label: t("task-components:catchUp_1c2d0f8e"),
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.catchUpPolicy !== snapshot.catchUpPolicy,
     },
     {
       key: "env",
-      label: "Env",
+      label: t("task-components:env_494d9aa0"),
       value: envSummary,
       differs: envDiffers,
     },
@@ -574,17 +555,12 @@ function RevisionPreview({
       <header className={`${cardWrapper} p-4 space-y-2`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1 min-w-0">
-            <p className="text-sm font-medium">rev {revision.revisionNumber}</p>
-            <p className="text-xs text-muted-foreground truncate">
-              Saved {relativeTime(revision.createdAt)} by {getActorLabel(revision)}
-              {revision.changeSummary ? ` · ${revision.changeSummary}` : ""}
-            </p>
+            <p className="text-sm font-medium"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.136630b66eb2_77b70" values={{ revisionNumber: revision.revisionNumber }} /></p>
+            <p className="text-xs text-muted-foreground truncate"><Trans ns="task-components" i18nKey="sentence_c29b0afc4d93" components={{ part1: <>{relativeTime(revision.createdAt)}</>, part2: <>{getActorLabel(revision)}</>, part3: <>{revision.changeSummary ? ` · ${revision.changeSummary}` : ""}</> }} /></p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={onCompare}>
-              <Search className="mr-1.5 h-3.5 w-3.5" />
-              Compare with current
-            </Button>
+              <Search className="mr-1.5 h-3.5 w-3.5" />{t("task-components:compareWithCurrent_095f9ab7")}</Button>
             <Button
               size="sm"
               onClick={onRestore}
@@ -600,9 +576,7 @@ function RevisionPreview({
       </header>
 
       <div className={`${cardWrapper} p-3`}>
-        <p className="pb-2 text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Structured fields
-        </p>
+        <p className="pb-2 text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:structuredFields_9ad6fd58")}</p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
@@ -610,9 +584,7 @@ function RevisionPreview({
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <Badge variant="outline" className="ml-2 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
-                    differs from current
-                  </Badge>
+                  <Badge variant="outline" className="ml-2 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">{t("task-components:differsFromCurrent_6f73b4b9")}</Badge>
                 )}
               </p>
             </div>
@@ -621,24 +593,20 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Description
-        </p>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:description_526e0087")}</p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
           {snapshot.description ? (
             <MarkdownBody>{snapshot.description}</MarkdownBody>
           ) : (
-            <span className="text-muted-foreground">No description</span>
+            <span className="text-muted-foreground">{t("task-components:noDescription_bcd8cc53")}</span>
           )}
         </div>
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Triggers ({triggers.length})
-        </p>
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.17fb8eb46438_1a699" values={{ count: triggers.length }} /></p>
         {triggers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No triggers in this revision.</p>
+          <p className="text-sm text-muted-foreground">{t("task-components:noTriggersInThisRevision_30a4fef6")}</p>
         ) : (
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
@@ -653,30 +621,23 @@ function RevisionPreview({
                 <span
                   className={`ml-auto text-xs ${trigger.enabled ? "text-emerald-400" : "text-muted-foreground"}`}
                 >
-                  {trigger.enabled ? "enabled" : "disabled"}
+                  {trigger.enabled ? t("task-components:enabled_fb9cf756") : t("final-components-b:RoutineHistoryTab.disabled_17eb3c")}
                 </span>
               </li>
             ))}
           </ul>
         )}
-        <p className="text-xs text-muted-foreground">
-          Webhook secrets are not stored in revisions. If a restored webhook trigger needs re-creation,
-          Paperclip mints fresh secret material at restore time.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("task-components:webhookSecretsAreNotStoredInRevisions_a2c8439f")}</p>
       </div>
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
-          <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Variables ({snapshot.variables.length})
-          </p>
+          <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground"><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.8a20256f7739_7f705" values={{ count: snapshot.variables.length }} /></p>
           <ul className="divide-y divide-border">
             {snapshot.variables.map((variable) => (
               <li key={variable.name} className="py-2 flex items-center justify-between text-sm">
                 <span className="font-mono text-xs">{variable.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  default: {formatVariableDefault(variable)}
-                </span>
+                <span className="text-xs text-muted-foreground"><Trans ns="task-components" i18nKey="sentence_7e37ba1a3199" components={{ part1: <>{formatVariableDefault(variable)}</> }} /></span>
               </li>
             ))}
           </ul>
@@ -709,59 +670,41 @@ function RestoreConfirmDialog({
   recreatedWebhookLabels: string[];
   envDiffCounts: EnvDiffCounts;
 }) {
+  useTranslation("task-components");
   const newRevisionNumber = currentRevisionNumber + 1;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Restore revision {target.revisionNumber}?</DialogTitle>
-          <DialogDescription>
-            This creates a new revision {newRevisionNumber} with the same content as revision{" "}
-            {target.revisionNumber}. Revisions {target.revisionNumber}–{currentRevisionNumber} stay
-            in history and are not modified.
-          </DialogDescription>
+          <DialogTitle><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.adee6b8f26d9_b4b87" values={{ revisionNumber: target.revisionNumber }} /></DialogTitle>
+          <DialogDescription><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.86c08a93aee6_2ba77" values={{ newRevisionNumber: newRevisionNumber, revisionNumber: target.revisionNumber, totalCount: target.revisionNumber, currentRevisionNumber: currentRevisionNumber }} /></DialogDescription>
         </DialogHeader>
         <ul className="space-y-2 text-sm">
           <li className="flex items-start gap-2">
-            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Routine field values, variables, and schedule cron will revert.
-          </li>
+            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />{t("task-components:routineFieldValuesVariablesAndScheduleCron_4e1b2bb6")}</li>
           {envDiffCounts.total > 0 && (
-            <li className="flex items-start gap-2">
-              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              Routine secrets will revert: {formatEnvDiffCounts(envDiffCounts)}.
-            </li>
+            <li className="flex items-start gap-2"><Trans ns="task-components" i18nKey="sentence_d3d1e7e67917" components={{ part1: <>{<span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />}</>, part2: <>{formatEnvDiffCounts(envDiffCounts)}</> }} /></li>
           )}
           <li className="flex items-start gap-2">
-            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Previous run history is preserved.
-          </li>
+            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />{t("task-components:previousRunHistoryIsPreserved_37857ccf")}</li>
           {recreatedWebhookLabels.map((label) => (
-            <li key={label} className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
-              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
-              The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
-              show the secret once after restore — copy it before closing.
-            </li>
+            <li key={label} className="flex items-start gap-2 text-amber-800 dark:text-amber-200"><Trans ns="task-components" i18nKey="sentence_f34fa3887d45" components={{ part1: <>{<span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />}</>, part2: <>{label}</> }} /></li>
           ))}
         </ul>
         <div className="space-y-1.5">
-          <Label htmlFor="restore-change-summary" className="text-xs">
-            Change summary (optional)
-          </Label>
+          <Label htmlFor="restore-change-summary" className="text-xs">{t("task-components:changeSummaryOptional_704fc4c0")}</Label>
           <Input
             id="restore-change-summary"
             value={changeSummary}
-            placeholder="Why are you restoring? Visible in history."
+            placeholder={t("task-components:whyAreYouRestoringVisibleInHistory_9093cbf2")}
             onChange={(event) => onChangeSummaryChange(event.target.value)}
           />
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>{t("task-components:cancel_19766ed6")}</Button>
           <Button onClick={onConfirm} disabled={pending}>
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {pending ? "Restoring…" : `Restore as revision ${newRevisionNumber}`}
+            {pending ? t("task-components:restoring_5a4918e0") : t("task-components:restoreAsRevision_2902fad0", { value1: newRevisionNumber })}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -790,6 +733,7 @@ function RoutineRevisionDiffModal({
   secrets: SecretLookup;
   onRestore: (revision: RoutineRevision) => void;
 }) {
+  useTranslation("task-components");
   const [leftId, setLeftId] = useState<string>(initialOldRevisionId);
   const [rightId, setRightId] = useState<string>(initialNewRevisionId);
 
@@ -804,7 +748,7 @@ function RoutineRevisionDiffModal({
   const right = revisions.find((r) => r.id === rightId) ?? null;
   const fieldChanges = useMemo(
     () => (left && right ? computeFieldChanges(left, right, agents, projects, secrets) : []),
-    [left, right, agents, projects, secrets],
+    [left, right, agents, projects, secrets, i18n.resolvedLanguage],
   );
   const descriptionDiff = useMemo<DiffRow[]>(
     () => (left && right
@@ -819,18 +763,18 @@ function RoutineRevisionDiffModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!max-w-(--pct-90) w-full max-h-(--sz-85vh) overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Compare routine revisions</DialogTitle>
+          <DialogTitle>{t("task-components:compareRoutineRevisions_53caf5e9")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-3">
           <RevisionPicker
-            label="Old"
+            label={t("task-components:old_bca97160")}
             value={leftId}
             onChange={setLeftId}
             revisions={revisions}
             tone="red"
           />
           <RevisionPicker
-            label="New"
+            label={t("task-components:new_18fdd549")}
             value={rightId}
             onChange={setRightId}
             revisions={revisions}
@@ -839,18 +783,16 @@ function RoutineRevisionDiffModal({
         </div>
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-              Field changes
-            </p>
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:fieldChanges_ecfa72a2")}</p>
             {fieldChanges.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No structural field changes.</p>
+              <p className="text-sm text-muted-foreground">{t("task-components:noStructuralFieldChanges_d9af89b8")}</p>
             ) : (
               <table className="w-full text-sm border border-border rounded-md overflow-hidden">
                 <thead>
                   <tr className="text-xs uppercase tracking-wide bg-muted/30 text-muted-foreground">
-                    <th className="px-3 py-2 text-left">Field</th>
-                    <th className="px-3 py-2 text-left">Old value</th>
-                    <th className="px-3 py-2 text-left">New value</th>
+                    <th className="px-3 py-2 text-left">{t("task-components:field_f45fc1df")}</th>
+                    <th className="px-3 py-2 text-left">{t("task-components:oldValue_a7c253b4")}</th>
+                    <th className="px-3 py-2 text-left">{t("task-components:newValue_7ca9b97d")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -870,20 +812,16 @@ function RoutineRevisionDiffModal({
             )}
           </section>
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
-              Description diff
-            </p>
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:descriptionDiff_0ec05d96")}</p>
             <DiffTable rows={descriptionDiff} />
           </section>
         </div>
         <DialogFooter className="justify-between sm:justify-between">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("task-components:close_7d9eb7ac")}</Button>
           {leftIsHistorical && left && (
             <Button onClick={() => onRestore(left)}>
               <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              Restore rev {left.revisionNumber} as new revision
+              {t("final-components-b:Restore_rev_revision_as_new_revision_10cf3f", { revision: left.revisionNumber })}
             </Button>
           )}
         </DialogFooter>
@@ -905,6 +843,7 @@ function RevisionPicker({
   revisions: RoutineRevision[];
   tone: "red" | "green";
 }) {
+  useTranslation("task-components");
   const toneClass = tone === "red"
     ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
     : "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300";
@@ -921,10 +860,7 @@ function RevisionPicker({
         className="h-8 min-w-(--sz-12rem) rounded-md border border-border/60 bg-background px-2 text-xs"
       >
         {revisions.map((revision) => (
-          <option key={revision.id} value={revision.id}>
-            rev {revision.revisionNumber} — {relativeTime(revision.createdAt)}
-            {revision.changeSummary ? ` • ${revision.changeSummary}` : ""}
-          </option>
+          <option key={revision.id} value={revision.id}><Trans ns="final-components-b" i18nKey="numeric.RoutineHistoryTab.a75e7ba95bff_77b70" values={{ revisionNumber: revision.revisionNumber }} components={{ part2: <>{relativeTime(revision.createdAt)}</>, part3: <>{revision.changeSummary ? ` • ${revision.changeSummary}` : ""}</> }} /></option>
         ))}
       </select>
     </div>
@@ -932,11 +868,12 @@ function RevisionPicker({
 }
 
 function DiffTable({ rows }: { rows: DiffRow[] }) {
+  useTranslation("task-components");
   if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No description on either revision.</p>;
+    return <p className="text-sm text-muted-foreground">{t("task-components:noDescriptionOnEitherRevision_010f554f")}</p>;
   }
   if (rows.every((row) => row.kind === "context")) {
-    return <p className="text-sm text-muted-foreground">Descriptions are identical.</p>;
+    return <p className="text-sm text-muted-foreground">{t("task-components:descriptionsAreIdentical_5982a8d2")}</p>;
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
@@ -951,10 +888,10 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
       <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-        <span>Old</span>
-        <span>New</span>
+        <span>{t("task-components:old_bca97160")}</span>
+        <span>{t("task-components:new_18fdd549")}</span>
         <span />
-        <span>Content</span>
+        <span>{t("task-components:content_47bd2907")}</span>
       </div>
       {rows.map((row, index) => (
         <div
@@ -980,18 +917,18 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
 }
 
 function getActorLabel(revision: RoutineRevision): string {
-  if (revision.createdByUserId) return "board";
-  if (revision.createdByAgentId) return "agent";
-  return "system";
+  if (revision.createdByUserId) return t("task-components:board_859169b3");
+  if (revision.createdByAgentId) return t("task-components:agent_d4f0bc5a");
+  return t("task-components:system_bbc5e661");
 }
 
 function resolveAgentName(agentId: string | null, lookup: AgentLookup) {
-  if (!agentId) return "Unassigned";
+  if (!agentId) return t("final-components-b:Unassigned_14d33b");
   return lookup.get(agentId)?.name ?? agentId;
 }
 
 function resolveProjectName(projectId: string | null, lookup: ProjectLookup) {
-  if (!projectId) return "No project";
+  if (!projectId) return t("final-components-b:No_project_f34c2b");
   return lookup.get(projectId)?.name ?? projectId;
 }
 
@@ -1006,16 +943,27 @@ function summarizeTriggerSnapshot(trigger: RoutineRevisionSnapshotTriggerV1): st
   return "API";
 }
 
+function displayTriggerSnapshot(trigger: RoutineRevisionSnapshotTriggerV1): string {
+  if (trigger.kind === "schedule") {
+    return [trigger.cronExpression, trigger.timezone].filter(Boolean).join(" · ");
+  }
+  if (trigger.kind === "webhook") {
+    const replay = trigger.replayWindowSec != null ? t("final-components-b:replay_seconds_s_0053f5", { seconds: trigger.replayWindowSec }) : "";
+    return [trigger.signingMode, replay].filter(Boolean).join(" · ");
+  }
+  return "API";
+}
+
 function formatVariableDefault(variable: RoutineVariable): string {
   if (variable.defaultValue == null) return "—";
   return String(variable.defaultValue);
 }
 
 function formatDirtyFieldList(labels: string[]): string {
-  if (labels.length === 0) return "the routine";
+  if (labels.length === 0) return t("final-components-b:RoutineHistoryTab.the_routine_af1ec2");
   if (labels.length === 1) return labels[0];
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+  if (labels.length === 2) return t("final-components-b:first_and_last_35feea", { first: labels[0], last: labels[1] });
+  return t("final-components-b:rest_and_last_4225d2", { rest: labels.slice(0, -1).join(i18n.resolvedLanguage === "zh-CN" ? "、" : ", "), last: labels[labels.length - 1] });
 }
 
 function collectWebhookTriggerDifferences(
@@ -1025,7 +973,7 @@ function collectWebhookTriggerDifferences(
   const currentIds = new Set(current.snapshot.triggers.map((t) => t.id));
   return target.snapshot.triggers
     .filter((trigger) => trigger.kind === "webhook" && !currentIds.has(trigger.id))
-    .map((trigger) => trigger.label ?? "webhook");
+    .map((trigger) => trigger.label ?? t("final-components-b:RoutineHistoryTab.webhook_9fd09d"));
 }
 
 function describeSnapshotField(value: unknown): string {
@@ -1033,6 +981,31 @@ function describeSnapshotField(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
+
+
+const SNAPSHOT_ENUM_KEYS: Record<string, Record<string, string>> = {
+  "priority": {
+    "critical": "final-components-b:history.priority.critical_a2eae8",
+    "high": "final-components-b:history.priority.high_caceca",
+    "medium": "final-components-b:history.priority.medium_b4a9db",
+    "low": "final-components-b:history.priority.low_558d47"
+  },
+  "status": {
+    "active": "final-components-b:history.status.active_2aac20",
+    "paused": "final-components-b:history.status.paused_b1856c",
+    "archived": "final-components-b:history.status.archived_94efb4",
+    "draft": "final-components-b:history.status.draft_15dc63"
+  },
+  "concurrencyPolicy": {
+    "coalesce_if_active": "final-components-b:history.concurrencyPolicy.coalesce_if_active_941b10",
+    "always_enqueue": "final-components-b:history.concurrencyPolicy.always_enqueue_6dc77f",
+    "skip_if_active": "final-components-b:history.concurrencyPolicy.skip_if_active_985d51"
+  },
+  "catchUpPolicy": {
+    "skip_missed": "final-components-b:history.catchUpPolicy.skip_missed_869e98",
+    "enqueue_missed_with_cap": "final-components-b:history.catchUpPolicy.enqueue_missed_with_cap_f49b7b"
+  }
+};
 
 function computeFieldChanges(
   left: RoutineRevision,
@@ -1049,32 +1022,35 @@ function computeFieldChanges(
     label: string,
     oldVal: unknown,
     newVal: unknown,
-    transform: (value: unknown) => string = describeSnapshotField,
+    transform: (value: unknown) => string = (value) => {
+      const keys = SNAPSHOT_ENUM_KEYS[_field];
+      return typeof value === "string" && keys && Object.hasOwn(keys, value) ? t(keys[value]) : describeSnapshotField(value);
+    },
   ) => {
     if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
       changes.push({ field: label, oldValue: transform(oldVal), newValue: transform(newVal) });
     }
   };
-  compareScalar("title", "Title", oldRoutine.title, newRoutine.title);
-  compareScalar("priority", "Priority", oldRoutine.priority, newRoutine.priority);
+  compareScalar("title", t("final-components-b:Title_7e8cd2"), oldRoutine.title, newRoutine.title);
+  compareScalar("priority", t("final-components-b:Priority_d60dbb"), oldRoutine.priority, newRoutine.priority);
   compareScalar(
     "assigneeAgentId",
-    "Default agent",
+    t("final-components-b:Default_agent_94da52"),
     resolveAgentName(oldRoutine.assigneeAgentId, agents),
     resolveAgentName(newRoutine.assigneeAgentId, agents),
   );
   compareScalar(
     "projectId",
-    "Project",
+    t("final-components-b:Project_985959"),
     resolveProjectName(oldRoutine.projectId, projects),
     resolveProjectName(newRoutine.projectId, projects),
   );
-  compareScalar("concurrencyPolicy", "Concurrency", oldRoutine.concurrencyPolicy, newRoutine.concurrencyPolicy);
-  compareScalar("catchUpPolicy", "Catch-up", oldRoutine.catchUpPolicy, newRoutine.catchUpPolicy);
-  compareScalar("status", "Status", oldRoutine.status, newRoutine.status);
+  compareScalar("concurrencyPolicy", t("final-components-b:Concurrency_870849"), oldRoutine.concurrencyPolicy, newRoutine.concurrencyPolicy);
+  compareScalar("catchUpPolicy", t("final-components-b:Catch_up_1c2d0f"), oldRoutine.catchUpPolicy, newRoutine.catchUpPolicy);
+  compareScalar("status", t("final-components-b:Status_920e41"), oldRoutine.status, newRoutine.status);
   if (JSON.stringify(oldRoutine.variables) !== JSON.stringify(newRoutine.variables)) {
     changes.push({
-      field: "Variables",
+      field: t("final-components-b:Variables_02db55"),
       oldValue: summarizeVariables(oldRoutine.variables),
       newValue: summarizeVariables(newRoutine.variables),
     });
@@ -1106,13 +1082,13 @@ function asSecretRef(binding: EnvBinding): EnvSecretRefBinding | null {
 }
 
 function formatVersionSelector(version: SecretVersionSelector | undefined): string {
-  if (version == null || version === "latest") return "latest";
+  if (version == null || version === "latest") return t("task-components:latest_5e1e2bca");
   return `v${version}`;
 }
 
 function describeSecretRef(ref: EnvSecretRefBinding, secrets: SecretLookup): string {
   const secret = secrets.get(ref.secretId);
-  const name = secret?.name ?? "<missing-secret>";
+  const name = secret?.name ?? t("final-components-b:missing_secret_5a9ab2");
   return `${name} ${formatVersionSelector(ref.version)}`;
 }
 
@@ -1120,16 +1096,15 @@ function describeEnvBinding(binding: EnvBinding | undefined, secrets: SecretLook
   if (binding === undefined) return "—";
   const ref = asSecretRef(binding);
   if (ref) return `secret_ref → ${describeSecretRef(ref, secrets)}`;
-  return "plain (set)";
+  return t("final-components-b:plain_set_713958");
 }
 
 function summarizeEnv(env: RoutineEnvConfig | null): string {
   const entries = Object.entries(normalizeEnv(env));
   if (entries.length === 0) return "";
   const secretCount = entries.filter(([, binding]) => envBindingKind(binding) === "secret_ref").length;
-  const keyLabel = entries.length === 1 ? "key" : "keys";
-  if (secretCount === 0) return `${entries.length} ${keyLabel}`;
-  return `${entries.length} ${keyLabel} (${secretCount} secret ${secretCount === 1 ? "ref" : "refs"})`;
+  if (secretCount === 0) return t("final-components-b:count_keys_c772a3", { count: entries.length });
+  return t(secretCount === 1 ? "integration-regressions:envOneSecret" : "integration-regressions:envManySecrets", { count: entries.length, secretCount });
 }
 
 type EnvDiffCounts = {
@@ -1169,9 +1144,9 @@ function summarizeEnvDiffCounts(
 
 function formatEnvDiffCounts(counts: EnvDiffCounts): string {
   const parts: string[] = [];
-  if (counts.added > 0) parts.push(`${counts.added} ${counts.added === 1 ? "key" : "keys"} added`);
-  if (counts.removed > 0) parts.push(`${counts.removed} ${counts.removed === 1 ? "key" : "keys"} removed`);
-  if (counts.changed > 0) parts.push(`${counts.changed} ${counts.changed === 1 ? "key" : "keys"} changed`);
+  if (counts.added > 0) parts.push(t("final-components-b:count_keys_added_0a1f36", { count: counts.added }));
+  if (counts.removed > 0) parts.push(t("final-components-b:count_keys_removed_946a3b", { count: counts.removed }));
+  if (counts.changed > 0) parts.push(t("final-components-b:count_keys_changed_5e1c94", { count: counts.changed }));
   return parts.join(", ");
 }
 
@@ -1192,7 +1167,7 @@ function compareEnv(
     const inNew = key in newRec;
     if (inNew && !inOld) {
       changes.push({
-        field: `Env added (${key})`,
+        field: t("final-components-b:Env_added_name_67601d", { name: key }),
         oldValue: "—",
         newValue: describeEnvBinding(newBinding, secrets),
       });
@@ -1200,7 +1175,7 @@ function compareEnv(
     }
     if (!inNew && inOld) {
       changes.push({
-        field: `Env removed (${key})`,
+        field: t("final-components-b:Env_removed_name_82e15d", { name: key }),
         oldValue: describeEnvBinding(oldBinding, secrets),
         newValue: "—",
       });
@@ -1211,7 +1186,7 @@ function compareEnv(
     const newKind = envBindingKind(newBinding);
     if (oldKind !== newKind) {
       changes.push({
-        field: `Env ${key} binding kind`,
+        field: t("final-components-b:Env_name_binding_kind_790d99", { name: key }),
         oldValue: describeEnvBinding(oldBinding, secrets),
         newValue: describeEnvBinding(newBinding, secrets),
       });
@@ -1222,29 +1197,29 @@ function compareEnv(
       const newRef = asSecretRef(newBinding)!;
       if (oldRef.secretId !== newRef.secretId) {
         changes.push({
-          field: `Env ${key} secret`,
+          field: t("final-components-b:Env_name_secret_491998", { name: key }),
           oldValue: describeEnvBinding(oldBinding, secrets),
           newValue: describeEnvBinding(newBinding, secrets),
         });
         continue;
       }
       changes.push({
-        field: `Env ${key} version`,
+        field: t("final-components-b:Env_name_version_d4e40f", { name: key }),
         oldValue: describeSecretRef(oldRef, secrets),
         newValue: describeSecretRef(newRef, secrets),
       });
       continue;
     }
     changes.push({
-      field: `Env ${key} value`,
-      oldValue: "plain (set)",
-      newValue: "plain (changed)",
+      field: t("final-components-b:Env_name_value_0cbc0e", { name: key }),
+      oldValue: t("final-components-b:plain_set_713958"),
+      newValue: t("final-components-b:plain_changed_63c9e0"),
     });
   }
 }
 
 function summarizeVariables(variables: RoutineVariable[]): string {
-  if (variables.length === 0) return "(none)";
+  if (variables.length === 0) return t("final-components-b:RoutineHistoryTab.none_552e42");
   return variables
     .map((variable) => `${variable.name}=${formatVariableDefault(variable)}`)
     .join(", ");
@@ -1264,24 +1239,24 @@ function compareTriggers(
   for (const [, pair] of byId) {
     if (pair.old && !pair.next) {
       changes.push({
-        field: `Trigger removed (${pair.old.label ?? pair.old.kind})`,
-        oldValue: summarizeTriggerSnapshot(pair.old),
+        field: t("final-components-b:Trigger_removed_trigger_9063cd", { trigger: pair.old.label ?? pair.old.kind }),
+        oldValue: displayTriggerSnapshot(pair.old),
         newValue: null,
       });
     } else if (!pair.old && pair.next) {
       changes.push({
-        field: `Trigger added (${pair.next.label ?? pair.next.kind})`,
+        field: t("final-components-b:Trigger_added_trigger_f67705", { trigger: pair.next.label ?? pair.next.kind }),
         oldValue: null,
-        newValue: summarizeTriggerSnapshot(pair.next),
+        newValue: displayTriggerSnapshot(pair.next),
       });
     } else if (pair.old && pair.next) {
       const oldSummary = summarizeTriggerSnapshot(pair.old);
       const newSummary = summarizeTriggerSnapshot(pair.next);
       if (oldSummary !== newSummary || pair.old.enabled !== pair.next.enabled) {
         changes.push({
-          field: `Trigger ${pair.next.label ?? pair.next.kind}`,
-          oldValue: `${oldSummary} (${pair.old.enabled ? "enabled" : "disabled"})`,
-          newValue: `${newSummary} (${pair.next.enabled ? "enabled" : "disabled"})`,
+          field: t("final-components-b:Trigger_trigger_b5806c", { trigger: pair.next.label ?? pair.next.kind }),
+          oldValue: `${displayTriggerSnapshot(pair.old)} (${pair.old.enabled ? t("final-components-b:enabled_fb9cf7") : t("final-components-b:RoutineHistoryTab.disabled_17eb3c")})`,
+          newValue: `${displayTriggerSnapshot(pair.next)} (${pair.next.enabled ? t("final-components-b:enabled_fb9cf7") : t("final-components-b:RoutineHistoryTab.disabled_17eb3c")})`,
         });
       }
     }

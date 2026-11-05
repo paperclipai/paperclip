@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useId, useState, type ReactNode } from "react";
 import {
   ChevronDown,
@@ -66,7 +67,7 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
     iconWrap: "bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-200",
     icon: Info,
     iconClass: "text-sky-700 dark:text-sky-300",
-    label: "text-sky-800 dark:text-sky-200",
+    get label() { return "text-sky-800 dark:text-sky-200"; },
     divider: "border-sky-300/50 dark:border-sky-500/30",
   },
   success: {
@@ -75,7 +76,7 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
     iconWrap: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200",
     icon: CircleCheck,
     iconClass: "text-emerald-700 dark:text-emerald-300",
-    label: "text-emerald-800 dark:text-emerald-200",
+    get label() { return "text-emerald-800 dark:text-emerald-200"; },
     divider: "border-emerald-300/50 dark:border-emerald-500/30",
   },
   warning: {
@@ -84,7 +85,7 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
     iconWrap: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
     icon: TriangleAlert,
     iconClass: "text-amber-700 dark:text-amber-300",
-    label: "text-amber-900 dark:text-amber-200",
+    get label() { return "text-amber-900 dark:text-amber-200"; },
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
   danger: {
@@ -93,7 +94,7 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
     iconWrap: "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-200",
     icon: OctagonAlert,
     iconClass: "text-red-700 dark:text-red-300",
-    label: "text-red-900 dark:text-red-200",
+    get label() { return "text-red-900 dark:text-red-200"; },
     divider: "border-red-400/50 dark:border-red-500/30",
   },
 };
@@ -112,6 +113,7 @@ function formatTimestamp(ts: string) {
 }
 
 function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTokens }) {
+  useTranslation("task-components");
   return (
     <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs">
       <div className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -217,6 +219,7 @@ export function SystemNoticeMetadataSections({
   sections: SystemNoticeMetadataSection[];
   tone?: SystemNoticeTone;
 }) {
+  useTranslation("task-components");
   const tokens = TONE_TOKENS[tone];
   return (
     <div className="divide-y divide-border/50 px-1 py-1">
@@ -248,6 +251,7 @@ export function SystemNotice({
   timestamp,
   className,
 }: SystemNoticeProps) {
+  useTranslation("task-components");
   const tokens = TONE_TOKENS[tone];
   const ToneIcon = tokens.icon;
   const [open, setOpen] = useState(detailsDefaultOpen);
@@ -256,11 +260,11 @@ export function SystemNotice({
   const resolvedLabel =
     label ??
     {
-      neutral: "System notice",
-      info: "System notice",
-      success: "System notice",
-      warning: "System warning",
-      danger: "System alert",
+      get neutral() { return t("final-components-b:SystemNotice.System_notice_e37ced"); },
+      get info() { return t("final-components-b:SystemNotice.System_notice_e37ced"); },
+      get success() { return t("final-components-b:SystemNotice.System_notice_e37ced"); },
+      get warning() { return t("final-components-b:SystemNotice.System_warning_5398b1"); },
+      get danger() { return t("final-components-b:SystemNotice.System_alert_2b1c66"); },
     }[tone];
 
   return (
@@ -326,7 +330,7 @@ export function SystemNotice({
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             )}
           >
-            <span>{open ? "Hide details" : "Details"}</span>
+            <span>{open ? t("task-components:hideDetails_c9722a7a") : t("task-components:details_45989de4")}</span>
             <ChevronDown
               className={cn(
                 "h-3.5 w-3.5 transition-transform duration-150",

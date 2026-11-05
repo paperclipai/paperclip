@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { ImagePlus, Loader2 } from "lucide-react";
 import {
@@ -37,10 +38,11 @@ export function TaskChatRichInput({
   onUploadingChange,
   ariaLabelledBy,
   testId = "task-chat-rich-input",
-  attachAriaLabel = "Attach image",
+  attachAriaLabel = t("task-chat-ui:attachImage"),
   showImageAttachControls = false,
   questionAnswer = false,
 }: TaskChatRichInputProps) {
+  useTranslation("task-components");
   const editorRef = useRef<MarkdownEditorRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadCountRef = useRef(0);
@@ -59,7 +61,7 @@ export function TaskChatRichInput({
   }
 
   async function uploadImage(file: File): Promise<string> {
-    if (!imageUploadHandler) throw new Error("Image uploads are unavailable.");
+    if (!imageUploadHandler) throw new Error(t("task-chat-ui:imageUploadUnavailable"));
     uploadCountRef.current += 1;
     updateUploading(true);
     setUploadError(null);
@@ -69,7 +71,7 @@ export function TaskChatRichInput({
       setUploadError(
         error instanceof Error
           ? error.message
-          : "The image could not be uploaded.",
+          : t("task-chat-ui:imageUploadFailed"),
       );
       throw error;
     } finally {
@@ -134,10 +136,8 @@ export function TaskChatRichInput({
               <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <ImagePlus aria-hidden className="h-3.5 w-3.5" />
-            )}
-            Attach image
-          </Button>
-          <span>or drop/paste an image into the note</span>
+            )}{t("task-components:attachImage_2eacc5e0")}</Button>
+          <span>{t("task-components:orDropPasteAnImageIntoThe_91c413d3")}</span>
         </div>
       ) : null}
       {uploadError ? (

@@ -1,3 +1,4 @@
+import { useTranslation , t } from "@/i18n";
 import { useState } from "react";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { AiProviderSetup } from "../ai-connections/AiProviderSetup";
@@ -19,20 +20,19 @@ export function OnboardingGatewaySetup({
   disabled?: boolean;
   onComplete: (binding: Exclude<AiConnectionBinding, { mode: "responsible_user" }>) => void;
 }) {
+  const { t } = useTranslation("connections");
   const [open, setOpen] = useState(false);
   return <>
-    <Button type="button" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>
-      Use a custom gateway
-    </Button>
+    <Button type="button" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>{t("use_a_custom_gateway_c6d19f7")}</Button>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onKeyDown={event => event.stopPropagation()}>
         <DialogHeader>
-          <DialogTitle>Custom gateway connection</DialogTitle>
-          <DialogDescription>Save the connection, then choose a model and test it with your agent.</DialogDescription>
+          <DialogTitle>{t("custom_gateway_connection_c9c9e9d")}</DialogTitle>
+          <DialogDescription>{t("save_the_connection_then_choose_a_model_d1906d0")}</DialogDescription>
         </DialogHeader>
         <AiProviderSetup companyId={companyId} agentId={agentId} environmentId={environmentId}
           initialProvider="gateway" initialProtocol={adapterType === "codex_local" ? "responses" : "messages"}
-          submitLabel="Save connection" onCancel={() => setOpen(false)}
+          submitLabel={t("final-components-b:onboarding.OnboardingGatewaySetup.Save_connection_df24ef")} onCancel={() => setOpen(false)}
           onComplete={binding => { setOpen(false); onComplete(binding); }} />
       </DialogContent>
     </Dialog>

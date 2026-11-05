@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import type { AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
@@ -26,27 +27,27 @@ import { Badge } from "@/components/ui/badge";
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
 
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
+  get status() { return t("final-components-a:status_920e413c"); },
   id: "ID",
-  assignee: "Responsible",
-  kickedOffBy: "Kicked off by",
-  project: "Project",
-  workspace: "Workspace",
-  parent: "Parent task",
-  labels: "Tags",
-  updated: "Last updated",
+  get assignee() { return t("final-components-a:responsible_bc110a6d"); },
+  get kickedOffBy() { return t("final-components-a:kickedOffBy_927efd2b"); },
+  get project() { return t("final-components-a:project_98595978"); },
+  get workspace() { return t("final-components-a:workspace_87bb59ba"); },
+  get parent() { return t("final-components-a:parentTask_fb8d8591"); },
+  get labels() { return t("final-components-a:tags_1331275b"); },
+  get updated() { return t("final-components-a:lastUpdated_382ac5f3"); },
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Task state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Responsible agent or board user.",
-  kickedOffBy: "Board user or agent who created the task.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the task.",
-  parent: "Parent task identifier and title.",
-  labels: "Task labels and tags.",
-  updated: "Latest visible activity time.",
+  get status() { return t("final-components-a:taskStateChipOnThe_2a80b434"); },
+  get id() { return t("final-components-a:ticketIdentifierLikePAP1009_4710c06f"); },
+  get assignee() { return t("final-components-a:responsibleAgentOrBoardUser_c67ac961"); },
+  get kickedOffBy() { return t("final-components-a:boardUserOrAgentWho_4e377625"); },
+  get project() { return t("final-components-a:linkedProjectPillWithIts_d615593a"); },
+  get workspace() { return t("final-components-a:executionOrProjectWorkspaceUsed_a2570417"); },
+  get parent() { return t("final-components-a:parentTaskIdentifierAndTitle_84f24885"); },
+  get labels() { return t("final-components-a:taskLabelsAndTags_d1cda43e"); },
+  get updated() { return t("final-components-a:latestVisibleActivityTime_6d595ff1"); },
 };
 
 export function issueColumnDescription(
@@ -54,10 +55,10 @@ export function issueColumnDescription(
   presentation: "legacy" | "task" = "legacy",
 ): string {
   if (column === "id" && presentation === "task") {
-    return "Task identifier like PAP-1009 on the trailing edge.";
+    return t("final-components-a:taskIdentifierLikePAP1009_8a525f1e");
   }
   if (column === "status" && presentation === "task") {
-    return "Task state icon on the leading edge.";
+    return t("final-components-a:taskStateIconOnThe_460d683b");
   }
   return issueColumnDescriptions[column];
 }
@@ -67,7 +68,7 @@ export function issueActivityTimestamp(issue: Issue): string {
 }
 
 export function issueActivityText(issue: Issue): string {
-  return `Updated ${issueActivityTimestamp(issue)}`;
+  return t("final-components-a:updatedTime_6379f4b4", { time: issueActivityTimestamp(issue) });
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -105,6 +106,7 @@ export function IssueColumnPicker({
   iconOnly?: boolean;
   rowPresentation?: "legacy" | "task";
 }) {
+  useTranslation("task-components");
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -113,18 +115,16 @@ export function IssueColumnPicker({
           variant={iconOnly ? "outline" : "ghost"}
           size={iconOnly ? "icon" : "sm"}
           className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
-          title="Columns"
+          title={t("task-components:columns_53aade77")}
         >
           <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
-          {!iconOnly && "Columns"}
+          {!iconOnly && t("task-components:columns_53aade77")}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-(--sz-300px) rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
-            <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-              Desktop task rows
-            </div>
+            <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">{t("task-components:desktopTaskRows_9ead53df")}</div>
             <div className="text-sm font-medium text-foreground">
               {title}
             </div>
@@ -157,12 +157,8 @@ export function IssueColumnPicker({
             className="items-start rounded-lg px-3 py-2.5 pl-8"
           >
             <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-foreground">
-                Date group separators
-              </span>
-              <span className="text-xs leading-relaxed text-muted-foreground">
-                Show Today, Yesterday, and Earlier rules on newest-first task lists.
-              </span>
+              <span className="text-sm font-medium text-foreground">{t("task-components:dateGroupSeparators_738875ea")}</span>
+              <span className="text-xs leading-relaxed text-muted-foreground">{t("task-components:showTodayYesterdayAndEarlierRulesOn_2c8dbf56")}</span>
             </span>
           </DropdownMenuCheckboxItem>
         ) : null}
@@ -170,9 +166,7 @@ export function IssueColumnPicker({
         <DropdownMenuItem
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
-        >
-          Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+        >{t("task-components:resetDefaults_4542d49a")}<span className="ml-auto text-xs text-muted-foreground">{t("task-components:statusIdUpdated_5fd9f7e2")}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -198,6 +192,7 @@ export function InboxIssueMetaLeading({
   statusSlot?: ReactNode;
   checklistStepNumber?: number | string | null;
 }) {
+  useTranslation("task-components");
   return (
     <>
       {showStatus ? (
@@ -236,9 +231,7 @@ export function InboxIssueMetaLeading({
               "hidden text-(length:--text-micro) font-medium sm:inline",
               "text-blue-600 dark:text-blue-400",
             )}
-          >
-            Live
-          </span>
+          >{t("task-components:live_b64ac05f")}</span>
         </Badge>
       )}
       {showSubtreeLiveChip && !isLive && subtreeLiveCount > 0 && (
@@ -247,7 +240,7 @@ export function InboxIssueMetaLeading({
             "px-1.5 sm:gap-1.5 sm:px-2",
             "border-border bg-transparent",
           )}
-          title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
+          title={t("task-components:subTaskRunningBelow_e26bf8be", { value1: subtreeLiveCount, value2: t("task-components:pluralSuffix", { count: subtreeLiveCount }) })}
         >
           <span
             className={cn(
@@ -256,9 +249,7 @@ export function InboxIssueMetaLeading({
             )}
             aria-hidden="true"
           />
-          <span className="hidden text-(length:--text-micro) font-medium text-muted-foreground sm:inline">
-            {subtreeLiveCount} live below
-          </span>
+          <span className="hidden text-(length:--text-micro) font-medium text-muted-foreground sm:inline"><Trans ns="final-components-a" i18nKey="numeric_f58857686088" values={{ subtreeLiveCount: subtreeLiveCount }} /></span>
         </Badge>
       )}
     </>
@@ -308,11 +299,12 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
+  useTranslation("task-components");
   const activityText = issueActivityTimestamp(issue);
-  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? t("task-components:user_b512d97e");
   const originatingActor = deriveOriginatingActor(issue);
   const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
-  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(originatingUserId, currentUserId) ?? "User";
+  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(originatingUserId, currentUserId) ?? t("task-components:user_b512d97e");
 
   return (
     <span
@@ -351,9 +343,7 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
-            </span>
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{t("task-components:unassigned_14d33bd0")}</span>
           );
         }
 
@@ -377,7 +367,7 @@ export function InboxIssueTrailingColumns({
           }
 
           if (originatingActor?.kind === "user") {
-            const tooltipText = viaAgentName ? `${creatorUserLabel} · via ${viaAgentName}` : creatorUserLabel;
+            const tooltipText = viaAgentName ? t("final-components-a:userViaAgent_24752efb", { user: creatorUserLabel, agent: viaAgentName }) : creatorUserLabel;
             return (
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
@@ -396,9 +386,7 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unknown
-            </span>
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{t("task-components:unknown_b764cdc0")}</span>
           );
         }
 
@@ -422,9 +410,7 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
-            </span>
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">{t("task-components:noProject_f34c2be0")}</span>
           );
         }
 
@@ -479,9 +465,7 @@ export function InboxIssueTrailingColumns({
                       {workspaceName}
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
-                  </TooltipContent>
+                  <TooltipContent side="top" sideOffset={6}>{t("task-components:filterByWorkspace_7e5aae00")}</TooltipContent>
                 </Tooltip>
               ) : (
                 workspaceName
@@ -500,7 +484,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-task</span>
+                <span className="italic">{t("task-components:subTask_17aa97a0")}</span>
               )}
             </span>
           );

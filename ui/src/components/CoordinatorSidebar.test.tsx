@@ -2,6 +2,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
 import { CoordinatorSidebar } from "./CoordinatorSidebar";
@@ -77,6 +78,23 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("localizes nested More destinations and pin actions when switching", async () => {
+    await renderSidebar();
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector('nav[aria-label="工作区导航"]')).not.toBeNull();
+      await click("更多工作区页面");
+      expect(document.querySelector('button[aria-label="固定项目"]')).not.toBeNull();
+      expect(document.querySelector('a[href="/routines"]')?.textContent).toContain("例行任务");
+      await click("固定项目");
+      expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("项目");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("Projects");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("announces unread chat totals in expanded and collapsed navigation", async () => {
     fixture.chats = [{ isUnreadForMe: true }, { isUnreadForMe: false }, { isUnreadForMe: true }];
     await renderSidebar();

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -15,13 +16,14 @@ import { ListTodo } from "lucide-react";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 
 export function MyIssues() {
+  const { t } = useTranslation("work");
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Tasks" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("work:copy.myTasks_faf873") }]);
+  }, [setBreadcrumbs, t]);
 
   const issuesQuery = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
@@ -36,8 +38,8 @@ export function MyIssues() {
       <EmptyState
         icon={ListTodo}
         message={streamlinedUiEnabled
-          ? "Select an organization to view your tasks."
-          : "Select a company to view your tasks."}
+          ? t("work:copy.selectAnOrganizationToViewYourTasks_bfb856")
+          : t("work:copy.selectACompanyToViewYourTasks_f43365")}
       />
     );
   }
@@ -52,7 +54,7 @@ export function MyIssues() {
       <QueryErrorState
         size="page"
         error={issuesView.error}
-        action="load your tasks"
+        action={t("work:copy.loadYourTasks_2e4880")}
         onRetry={issuesView.retry}
         retrying={issuesView.isFetching}
       />
@@ -67,7 +69,7 @@ export function MyIssues() {
   return (
     <div className="space-y-4">
       {myIssues.length === 0 && (
-        <EmptyState icon={ListTodo} message="No tasks assigned to you." />
+        <EmptyState icon={ListTodo} message={t("work:copy.noTasksAssignedToYou_1a9677")} />
       )}
 
       {myIssues.length > 0 && (

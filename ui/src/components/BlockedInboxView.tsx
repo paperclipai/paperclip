@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -69,6 +70,7 @@ export function BlockedInboxView({
   showUpdatedColumn,
   presentation = "legacy",
 }: BlockedInboxViewProps) {
+  useTranslation("task-components");
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
   const blockedQuery = useQuery({
@@ -163,10 +165,8 @@ export function BlockedInboxView({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
-            <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {describeError(blockedView.error, { action: "load the Blocked tab" }).body}
-            </p>
+            <p className="text-sm font-medium">{t("task-components:couldnTLoadTheBlockedTab_a61e4428")}</p>
+            <p className="text-xs opacity-80"><Trans ns="task-components" i18nKey="sentence_86b91e6347d2" components={{ part1: <>{describeError(blockedView.error, { action: "load the Blocked tab" }).body}</> }} /></p>
           </div>
           <Button
             type="button"
@@ -176,7 +176,7 @@ export function BlockedInboxView({
             onClick={blockedView.retry}
             disabled={blockedView.isFetching}
           >
-            {blockedView.isFetching ? "Trying…" : "Try again"}
+            {blockedView.isFetching ? t("task-components:trying_3ff51b0b") : t("task-components:tryAgain_d8b8392e")}
           </Button>
         </div>
       </div>
@@ -193,10 +193,8 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
-          <p className="text-xs text-muted-foreground">
-            Tasks that need a decision, recovery, or external action will appear here.
-          </p>
+          <p className="text-sm font-medium text-foreground">{t("task-components:noWorkIsStopped_6d4397f7")}</p>
+          <p className="text-xs text-muted-foreground">{t("task-components:tasksThatNeedADecisionRecoveryOr_ec0fc599")}</p>
         </div>
       </Card>
     );
@@ -208,9 +206,7 @@ export function BlockedInboxView({
         <Card
           data-testid="blocked-inbox-no-search-results"
           className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
-        >
-          No stopped items match your search.
-        </Card>
+        >{t("task-components:noStoppedItemsMatchYourSearch_c4f2407d")}</Card>
       </div>
     );
   }
@@ -318,6 +314,7 @@ function BlockedInboxRow({
   showUpdatedColumn,
   presentation,
 }: BlockedInboxRowProps) {
+  useTranslation("task-components");
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
   const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
@@ -420,6 +417,7 @@ function BlockedRowDesktopMeta({
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
+  useTranslation("task-components");
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">

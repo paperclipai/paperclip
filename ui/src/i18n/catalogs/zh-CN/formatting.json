@@ -1,0 +1,8 @@
+{
+  "relative": {"justNow": "刚刚", "minute": "{{count}} 分钟前", "hour": "{{count}} 小时前", "day": "{{count}} 天前", "week": "{{count}} 周前", "month": "{{count}} 个月前"},
+  "unit": {"second": "秒", "minute": "分钟", "hour": "小时", "day": "天"},
+  "monthlyBudget": "{{amount}}/月",
+  "billing": {"metered_api": "按量计费 API", "subscription_included": "订阅", "subscription_overage": "订阅超额用量", "credits": "额度", "fixed": "固定费用", "unknown": "未知"},
+  "finance": {"inference_charge": "推理费用", "platform_fee": "平台费用", "credit_purchase": "额度购买", "credit_refund": "额度退款", "credit_expiry": "额度到期", "byok_fee": "BYOK 费用", "gateway_overhead": "网关附加费用", "log_storage_charge": "日志存储", "logpush_charge": "日志推送", "provisioned_capacity_charge": "预置容量", "training_charge": "训练", "custom_model_import_charge": "自定义模型导入", "custom_model_storage_charge": "自定义模型存储", "manual_adjustment": "手动调整"},
+  "direction": {"credit": "贷记", "debit": "借记"}
+}

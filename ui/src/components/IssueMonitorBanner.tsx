@@ -1,3 +1,5 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation, i18n } from "@/i18n";
 import { useMemo, useState } from "react";
 import { Clock, X } from "lucide-react";
 import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
@@ -90,11 +92,11 @@ export function buildMonitorSurfaceCopy(
   if (derived.source === "monitor" && areAutomaticMonitorChecksPaused({ status: issueStatus })) {
     const canCheckNow = canCheckIssueMonitorNow({ status: issueStatus }, derived.serviceName);
     const hint = canCheckNow
-      ? "This task is blocked. You can ask the agent to check now."
-      : "Resume this task to continue checking.";
+      ? t("final-components-b:IssueMonitorBanner.This_task_is_blocked_You_can_ask_the_agent_to_check_now_fb17fe")
+      : t("final-components-b:IssueMonitorBanner.Resume_this_task_to_continue_checking_9d9a6e");
     return {
-      bannerTitle: "Automatic checks paused",
-      stripTitle: "Automatic checks paused",
+      get bannerTitle() { return t("final-components-b:IssueMonitorBanner.Automatic_checks_paused_03d978"); },
+      get stripTitle() { return t("final-components-b:IssueMonitorBanner.Automatic_checks_paused_03d978"); },
       bannerMeta: [hint],
       stripMeta: [hint],
       tone: "info",
@@ -105,9 +107,9 @@ export function buildMonitorSurfaceCopy(
 
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
     return {
-      bannerTitle: "Waiting for workspace",
-      stripTitle: "Waiting for workspace",
-      bannerMeta: ["Another task is using this workspace. Work starts automatically when it is available."],
+      get bannerTitle() { return t("final-components-b:IssueMonitorBanner.Waiting_for_workspace_e682cb"); },
+      get stripTitle() { return t("final-components-b:IssueMonitorBanner.Waiting_for_workspace_e682cb"); },
+      bannerMeta: [t("final-components-b:IssueMonitorBanner.Another_task_is_using_this_workspace_Work_starts_automatically_wh_db345a")],
       stripMeta: ["Work starts automatically when the workspace is available."],
       tone: "info",
       workspaceWait: true,
@@ -118,9 +120,9 @@ export function buildMonitorSurfaceCopy(
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
   if (derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0) {
     return {
-      bannerTitle: "Pull request review requested",
-      stripTitle: "Pull request review requested",
-      bannerMeta: [`Next check ${eta} · ${absolute} (your time)`],
+      get bannerTitle() { return t("final-components-b:IssueMonitorBanner.Pull_request_review_requested_49c186"); },
+      get stripTitle() { return t("final-components-b:IssueMonitorBanner.Pull_request_review_requested_49c186"); },
+      bannerMeta: [t("final-components-b:Next_check_eta_absolute_your_time_3aab4b", { eta, absolute })],
       stripMeta: [`Next check ${eta} · ${absolute}`],
       tone: derived.state === "overdue" ? "warning" : "info",
       pullRequestReview: true,
@@ -128,9 +130,9 @@ export function buildMonitorSurfaceCopy(
   }
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
     return {
-      bannerTitle: "Pool exhausted",
-      stripTitle: "Pool exhausted",
-      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits."],
+      get bannerTitle() { return t("final-components-b:IssueMonitorBanner.Pool_exhausted_32acdd"); },
+      get stripTitle() { return t("final-components-b:IssueMonitorBanner.Pool_exhausted_32acdd"); },
+      bannerMeta: [t("final-components-b:Usage_recheck_eta_absolute_your_time_45250b", { eta, absolute }), t("final-components-b:IssueMonitorBanner.Tasks_with_a_selected_account_keep_it_while_waiting_Work_resumes__6a6fcd")],
       stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
       tone: "info",
     };
@@ -160,8 +162,8 @@ export function buildMonitorSurfaceCopy(
       break;
   }
 
-  const attemptLabel = derived.attemptCount >= 1 ? `Attempt ${derived.attemptCount}` : null;
-  const serviceLabel = derived.serviceName ? `Watching: ${derived.serviceName}` : null;
+  const attemptLabel = derived.attemptCount >= 1 ? t("task-components:attempt_7a5e6708", { value1: derived.attemptCount }) : null;
+  const serviceLabel = derived.serviceName ? t("final-components-b:Watching_serviceName_7d831f", { serviceName: derived.serviceName }) : null;
 
   const bannerMeta = [statusHint, `${absolute} (your time)`, attemptLabel, serviceLabel].filter(
     (piece): piece is string => Boolean(piece),
@@ -188,7 +190,7 @@ function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number):
     return derived.source === "monitor" && areAutomaticMonitorChecksPaused(issue) ? null : derived.nextCheckAt;
   }, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews]);
+  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews, i18n.resolvedLanguage]);
 }
 
 function CheckNowButton({
@@ -200,6 +202,7 @@ function CheckNowButton({
   checkingNow: boolean;
   reviewRequested?: boolean;
 }) {
+  useTranslation("task-components");
   return (
     <Button
       type="button"
@@ -209,15 +212,16 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : reviewRequested ? "Check status" : "Check now"}
+      {checkingNow ? t("task-components:checking_ec963ffc") : reviewRequested ? t("task-components:checkStatus_69cd3590") : t("task-components:checkNow_2937cffb")}
     </Button>
   );
 }
 
 function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> }) {
+  useTranslation("task-components");
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const cancel = async () => {
     setPending(true);
     setError(null);
@@ -225,7 +229,7 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
       await onCancel();
       setOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to cancel the monitor. Try again.");
+      setError(err instanceof Error ? err : localizeUiError(new Error("Unable to cancel the monitor. Try again."), { key: "final-components-b:error.Unable_to_cancel_the_monitor_Try_again_c98815" }));
     } finally {
       setPending(false);
     }
@@ -233,19 +237,19 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!pending) { setOpen(next); setError(null); } }}>
       <AlertDialogTrigger asChild>
-        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label="Cancel monitor" title="Cancel monitor">
+        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label={t("task-components:cancelMonitor_725cf6ee")} title={t("task-components:cancelMonitor_725cf6ee")}>
           <X className="h-4 w-4" aria-hidden="true" />
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Cancel monitor?</AlertDialogTitle>
-          <AlertDialogDescription>This removes the scheduled monitor check. The agent will no longer resume from this monitor. You can send a message to continue the task.</AlertDialogDescription>
+          <AlertDialogTitle>{t("task-components:cancelMonitor_ed370fae")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("task-components:thisRemovesTheScheduledMonitorCheckThe_4317d6f1")}</AlertDialogDescription>
         </AlertDialogHeader>
-        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        {error ? <p role="alert" className="text-sm text-destructive">{describeUiError(error).body}</p> : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Keep monitor</AlertDialogCancel>
-          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? "Cancelling…" : "Cancel monitor"}</Button>
+          <AlertDialogCancel disabled={pending}>{t("task-components:keepMonitor_a498617d")}</AlertDialogCancel>
+          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? t("task-components:cancelling_91b104db") : t("task-components:cancelMonitor_725cf6ee")}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -274,6 +278,7 @@ export function IssueMonitorBanner({
   checkError,
   onCancelMonitor,
 }: IssueMonitorSurfaceProps) {
+  useTranslation("task-components");
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
@@ -311,6 +316,7 @@ export function IssueMonitorComposerStrip({
   checkError,
   className,
 }: IssueMonitorSurfaceProps & { className?: string }) {
+  useTranslation("task-components");
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
@@ -335,10 +341,10 @@ export function IssueMonitorComposerStrip({
       {!copy.automaticChecksPaused ? (
         <p className="mt-1.5 text-xs text-muted-foreground">
           {copy.pullRequestReview
-            ? "Review on GitHub, then check status to have the agent verify the result."
+            ? t("task-components:reviewOnGithubThenCheckStatusTo_138c837a")
             : copy.workspaceWait
-            ? "You can keep sending instructions while the agent waits."
-            : "Sending a reply wakes the agent now — before the scheduled check."}
+            ? t("task-components:youCanKeepSendingInstructionsWhileThe_863825ba")
+            : t("task-components:sendingAReplyWakesTheAgentNow_c39c874e")}
         </p>
       ) : null}
       {checkError ? <p role="alert" className="text-sm text-destructive">{checkError}</p> : null}

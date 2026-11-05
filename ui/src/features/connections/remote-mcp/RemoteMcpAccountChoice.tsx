@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "@/components/InlineBanner";
 import { ConnectionChoiceList } from "../ConnectionChoiceList";
@@ -22,31 +23,24 @@ export function RemoteMcpAccountChoice({
   onCancel?: () => void;
   onConnectNew: () => void;
 }) {
+  const { t } = useTranslation("connections");
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold">
           {upstreamServiceName
-            ? `Connect ${upstreamServiceName} through ${providerName}`
-            : `Connect ${providerName}`}
+            ? t("connect_through_1278773", { upstreamServiceName: upstreamServiceName, providerName: providerName })
+            : t("connect_aa9bb86", { providerName: providerName })}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Use an existing connection or connect a new account. Existing access
-          stays unchanged.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">{t("use_an_existing_connection_or_connect_a_6ff77ec")}</p>
       </div>
       {upstreamServiceName && (
-        <InlineBanner compact>
-          {providerName} is an external service that handles the connection and
-          requests to {upstreamServiceName}. Reusing this account does not yet
-          verify app access; the agent will check it and guide any additional
-          authorization.
-        </InlineBanner>
+        <InlineBanner compact>{t("is_an_external_service_that_handles_the_4be6776", { providerName: providerName, upstreamServiceName: upstreamServiceName })}</InlineBanner>
       )}
       <ConnectionChoiceList
         choices={connections.map((connection) => ({
           ...connection,
-          description: "Provider account available",
+          description: t("final-configuration:providerAccount"),
         }))}
         pendingId={pendingId}
         onSelect={onSelect}
@@ -61,12 +55,8 @@ export function RemoteMcpAccountChoice({
           variant="ghost"
           disabled={Boolean(pendingId)}
           onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button disabled={Boolean(pendingId)} onClick={onConnectNew}>
-          Connect new
-        </Button>
+        >{t("cancel_1791a62")}</Button>
+        <Button disabled={Boolean(pendingId)} onClick={onConnectNew}>{t("connect_new_01e7629")}</Button>
       </div>
     </div>
   );

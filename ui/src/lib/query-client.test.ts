@@ -225,7 +225,7 @@ describe("createAppQueryClient", () => {
       meta: { errorToast: true },
     });
     await observer.mutate().catch(() => undefined);
-    expect(notifyMutationError).toHaveBeenCalledWith({ title: "Check your input", body: "Title is required" });
+    expect(notifyMutationError).toHaveBeenCalledWith({ title: "Check your input", body: "Title is required", presentation: { error: { cause: observer.getCurrentResult().error } } });
   });
 
   it("toasts a transient failure the banner does not cover", async () => {
@@ -239,6 +239,7 @@ describe("createAppQueryClient", () => {
     expect(notifyMutationError).toHaveBeenCalledWith({
       title: "Connection interrupted",
       body: "Paperclip is temporarily unavailable. Please try again in a moment.",
+      presentation: { error: { cause: observer.getCurrentResult().error } },
     });
   });
 

@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
-import { type ReactNode } from "react";
+import { act, type ReactNode } from "react";
+import { i18n, Trans } from "@/i18n";
+import { renderToStaticMarkup } from "react-dom/server";
+import fs from "node:fs";
+import path from "node:path";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -155,6 +159,28 @@ describe("ConnectClientDialog", () => {
     container.remove();
   });
 
+  it("bounded stabilization keeps the literal authorization placeholder inside one closed code boundary", async () => {
+    expect.assertions(27);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      flushSync(() => root.render(<QueryClientProvider client={client}><ConnectClientDialog gateway={gateway(storedToken())} open onOpenChange={vi.fn()} createdTokens={[]} onTokenCreated={vi.fn()} /></QueryClientProvider>));
+      for (const locale of ["en", "zh-CN", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        const rawCatalog = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, `../../../i18n/catalogs/${locale}/final-pages.json`), "utf8"));
+        expect(rawCatalog.Issue_a_token_before_copying_a_snippet_the_full_header_Authorizat_86373b).toContain("</header>");
+        const markup = renderToStaticMarkup(<Trans ns="final-pages" i18nKey="Issue_a_token_before_copying_a_snippet_the_full_header_Authorizat_86373b" components={{ header: <code /> }} />);
+        expect(markup).toContain("<code>Authorization: Bearer ***</code>");
+        expect(markup).not.toContain("&lt;code&gt;");
+        const paragraph = [...container.querySelectorAll("p")].find(p => p.textContent?.includes("Authorization: Bearer ***"));
+        expect(paragraph).toBeTruthy();
+        expect(paragraph!.querySelector("code")?.textContent).toBe("Authorization: Bearer ***");
+        expect(paragraph!.querySelectorAll("code")).toHaveLength(1);
+        expect(paragraph!.innerHTML).not.toContain("&lt;code&gt;");
+        expect(paragraph!.textContent).toContain(locale === "en" ? "header is required" : "请求头");
+        expect(paragraph!.querySelector("code")?.nextSibling?.textContent).toContain(locale === "en" ? "header is required" : "请求头");
+      }
+    } finally { await act(async () => { await i18n.changeLanguage("en"); }); client.clear(); }
+  });
   it("copies a complete client snippet with the selected token and explains the gateway boundary", async () => {
     const persisted = storedToken();
     const created = { ...persisted, token: "pcgw_FULL_SECRET" } satisfies ToolMcpGatewayTokenCreated;

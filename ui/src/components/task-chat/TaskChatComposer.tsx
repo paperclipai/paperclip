@@ -1,3 +1,6 @@
+import { localizeUiError, describeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation, Trans } from "@/i18n";
+import { attachmentKindDisplayLabel } from "./task-chat-display";
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
 import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
@@ -239,7 +242,7 @@ export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
     if (extra.length > 0) {
       return {
         matched: true,
-        error: `/goal ${subcommand} does not accept extra arguments.`,
+        error: t("task-chat-ui:goalExtraArguments", { subcommand }),
       };
     }
     return {
@@ -273,6 +276,7 @@ function AssigneeIdentityAvatar({
     | undefined;
   placement: "trigger" | "option";
 }) {
+  useTranslation("task-components");
   if (assigneeValue.startsWith("agent:")) {
     const agentId = assigneeValue.slice("agent:".length);
     const icon = agentMap?.get(agentId)?.icon ?? "bot";
@@ -318,17 +322,17 @@ function AssigneeIdentityAvatar({
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
 function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
   if (mobile) {
-    if (mode === "planning") return `Plan with ${agentName}…`;
-    if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
+    if (mode === "planning") return t("task-chat-ui:planMobile", { agent: agentName });
+    if (mode === "ask") return t("task-chat-ui:askMobile", { agent: agentName });
+    return t("task-chat-ui:messageMobile", { agent: agentName });
   }
   switch (mode) {
     case "planning":
-      return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
+      return t("task-chat-ui:planPlaceholder", { agent: agentName });
     case "ask":
-      return `Ask ${agentName} a question — read-only, nothing runs…`;
+      return t("task-chat-ui:askPlaceholder", { agent: agentName });
     default:
-      return `Message ${agentName} — describe what you want done…`;
+      return t("task-chat-ui:messagePlaceholder", { agent: agentName });
   }
 }
 
@@ -425,6 +429,7 @@ export function TaskChatComposer({
   onRunnerGoalCommand,
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
+  useTranslation("task-components");
   const streamlined = useStreamlinedTaskChatPresentation();
   const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
@@ -665,27 +670,27 @@ export function TaskChatComposer({
   const assigneeValue = creation || conversationMode ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
   const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
   const assigneeLabel =
-    reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
+    reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? t("task-components:unassigned_14d33bd0");
   const assigneeName =
-    assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
+    assigneeLabel === "Unassigned" ? t("task-chat-ui:theAgent") : assigneeLabel;
   const effectivePlaceholder = queuedEdit
-    ? "Edit queued message…"
+    ? t("task-chat-ui:editQueued")
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
     kind: "action",
     command: "goal",
-    name: "Goal",
+    name: t("task-chat-ui:goalActionName"),
     description:
       !runnerGoalCapability || runnerGoalCapability.verified === false
-        ? "Support will be verified when the session starts."
-        : "Pursue work across turns.",
+        ? t("task-chat-ui:goalVerifyLater")
+        : t("task-chat-ui:goalAcrossTurns"),
     aliases: ["goal", "pursue", "continue"],
     disabled: goalUnavailable && runnerGoalCapability !== null,
     disabledReason:
       runnerGoalCapability?.reason ??
-      "Session goals are unsupported by this agent.",
+      t("task-chat-ui:goalsUnsupported"),
   };
 
   function updatePendingAssignee(value: string | null) {
@@ -721,9 +726,9 @@ export function TaskChatComposer({
       const url = onAttachImage
         ? attachment?.contentPath
         : await onImageUpload?.(file);
-      if (!url) throw new Error("Upload did not return a file URL");
+      if (!url) throw localizeUiError(new Error("Upload did not return a file URL"), { key: "final-components-b:error.Upload_did_not_return_a_file_URL_da4aa8" });
       if (!attachmentsRef.current.some((item) => item.id === id))
-        throw new Error("Attachment was removed");
+        throw localizeUiError(new Error("Attachment was removed"), { key: "final-components-b:error.Attachment_was_removed_2ee543" });
       setAttachments((prev) =>
         prev.map((item) =>
           item.id === id
@@ -744,7 +749,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: describeError(err, { action: "upload the file" }).body,
+                get error() { return describeUiError(err, { key: "final-components-b:action.upload_the_file_3e58da" }).body; },
                 file,
               }
             : item,
@@ -769,7 +774,7 @@ export function TaskChatComposer({
               ? {
                   ...item,
                   status: "error",
-                  error: "This file type cannot be attached here",
+                  get error() { return t("task-chat-ui:fileTypeUnsupported"); },
                 }
               : item,
           ),
@@ -778,7 +783,7 @@ export function TaskChatComposer({
       }
       const attachment = await onAttachImage(file);
       if (!attachment?.contentPath)
-        throw new Error("Upload did not return a file URL");
+        throw localizeUiError(new Error("Upload did not return a file URL"), { key: "final-components-b:error.Upload_did_not_return_a_file_URL_da4aa8" });
       const name = attachment?.originalFilename ?? file.name;
       setAttachments((prev) =>
         prev.map((item) =>
@@ -800,7 +805,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: describeError(err, { action: "upload the file" }).body,
+                get error() { return describeUiError(err, { key: "final-components-b:action.upload_the_file_3e58da" }).body; },
                 file,
               }
             : item,
@@ -925,7 +930,7 @@ export function TaskChatComposer({
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
     if (goalCommand.matched && conversationMode) {
-      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      setActionError(t("task-chat-ui:separateGoalTask"));
       return;
     }
     if (goalCommand.matched) {
@@ -940,7 +945,7 @@ export function TaskChatComposer({
       if (!onRunnerGoalCommand) {
         setActionError(
           runnerGoalCapability?.reason ??
-            "Session goals are unsupported by this agent.",
+            t("task-chat-ui:goalsUnsupported"),
         );
         return;
       }
@@ -950,7 +955,7 @@ export function TaskChatComposer({
       ) {
         setActionError(
           runnerGoalCapability.reason ??
-            "Session goals are unsupported by this agent.",
+            t("task-chat-ui:goalsUnsupported"),
         );
         return;
       }
@@ -960,7 +965,7 @@ export function TaskChatComposer({
         if (hasReassignment && goalCommand.command.action !== "focus") {
           const reassignment = parseAssigneeValue(assigneeValue);
           if (!reassignment?.assigneeAgentId || !onRunnerGoalReassign) {
-            setActionError("Select an agent before starting a session goal.");
+            setActionError(t("task-chat-ui:selectGoalAgent"));
             return;
           }
           await onRunnerGoalReassign(reassignment);
@@ -978,7 +983,7 @@ export function TaskChatComposer({
         setActionError(
           error instanceof Error
             ? error.message
-            : "The goal action could not be applied.",
+            : t("task-chat-ui:goalActionFailed"),
         );
       }
       return;
@@ -1218,7 +1223,7 @@ export function TaskChatComposer({
       setTakeoverError(
         cause instanceof Error
           ? cause.message
-          : "This request could not be skipped.",
+          : t("task-chat-ui:requestSkipFailed"),
       );
     });
   }
@@ -1233,9 +1238,7 @@ export function TaskChatComposer({
     >
       {takeoverBusy ? (
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-      ) : null}
-      Skip
-    </Button>
+      ) : null}{t("task-components:skip_28d03596")}</Button>
   ) : null;
 
   if (pause && (!conversationMode || queuedEdit)) {
@@ -1284,13 +1287,11 @@ export function TaskChatComposer({
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {takeover.pendingCount > 1 ? (
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={takeover.onShowNext}>
-                  {takeover.pendingCount} pending
-                </Button>
+                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={takeover.onShowNext}>{t("task-chat-ui:pendingCount", { count: takeover.pendingCount })}</Button>
               ) : null}
               <div ref={setTakeoverControlsSlot} className="flex shrink-0 items-center" data-testid="task-chat-composer-takeover-controls-slot" />
               <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground"
-                aria-label={`Dismiss ${takeover.label}`} disabled={takeoverBusy} onClick={takeover.onDismiss}>
+                aria-label={t("task-components:dismiss_85d9ea4e", { value1: takeover.label })} disabled={takeoverBusy} onClick={takeover.onDismiss}>
                 <X aria-hidden />
               </Button>
             </div>
@@ -1320,7 +1321,7 @@ export function TaskChatComposer({
           className="flex h-11 min-w-0 items-center gap-2 px-2.5"
           data-testid="task-chat-composer-context"
           role="group"
-          aria-label="Task project and worktrees"
+          aria-label={t("task-components:taskProjectAndWorktrees_fc5cde17")}
         >
           {creation.contextBar}
         </TaskChatComposerBar>
@@ -1366,17 +1367,15 @@ export function TaskChatComposer({
         >
           <CircleHelp className="h-4 w-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">
-            {pendingTakeover?.label ?? takeover?.label ?? "Pending input"}
+            {pendingTakeover?.label ?? takeover?.label ?? t("task-components:pendingInput_bc6e0973")}
           </span>
-          <span className="shrink-0 font-medium">
-            {pendingTakeover?.count ?? takeover?.pendingCount ?? 1} pending
-          </span>
+          <span className="shrink-0 font-medium">{t("task-chat-ui:pendingCount", { count: pendingTakeover?.count ?? takeover?.pendingCount ?? 1 })}</span>
         </button>
       ) : null}
           {pause && conversationMode ? (
             <div className="space-y-2">
               <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
-              <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
+              <p className="text-xs text-muted-foreground">{t("task-components:sendNewToStartAFreshSession_bed063a1")}</p>
             </div>
           ) : null}
           <ComposerImageAttachments
@@ -1398,14 +1397,14 @@ export function TaskChatComposer({
               onChange={changeBody}
               placeholder={
                 disabled
-                  ? (disabledReason ?? "Composer disabled")
+                  ? (disabledReason ?? t("task-components:composerDisabled_72a59fae"))
                   : effectivePlaceholder
               }
               readOnly={disabled || !!uncertainSubmission || Boolean(creation && (submitting || creation.readOnly))}
               mentions={mentions}
               actionCommands={creation ? [] : conversationMode ? [{
-                id: "action:new", kind: "action", command: "new", name: "New session",
-                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                id: "action:new", kind: "action", command: "new", name: t("task-chat-ui:newSession"),
+                description: t("task-components:startFreshContextHerePreservingConversationHistory_130c3e63"), aliases: ["new"],
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
@@ -1464,10 +1463,10 @@ export function TaskChatComposer({
                       </AttachmentTitle>
                       <AttachmentDescription className="max-w-48">
                         {attachment.status === "uploading"
-                          ? "Uploading…"
+                          ? t("task-components:uploading_5ce44dd7")
                           : attachment.status === "error"
-                            ? (attachment.error ?? "Upload failed")
-                            : [kind.label, sizeLabel]
+                            ? (attachment.error ?? t("task-components:uploadFailed_6efc5d27"))
+                            : [attachmentKindDisplayLabel(kind.label), sizeLabel]
                                 .filter(Boolean)
                                 .join(" · ")}
                       </AttachmentDescription>
@@ -1475,7 +1474,7 @@ export function TaskChatComposer({
                     <AttachmentActions>
                       {attachment.status === "error" && attachment.file ? (
                         <AttachmentAction
-                          aria-label={`Retry ${attachment.name}`}
+                          aria-label={t("task-chat-ui:retryFile", { name: attachment.name })}
                           disabled={!!uncertainSubmission}
                           onClick={() => retryUpload(attachment)}
                         >
@@ -1483,7 +1482,7 @@ export function TaskChatComposer({
                         </AttachmentAction>
                       ) : null}
                       <AttachmentAction
-                        aria-label={`Remove ${attachment.name}`}
+                        aria-label={t("task-components:remove_d2f6b9b7", { value1: attachment.name })}
                         disabled={!!uncertainSubmission}
                         onClick={() =>
                           setAttachments((prev) =>
@@ -1527,8 +1526,8 @@ export function TaskChatComposer({
             {queuedEdit ? (
               <span className="px-1 text-xs font-medium text-muted-foreground">
                 {queuedEdit.stale
-                  ? "Queued message changed"
-                  : "Editing queued message"}
+                  ? t("task-components:queuedMessageChanged_2dc0f5a6")
+                  : t("task-components:editingQueuedMessage_3bb5020b")}
               </span>
             ) : (
               <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => changeMode("standard") : undefined}
@@ -1566,11 +1565,11 @@ export function TaskChatComposer({
               <InlineEntitySelector
                 value={assigneeValue}
                 options={reassignOptions ?? []}
-                placeholder="Assignee"
-                mobileTitle="Select assignee"
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees…"
-                emptyMessage="No matches."
+                placeholder={t("task-components:assignee_5e20d20e")}
+                mobileTitle={t("task-chat-ui:selectAssignee")}
+                noneLabel={t("task-chat-ui:noAssignee")}
+                searchPlaceholder={t("task-components:searchAssignees_12019555")}
+                emptyMessage={t("task-components:noMatches_d6572bd2")}
                 onChange={updatePendingAssignee}
                 disabled={disabled}
                 triggerTestId="task-chat-composer-assignee"
@@ -1616,9 +1615,7 @@ export function TaskChatComposer({
                 onClick={onCancelQueuedEdit}
                 disabled={submitting}
                 className="h-8 shrink-0 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >
-                Cancel
-              </button>
+              >{t("task-components:cancel_19766ed6")}</button>
             ) : null}
             <button
               type="button"
@@ -1638,28 +1635,28 @@ export function TaskChatComposer({
               title={
                 showStop
                   ? stopControl.stopping
-                    ? "Stopping…"
-                    : "Stop response"
+                    ? t("task-components:stopping_bbe85741")
+                    : t("task-components:stopResponse_d5ca579c")
                   : queuedEdit
                     ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
+                      ? t("task-components:queueAsNewMessage_c4284a66")
+                      : t("task-components:saveQueuedMessage_3d52a0db")
                     : uploadPending
-                      ? "Waiting for upload to finish"
+                      ? t("task-components:waitingForUploadToFinish_71fd6a43")
                       : uploadFailed
-                        ? "Remove the failed attachment to send"
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
+                        ? t("task-components:removeTheFailedAttachmentToSend_10d2ce8e")
+                        : creation ? `${creation.submitLabel} (⌘+Enter)` : t("task-components:sendEnter_b5f7acc1")
               }
               aria-label={
                 showStop
                   ? stopControl.stopping
-                    ? "Stopping…"
-                    : "Stop"
+                    ? t("task-components:stopping_bbe85741")
+                    : t("task-components:stop_cae7d57b")
                   : queuedEdit
                     ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
-                    : creation?.submitLabel ?? "Send"
+                      ? t("task-components:queueAsNewMessage_c4284a66")
+                      : t("task-components:saveQueuedMessage_3d52a0db")
+                    : creation?.submitLabel ?? t("task-components:send_f6f4688f")
               }
               aria-busy={submitting}
               className={cn(

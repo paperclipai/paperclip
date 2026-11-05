@@ -1,3 +1,5 @@
+import { t as finalPagesT } from "@/i18n";
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { HeartbeatRun, RoutineRunSummary } from "@paperclipai/shared";
@@ -34,9 +36,9 @@ function runDuration(run: HeartbeatRun) {
   const end = run.finishedAt ? new Date(run.finishedAt).getTime() : null;
   if (start == null || end == null || !Number.isFinite(start) || !Number.isFinite(end)) return null;
   const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return finalPagesT("final-pages:value_s_47c4d1", { value: seconds });
   const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
+  return finalPagesT("final-pages:first_m_second_s_b97502", { first: minutes, second: seconds % 60 });
 }
 
 function readableSource(source: string) {
@@ -44,7 +46,7 @@ function readableSource(source: string) {
 }
 
 function routineRunTitle(run: RoutineRunSummary) {
-  return run.linkedIssue?.title ?? run.trigger?.label ?? "Routine run";
+  return run.linkedIssue?.title ?? run.trigger?.label ?? translateAgentPage("agents:routine_run");
 }
 
 function RoutineScopedRuns({
@@ -54,13 +56,12 @@ function RoutineScopedRuns({
   runs: RoutineRunSummary[];
   view: QueryViewState<RoutineRunSummary[]>;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   // A loaded list stays on screen through a failed refetch; an outage before
   // the first load reads as loading, and only a real failure shows copy.
   if (view.kind === "loading" || view.kind === "reconnecting") {
     return (
-      <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
-        Loading routine runs…
-      </div>
+      <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">{translateAgentPage("agents:loading_routine_runs")}</div>
     );
   }
 
@@ -68,7 +69,7 @@ function RoutineScopedRuns({
     return (
       <QueryErrorState
         error={view.error}
-        action="load routine runs"
+        action={translateAgentPage("agents:load_routine_runs")}
         onRetry={view.retry}
         retrying={view.isFetching}
       />
@@ -76,18 +77,16 @@ function RoutineScopedRuns({
   }
 
   if (runs.length === 0) {
-    return <EmptyState icon={Activity} message="No routine runs yet." />;
+    return <EmptyState icon={Activity} message={translateAgentPage("agents:no_routine_runs_yet")} />;
   }
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-foreground">Routine runs</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Executions created by this routine, newest first.
-        </p>
+        <h2 className="text-lg font-semibold text-foreground">{translateAgentPage("agents:routine_runs")}</h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{translateAgentPage("agents:executions_created_by_this_routine_newest_first")}</p>
       </div>
-      <ul className="divide-y divide-border border-y border-border" aria-label="Routine runs">
+      <ul className="divide-y divide-border border-y border-border" aria-label={translateAgentPage("agents:routine_runs")}>
         {runs.map((run) => {
           const content = (
             <>
@@ -122,7 +121,7 @@ function RoutineScopedRuns({
           );
         })}
       </ul>
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent routine runs.</p>
+      <p className="text-xs text-muted-foreground">{translateAgentPage("agents:showing_the")}{" "}{RUN_LIMIT}{" "}{translateAgentPage("agents:most_recent_routine_runs")}</p>
     </div>
   );
 }
@@ -139,6 +138,7 @@ export function AuditRuns({
   lockedAgentId?: string;
   hideHeader?: boolean;
 }) {
+  const { t: translateAgentPage } = useTranslation("agents");
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = lockedAgentId ?? searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
@@ -214,23 +214,20 @@ export function AuditRuns({
     <div className="space-y-4">
       {hideHeader ? null : (
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Runs</h2>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Recent agent executions across the organization. Open a run to inspect its transcript,
-            output, and task context.
-          </p>
+          <h2 className="text-lg font-semibold text-foreground">{translateAgentPage("agents:runs")}</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{translateAgentPage("agents:recent_agent_executions_across_the_organization_open_a")}</p>
         </div>
       )}
 
       <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {lockedAgentId ? null : <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>Agent</span>
+          <span>{translateAgentPage("agents:agent_5ce2e6")}</span>
           <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>
             <SelectTrigger className="w-48">
-              <SelectValue placeholder="All agents" />
+              <SelectValue placeholder={translateAgentPage("agents:all_agents")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All agents</SelectItem>
+              <SelectItem value={ALL}>{translateAgentPage("agents:all_agents")}</SelectItem>
               {(agents.data ?? []).map((agent) => (
                 <SelectItem key={agent.id} value={agent.id}>
                   {agent.name}
@@ -240,13 +237,13 @@ export function AuditRuns({
           </Select>
         </label>}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>Status</span>
+          <span>{translateAgentPage("agents:status")}</span>
           <Select value={status} onValueChange={(value) => updateFilter("runStatus", value)}>
             <SelectTrigger className="w-40">
-              <SelectValue placeholder="All statuses" />
+              <SelectValue placeholder={translateAgentPage("agents:all_statuses")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All statuses</SelectItem>
+              <SelectItem value={ALL}>{translateAgentPage("agents:all_statuses")}</SelectItem>
               {statuses.map((value) => (
                 <SelectItem key={value} value={value}>
                   {readableSource(value)}
@@ -256,30 +253,26 @@ export function AuditRuns({
           </Select>
         </label>
         {(!lockedAgentId && agentId !== ALL) || status !== ALL ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
+          <Button variant="ghost" size="sm" onClick={clearFilters}>{translateAgentPage("agents:clear_filters")}</Button>
         ) : null}
       </div>
 
       {runsView.kind === "loading" || runsView.kind === "reconnecting" ? (
-        <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
-          Loading runs…
-        </div>
+        <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">{translateAgentPage("agents:loading_runs")}</div>
       ) : runsView.kind === "error" ? (
         <QueryErrorState
           error={runsView.error}
-          action="load runs"
+          action={translateAgentPage("agents:load_runs")}
           onRetry={runsView.retry}
           retrying={runsView.isFetching}
         />
       ) : visibleRuns.length === 0 ? (
         <EmptyState
           icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}
-          message={agentId !== ALL || status !== ALL ? "No runs match these filters." : "No runs yet."}
+          message={agentId !== ALL || status !== ALL ? translateAgentPage("agents:no_runs_match_these_filters") : translateAgentPage("agents:no_runs_yet")}
         />
       ) : (
-        <ul className="divide-y divide-border border-y border-border" aria-label="Recent runs">
+        <ul className="divide-y divide-border border-y border-border" aria-label={translateAgentPage("agents:recent_runs")}>
           {visibleRuns.map((run) => {
             const agent = agentById.get(run.agentId);
             const summary = runSummary(run);
@@ -293,7 +286,7 @@ export function AuditRuns({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium text-foreground">
-                        {agent?.name ?? "Unknown agent"}
+                        {agent?.name ?? translateAgentPage("agents:unknown_agent")}
                       </span>
                       <span className="font-mono text-(length:--text-micro) text-muted-foreground">
                         {run.id.slice(0, 8)}
@@ -301,7 +294,7 @@ export function AuditRuns({
                       <StatusBadge status={run.status} />
                     </div>
                     <p className="mt-1 truncate text-sm text-muted-foreground">
-                      {summary ?? `${readableSource(run.invocationSource)} run`}
+                      {summary ?? translateAgentPage("agents:run_3acc0b", { value1: readableSource(run.invocationSource) })}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground sm:justify-end">
@@ -318,7 +311,7 @@ export function AuditRuns({
         </ul>
       )}
 
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent runs.</p>
+      <p className="text-xs text-muted-foreground">{translateAgentPage("agents:showing_the")}{" "}{RUN_LIMIT}{" "}{translateAgentPage("agents:most_recent_runs")}</p>
     </div>
   );
 }

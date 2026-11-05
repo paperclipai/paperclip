@@ -1,3 +1,4 @@
+import type { ToastPresentation } from "../lib/localized-ui-error";
 import type { AgentAppearance } from "@paperclipai/shared";
 import {
   createContext,
@@ -29,6 +30,8 @@ export type ToastActor = {
 };
 
 export interface ToastInput {
+  /** Opt-in render-time copy; strings remain the stable storage/dedupe API. */
+  presentation?: ToastPresentation;
   id?: string;
   dedupeKey?: string;
   title: string;
@@ -40,6 +43,7 @@ export interface ToastInput {
 }
 
 export interface ToastItem {
+  presentation?: ToastPresentation;
   id: string;
   title: string;
   body?: string;
@@ -146,6 +150,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
       setToasts((prev) => {
         const nextToast: ToastItem = {
+          presentation: input.presentation,
           id,
           title: input.title,
           body: input.body,

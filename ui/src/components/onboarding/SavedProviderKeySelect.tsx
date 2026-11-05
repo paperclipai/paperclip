@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import type { AiProvider } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
@@ -83,13 +84,14 @@ export function SavedProviderKeySelect({
   disabled?: boolean;
   kind?: "api" | "subscription";
 }) {
+  const { t } = useTranslation("connections");
   return (
     <div className="space-y-2">
       {options.length > 0 && (
         <label className="block space-y-2 text-sm">
-          <span>{kind === "api" ? "API key" : "Subscription"}</span>
+          <span>{kind === "api" ? t("api_key_cf678ca") : t("subscription_8fde48f")}</span>
           <select
-            aria-label={kind === "api" ? "Saved API key" : "Saved subscription"}
+            aria-label={kind === "api" ? t("saved_api_key_a6c306a") : t("saved_subscription_8e9b1c2")}
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             value={value}
             onChange={(event) => onChange(event.target.value)}
@@ -102,27 +104,20 @@ export function SavedProviderKeySelect({
             ))}
             <option value="">
               {kind === "api"
-                ? "Enter a new API key"
-                : "Sign in to another account"}
+                ? t("enter_a_new_api_key_a3e4ec7")
+                : t("sign_in_to_another_account_5eaf09a")}
             </option>
           </select>
         </label>
       )}
       {loading && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Checking saved API keys…
-        </p>
+        <p role="status" className="text-sm text-muted-foreground">{t("checking_saved_api_keys_1b36da5")}</p>
       )}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
-          Some saved keys could not be loaded. You can still enter a new key.
-        </p>
+        <p role="alert" className="text-sm text-destructive">{t("some_saved_keys_could_not_be_loaded_81c69d8")}</p>
       )}
       {value && (
-        <p className="text-sm text-muted-foreground">
-          Reuse this saved {kind === "api" ? "key" : "subscription"} for this
-          agent.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("reuse_this_saved_for_this_agent_9ca394e", { credentialType: kind === "api" ? t("reviewBKey") : t("reviewBSubscription") })}</p>
       )}
     </div>
   );

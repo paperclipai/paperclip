@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useAccountIdentity } from "@/api/companies-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogState } from "@/context/DialogContext";
@@ -7,6 +8,7 @@ import type { PluginHostContext } from "@/plugins/bridge";
 import { PluginSlotMount, usePluginSlots, type PluginSlotContext } from "@/plugins/slots";
 
 function AppShellEntries({ context }: { context: PluginSlotContext }) {
+  useTranslation("task-components");
   const { slots, errorMessage } = usePluginSlots({
     slotTypes: ["appShellOverlay"],
     companyId: context.companyId,
@@ -14,7 +16,7 @@ function AppShellEntries({ context }: { context: PluginSlotContext }) {
   // Optional extensions must not replace the application's normal error UI.
   if (errorMessage || slots.length === 0) return null;
   return (
-    <aside className="plugin-app-shell-overlays" aria-label="Application extensions">
+    <aside className="plugin-app-shell-overlays" aria-label={t("task-components:applicationExtensions_25543191")}>
       {slots.map((slot) => (
         <PluginSlotMount
           key={`${slot.pluginId}:${slot.pluginVersion}:${slot.id}`}
@@ -34,6 +36,7 @@ function AppShellEntries({ context }: { context: PluginSlotContext }) {
  * Host context is display context, never proof of server authorization.
  */
 export function PluginAppShellOverlays({ localTrusted = false }: { localTrusted?: boolean }) {
+  useTranslation("task-components");
   const { userId, settled } = useAccountIdentity();
   const { selectedCompanyId, selectedCompany, loading } = useCompany();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();

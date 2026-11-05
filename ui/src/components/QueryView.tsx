@@ -1,3 +1,5 @@
+import { describeUiError } from "@/lib/localized-ui-error";
+import { t, useTranslation } from "@/i18n";
 /**
  * One way to render a read.
  *
@@ -138,8 +140,10 @@ const NOT_RETRYABLE: ReadonlySet<ErrorKind> = new Set(["auth", "forbidden", "not
  * from `describeError` and a Retry button. Never renders a raw error code.
  */
 export function QueryErrorState({ error, size = "panel", action, onRetry, retrying = false, className }: QueryErrorStateProps) {
+  useTranslation("task-components");
   const kind = classifyError(error);
-  const { title, body } = describeError(error, { action });
+  const { title } = describeError(error, { action });
+  const { body } = describeUiError(error);
   const retryButton = onRetry && !NOT_RETRYABLE.has(kind) ? (
     <Button
       type="button"
@@ -149,7 +153,7 @@ export function QueryErrorState({ error, size = "panel", action, onRetry, retryi
       disabled={retrying}
     >
       <RefreshCcw aria-hidden="true" className={cn(retrying && "animate-spin")} />
-      {retrying ? "Retrying…" : "Retry"}
+      {retrying ? t("task-components:retrying_a16c8b1c") : t("task-components:retry_942087cc")}
     </Button>
   ) : null;
 
@@ -201,7 +205,8 @@ export interface QueryPlaceholderProps {
 }
 
 /** A quiet placeholder for `loading` and `reconnecting`: it fills in by itself. */
-export function QueryPlaceholder({ size = "panel", label = "Loading", className }: QueryPlaceholderProps) {
+export function QueryPlaceholder({ size = "panel", label = t("final-components-a:loading_dc380888"), className }: QueryPlaceholderProps) {
+  useTranslation("task-components");
   if (size === "page") {
     return (
       <div role="status" aria-busy="true" aria-label={label} data-query-view="placeholder" className={className}>
@@ -227,10 +232,9 @@ export function QueryPlaceholder({ size = "panel", label = "Loading", className 
 
 /** The small hint above stale content, for surfaces that opt in with `staleHint`. */
 export function QueryStaleHint({ className }: { className?: string }) {
+  useTranslation("task-components");
   return (
-    <p role="status" data-query-view="stale" className={cn("text-xs text-muted-foreground", className)}>
-      Updating paused while reconnecting…
-    </p>
+    <p role="status" data-query-view="stale" className={cn("text-xs text-muted-foreground", className)}>{t("task-components:sentence_686e97456019")}</p>
   );
 }
 
@@ -266,12 +270,13 @@ export function QueryView<TData>({
   className,
   children,
 }: QueryViewProps<TData>) {
+  useTranslation("task-components");
   const view = useQueryView(query);
   switch (view.kind) {
     case "loading":
       return <>{loading ?? <QueryPlaceholder size={size} className={className} />}</>;
     case "reconnecting":
-      return <>{reconnecting ?? loading ?? <QueryPlaceholder size={size} label="Reconnecting" className={className} />}</>;
+      return <>{reconnecting ?? loading ?? <QueryPlaceholder size={size} label={t("final-components-a:reconnecting_afb118fc")} className={className} />}</>;
     case "error":
       if (view.errorKind === "not_found" && notFound !== undefined) return <>{notFound}</>;
       return (

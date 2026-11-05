@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { InboxTab } from "./inbox";
 
 /**
@@ -49,22 +50,22 @@ export interface TaskViewGroup {
 
 export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
   {
-    label: "My work",
+    get "label"() { return t("display:meta_57a125343d6e"); },
     views: [
-      { key: "mine", label: "Mine", surface: "inbox", inboxTab: "mine", hint: "Assigned to you or waiting on you" },
-      { key: "unread", label: "Unread", surface: "inbox", inboxTab: "unread", hint: "Tasks you touched with new activity" },
-      { key: "blocked", label: "Blocked", surface: "inbox", inboxTab: "blocked", hint: "Blocked tasks, grouped by blocker" },
-      { key: "recent", label: "Recent", surface: "inbox", inboxTab: "recent", hint: "Everything you touched lately" },
-      { key: "everything", label: "Everything", surface: "inbox", inboxTab: "all", hint: "Tasks, approvals, failed runs and join requests" },
+      { key: "mine", get "label"() { return t("display:meta_d42af7968b5c"); }, surface: "inbox", inboxTab: "mine", get "hint"() { return t("display:meta_4d86dfaa91e1"); } },
+      { key: "unread", get "label"() { return t("display:meta_07b032b56f7a"); }, surface: "inbox", inboxTab: "unread", get "hint"() { return t("display:meta_2a9ee0b283bb"); } },
+      { key: "blocked", get "label"() { return t("display:meta_99613c74ce01"); }, surface: "inbox", inboxTab: "blocked", get "hint"() { return t("display:meta_349c90c0f5cf"); } },
+      { key: "recent", get "label"() { return t("display:meta_76eec760c9b6"); }, surface: "inbox", inboxTab: "recent", get "hint"() { return t("display:meta_94a92e5aa31f"); } },
+      { key: "everything", get "label"() { return t("display:meta_4a66d1480779"); }, surface: "inbox", inboxTab: "all", get "hint"() { return t("display:meta_eb9b3507692b"); } },
     ],
   },
   {
-    label: "Organization",
+    get "label"() { return t("display:meta_519255ae1f74"); },
     views: [
-      { key: "all", label: "All tasks", surface: "issues", statuses: [], hint: "Every task in the organization" },
-      { key: "active", label: "Active", surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], hint: "Open tasks, running or not" },
-      { key: "backlog", label: "Backlog", surface: "issues", statuses: ["backlog"], hint: "Not started yet" },
-      { key: "done", label: "Done", surface: "issues", statuses: ["done", "cancelled"], hint: "Completed and cancelled" },
+      { key: "all", get "label"() { return t("display:meta_2eee0bb53a4a"); }, surface: "issues", statuses: [], get "hint"() { return t("display:meta_94a29b649e59"); } },
+      { key: "active", get "label"() { return t("display:meta_a733b809d2f1"); }, surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], get "hint"() { return t("display:meta_3997bc7cd63d"); } },
+      { key: "backlog", get "label"() { return t("display:meta_1fe3af46d323"); }, surface: "issues", statuses: ["backlog"], get "hint"() { return t("display:meta_8f1a268e65af"); } },
+      { key: "done", get "label"() { return t("display:meta_e9b450d14bc2"); }, surface: "issues", statuses: ["done", "cancelled"], get "hint"() { return t("display:meta_0435d77b0027"); } },
     ],
   },
 ];

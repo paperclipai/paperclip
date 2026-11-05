@@ -1,3 +1,4 @@
+import { t as translateAgentPage, useTranslation } from "@/i18n";
 export type SecretPathRow =
   | { kind: "company"; secret: { name: string } }
   | { kind: "user"; definition: { name: string } };
@@ -106,7 +107,7 @@ export function buildSecretPathBreadcrumbs(path: string): SecretPathBreadcrumb[]
 }
 
 export function validateSecretFolderSegment(value: string): string | null {
-  if (!value.trim()) return "Folder name is required.";
-  if (value.includes("/")) return "Folder name cannot contain slashes.";
+  if (!value.trim()) return translateAgentPage("agents:folder_name_is_required");
+  if (value.includes("/")) return translateAgentPage("agents:folder_name_cannot_contain_slashes");
   return null;
 }

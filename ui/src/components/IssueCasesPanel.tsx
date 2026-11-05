@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useCaseHref } from "@/lib/router";
 import { casesApi, type CaseLinkRole } from "@/api/cases";
@@ -7,9 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
 
 const ROLE_LABEL: Record<CaseLinkRole, string> = {
-  origin: "origin",
-  work: "work",
-  reference: "reference",
+  get origin() { return t("final-components-b:IssueCasesPanel.origin_181fdd"); },
+  get work() { return t("final-components-b:IssueCasesPanel.work_00e13e"); },
+  get reference() { return t("final-components-b:IssueCasesPanel.reference_52367a"); },
 };
 
 /**
@@ -19,6 +20,7 @@ const ROLE_LABEL: Record<CaseLinkRole, string> = {
  * dropped into the issue properties panel unconditionally.
  */
 export function IssueCasesPanel({ issueId }: { issueId: string }) {
+  useTranslation("task-components");
   const caseHref = useCaseHref();
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -37,7 +39,7 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
 
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Cases</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("task-components:cases_2249bd50")}</h3>
       <div className="space-y-1">
         {links.map((link) => (
           <Link
@@ -47,7 +49,7 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
           >
             <span className="font-mono text-xs text-muted-foreground shrink-0">{link.case.identifier}</span>
             <span className="min-w-0 flex-1 truncate" title={link.case.title}>{link.case.title}</span>
-            <Badge variant="secondary" className="shrink-0">{link.case.workIssueId === issueId ? "workflow" : ROLE_LABEL[link.role]}</Badge>
+            <Badge variant="secondary" className="shrink-0">{link.case.workIssueId === issueId ? t("task-components:workflow_da7f739f") : ROLE_LABEL[link.role]}</Badge>
             {link.case.workIssueId === issueId && link.case.phase ? (
               <span className="truncate text-xs text-muted-foreground">{link.case.phase}</span>
             ) : null}

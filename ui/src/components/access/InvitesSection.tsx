@@ -1,3 +1,4 @@
+import { useTranslation, t, i18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
@@ -15,27 +16,27 @@ import { describeError } from "@/api/errors";
 const inviteRoleOptions = [
   {
     value: "viewer",
-    label: "Viewer",
-    description: "Can view organization work and follow along.",
-    gets: "View-only organization membership.",
+    get label() { return t("agent-config:viewer_dbad9f1"); },
+    get description() { return t("agent-config:canViewOrganizationWorkAndFollowAlong_c350196"); },
+    get gets() { return t("agent-config:viewOnlyOrganizationMembership_9c84d8c"); },
   },
   {
     value: "operator",
-    label: "Operator",
-    description: "Can edit organization work and invite people.",
-    gets: "Full editing and audit access. Cannot approve join requests or manage member permissions.",
+    get label() { return t("agent-config:operator_d0e687b"); },
+    get description() { return t("agent-config:canEditOrganizationWorkAndInvitePeople_be66e7a"); },
+    get gets() { return t("agent-config:fullEditingAndAuditAccessCannotApproveJoin_2bc4cf7"); },
   },
   {
     value: "admin",
-    label: "Admin",
-    description: "Recommended for operators who need to invite people, create agents, and approve joins.",
-    gets: "Can create agents, invite users, assign tasks, and approve join requests.",
+    get label() { return t("agent-config:admin_4e7afeb"); },
+    get description() { return t("agent-config:recommendedForOperatorsWhoNeedToInvitePeople_3542cc4"); },
+    get gets() { return t("agent-config:canCreateAgentsInviteUsersAssignTasksAnd_4d2bcd6"); },
   },
   {
     value: "owner",
-    label: "Owner",
-    description: "Full organization access, including membership management.",
-    gets: "Everything in Admin, plus managing members.",
+    get label() { return t("agent-config:owner_89ff312"); },
+    get description() { return t("agent-config:fullOrganizationAccessIncludingMembershipManagement_0eb4a07"); },
+    get gets() { return t("agent-config:everythingInAdminPlusManagingMembers_befed5f"); },
   },
 ] as const;
 
@@ -48,6 +49,7 @@ function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof 
 
 /** The Invites tab of the Members page (extracted from the former standalone Invites page). */
 export function InvitesSection() {
+  const { t } = useTranslation("agent-config");
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -77,7 +79,7 @@ export function InvitesSection() {
       afterFallback?.();
     }
     pushToast({
-      title: "Clipboard unavailable",
+      title: t("agent-config:clipboardUnavailable_bec46a2"),
       body: unavailableBody,
       tone: "warn",
     });
@@ -85,7 +87,7 @@ export function InvitesSection() {
   }
 
   async function copyInviteUrl(url: string) {
-    return copyText(url, "The invite URL is selected. Copy it manually from the field.", selectLatestInviteUrl);
+    return copyText(url, t("agent-config:theInviteUrlIsSelectedCopyItManually_6ab59fd"), selectLatestInviteUrl);
   }
 
   const inviteHistoryQueryKey = queryKeys.access.invites(selectedCompanyId ?? "", "all", INVITE_HISTORY_PAGE_SIZE);
@@ -106,7 +108,7 @@ export function InvitesSection() {
       invitesQuery.data?.pages.flatMap((page) =>
         Array.isArray(page?.invites) ? page.invites.filter(isInviteHistoryRow) : [],
       ) ?? [],
-    [invitesQuery.data?.pages],
+    [invitesQuery.data?.pages, i18n.resolvedLanguage],
   );
 
   const createInviteMutation = useMutation({
@@ -119,18 +121,18 @@ export function InvitesSection() {
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
-      const copied = await copyText(invite.inviteUrl, "Copy the invite URL manually from the field below.");
+      const copied = await copyText(invite.inviteUrl, t("agent-config:copyTheInviteUrlManuallyFromTheField_fc75224"));
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Invite created",
-        body: copied ? "Invite ready below and copied to clipboard." : "Invite ready below.",
+        title: t("agent-config:inviteCreated_043e58c"),
+        body: copied ? t("agent-config:inviteReadyBelowAndCopiedToClipboard_5733cb2") : t("agent-config:inviteReadyBelow_a9e6eb8"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to create invite",
+        title: t("agent-config:failedToCreateInvite_f934ca2"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -141,11 +143,11 @@ export function InvitesSection() {
     mutationFn: (inviteId: string) => accessApi.revokeInvite(inviteId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
-      pushToast({ title: "Invite revoked", tone: "success" });
+      pushToast({ title: t("agent-config:inviteRevoked_4e6cdd5"), tone: "success" });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to revoke invite",
+        title: t("agent-config:failedToRevokeInvite_23b030e"),
         body: describeError(error).body,
         tone: "error",
       });
@@ -153,22 +155,22 @@ export function InvitesSection() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select an organization to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">{t("agent-config:selectAnOrganizationToManageInvites_b2e7b00")}</div>;
   }
 
   if (invitesQuery.isLoading || invitesView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading invites…</div>;
+    return <div className="text-sm text-muted-foreground">{t("agent-config:loadingInvites_ef01aba")}</div>;
   }
 
   if (invitesView.kind === "error") {
     if (invitesView.errorKind === "forbidden") {
-      return <div className="text-sm text-destructive">You do not have permission to manage organization invites.</div>;
+      return <div className="text-sm text-destructive">{t("agent-config:youDoNotHavePermissionToManageOrganization_ca4d8de")}</div>;
     }
     return (
       <QueryErrorState
         size="page"
         error={invitesQuery.error}
-        action="load invites"
+        action={t("agent-config:loadInvites_f41e020")}
         onRetry={invitesView.retry}
         retrying={invitesView.isFetching}
       />
@@ -177,21 +179,16 @@ export function InvitesSection() {
 
   return (
     <div className="max-w-6xl space-y-8">
-      <p className="max-w-3xl text-sm text-muted-foreground">
-        Invite people to request access to this organization. New invite links are copied to your clipboard when they are
-        generated.
-      </p>
+      <p className="max-w-3xl text-sm text-muted-foreground">{t("agent-config:invitePeopleToRequestAccessToThisOrganization_b0ebe2a")}</p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Invite a person</h2>
-          <p className="text-sm text-muted-foreground">
-            Generate a human invite link and choose the default access it should request.
-          </p>
+          <h2 className="text-sm font-semibold">{t("agent-config:inviteAPerson_62d12c3")}</h2>
+          <p className="text-sm text-muted-foreground">{t("agent-config:generateAHumanInviteLinkAndChooseThe_9b3ad49")}</p>
         </div>
 
         <fieldset className="space-y-3">
-          <legend className="text-sm font-medium">Choose a role</legend>
+          <legend className="text-sm font-medium">{t("agent-config:chooseARole_215ccf6")}</legend>
           <div className="rounded-xl border border-border">
             {inviteRoleOptions.map((option, index) => {
               const checked = humanRole === option.value;
@@ -212,9 +209,7 @@ export function InvitesSection() {
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium">{option.label}</span>
                       {option.value === "operator" ? (
-                        <Badge variant="outline" className="border-border text-muted-foreground">
-                          Default
-                        </Badge>
+                        <Badge variant="outline" className="border-border text-muted-foreground">{t("agent-config:default_808d7dc")}</Badge>
                       ) : null}
                     </span>
                     <span className="block max-w-2xl text-sm text-muted-foreground">{option.description}</span>
@@ -226,35 +221,29 @@ export function InvitesSection() {
           </div>
         </fieldset>
 
-        <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
-        </div>
+        <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">{t("agent-config:eachInviteLinkIsSingleUseHumanInvitees_ab5c705")}</div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
-            {createInviteMutation.isPending ? "Creating…" : "Create invite"}
+            {createInviteMutation.isPending ? t("agent-config:creating_94d7d8e") : t("agent-config:createInvite_a840462")}
           </Button>
-          <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
+          <span className="text-sm text-muted-foreground">{t("agent-config:inviteHistoryBelowKeepsTheAuditTrail_aaf0a30")}</span>
         </div>
 
         {latestInviteUrl ? (
           <div className="space-y-3 rounded-lg border border-border px-4 py-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium">Latest invite link</div>
+                <div className="text-sm font-medium">{t("agent-config:latestInviteLink_ee61f28")}</div>
                 {latestInviteCopied ? (
                   <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                    <Check className="h-3.5 w-3.5" />
-                    Copied
-                  </div>
+                    <Check className="h-3.5 w-3.5" />{t("agent-config:copied_8e3df45")}</div>
                 ) : null}
               </div>
-              <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
-              </div>
+              <div className="text-sm text-muted-foreground">{t("agent-config:thisUrlIncludesTheCurrentPaperclipDomainReturned_1639d61")}</div>
             </div>
             <label className="block space-y-1">
-              <span className="sr-only">Latest invite URL</span>
+              <span className="sr-only">{t("agent-config:latestInviteUrl_fca7998")}</span>
               <input
                 ref={latestInviteInputRef}
                 readOnly
@@ -262,7 +251,7 @@ export function InvitesSection() {
                 onFocus={(event) => event.currentTarget.select()}
                 onClick={(event) => event.currentTarget.select()}
                 className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground outline-none transition-colors selection:bg-primary selection:text-primary-foreground focus:border-ring"
-                aria-label="Latest invite URL"
+                aria-label={t("agent-config:latestInviteUrl_fca7998")}
               />
             </label>
             <div className="flex flex-wrap gap-2">
@@ -275,9 +264,7 @@ export function InvitesSection() {
                   setLatestInviteCopied(copied);
                 }}
               >
-                <Copy className="h-4 w-4" />
-                Copy link
-              </Button>
+                <Copy className="h-4 w-4" />{t("agent-config:copyLink_2f84eea")}</Button>
             </div>
           </div>
         ) : null}
@@ -286,32 +273,26 @@ export function InvitesSection() {
       <section className="rounded-xl border border-border">
         <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
           <div className="space-y-1">
-            <h2 className="text-sm font-semibold">Invite history</h2>
-            <p className="text-sm text-muted-foreground">
-              Review invite status, audience, inviter, and any linked join request.
-            </p>
+            <h2 className="text-sm font-semibold">{t("agent-config:inviteHistory_cbc505f")}</h2>
+            <p className="text-sm text-muted-foreground">{t("agent-config:reviewInviteStatusAudienceInviterAndAnyLinked_e0c2fd3")}</p>
           </div>
-          <Link to="/inbox/requests" className="text-sm underline underline-offset-4">
-            Open join request queue
-          </Link>
+          <Link to="/inbox/requests" className="text-sm underline underline-offset-4">{t("agent-config:openJoinRequestQueue_33d927b")}</Link>
         </div>
 
         {inviteHistory.length === 0 ? (
-          <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this organization yet.
-          </div>
+          <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">{t("agent-config:noInvitesHaveBeenCreatedForThisOrganization_5f60f36")}</div>
         ) : (
           <div className="border-t border-border">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">For</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
-                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">Action</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("agent-config:state_a725020")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("agent-config:for_f788060")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("agent-config:invitedBy_2902cf3")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("agent-config:created_accf40c")}</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">{t("agent-config:joinRequest_83934b9")}</th>
+                    <th className="px-5 py-3 text-right font-medium text-muted-foreground">{t("agent-config:action_97c89a4")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -324,7 +305,7 @@ export function InvitesSection() {
                       </td>
                       <td className="px-5 py-3 align-top">{formatInviteAudience(invite)}</td>
                       <td className="px-5 py-3 align-top">
-                        <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || "Unknown inviter"}</div>
+                        <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || t("agent-config:unknownInviter_d7fa446")}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (
                           <div className="text-xs text-muted-foreground">{invite.invitedByUser.email}</div>
                         ) : null}
@@ -334,9 +315,7 @@ export function InvitesSection() {
                       </td>
                       <td className="px-5 py-3 align-top">
                         {invite.relatedJoinRequestId ? (
-                          <Link to="/inbox/requests" className="underline underline-offset-4">
-                            Review request
-                          </Link>
+                          <Link to="/inbox/requests" className="underline underline-offset-4">{t("agent-config:reviewRequest_525f174")}</Link>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
@@ -348,11 +327,9 @@ export function InvitesSection() {
                             variant="outline"
                             onClick={() => revokeMutation.mutate(invite.id)}
                             disabled={revokeMutation.isPending}
-                          >
-                            Revoke
-                          </Button>
+                          >{t("agent-config:revoke_0be7207")}</Button>
                         ) : (
-                          <span className="text-xs text-muted-foreground">Inactive</span>
+                          <span className="text-xs text-muted-foreground">{t("agent-config:inactive_09af574")}</span>
                         )}
                       </td>
                     </tr>
@@ -368,7 +345,7 @@ export function InvitesSection() {
                   onClick={() => invitesQuery.fetchNextPage()}
                   disabled={invitesQuery.isFetchingNextPage}
                 >
-                  {invitesQuery.isFetchingNextPage ? "Loading more…" : "View more"}
+                  {invitesQuery.isFetchingNextPage ? t("agent-config:loadingMore_713bdc0") : t("agent-config:viewMore_e3c5fa8")}
                 </Button>
               </div>
             ) : null}
@@ -384,7 +361,7 @@ function formatInviteState(state: "active" | "accepted" | "expired" | "revoked")
 }
 
 function formatInviteAudience(invite: Awaited<ReturnType<typeof accessApi.listInvites>>["invites"][number]) {
-  if (invite.allowedJoinTypes === "agent") return "Agent";
-  if (invite.allowedJoinTypes === "both") return invite.humanRole ? `Human or agent · ${invite.humanRole}` : "Human or agent";
-  return invite.humanRole ?? "Human";
+  if (invite.allowedJoinTypes === "agent") return t("agent-config:agent_5ce2e6f");
+  if (invite.allowedJoinTypes === "both") return invite.humanRole ? t("agent-config:humanOrAgentValue_95b3abf", { value1: invite.humanRole }) : t("agent-config:humanOrAgent_cb6bad4");
+  return invite.humanRole ?? t("agent-config:human_e31663b");
 }

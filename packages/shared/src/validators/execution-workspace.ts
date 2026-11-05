@@ -75,6 +75,9 @@ export const executionWorkspaceCloseActionSchema = z.object({
   label: z.string(),
   description: z.string(),
   command: z.string().nullable(),
+  presentation: z.object({
+    variant: z.enum(["workspace_cleanup", "project_workspace_cleanup", "plugin_storage_removal", "remote_compute_release"]),
+  }).strict().optional(),
 }).strict();
 
 export const executionWorkspaceCloseLinkedIssueSchema = z.object({
@@ -131,12 +134,25 @@ export const workspaceRuntimeServiceSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).strict();
+const closeReasonPresentationSchema = z.object({
+  code: z.enum(["no_local_path", "path_missing", "git_inspection_failed", "git_status_failed", "git_comparison_failed",
+    "storage_inspection_unavailable", "remote_unsaved", "remote_saved_unavailable", "remote_save_incomplete",
+    "git_status_unverified", "linked_open_issues", "shared_linked_open_issues", "shared_session_only",
+    "stop_runtime_services", "dirty_tracked_files", "untracked_files", "ahead_of_base", "behind_base",
+    "remote_custom_cleanup_unsupported", "keep_project_workspace"]),
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+}).strict();
+
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().guid(),
   deliveryState: executionWorkspaceDeliveryStateSchema,
   state: executionWorkspaceCloseReadinessStateSchema,
   blockingReasons: z.array(z.string()),
   warnings: z.array(z.string()),
+  presentation: z.object({
+    warnings: z.record(z.string(), closeReasonPresentationSchema),
+    blockingReasons: z.record(z.string(), closeReasonPresentationSchema),
+  }).strict().optional(),
   linkedIssues: z.array(executionWorkspaceCloseLinkedIssueSchema),
   plannedActions: z.array(executionWorkspaceCloseActionSchema),
   isDestructiveCloseAllowed: z.boolean(),

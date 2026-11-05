@@ -1,0 +1,25 @@
+{
+  "pluginRenderFailed": "{{name}}: failed to render",
+  "pluginTargetUnavailable": "{{name}}: could not resolve launcher target \"{{target}}\".",
+  "close": "Close",
+  "primaryAgentChangeFailed": "Couldn't change your primary agent.",
+  "retry": "Retry",
+  "designProposalsOn": "Design proposals: On",
+  "designProposalsOff": "Design proposals: Off",
+  "language": "Language",
+  "account": {
+    "board": "Board",
+    "signedIn": "Signed in",
+    "localBoard": "Local workspace board",
+    "openMenu": "Open account menu",
+    "title": "Account",
+    "viewProfile": "View profile",
+    "viewCommit": "View commit {{commit}} on GitHub",
+    "settings": "Settings",
+    "invite": "Invite",
+    "documentation": "Documentation",
+    "signingOut": "Signing out...",
+    "signOut": "Sign out",
+    "feedback": "Share feedback"
+  }
+}

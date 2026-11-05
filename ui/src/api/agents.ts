@@ -1,3 +1,4 @@
+import { localizeUiError } from "@/lib/localized-ui-error";
 import type { AgentPublicIdentity } from "@paperclipai/shared";
 import type { AgentProjectAccess } from "@paperclipai/shared";
 import type {
@@ -306,17 +307,17 @@ export const agentsApi = {
       // Exact retries are idempotent: a repeated click can return a successor
       // that has already stopped. It does not mean a new attempt was queued.
       if (["failed", "timed_out", "cancelled", "interrupted"].includes(result.status)) {
-        throw new Error(
+        throw localizeUiError(new Error(
           "The previous retry has already stopped. Refresh the task and retry its latest failed run.",
-        );
+        ), { key: "final-components-a:thePreviousRetryHasAlready_2525af33" });
       }
       return { runId: result.id, issueId: null };
     }
     if ("actionId" in result) {
       if (result.status === "failed" || result.status === "cancelled") {
-        throw new Error(
+        throw localizeUiError(new Error(
           "This retry could not start. Open the task to review its current access and recovery state.",
-        );
+        ), { key: "final-components-a:thisRetryCouldNotStart_846a8bf2" });
       }
       return { runId: result.runId, issueId: result.issueId };
     }

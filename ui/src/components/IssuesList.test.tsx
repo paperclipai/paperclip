@@ -18,6 +18,8 @@ import { ApiError } from "../api/client";
 import { ConnectivityProvider, createConnectivityStore } from "../lib/connectivity";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 import { readIssueSortParams } from "../lib/issue-sort";
+import { i18n } from "@/i18n";
+import { IssuesList as LegacyIssuesList } from "./LegacyIssuesList";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -1095,6 +1097,72 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it.each([
+    [true, 0],
+    [true, 1],
+    [false, 0],
+    [false, 1],
+  ] as const)("preserves numeric progress across mounted locale changes (streamlined=%s, count=%s)", async (enableStreamlinedUi, count) => {
+    await i18n.changeLanguage("en");
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi, enableExternalObjects: false });
+    const issues = [
+      createIssue({ id: "done", identifier: "PAP-1", title: "Completed setup", status: "done" }),
+      createIssue({ id: "next", identifier: "PAP-2", title: "用户任务 / Alpha", status: count === 1 ? "in_progress" : "todo" }),
+      createIssue({ id: "blocked", identifier: "PAP-3", title: "Blocked follow-up", status: "blocked" }),
+    ];
+    const dataBefore = JSON.stringify(issues);
+    const ListComponent = enableStreamlinedUi ? IssuesList : LegacyIssuesList;
+    const { root, queryClient } = renderWithQueryClient(
+      <ListComponent issues={issues} agents={[]} projects={[]} viewStateKey="zero-count-locale"
+        showProgressSummary onUpdateIssue={() => undefined} />,
+      container,
+    );
+    try {
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain(`${count} in progress`);
+        expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(3);
+      });
+      const progress = container.querySelector('[role="progressbar"]');
+      const segments = [...progress!.children];
+      const segmentData = segments.map((node) => [node.getAttribute("style"), node.getAttribute("aria-hidden")]);
+      const rows = [...container.querySelectorAll('[data-testid="issue-row"]')];
+      const link = container.querySelector('a[href="/issues/PAP-2"]');
+      expect(link?.textContent).toContain("用户任务 / Alpha");
+      for (const locale of ["zh-CN", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await waitForAssertion(() => {
+          expect(container.textContent).toContain(locale === "en" ? `${count} in progress` : `进行中 ${count} 项`);
+        });
+        expect(container.querySelector('[role="progressbar"]')).toBe(progress);
+        expect(progress?.getAttribute("aria-valuenow")).toBe("1");
+        expect(progress?.getAttribute("aria-valuemax")).toBe("3");
+        expect([...progress!.children]).toEqual(segments);
+        expect(segments.map((node) => [node.getAttribute("style"), node.getAttribute("aria-hidden")])).toEqual(segmentData);
+        expect([...container.querySelectorAll('[data-testid="issue-row"]')]).toEqual(rows);
+        expect(container.querySelector('a[href="/issues/PAP-2"]')).toBe(link);
+        expect(link?.textContent).toContain("用户任务 / Alpha");
+        expect(JSON.stringify(issues)).toBe(dataBefore);
+      }
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it.each([IssuesList, LegacyIssuesList])("preserves reachable zero done and blocked counts in the mounted list", async ListComponent => {
+    await i18n.changeLanguage("en");
+    const issues = [createIssue({ id: "one", status: "todo" }), createIssue({ id: "two", status: "todo" })];
+    const { root, queryClient } = renderWithQueryClient(<ListComponent issues={issues} agents={[]} projects={[]} viewStateKey="zero-all-progress" showProgressSummary onUpdateIssue={() => undefined} />, container);
+    try {
+      await waitForAssertion(() => { expect(container.textContent).toContain("0/2 done"); expect(container.textContent).toContain("0 blocked"); });
+      const progress = container.querySelector('[role="progressbar"]');
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.textContent).toContain("0/2"); expect(container.textContent).toContain("0");
+      expect(container.querySelector('[role="progressbar"]')).toBe(progress); expect(progress?.getAttribute("aria-valuenow")).toBe("0");
+    } finally { await act(() => root.unmount()); queryClient.clear(); await i18n.changeLanguage("en"); }
   });
 
   it("adds checklist affordances for workflow-sorted sub-issue lists", async () => {

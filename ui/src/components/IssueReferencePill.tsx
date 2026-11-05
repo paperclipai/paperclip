@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { IssueLockedStub, IssueRelationIssueSummary } from "@paperclipai/shared";
@@ -26,6 +27,7 @@ export function IssueReferencePill({
   /** Reserves space for a separate hover/focus action without moving the task link. */
   onRemove?: (issueId: string) => void;
 }) {
+  useTranslation("task-components");
   // Private issue referenced from a visible edge — never leak a title or a link.
   if (isLockedIssueStub(issue)) {
     return <LockedIssueChip identifier={issue.identifier} className={className} />;
@@ -56,15 +58,15 @@ export function IssueReferencePill({
           data-mention-kind="issue"
           className={cn(classNames, "min-w-0 max-w-full")}
           title={issue.title}
-          aria-label={`Task ${issueLabel}: ${issue.title}`}
+          aria-label={t("task-components:task_11ac34f3", { value1: issueLabel, value2: issue.title })}
         >
           {content}
         </Link>
         <button
           type="button"
           className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/issue-reference:opacity-100 group-focus-within/issue-reference:opacity-100 pointer-coarse:opacity-100"
-          aria-label={`Remove ${issueLabel} as blocker`}
-          title={`Remove ${issueLabel} as blocker`}
+          aria-label={t("task-components:removeAsBlocker_9a08c339", { value1: issueLabel })}
+          title={t("task-components:removeAsBlocker_9a08c339", { value1: issueLabel })}
           onClick={(event) => {
             event.stopPropagation();
             onRemove(issue.id);
@@ -82,7 +84,7 @@ export function IssueReferencePill({
         data-mention-kind="issue"
         className={classNames}
         title={issue.title}
-        aria-label={`Task: ${issue.title}`}
+        aria-label={t("task-components:task_9b8def10", { value1: issue.title })}
       >
         {content}
       </span>
@@ -96,7 +98,7 @@ export function IssueReferencePill({
       data-mention-kind="issue"
       className={classNames}
       title={issue.title}
-      aria-label={`Task ${issueLabel}: ${issue.title}`}
+      aria-label={t("task-components:task_11ac34f3", { value1: issueLabel, value2: issue.title })}
     >
       {content}
     </Link>

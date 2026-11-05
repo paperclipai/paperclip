@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -31,8 +32,9 @@ export function CollectionToolbar({
   actions,
   feedback,
   className,
-  ariaLabel = "Collection controls",
+  ariaLabel = t("final-components-b:CollectionToolbar.Collection_controls_852aaa"),
 }: CollectionToolbarProps) {
+  useTranslation("final-components-b");
   return (
     <div
       data-slot="collection-toolbar"

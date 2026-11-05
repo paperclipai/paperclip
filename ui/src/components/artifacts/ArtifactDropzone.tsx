@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Upload } from "lucide-react";
@@ -10,6 +11,7 @@ export function ArtifactDropzone({ children, onUpload, enabled = true, target }:
   enabled?: boolean;
   target?: HTMLElement | null;
 }) {
+  useTranslation("task-components");
   const rootRef = useRef<HTMLElement>(null);
   const uploadRef = useRef(onUpload);
   uploadRef.current = onUpload;
@@ -68,11 +70,11 @@ export function ArtifactDropzone({ children, onUpload, enabled = true, target }:
   const overlay = dragging ? (
     <div data-artifact-drop-overlay role="status" className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 border-2 border-dashed border-primary bg-background/95 px-6 text-center">
       <Upload aria-hidden="true" className="size-6 text-primary" />
-      <p className="text-sm font-medium">Drop files to add them to this task</p>
+      <p className="text-sm font-medium">{t("task-components:dropFilesToAddThemToThis_52273469")}</p>
     </div>
   ) : null;
   return (
-    <section ref={rootRef} aria-label={enabled ? "Artifact uploads" : undefined} className="relative h-full min-h-0">
+    <section ref={rootRef} aria-label={enabled ? t("task-components:artifactUploads_a4ae47d0") : undefined} className="relative h-full min-h-0">
       {children}
       {target && overlay ? createPortal(overlay, target) : overlay}
     </section>

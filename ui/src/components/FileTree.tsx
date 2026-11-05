@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
@@ -216,18 +217,18 @@ export function parseFrontmatter(content: string): { data: FrontmatterData; body
 }
 
 export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
-  name: "Name",
-  title: "Title",
-  kind: "Kind",
-  reportsTo: "Reports to",
-  skills: "Skills",
-  status: "Status",
-  description: "Description",
-  priority: "Priority",
-  assignee: "Responsible",
-  project: "Project",
-  recurring: "Recurring",
-  targetDate: "Target date",
+  get name() { return t("final-components-b:FileTree.Name_dcd1d5"); },
+  get title() { return t("task-components:title_7e8cd205"); },
+  get kind() { return t("final-components-b:Kind_f5387f"); },
+  get reportsTo() { return t("final-components-b:FileTree.Reports_to_2b488c"); },
+  get skills() { return t("final-components-b:FileTree.Skills_66d0f5"); },
+  get status() { return t("final-components-b:FileTree.Status_920e41"); },
+  get description() { return t("task-components:description_526e0087"); },
+  get priority() { return t("final-components-b:FileTree.Priority_d60dbb"); },
+  get assignee() { return t("final-components-b:FileTree.Responsible_bc110a"); },
+  get project() { return t("final-components-b:FileTree.Project_985959"); },
+  get recurring() { return t("final-components-b:FileTree.Recurring_c0c06e"); },
+  get targetDate() { return t("final-components-b:FileTree.Target_date_834cc8"); },
 };
 
 // -- File tree component -----------------------------------------------------
@@ -292,8 +293,9 @@ export function FileTree({
   loading = false,
   error,
   empty,
-  ariaLabel = "Files",
+  ariaLabel = t("final-components-b:FileTree.Files_abc7e9"),
 }: FileTreeProps) {
+  useTranslation("task-components");
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
   const visibleNodes = useMemo(
     () => flattenVisibleNodes(nodes, expandedDirs).filter(({ node }) => !visiblePaths || visiblePaths.has(node.path)),
@@ -383,15 +385,11 @@ export function FileTree({
                 "px-2.5",
                 statusBadge.error ?? statusBadgeDefault,
               )}
-            >
-              error
-            </Badge>
+            >{t("task-components:sentence_ca00fccfb408")}</Badge>
             <span className="min-w-0 text-destructive">{describeError(new Error(error.message)).body}</span>
           </div>
           {error.retry && (
-            <Button type="button" size="xs" variant="outline" onClick={error.retry}>
-              Retry
-            </Button>
+            <Button type="button" size="xs" variant="outline" onClick={error.retry}>{t("task-components:retry_942087cc")}</Button>
           )}
         </div>
       </div>
@@ -402,9 +400,9 @@ export function FileTree({
     return (
       <div aria-label={ariaLabel} role="tree" className="p-3">
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
-          <div className="text-sm font-medium">{empty?.title ?? "No files"}</div>
+          <div className="text-sm font-medium">{empty?.title ?? t("task-components:noFiles_c219d965")}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {empty?.description ?? "Files will appear here when they are available."}
+            {empty?.description ?? t("task-components:filesWillAppearHereWhenTheyAre_d72f04c8")}
           </div>
         </div>
       </div>
@@ -466,7 +464,7 @@ export function FileTree({
             {layout === "explorer" && (node.kind === "dir" ? (
               <button type="button" disabled={disabled} className="flex size-4 shrink-0 items-center justify-center rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                 onClick={event => { event.stopPropagation(); onToggleDir(node.path); }}
-                aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}>
+                aria-label={expanded ? t("task-components:collapse_79960d26", { value1: node.name }) : t("task-components:expand_fa2b2312", { value1: node.name })}>
                 {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
             ) : <span className="size-4 shrink-0" aria-hidden="true" />)}
@@ -474,7 +472,7 @@ export function FileTree({
               <label className={cn("flex items-center", layout === "explorer" ? "size-4 shrink-0 justify-center" : "pl-2")} onClick={(event) => event.stopPropagation()}>
                 <input
                   type="checkbox"
-                  aria-label={checkboxLabel?.(node) ?? `Select ${node.path}`}
+                  aria-label={checkboxLabel?.(node) ?? t("task-components:select_dbe65a7d", { value1: node.path })}
                   disabled={disabled}
                   checked={allChecked}
                   ref={(element) => {
@@ -523,7 +521,7 @@ export function FileTree({
                   event.stopPropagation();
                   onToggleDir(node.path);
                 }}
-                aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+                aria-label={expanded ? t("task-components:collapse_79960d26", { value1: node.name }) : t("task-components:expand_fa2b2312", { value1: node.name })}
               >
                 {expanded ? (
                   <ChevronDown className="h-3.5 w-3.5" />

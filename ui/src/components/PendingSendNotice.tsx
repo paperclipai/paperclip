@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -28,18 +29,20 @@ export function PendingSendNotice({
   onCancel: () => void;
   className?: string;
 }) {
+  useTranslation("task-components");
+  const nounLabel = ({ message: t("deep-ui:noun_message"), comment: t("deep-ui:noun_comment"), task: t("deep-ui:noun_task"), update: t("deep-ui:noun_update") } as Record<string, string>)[noun] ?? noun;
   const replayable = Boolean(onResendNow);
   const title = !replayable
-    ? `We couldn’t confirm whether this ${noun} was sent.`
+    ? t("deep-ui:send_unknown", { noun: nounLabel })
     : resending
-      ? "Sending…"
+      ? t("task-components:sending_b8ed5279")
       : stalled
-        ? `Couldn’t send this ${noun} yet.`
-        : "Sending when reconnected…";
+        ? t("deep-ui:send_failed", { noun: nounLabel })
+        : t("deep-ui:sending_when_reconnected_8639e6");
   const detail = replayable
-    ? persisted ? `Your ${noun} is saved on this device.`
-      : "Browser storage is unavailable. Keep this tab open or copy your text before leaving."
-    : "It may already be in the conversation. Check it before sending again; Cancel keeps your text.";
+    ? persisted ? t("deep-ui:send_saved", { noun: nounLabel })
+      : t("deep-ui:browser_storage_is_unavailable_keep_this_tab_open_or_copy_yo_164d7a")
+    : t("deep-ui:it_may_already_be_in_the_conversation_check_it_before_sendin_cb1803");
   return (
     <div
       role="status"
@@ -54,13 +57,9 @@ export function PendingSendNotice({
       <p className="text-muted-foreground">{detail}</p>
       <div className="flex items-center gap-2">
         {onResendNow ? (
-          <Button type="button" size="sm" variant="outline" disabled={resending} onClick={onResendNow}>
-            Resend now
-          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={resending} onClick={onResendNow}>{t("task-components:resendNow_a4fab5c8")}</Button>
         ) : null}
-        <Button type="button" size="sm" variant="ghost" disabled={resending} onClick={onCancel}>
-          Cancel
-        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={resending} onClick={onCancel}>{t("task-components:cancel_19766ed6")}</Button>
       </div>
     </div>
   );

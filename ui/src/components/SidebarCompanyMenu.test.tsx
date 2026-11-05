@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
@@ -198,6 +199,26 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
   }
+
+  it("localizes organization actions and preserves organization names", async () => {
+    const { root } = renderMenu();
+    try {
+      await i18n.changeLanguage("zh-CN");
+      await flushReact();
+      expect(container.querySelector('button[aria-label="打开 Acme Labs 的组织切换器"]')).not.toBeNull();
+      await openMenu("打开 Acme Labs 的组织切换器");
+      expect(document.body.textContent).toContain("创建组织");
+      expect(document.body.textContent).toContain("退出登录");
+      expect(document.body.textContent).toContain("Strata");
+      await i18n.changeLanguage("en");
+      await flushReact();
+      expect(document.body.textContent).toContain("Create organization");
+    } finally {
+      act(() => root.unmount());
+      await i18n.changeLanguage("en");
+    }
+  });
+
 
   // This menu is the one the app renders, so it is the only place a customer can
   // act on a failed company list. Saying "No companies" there states something

@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -87,14 +88,14 @@ export function buildRoutineProjectOptions(
 }
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
-  overview: "Overview",
-  triggers: "Triggers",
-  variables: "Variables",
-  secrets: "Secrets",
-  delivery: "Delivery",
-  runs: "Runs",
-  activity: "Activity",
-  history: "History",
+  get overview() { return t("work:copy.overview_d4b1ea"); },
+  get triggers() { return t("work:copy.triggers_e62f21"); },
+  get variables() { return t("work:copy.variables_02db55"); },
+  get secrets() { return t("work:copy.secrets_d8707d"); },
+  get delivery() { return t("work:copy.delivery_52bfe5"); },
+  get runs() { return t("work:copy.runs_848f54"); },
+  get activity() { return t("work:copy.activity_38da15"); },
+  get history() { return t("work:copy.history_0e7696"); },
 };
 
 function isRoutineSection(value: string | undefined | null): value is RoutineSectionKey {
@@ -158,6 +159,7 @@ function buildRoutineMutationPayload(input: RoutineEditDraft) {
 }
 
 export function RoutineDetail() {
+  const { t } = useTranslation("work");
   const { routineId, section: sectionParam } = useParams<{ routineId: string; section?: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -195,7 +197,7 @@ export function RoutineDetail() {
       writeLastSection(routineId, next);
       navigate(`/routines/${routineId}/${next}`, { replace: options?.replace ?? true });
     },
-    [navigate, routineId],
+    [navigate, routineId, t],
   );
 
   const routineQuery = useQuery({
@@ -224,7 +226,7 @@ export function RoutineDetail() {
       triggerIds: routine?.triggers.map((trigger) => trigger.id) ?? [],
       runIds: routineRuns?.map((run) => run.id) ?? [],
     }),
-    [routine?.triggers, routineRuns],
+    [routine?.triggers, routineRuns, t],
   );
   const { data: activity } = useQuery({
     queryKey: [
@@ -257,7 +259,7 @@ export function RoutineDetail() {
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error(t("work:copy.selectACompanyToCreateSecrets_1935ff"));
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -283,44 +285,44 @@ export function RoutineDetail() {
             env: routine.env ?? null,
           }
         : null,
-    [routine],
+    [routine, t],
   );
   const dirtyFields = useMemo<RoutineHistoryDirtyFieldDescriptor[]>(() => {
     if (!routineDefaults) return [];
     const result: RoutineHistoryDirtyFieldDescriptor[] = [];
-    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: "the title" });
+    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: t("work:copy.theTitle_09cb2a") });
     if (editDraft.description !== routineDefaults.description) {
-      result.push({ key: "description", label: "the description" });
+      result.push({ key: "description", label: t("work:copy.theDescription_734b09") });
     }
     if (editDraft.projectId !== routineDefaults.projectId) {
-      result.push({ key: "projectId", label: "the project" });
+      result.push({ key: "projectId", label: t("work:copy.theProject_059df4") });
     }
     if (editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId) {
-      result.push({ key: "assigneeAgentId", label: "the default agent" });
+      result.push({ key: "assigneeAgentId", label: t("work:copy.theDefaultAgent_730b86") });
     }
     if (editDraft.priority !== routineDefaults.priority) {
-      result.push({ key: "priority", label: "the priority" });
+      result.push({ key: "priority", label: t("work:copy.thePriority_6b75dd") });
     }
     if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
-      result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
+      result.push({ key: "concurrencyPolicy", label: t("work:copy.theConcurrencyPolicy_f6cd91") });
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
-      result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+      result.push({ key: "catchUpPolicy", label: t("work:copy.theCatchUpPolicy_d4abae") });
     }
     if (editDraft.activityGatePolicy !== routineDefaults.activityGatePolicy) {
-      result.push({ key: "activityGatePolicy", label: "the advanced run policy" });
+      result.push({ key: "activityGatePolicy", label: t("work:copy.theAdvancedRunPolicy_ea1331") });
     }
     if (editDraft.activityGateScope !== routineDefaults.activityGateScope) {
-      result.push({ key: "activityGateScope", label: "the activity gate scope" });
+      result.push({ key: "activityGateScope", label: t("work:copy.theActivityGateScope_1f0144") });
     }
     if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
-      result.push({ key: "variables", label: "the variables" });
+      result.push({ key: "variables", label: t("work:copy.theVariables_ee87e5") });
     }
     if (JSON.stringify(editDraft.env ?? null) !== JSON.stringify(routineDefaults.env ?? null)) {
-      result.push({ key: "env", label: "the secrets" });
+      result.push({ key: "env", label: t("work:copy.theSecrets_b0cf29") });
     }
     return result;
-  }, [editDraft, routineDefaults]);
+  }, [editDraft, routineDefaults, t]);
   const isEditDirty = dirtyFields.length > 0;
 
   const sectionDirtyFields = useCallback(
@@ -329,11 +331,11 @@ export function RoutineDetail() {
       if (!keys) return [];
       return dirtyFields.filter((field) => keys.includes(field.key));
     },
-    [dirtyFields],
+    [dirtyFields, t],
   );
   const isSectionDirty = useCallback(
     (target: RoutineSectionKey) => sectionDirtyFields(target).length > 0,
-    [sectionDirtyFields],
+    [sectionDirtyFields, t],
   );
   const discardSection = useCallback(
     (target: RoutineSectionKey) => {
@@ -348,19 +350,19 @@ export function RoutineDetail() {
         return next as RoutineEditDraft;
       });
     },
-    [routineDefaults],
+    [routineDefaults, t],
   );
 
   useEffect(() => {
     if (!routine) return;
-    setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
+    setBreadcrumbs([{ label: t("work:copy.routines_61b7bb"), href: "/routines" }, { label: routine.title }]);
     if (!routineDefaults) return;
     const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
+  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, t]);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -377,16 +379,16 @@ export function RoutineDetail() {
     async (label: string, value: string) => {
       try {
         await copyTextToClipboard(value);
-        pushToast({ title: `${label} copied`, tone: "success" });
+        pushToast({ title: t("work:extra.message_06d791026d", { value1: label }), tone: "success" });
       } catch (copyError) {
         pushToast({
-          title: `Failed to copy ${label.toLowerCase()}`,
-          body: describeError(copyError, { action: "copy to the clipboard" }).body,
+          title: t("work:copy.failedToCopy_ef67b3", { value1: label.toLowerCase() }),
+          body: describeError(copyError, { action: t("work:copy.copyToTheClipboard_0c2f35") }).body,
           tone: "error",
         });
       }
     },
-    [pushToast],
+    [pushToast, t],
   );
 
   const saveRoutine = useMutation({
@@ -411,15 +413,15 @@ export function RoutineDetail() {
       if (mutationError instanceof ApiError && mutationError.status === 409) {
         setSaveConflict(true);
         pushToast({
-          title: "Routine changed",
-          body: "Someone else updated this routine. Reload to see the latest revision.",
+          title: t("work:copy.routineChanged_cd400e"),
+          body: t("work:copy.someoneElseUpdatedThisRoutineReloadToSeeThe_be054f"),
           tone: "warn",
         });
         return;
       }
       pushToast({
-        title: "Failed to save routine",
-        body: describeError(mutationError, { action: "save the routine" }).body,
+        title: t("work:copy.failedToSaveRoutine_34cf35"),
+        body: describeError(mutationError, { action: t("work:copy.saveTheRoutine_0cd92f") }).body,
         tone: "error",
       });
     },
@@ -440,7 +442,7 @@ export function RoutineDetail() {
           : {}),
       }),
     onSuccess: async () => {
-      pushToast({ title: "Routine run started", tone: "success" });
+      pushToast({ title: t("work:copy.routineRunStarted_89f08d"), tone: "success" });
       setRunVariablesOpen(false);
       navigateToSection("runs");
       await Promise.all([
@@ -452,8 +454,8 @@ export function RoutineDetail() {
     },
     onError: (runError) => {
       pushToast({
-        title: "Routine run failed",
-        body: describeError(runError, { action: "start the routine run" }).body,
+        title: t("work:copy.routineRunFailed_296c7c"),
+        body: describeError(runError, { action: t("work:copy.startTheRoutineRun_b7d489") }).body,
         tone: "error",
       });
     },
@@ -463,8 +465,8 @@ export function RoutineDetail() {
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
     onSuccess: async (_data, status) => {
       pushToast({
-        title: "Routine saved",
-        body: status === "paused" ? "Automation paused." : "Automation enabled.",
+        title: t("work:copy.routineSaved_e522b3"),
+        body: status === "paused" ? t("work:copy.automationPaused_9ac97b") : t("work:copy.automationEnabled_bd0845"),
         tone: "success",
       });
       await Promise.all([
@@ -474,8 +476,8 @@ export function RoutineDetail() {
     },
     onError: (statusError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: describeError(statusError, { action: "update the routine" }).body,
+        title: t("work:copy.failedToUpdateRoutine_658553"),
+        body: describeError(statusError, { action: t("work:copy.updateTheRoutine_b91df2") }).body,
         tone: "error",
       });
     },
@@ -499,11 +501,11 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       if (result.secretMaterial) {
         setSecretMessage({
-          title: "Webhook trigger created",
+          title: t("work:copy.webhookTriggerCreated_ef8b55"),
           entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
         });
       } else {
-        pushToast({ title: "Trigger added", body: "The routine schedule was saved.", tone: "success" });
+        pushToast({ title: t("work:copy.triggerAdded_bdfe6f"), body: t("work:copy.theRoutineScheduleWasSaved_8a3c9b"), tone: "success" });
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -513,8 +515,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to add trigger",
-        body: describeError(triggerError, { action: "create the trigger" }).body,
+        title: t("work:copy.failedToAddTrigger_3c4a07"),
+        body: describeError(triggerError, { action: t("work:copy.createTheTrigger_800ccc") }).body,
         tone: "error",
       });
     },
@@ -523,7 +525,7 @@ export function RoutineDetail() {
   const updateTrigger = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
     onSuccess: async () => {
-      pushToast({ title: "Trigger saved", body: "The routine cadence update was saved.", tone: "success" });
+      pushToast({ title: t("work:copy.triggerSaved_85c8b3"), body: t("work:copy.theRoutineCadenceUpdateWasSaved_107e7f"), tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -532,8 +534,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to update trigger",
-        body: describeError(triggerError, { action: "update the trigger" }).body,
+        title: t("work:copy.failedToUpdateTrigger_4707ca"),
+        body: describeError(triggerError, { action: t("work:copy.updateTheTrigger_4347d3") }).body,
         tone: "error",
       });
     },
@@ -542,7 +544,7 @@ export function RoutineDetail() {
   const deleteTrigger = useMutation({
     mutationFn: (id: string) => routinesApi.deleteTrigger(id),
     onSuccess: async () => {
-      pushToast({ title: "Trigger deleted", tone: "success" });
+      pushToast({ title: t("work:copy.triggerDeleted_f05261"), tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -551,8 +553,8 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to delete trigger",
-        body: describeError(triggerError, { action: "delete the trigger" }).body,
+        title: t("work:copy.failedToDeleteTrigger_86096d"),
+        body: describeError(triggerError, { action: t("work:copy.deleteTheTrigger_03274f") }).body,
         tone: "error",
       });
     },
@@ -562,7 +564,7 @@ export function RoutineDetail() {
     mutationFn: (id: string): Promise<RotateRoutineTriggerResponse> => routinesApi.rotateTriggerSecret(id),
     onSuccess: async (result) => {
       setSecretMessage({
-        title: "Webhook secret rotated",
+        title: t("work:copy.webhookSecretRotated_7eeaca"),
         entries: [{ webhookUrl: result.secretMaterial.webhookUrl, webhookSecret: result.secretMaterial.webhookSecret }],
       });
       await Promise.all([
@@ -572,17 +574,17 @@ export function RoutineDetail() {
     },
     onError: (triggerError) => {
       pushToast({
-        title: "Failed to rotate webhook secret",
-        body: describeError(triggerError, { action: "rotate the webhook secret" }).body,
+        title: t("work:copy.failedToRotateWebhookSecret_1caaab"),
+        body: describeError(triggerError, { action: t("work:copy.rotateTheWebhookSecret_1c6f8b") }).body,
         tone: "error",
       });
     },
   });
 
-  const agentById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
-  const projectById = useMemo(() => new Map((projects ?? []).map((project) => [project.id, project])), [projects]);
-  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
-  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
+  const agentById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents, t]);
+  const projectById = useMemo(() => new Map((projects ?? []).map((project) => [project.id, project])), [projects, t]);
+  const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id, t]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id, t]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -593,11 +595,11 @@ export function RoutineDetail() {
         label: agent.name,
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
-    [agents, recentAssigneeIds],
+    [agents, recentAssigneeIds, t],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () => buildRoutineProjectOptions(projects ?? []),
-    [projects],
+    [projects, t],
   );
   const mentionOptions = useMemo<MentionOption[]>(
     () => buildMarkdownMentionOptions({
@@ -605,7 +607,7 @@ export function RoutineDetail() {
       projects: (projects ?? []).filter((project) => !project.archivedAt),
       members: companyMembers?.users,
     }),
-    [agents, companyMembers?.users, projects],
+    [agents, companyMembers?.users, projects, t],
   );
 
   // Wrap track-recent side-effects so the section components stay declarative.
@@ -620,7 +622,7 @@ export function RoutineDetail() {
       }
       return next;
     });
-  }, []);
+  }, [t]);
 
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
@@ -629,7 +631,7 @@ export function RoutineDetail() {
     setSaveConflict(false);
     if (routineDefaults) setEditDraft(routineDefaults);
     queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
-  }, [queryClient, routineDefaults, routineId]);
+  }, [queryClient, routineDefaults, routineId, t]);
 
   const onHistoryRestoreSecretMaterials = useCallback((response: RestoreRoutineRevisionResponse) => {
     if (response.secretMaterials.length > 0) {
@@ -637,15 +639,15 @@ export function RoutineDetail() {
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
-            ? "Webhook trigger restored"
-            : `${response.secretMaterials.length} webhook triggers restored`,
+            ? t("work:copy.webhookTriggerRestored_7450a8")
+            : t("work:copy.webhookTriggersRestored_c4c167", { value1: response.secretMaterials.length }),
         entries: response.secretMaterials.map((recreated) => ({
           webhookUrl: recreated.webhookUrl,
           webhookSecret: recreated.webhookSecret,
         })),
       });
     }
-  }, [navigateToSection]);
+  }, [navigateToSection, t]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -677,11 +679,11 @@ export function RoutineDetail() {
       });
       hydratedRoutineIdRef.current = response.routine.id;
     },
-    [queryClient, routineId],
+    [queryClient, routineId, t],
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("work:copy.selectACompanyToViewRoutines_3418ac")} />;
   }
 
   // Back-compat redirect: `?tab=x` → `/routines/:id/x`.
@@ -711,7 +713,7 @@ export function RoutineDetail() {
       <QueryErrorState
         size="page"
         error={routineView.error}
-        action="load this routine"
+        action={t("work:copy.loadThisRoutine_5f7eec")}
         onRetry={routineView.retry}
         retrying={routineView.isFetching}
       />
@@ -722,7 +724,7 @@ export function RoutineDetail() {
     return (
       <EmptyState
         icon={AlertCircle}
-        message="We couldn't load this routine."
+        message={t("work:copy.weCouldnTLoadThisRoutine_737c95")}
       />
     );
   }
@@ -731,12 +733,12 @@ export function RoutineDetail() {
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
   const automationLabel =
     routine.status === "archived"
-      ? "Archived"
+      ? t("work:copy.archived_bdb865")
       : !routine.assigneeAgentId
-        ? "Draft"
+        ? t("work:copy.draft_ebf12e")
         : automationEnabled
-          ? "Active"
-          : "Paused";
+          ? t("work:copy.active_923406")
+          : t("work:copy.paused_e159b0");
   const automationLabelClassName =
     routine.status === "archived"
       ? "text-muted-foreground"
@@ -766,8 +768,8 @@ export function RoutineDetail() {
     onToggleAutomation: () => {
       if (!automationEnabled && !routine.assigneeAgentId) {
         pushToast({
-          title: "Default agent required",
-          body: "Set a default agent before enabling routine automation.",
+          title: t("work:copy.defaultAgentRequired_2761f3"),
+          body: t("work:copy.setADefaultAgentBeforeEnablingRoutineAutomation_1885fd"),
           tone: "warn",
         });
         return;
@@ -818,9 +820,7 @@ export function RoutineDetail() {
       <a
         href="#routine-section"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded focus:bg-background focus:px-3 focus:py-1.5 focus:text-sm"
-      >
-        Skip to section
-      </a>
+      >{t("work:copy.skipToSection_7da8cf")}</a>
 
       {/* Bounded to the main scroll area's height so the header + sub-nav stay
           fixed and only the section content below scrolls (no page-level
@@ -833,7 +833,7 @@ export function RoutineDetail() {
               ref={titleInputRef}
               data-autosize-title
               className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
+              placeholder={t("work:copy.routineTitle_26d0f8")}
               rows={1}
               value={editDraft.title}
               onChange={(event) => {
@@ -867,7 +867,7 @@ export function RoutineDetail() {
                 checked={automationEnabled}
                 onCheckedChange={contextValue.onToggleAutomation}
                 disabled={automationToggleDisabled}
-                aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+                aria-label={automationEnabled ? t("work:copy.pauseAutomaticTriggers_0231db") : t("work:copy.enableAutomaticTriggers_caf197")}
               />
               <span className={`text-sm font-medium ${automationLabelClassName}`}>{automationLabel}</span>
             </div>

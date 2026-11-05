@@ -1,3 +1,4 @@
+import { t, useTranslation, Trans } from "@/i18n";
 import { Layers } from "lucide-react";
 import type { To } from "react-router-dom";
 import type { CompanyArtifactGroup } from "@/api/artifacts";
@@ -19,9 +20,10 @@ interface ArtifactGroupCardProps {
  * than one artifact.
  */
 export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
+  useTranslation("task-components");
   const stacked = group.count > 1;
   const preview = group.previewArtifacts[0];
-  const countLabel = `${group.count} artifact${group.count === 1 ? "" : "s"}`;
+  const countLabel = t("final-components-a:artifacts", { count: group.count });
 
   return (
     <div className="relative">
@@ -80,7 +82,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
             <span>{countLabel}</span>
             <span className="text-muted-foreground/50">·</span>
-            <span>Updated {formatDate(group.updatedAt)}</span>
+            <span><Trans ns="task-components" i18nKey="sentence_44d29d05f92a" components={{ part1: <>{formatDate(group.updatedAt)}</> }} /></span>
           </div>
         </div>
       </Link>
