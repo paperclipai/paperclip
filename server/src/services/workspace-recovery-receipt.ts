@@ -2,7 +2,7 @@ import { and, desc, eq, sql, type AnyColumn } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
-import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { readNativeWorkspaceSyncReference, type NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { readSnapshot } from "./workspace-recovery-snapshot.js";
 
@@ -62,6 +62,30 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
   };
 }
 
+/** A native merge proves only its exact descriptor allocation. It can coexist
+ * with snapshot receipts for other allocations from the same recovery. */
+async function verifiedNativeCopybackReceipt(db: Db, input: {
+  companyId: string; issueId: string; runId: string; reference: NativeWorkspaceSyncReference;
+}) {
+  const { reference } = input;
+  if (reference.state !== "finalized" || !reference.finalHostSha256) return null;
+  const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata })
+    .from(workspaceOperations).where(and(eq(workspaceOperations.companyId, input.companyId),
+      eq(workspaceOperations.issueId, input.issueId), eq(workspaceOperations.heartbeatRunId, input.runId),
+      eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->>'leaseId' = ${reference.leaseId}`,
+      sql`${workspaceOperations.metadata}->>'providerLeaseId' = ${reference.providerLeaseId}`,
+      sql`${workspaceOperations.metadata}->>'descriptorSha256' = ${reference.descriptorSha256}`,
+      sql`${workspaceOperations.metadata}->>'finalHostSha256' = ${reference.finalHostSha256}`,
+    )).limit(1);
+  if (!receipt || typeof receipt.metadata?.recoveryActionId !== "string") return null;
+  const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    eq(issueRecoveryActions.id, receipt.metadata.recoveryActionId)));
+  const state = readWorkspaceRecovery(action?.evidence ?? null);
+  return state?.runId === input.runId && state.status === "recovered" ? receipt.id : null;
+}
+
 /** Only the host writes workspace operations. Adapter output and a user-supplied
  * repair note cannot substitute for this exact copyback receipt. Stop/authority
  * are checked separately at every continuation admission. */
@@ -84,9 +108,9 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
       if (!allocations?.length) return null;
       let receiptId: string | null = null;
       for (const allocation of allocations) {
-        // Migration retires the local merge destination. A verified immutable
-        // attachment is the repair receipt; the old copyback remains unresolved.
-        // Provider stop and current execution ownership are checked separately.
+        // Each allocation needs its own saved files. A completed native merge
+        // remains valid for its exact primary source after migration; additional
+        // sources need their own immutable snapshots. Stop checks stay separate.
         const [saved] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata,
           evidence: issueRecoveryActions.evidence }).from(workspaceOperations).innerJoin(issueRecoveryActions, and(
           eq(issueRecoveryActions.companyId, workspaceOperations.companyId), eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),
@@ -100,18 +124,21 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
           sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
         )).orderBy(desc(workspaceOperations.createdAt)).limit(1);
         if (!saved || readWorkspaceRecovery(saved.evidence)?.status !== "recovered") {
-          receiptId = null; break;
+          const copyback = reference && allocation.leaseId === reference.leaseId
+            && allocation.providerLeaseId === reference.providerLeaseId
+            ? await verifiedNativeCopybackReceipt(db, { companyId: run.companyId, issueId, runId: run.id, reference }) : null;
+          if (!copyback) return null;
+          receiptId = copyback;
+          continue;
         }
         try { readSnapshot(saved.metadata, run.companyId, run.id); } catch { return null; }
         receiptId = saved.id;
       }
-      if (receiptId) return receiptId;
-      // A completed legacy copyback is still a valid receipt after its host
-      // files move. Migration must not erase that independent recovery proof.
-      if (reference?.state !== "finalized" || allocations.length !== 1 || allocations[0].leaseId !== reference.leaseId) return null;
+      return receiptId;
     }
   }
   if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;
+  if (!remote) return verifiedNativeCopybackReceipt(db, { companyId: run.companyId, issueId, runId: run.id, reference: reference! });
   const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
     eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery"),
@@ -134,8 +161,7 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
       eq(executionWorkspaceSnapshots.epoch, remote.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
     ));
     if (!snapshot || snapshot.sha256 !== proof.sha256 || snapshot.generation !== proof.generation) return null;
-  } else if (!reference || proof.leaseId !== reference.leaseId || proof.providerLeaseId !== reference.providerLeaseId
-    || proof.descriptorSha256 !== reference.descriptorSha256 || proof.finalHostSha256 !== reference.finalHostSha256) return null;
+  }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.id, proof.recoveryActionId),

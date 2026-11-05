@@ -162,10 +162,10 @@ describe.skipIf(!support.supported)("finalized workspace recovery preservation",
     await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
     expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).toBe(operationId);
   });
-  it("does not treat one old copyback as repair of several declared allocations", async () => {
-    const f = await fixture(true), otherLeaseId = randomUUID();
+  it("requires every allocation and preserves mixed completed repair receipts", async () => {
+    const f = await fixture(true), otherLeaseId = randomUUID(), otherProviderLeaseId = randomUUID();
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.reference.leaseId));
-    await db.insert(environmentLeases).values({ ...lease, id: otherLeaseId, providerLeaseId: randomUUID() });
+    await db.insert(environmentLeases).values({ ...lease, id: otherLeaseId, providerLeaseId: otherProviderLeaseId });
     await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence,
       systemRecovery: { ...createSystemRecovery(f.runId), state: "complete" },
       workspaceRecovery: { ...(f.action.evidence.workspaceRecovery as object), status: "recovered" },
@@ -178,6 +178,14 @@ describe.skipIf(!support.supported)("finalized workspace recovery preservation",
         descriptorSha256: f.reference.descriptorSha256, finalHostSha256: f.reference.finalHostSha256 } });
     await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
     expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).toBeNull();
+    const file = (suffix: string) => ({ objectKey: `${f.companyId}/workspace-recovery/${f.runId}/${otherLeaseId}/${"78".repeat(32)}.${suffix}`,
+      sha256: "78".repeat(32), byteSize: 1 });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_recovery_snapshot", status: "succeeded", metadata: {
+        schema: "paperclip.workspace-recovery-snapshot.v1", recoveryActionId: f.action.id,
+        leaseId: otherLeaseId, providerLeaseId: otherProviderLeaseId,
+        archive: file("tar"), manifest: file("jsonl") } });
+    expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).not.toBeNull();
   });
   it("preserves an older finalized reference with omitted optional fields", async () => {
     const f = await fixture(true);
