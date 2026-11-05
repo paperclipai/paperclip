@@ -52,4 +52,3 @@ export function recommendsBrokenExecForm(line: string): boolean {
     lower.includes("do not use");
   return !warns;
 }
-
