@@ -9,6 +9,20 @@ vi.mock("./windows-terminal-job.js", () => ({ prepareWindowsTerminalJob: pending
 import { runChildProcess } from "./server-utils.js";
 
 describe.skipIf(process.platform !== "win32")("Windows terminal startup cancellation", () => {
+  it("runs the original command without stop proof if the supervisor is unavailable", async () => {
+    pending.prepare.mockRejectedValueOnce(new Error("compiler unavailable"));
+    let log = "";
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", "process.stdout.write('provider ran')"], {
+      cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1,
+      onLog: async (_stream, chunk) => { log += chunk; },
+      terminalResultCleanup: { windowsProcessTreeGuard: true, hasTerminalResult: () => false },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("provider ran");
+    expect(result.processTreeStopped).not.toBe(true);
+    expect(log).toContain("process-tree verification unavailable");
+  });
+
   it("does not start the provider when cancellation wins during supervisor preparation", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cancel-prepare-"));
     const marker = path.join(dir, "started");

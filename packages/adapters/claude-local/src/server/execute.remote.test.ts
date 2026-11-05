@@ -922,6 +922,76 @@ describe("claude remote execution", () => {
     })).rejects.toThrow("synthetic process failure without stop proof");
   });
 
+  it.skipIf(process.platform !== "win32")("does not retry an unknown resumed session without Windows process-tree stop proof", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-unknown-session-no-stop-proof-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "result",
+        session_id: sessionId,
+        is_error: true,
+        subtype: "error_during_execution",
+        result: `No conversation found with session id ${sessionId}`,
+      }),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+      terminalResultCleanup: {
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        stopReason: "unmanaged_background_task_stopped",
+        reason: "unmanaged background task stopped; no durable live path",
+        terminalResultSeen: true,
+        signal: "SIGTERM",
+        forceKilled: false,
+      },
+      processTreeStopped: false,
+    });
+
+    const result = await execute({
+      runId: "run-claude-unknown-session-no-stop-proof",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId,
+        sessionParams: { sessionId, cwd: workspaceDir },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      config: {
+        model: "claude-opus-5",
+        engine: "cli",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async () => {},
+    });
+
+    const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
+    expect(providerCalls).toHaveLength(1);
+    expect(providerCalls[0]?.[2]).toContain("--resume");
+    expect(result.clearSession).not.toBe(true);
+  });
+
   it("does not retry an unknown resumed session after SSH client cleanup", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-ssh-cleaned-resume-"));
     cleanupDirs.push(rootDir);

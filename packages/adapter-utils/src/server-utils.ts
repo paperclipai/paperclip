@@ -4777,13 +4777,20 @@ export async function runChildProcess(
           opts.signal.throwIfAborted();
         }
         let job: Awaited<ReturnType<typeof prepareWindowsTerminalJob>> | null = null;
+        let treeGuardUnavailable = false;
         try {
           if (process.platform === "win32" && opts.terminalResultCleanup?.windowsProcessTreeGuard && !opts.remoteExecution) {
             job = await prepareWindowsTerminalJob(target.command, target.args);
           }
         } catch (error) {
-          await target.cleanup?.();
-          throw error;
+          if (opts.signal?.aborted) {
+            await target.cleanup?.();
+            opts.signal.throwIfAborted();
+          }
+          treeGuardUnavailable = true;
+          onLogError(error, runId, "Windows process-tree verification unavailable");
+          await opts.onLog("stderr", "[paperclip] Windows process-tree verification unavailable; automatic session recovery will be disabled.\n")
+            .catch((err) => onLogError(err, runId, "failed to log Windows process-tree fallback"));
         }
         if (opts.signal?.aborted) {
           await job?.settle();
@@ -5021,8 +5028,8 @@ export async function runChildProcess(
                     stderr,
                     pid: child.pid ?? null,
                     startedAt,
-                    ...(job ? { processTreeStopped } : {}),
-                    terminalResultCleanup: terminalCleanupStarted && (!job || processTreeStopped)
+                    ...(job || treeGuardUnavailable ? { processTreeStopped } : {}),
+                    terminalResultCleanup: terminalCleanupStarted && (!(job || treeGuardUnavailable) || processTreeStopped)
                       ? {
                           kind: "terminal_result_cleanup",
                           stopped: true,
