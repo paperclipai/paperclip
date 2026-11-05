@@ -191,9 +191,11 @@ import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent
 import {
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runBoundedShutdownStep,
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { initializeAdapterSettings } from "./services/adapter-settings.js";
@@ -1939,6 +1941,8 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    const shutdownStartedAt = Date.now();
+    logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
@@ -1946,33 +1950,54 @@ async function startServerWithDatabaseTeardown(
     // are still available. Railway must switch routing before signaling A.
     await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
       drainRequests: abort => drainHttpRequestWork(app, abort) });
-    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+    // Every remaining step before the run drain shares one bounded budget, so a
+    // slow step cannot hold the drain until the platform sends SIGKILL.
+    const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
+    await preDrain.run("systemd_notify", () =>
+      systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;
     skillVersionRetentionWorker?.unsubscribe();
-    await taskDrainExpiryWork.stop();
+    await preDrain.run("task_drain_expiry_stop", () => taskDrainExpiryWork.stop());
     nativeRunnerEvidenceRetentionWorker?.unsubscribe();
-    await skillSourceSync.stop();
+    await preDrain.run("skill_source_sync_stop", () => skillSourceSync.stop());
     unsubscribeChatCompletions();
     unsubscribeNativeResponsePresentation?.();
     unsubscribeNativeWorkspaceFinalization?.();
     unsubscribeRetainedNativeSessionCleanup?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
-    await deliveryWork.stop(deploymentHints ? new Set([
+    await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
-    ]) : undefined);
-    await runEvidenceMigrationWork?.stop();
-    await providerTraceRetentionWork.stop();
-    await skillVersionRetentionWorker?.dispose();
-    await workspaceRecoveryWork.stop();
+    ]) : undefined));
+    await preDrain.run("run_evidence_migration_stop", async () => {
+      await runEvidenceMigrationWork?.stop();
+    });
+    await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
+    await preDrain.run("skill_version_retention_dispose", async () => {
+      await skillVersionRetentionWorker?.dispose();
+    });
+    await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryWork.stop());
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
+    const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
-      prepareHotRestartShutdown,
-      waitForHeartbeatSchedulerIdle,
+      // A preparation that times out falls back to the graceful drain, the
+      // same as a preparation that fails.
+      prepareHotRestartShutdown: prepareHotRestart
+        ? async (preparationSignal) => {
+          const preparation = await preDrain.run("hot_restart_prepare", () =>
+            prepareHotRestart(preparationSignal));
+          if (preparation.outcome === "completed") return preparation.value;
+          if (preparation.outcome === "failed") throw preparation.error;
+          throw new Error("hot-restart shutdown preparation timed out");
+        }
+        : null,
+      waitForHeartbeatSchedulerIdle: async () => {
+        await preDrain.run("scheduler_idle", waitForHeartbeatSchedulerIdle);
+      },
     });
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
@@ -1988,16 +2013,18 @@ async function startServerWithDatabaseTeardown(
       );
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
-      await telemetryClient.flush();
-    }
-
     if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
+      const drainStartedAt = Date.now();
+      logger.info(
+        { signal, sinceSignalMs: drainStartedAt - shutdownStartedAt },
+        "starting graceful heartbeat run drain",
+      );
       try {
         const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
-        logger.info({ signal, drain }, "graceful heartbeat run drain complete");
+        logger.info(
+          { signal, drain, durationMs: Date.now() - drainStartedAt },
+          "graceful heartbeat run drain complete",
+        );
       } catch (err) {
         logger.error({ err, signal }, "graceful heartbeat run drain failed");
       }
@@ -2008,6 +2035,20 @@ async function startServerWithDatabaseTeardown(
         signal,
         drain: drainHeartbeatExecutionFinalizers,
         timeoutMs: 30_000,
+        log: logger,
+      });
+    }
+
+    // The telemetry flush protects no run, so it runs after the drain and has
+    // its own bound.
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await runBoundedShutdownStep({
+        step: "telemetry_flush",
+        signal,
+        timeoutMs: 5_000,
+        run: () => telemetryClient.flush(),
         log: logger,
       });
     }
