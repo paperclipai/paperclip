@@ -95,6 +95,7 @@ import {
 
 import { workspaceRootsFor } from "../../tool-file-changes.js";
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
+import { claudeRateLimitSnapshot, rateLimitNoticeEvent, rateLimitSnapshotChanged, type ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
 const MAX_BUFFERED_EVENTS = 512;
@@ -783,6 +784,8 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string;
   } | null = null;
   #usage: Record<string, unknown> | null = null;
+  #rateLimits: ProviderRateLimitSnapshot | null = null;
+  #rateLimitNoticeSequence = 0;
   #assistantText = "";
   /** Claude compaction banners in this session; pairs start and end notices. */
   #compactionCount = 0;
@@ -1774,6 +1777,7 @@ class CodexAcpxSession implements HarnessSession {
         cumulative: event.breakdown,
         cost: event.cost,
       });
+      this.#observeRateLimits(event as { _meta?: unknown }, turnId);
     }
     this.#workspaceRoots ??= workspaceRootsFor(this.#input.workingDirectory);
     for (const canonical of canonicalProviderEventsFromAcpxRuntimeEvent(
@@ -1787,6 +1791,18 @@ class CodexAcpxSession implements HarnessSession {
         itemId: canonical.itemId,
       });
     }
+  }
+
+  /** Claude reports `rate_limit_event` as `usage_update._meta["_claude/rateLimit"]`. */
+  #observeRateLimits(event: { _meta?: unknown }, turnId: string): void {
+    const next = claudeRateLimitSnapshot(event._meta, this.#rateLimits, this.#now().toISOString());
+    if (!next) return;
+    if (rateLimitSnapshotChanged(this.#rateLimits, next)) {
+      const itemId = `${turnId}:rate-limits:${++this.#rateLimitNoticeSequence}`;
+      const notice = rateLimitNoticeEvent(next, itemId);
+      this.#emit(notice.eventType, notice.payload, { turnId, itemId });
+    }
+    this.#rateLimits = next;
   }
 
   async #handleExtensionInput(

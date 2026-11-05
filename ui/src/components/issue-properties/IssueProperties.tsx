@@ -14,6 +14,8 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
+  readProviderRateLimits,
+  summarizeProviderRateLimits,
   isArtifactReviewDocumentKey,
   type ExecutionWorkspace,
   type Issue,
@@ -69,7 +71,8 @@ import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { ProjectTile } from "../ProjectTile";
 import { IssueReferencePill } from "../IssueReferencePill";
-import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
+import { formatDate, formatDateTime, cn, projectUrl, agentUrl } from "../../lib/utils";
+import { AgentRateLimitPropertyValue } from "../AgentRateLimitGauge";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
 import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
@@ -427,6 +430,16 @@ export function IssueProperties({
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const assigneeRuntimeAgentId = issue.assigneeAgentId ?? null;
+  const { data: assigneeRuntimeState } = useQuery({
+    queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
+    queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
+    // Optional detail: a 403 for board users without agent management access
+    // is not retried by the shared policy and simply hides the row.
+    enabled: !!assigneeRuntimeAgentId && !!companyId,
+  });
+  const assigneeRateLimits = readProviderRateLimits(assigneeRuntimeState?.stateJson);
+  const assigneeRateLimitAgent = assigneeRuntimeAgentId ? agents?.find((agent) => agent.id === assigneeRuntimeAgentId) : null;
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId!),
     queryFn: () => accessApi.listUserDirectory(companyId!),
@@ -2401,6 +2414,15 @@ export function IssueProperties({
           >
             {assigneeOptionsContent}
           </PropertyPicker>
+        ) : null}
+
+        {assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now()) ? (
+          <PropertyRow label="Usage limit">
+            <AgentRateLimitPropertyValue
+              snapshot={assigneeRateLimits}
+              detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
+            />
+          </PropertyRow>
         ) : null}
 
         <PropertyPicker
