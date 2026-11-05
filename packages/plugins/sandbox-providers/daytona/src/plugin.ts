@@ -1889,12 +1889,6 @@ async function executeOneShot(
     // attribute a step's exec time to the provider boundary through the
     // free-form `metadata.durationMs`.
     execStart = timingNow();
-    // The SDK passes `timeoutSeconds` to the toolbox but sets no client-side
-    // deadline on the HTTP request, because this client has no
-    // `requestTimeoutMs`. A stalled toolbox request then outlives the command
-    // deadline until the host abandons the RPC with an opaque timeout. Bound the
-    // request just past its own deadline. That is still well inside the host
-    // RPC buffer, so the caller receives this attributed timed-out result.
     const result = await withLivenessTimeout(
       "process.executeCommand",
       timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS,
@@ -1911,8 +1905,6 @@ async function executeOneShot(
     };
   } catch (error) {
     if (error instanceof SandboxLivenessTimeoutError && execStart != null) {
-      // The command may still be running, or may have finished, in the
-      // sandbox. Report the unconfirmed exit; never treat it as a failure.
       return {
         exitCode: null,
         timedOut: true,
@@ -1945,7 +1937,8 @@ async function executeOneShot(
     throw error;
   } finally {
     if (stdinPath) {
-      await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
+      await withLivenessTimeout("fs.deleteFile", LIVENESS_START_TIMEOUT_MARGIN_MS,
+        () => sandbox.fs.deleteFile(stdinPath)).catch(() => undefined);
     }
   }
 }
