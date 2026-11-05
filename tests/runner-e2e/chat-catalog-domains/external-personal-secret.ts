@@ -473,6 +473,7 @@ export const personalSecretExternalCases = [
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
+        "chat-catalog-domains/external-personal-secret-entry-dialog.ts",
         "chat-catalog-domains/external-credential-language.ts",
         "chat-catalog-domains/external-secret-scan.ts",
         "chat-catalog-domains/identity-auth.ts",
