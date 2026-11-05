@@ -2,6 +2,7 @@ import type { RunDispatchScope } from "../run-dispatch-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { QUOTA_RECOVERY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 
 /** How long a sweep that ran degraded waits before it re-reads in-flight state. */
 const DEGRADED_SWEEP_BACKOFF_MS = 30_000;
@@ -10,7 +11,7 @@ export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   owner: {
     promoteDueScheduledRetries(): Promise<{ degraded?: boolean } | void>;
-    nextScheduledRetryAt(): Promise<number | null>;
+    nextScheduledRetryAt(input?: { excludeReason?: string }): Promise<number | null>;
     resumeQueuedRunsAfterDrain(scope?: RunDispatchScope): Promise<unknown>;
     schedulingSuppressed(): Promise<boolean>;
   },
@@ -40,7 +41,14 @@ export function registerRunDispatchWork(
       if (suppressed) return null;
       const next = await owner.nextScheduledRetryAt();
       if (next === null || degradedBackoffUntil === 0) return next;
-      return Math.max(next, degradedBackoffUntil);
+      // The floor belongs to the parked quota-recovery rows alone: their due
+      // time stays in the past on purpose while the in-flight count is
+      // unreadable, and they are the only rows the degraded sweep denied. A
+      // retry scheduled for another reason is due on its own schedule, so read
+      // that class separately and keep whichever deadline is earlier.
+      const floored = Math.max(next, degradedBackoffUntil);
+      const other = await owner.nextScheduledRetryAt({ excludeReason: QUOTA_RECOVERY_RETRY_REASON });
+      return other === null ? floored : Math.min(other, floored);
     },
   });
   const scopes = new Set<string>(["*"]);

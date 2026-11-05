@@ -11,7 +11,7 @@ afterEach(async () => {
   for (const stop of cleanup.splice(0)) await stop();
   vi.useRealTimers();
 });
-function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean } = {}) {
+function fixture(input: { due?: number; otherDue?: number; suppressed?: boolean; draining?: boolean } = {}) {
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
   const dialect = new PgDialect();
@@ -22,7 +22,8 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
   const db: { execute: typeof execute; transaction: (callback: (tx: any) => Promise<any>) => Promise<any> } = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>): Promise<any> {
     return callback({ execute, transaction: db.transaction });
   } });
-  const state = { due: input.due ?? null as number | null, suppressed: input.suppressed ?? false,
+  const state = { due: input.due ?? null as number | null, otherDue: input.otherDue ?? null as number | null,
+    suppressed: input.suppressed ?? false,
     draining: input.draining ?? false, standby: false, fail: false, degraded: false };
   const promote = vi.fn(async () => {
     if (state.fail) throw new Error("database unavailable");
@@ -32,7 +33,7 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
     if (state.due !== null && state.due <= Date.now()) state.due = null;
     return { degraded: false };
   });
-  const next = vi.fn(async () => state.due);
+  const next = vi.fn(async (options?: { excludeReason?: string }) => options?.excludeReason ? state.otherDue : state.due);
   const dispatch = vi.fn(async (_scope?: { companyId: string }) => {});
   const coordinator = createDeliveryWorkCoordinator({ owner: db,
     canRun: () => !state.draining && !state.standby, canReconcile: () => !state.standby, onError: vi.fn() });
@@ -75,6 +76,24 @@ describe("run dispatch obligations", () => {
     expect(f.promote).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1);
     expect(f.promote).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the degraded window off retries the degraded sweep did not deny", async () => {
+    // The floor exists for the parked quota-recovery cohort, the only rows a
+    // degraded sweep denies. A retry scheduled for another reason comes due on
+    // its own schedule and must not inherit that window.
+    const f = fixture({ due: 1_000_000, otherDue: 1_012_000 }); f.state.degraded = true; await f.worker.ready;
+    expect(f.promote).toHaveBeenCalledOnce();
+    expect(f.next).toHaveBeenLastCalledWith({ excludeReason: "provider_quota_recovery" });
+    expect(f.coordinator.nextWakeAt()).toBe(1_012_000);
+    await vi.advanceTimersByTimeAsync(11_999);
+    expect(f.promote).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.promote).toHaveBeenCalledTimes(2);
+  });
+  it("falls back to the full floor when only the denied class is pending", async () => {
+    const f = fixture({ due: 1_000_000 }); f.state.degraded = true; await f.worker.ready;
+    expect(f.next).toHaveBeenLastCalledWith({ excludeReason: "provider_quota_recovery" });
+    expect(f.coordinator.nextWakeAt()).toBe(1_030_000);
   });
   it("rearms earlier work and cancels a future deadline on a committed producer change", async () => {
     const f = fixture({ due: 1_600_000 }); await f.worker.ready;

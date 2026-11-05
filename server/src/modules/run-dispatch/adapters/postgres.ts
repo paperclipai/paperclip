@@ -525,10 +525,13 @@ export function createPostgresRunDispatchAdapter(
     return decideScheduledRetryGate(factsResult.facts, input.now);
   }
 
-  async function nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null> {
+  async function nextScheduledRetryAt(input: { cutoff: Date | null; excludeReason?: string }): Promise<number | null> {
     const [row] = await db.select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.status, "scheduled_retry"),
         sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
+        input.excludeReason
+          ? sql`${heartbeatRuns.scheduledRetryReason} is distinct from ${input.excludeReason}`
+          : undefined,
         input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined))
       .orderBy(asc(heartbeatRuns.scheduledRetryAt)).limit(1);
     return row?.at?.getTime() ?? null;

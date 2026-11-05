@@ -1720,8 +1720,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     });
   }
 
-  async function nextScheduledRetryAt() {
-    return runDispatch.nextScheduledRetryAt({ cutoff: await getWorktreeExecutionCutoff() });
+  async function nextScheduledRetryAt(input: { excludeReason?: string } = {}) {
+    const cutoff = await getWorktreeExecutionCutoff();
+    return runDispatch.nextScheduledRetryAt(input.excludeReason ? { cutoff, excludeReason: input.excludeReason } : { cutoff });
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {

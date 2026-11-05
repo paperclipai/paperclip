@@ -90,7 +90,7 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
   });
 
   return {
-    nextScheduledRetryAt: (input: { cutoff: Date | null }) => adapter.nextScheduledRetryAt(input),
+    nextScheduledRetryAt: (input: { cutoff: Date | null; excludeReason?: string }) => adapter.nextScheduledRetryAt(input),
     evaluateScheduledRetryGate: createEvaluateScheduledRetryGate({ reader: adapter }),
     promoteScheduledRetry,
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({
