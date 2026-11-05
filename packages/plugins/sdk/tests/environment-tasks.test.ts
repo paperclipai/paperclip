@@ -36,6 +36,15 @@ describe("retained source launch fields", () => {
   });
 });
 
+describe("provider-specific source recovery capability", () => {
+  const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+  it("keeps ACPX opt-in separate from Codex support", () => {
+    expect(environmentTaskResultSchema.parse({ ...description, acpxSourceRecoveryVersion: 1 })).toHaveProperty("acpxSourceRecoveryVersion", 1);
+    expect(environmentTaskResultSchema.parse({ ...description, sourceRecoveryVersion: 1 })).not.toHaveProperty("acpxSourceRecoveryVersion");
+    expect(environmentTaskResultSchema.safeParse({ ...description, acpxSourceRecoveryVersion: 2 }).success).toBe(false);
+  });
+});
+
 describe("task hosted search restriction", () => {
   it("preserves Core's explicit restriction through plugin launch preparation", () => {
     const operation = { ...prepare, requirements: { ...prepare.requirements,

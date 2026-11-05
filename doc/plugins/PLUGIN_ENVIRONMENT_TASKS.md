@@ -87,7 +87,10 @@ and saves the result before it submits its configuration ID.
 ### Stopped source reconciliation
 
 `sourceRecoveryVersion: 1` in `describe` declares support for restoring a stopped
-Codex source without starting another turn. The authenticated request belongs to
+Codex source without starting another turn. `acpxSourceRecoveryVersion: 1` is a
+separate ACPX capability; Codex support never implies ACPX support. These
+descriptions do not activate a provider without its matching Core admission.
+The authenticated request belongs to
 the current run while `prepare` and `submit` carry the predecessor Runner identity.
 Core derives this relationship from its saved source-consumer claim; a mismatched
 run ID alone never grants recovery. Both operations must name the same `resumeFrom`, exact source Runner identity, and current

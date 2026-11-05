@@ -139,6 +139,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     executionContextVersion: z.literal(1).optional(),
     /** The provider and verified native Runner support dormant source reconciliation. */
     sourceRecoveryVersion: z.literal(1).optional(),
+    acpxSourceRecoveryVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
