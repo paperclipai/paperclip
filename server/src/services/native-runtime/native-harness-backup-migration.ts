@@ -153,11 +153,7 @@ export async function migrateNativeHarnessBackups(db: Db, input: {
   return counts.reduce<number>((total, count) => total + count, 0);
 }
 
-/** Copy settled successful history using its released runtime owner. This is
- * preparatory work, never an offline-writer assertion or enrollment receipt. */
 export async function prestageNativeHarnessBackups(db: Db, input: { storage: StorageService; signal: AbortSignal }) {
-  // Keep preparatory work below offline throughput so the serving process can
-  // continue handling real work. This finite operation has no idle schedule.
   const deferSource = (scopeDigest: string, reason: string, outcome: string) => {
     console.warn(JSON.stringify({ schema: "paperclip.native-harness-prestage-source.v1", scopeDigest, reason }));
     return outcome;
@@ -166,7 +162,6 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
     if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_migration_source_unsettled") {
       return deferSource(scopeDigest, error.message, "source_unavailable");
     }
-    // This callback only receives preparation filesystem failures, never DB errors.
     if (["ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException)?.code ?? "")) {
       return deferSource(scopeDigest, "native_harness_migration_source_unavailable", "source_unavailable");
     }

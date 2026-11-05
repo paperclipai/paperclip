@@ -37,8 +37,6 @@ it.each([true, false])("checks unfulfilled database obligations for an empty sou
     expect(JSON.parse(failure.mock.calls[0][0])).toEqual({ schema: "paperclip.native-harness-prestage.v1",
       state: "blocked", failure: "native_harness_prestage_source_missing", enrollmentReady: false });
   } else {
-    // Fresh databases and databases whose retained sources are already durable
-    // both have no unfulfilled local obligations, so an empty scan is valid.
     expect(process.exitCode ?? 0).toBe(0);
     expect(failure).not.toHaveBeenCalled();
     expect(success).toHaveBeenCalledWith(JSON.stringify({ schema: "paperclip.native-harness-prestage.v1", counts, enrollmentReady: false }));
@@ -61,8 +59,6 @@ it("reports a failed deadline with real timers when the dependency holds no even
   const bundled = await build({
     entryPoints: [fileURLToPath(new URL("./native-harness-prestage.ts", import.meta.url))],
     bundle: true, platform: "node", format: "esm", write: false,
-    // Shorten only the command's deadlines. These remain real Node timers in
-    // a separate process, so an unreferenced fallback cannot be advanced by us.
     banner: { js: "const realTimeout = globalThis.setTimeout; globalThis.setTimeout = (fn, ms, ...args) => realTimeout(fn, ms === 5400000 ? 10 : ms === 10000 ? 50 : ms, ...args);" },
     plugins: [{ name: "prestage-dependencies", setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => args.importer ? { path: "dependencies", namespace: "fixture" } : undefined);

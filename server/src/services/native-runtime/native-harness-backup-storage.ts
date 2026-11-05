@@ -164,8 +164,6 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
       || stamp.normalizedSessionId !== inactiveSource.normalizedSessionId || stamp.runnerInstanceId !== inactiveSource.runnerInstanceId) {
       fail("prestage_source_changed");
     }
-    // The task share lock serializes publication with execution checkout. A
-    // turn that ran during upload also changes the immutable backup manifest.
     const source = await readNativeHarnessBackupSource(inactiveSource.root);
     if (!source) fail("prestage_source_changed");
     const { manifestBytes: manifest, manifest: identity, state } = source;

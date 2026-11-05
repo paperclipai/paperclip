@@ -7,8 +7,6 @@ import { getStorageService } from "../storage/index.js";
 import { hasLocalNativeHarnessObligations, prestageNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
 import { initializeNativeHarnessPrestageKey, nativeHarnessPrestageDatabaseUrl } from "./native-harness-prestage-runtime.js";
 
-// Operator-only finite preparation. No task drain, scheduler, app routes,
-// enrollment export, or assertion that other executions have stopped.
 if (process.env.PAPERCLIP_NATIVE_HARNESS_PRESTAGE !== "true") throw new Error("Explicit harness pre-copy mode is required");
 const sourceUrl = process.env.DATABASE_URL;
 if (!sourceUrl) throw new Error("Harness pre-copy requires an explicit database");
@@ -26,11 +24,8 @@ const reportBlocked = (error: unknown) => {
 };
 const abort = (reason: string) => {
   if (cancellation.signal.aborted) return;
-  // Report failure before awaiting cleanup: a dependency may never settle.
   reportBlocked(new Error(reason));
   cancellation.abort(new Error(reason));
-  // Closing this command's clients interrupts blocked queries. A bounded
-  // fallback also covers an unresponsive storage or filesystem dependency.
   shutdown = setTimeout(() => process.exit(1), 10_000);
   void closeRegisteredClients(url, { scope: "database" });
 };

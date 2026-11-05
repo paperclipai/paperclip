@@ -20,7 +20,6 @@ it("writes backups with the configured app key even after its file disappears", 
   await initializeNativeHarnessPrestageKey(keyFile);
   await fs.unlink(keyFile);
   const prepared = createLocalEncryptedCipher("write").encrypt("saved harness key");
-  // A later app process uses its own original key, not a newly generated file.
   vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
   await fs.writeFile(keyFile, key, { mode: 0o600 });
   expect(createLocalEncryptedCipher("read").decrypt(prepared)).toBe("saved harness key");
@@ -69,7 +68,6 @@ describe.skipIf(!support.supported)("prestage database waits", () => {
       await expect(db.transaction(tx => tx.execute(sql`select pg_advisory_xact_lock(939193)`)))
         .rejects.toMatchObject({ cause: { code: "55P03" } });
       expect(Date.now() - started).toBeLessThan(10_000);
-      // Abort cleanup must also interrupt a query whose statement deadline is later.
       const waiting = db.execute(sql`select pg_sleep(20)`);
       const rejected = expect(waiting).rejects.toBeTruthy();
       await new Promise(resolve => setTimeout(resolve, 100));

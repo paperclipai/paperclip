@@ -1,12 +1,8 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-/** Only filesystem inspection can produce this error. Database failures must
- * retain their identity, even if their class or code resembles a source error. */
 export class NativeHarnessBackupSourceError extends Error {}
 
-/** Wrap input reads individually, so archive output and database errors never
- * become deferrable just because they share a filesystem error code. */
 export async function readNativeHarnessBackupSourceInput<T>(read: () => Promise<T>): Promise<T> {
   try { return await read(); }
   catch (error) {
