@@ -406,6 +406,8 @@ provider has stopped or change native cancellation acknowledgement.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
+Periodic checks can record more than one no-replay hold for the same stopped run. A reconciliation attests to the run, not to one hold. One accepted `executionReconciliation` clears every other no-replay hold of that task for the same source run, in the same transaction. Only the targeted action owns continuation delivery, so the run gets at most one continuation. The other holds keep their status and record `reconciledByRecoveryActionId`. A later request that targets one of them changes nothing. Holds for other runs, retained-workspace repair holds, and system-owned recovery stay in force. File-only workspace repair does not clear other holds.
+
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution
 ownership, environment leases, coordinator, or execution events prove that it

@@ -10264,10 +10264,11 @@ export function issueRoutes(
           }
         }
 
+        let reconciledSiblingIds: string[] = [];
         if (executionReconciliation) {
           // The authorized chat retry is the sole durable delivery owner.
           // Never also enqueue a generic successor that lacks chat provenance.
-          await markExecutionReconciliation(
+          reconciledSiblingIds = await markExecutionReconciliation(
             tx as unknown as Db,
             activeRecoveryAction,
             executionReconciliation,
@@ -10446,7 +10447,7 @@ export function issueRoutes(
         );
         if (!recoveryAction) throw notFound("Active recovery action not found");
 
-        return { issue, recoveryAction, chatRetry };
+        return { issue, recoveryAction, chatRetry, reconciledSiblingIds };
       });
       if (result.replayed) {
         res.json({
@@ -10504,6 +10505,9 @@ export function issueRoutes(
           sourceIssueStatus: sourceIssueStatus ?? null,
           resolutionNote: result.recoveryAction.resolutionNote,
           ...(workspaceBaseRef ? { workspaceBaseRef } : {}),
+          ...(result.reconciledSiblingIds?.length
+            ? { reconciledSiblingRecoveryActionIds: result.reconciledSiblingIds }
+            : {}),
         },
       });
 

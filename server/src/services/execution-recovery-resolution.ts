@@ -12,7 +12,7 @@ import { isInterruptedNativePreparationCandidate } from "./cancelled-native-star
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
@@ -30,7 +30,7 @@ import {
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
-import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { alias } from "drizzle-orm/pg-core";
@@ -209,7 +209,7 @@ export async function markExecutionReconciliation(
       throw conflict("The authorized chat retry owner is no longer valid.");
     }
   }
-  await db.transaction(async tx => {
+  return db.transaction(async tx => {
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
@@ -245,6 +245,29 @@ export async function markExecutionReconciliation(
           eq(issueRecoveryActions.id, action.id),
         ),
       );
+    if (options?.workspaceRepairOnly) return [];
+    const siblings = await tx
+      .update(issueRecoveryActions)
+      .set({
+        evidence: sql`(${issueRecoveryActions.evidence} - 'automaticRecovery') || ${JSON.stringify({ reconciledByRecoveryActionId: action.id })}::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, action.companyId),
+          eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId),
+          ne(issueRecoveryActions.id, action.id),
+          inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+          inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+          sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId') = ${decision.runId}`,
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+          sql`not (${issueRecoveryActions.evidence} ? 'executionReconciliation')`,
+          sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
+          sql`coalesce(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+        ),
+      )
+      .returning({ id: issueRecoveryActions.id });
+    return siblings.map(sibling => sibling.id);
   });
 }
 
