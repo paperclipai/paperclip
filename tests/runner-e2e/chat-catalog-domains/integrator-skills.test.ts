@@ -83,3 +83,12 @@ it("rejects negated use of the required viewport instead of treating nonoverflow
  const markdown = websiteChecklist.join("\n").replace(websiteChecklist[3]!, "Do not use a viewport 375px wide; there must be no horizontal overflow.");
  expect(preservesWebsiteChecklist(markdown)).toBe(false);
 });
+
+it.each(["Never test", "Avoid testing", "Don't bother testing"])("rejects unconditional mobile-check omission: %s", instruction => {
+ const markdown = websiteChecklist.join("\n").replace(websiteChecklist[3]!, `${instruction} a viewport 375px wide; there must be no horizontal overflow.`);
+ expect(preservesWebsiteChecklist(markdown)).toBe(false);
+});
+it("keeps the required viewport review when a separate restriction forbids testing a qualified build", () => {
+ const markdown = `${websiteChecklist.join("\n")}; do not perform the check on a cached build.`;
+ expect(preservesWebsiteChecklist(markdown)).toBe(true);
+});
