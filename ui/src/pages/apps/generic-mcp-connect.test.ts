@@ -136,6 +136,12 @@ describe("customHeaderError", () => {
       .toContain("line breaks");
   });
 
+  it("refuses an Authorization header only under browser sign-in", () => {
+    const rows = [{ id: "a", name: "authorization", value: "Bearer x" }];
+    expect(customHeaderError(rows, "oauth")).toContain("Authorization header");
+    expect(customHeaderError(rows, "custom_headers")).toBeNull();
+  });
+
   it("asks for a value on a half-filled row and flags duplicates", () => {
     expect(customHeaderError([{ id: "a", name: "X-Api-Key", value: "" }]))
       .toContain('Add a value for "X-Api-Key"');
@@ -179,6 +185,29 @@ describe("genericConnectPayload", () => {
       "headers.X-Api-Key": "phx_secret",
       "headers.X-Project": "12345",
     });
+  });
+
+  it("sends additional headers alongside browser sign-in", () => {
+    const payload = genericConnectPayload(draft({
+      authMode: "oauth",
+      oauthClientId: "cid",
+      headers: [
+        { id: "a", name: "X-Workspace-Binding", value: "ws_1" },
+        { id: "b", name: "", value: "" },
+      ],
+    }));
+    expect(payload).toMatchObject({
+      authMode: "oauth",
+      credentialValues: { "headers.X-Workspace-Binding": "ws_1" },
+      oauthClient: { clientId: "cid" },
+    });
+  });
+
+  it("leaves headers out of modes that do not take them", () => {
+    const headers = [{ id: "a", name: "X-Api-Key", value: "abc" }];
+    for (const authMode of ["auto", "none", "bearer"] as const) {
+      expect(genericConnectPayload(draft({ authMode, headers })).credentialValues).toBeUndefined();
+    }
   });
 
   it("only sends a preregistered client when the operator supplied one", () => {
@@ -227,6 +256,21 @@ describe("canSubmitGenericConnect", () => {
     expect(canSubmitGenericConnect(draft({
       authMode: "custom_headers",
       headers: [{ id: "a", name: "Host", value: "abc" }],
+    }))).toBe(false);
+  });
+
+  it("holds browser sign-in until its optional headers are valid", () => {
+    expect(canSubmitGenericConnect(draft({
+      authMode: "oauth",
+      headers: [{ id: "a", name: "X-Workspace-Binding", value: "ws_1" }],
+    }))).toBe(true);
+    expect(canSubmitGenericConnect(draft({
+      authMode: "oauth",
+      headers: [{ id: "a", name: "Authorization", value: "Bearer x" }],
+    }))).toBe(false);
+    expect(canSubmitGenericConnect(draft({
+      authMode: "oauth",
+      headers: [{ id: "a", name: "X-Workspace-Binding", value: "" }],
     }))).toBe(false);
   });
 
