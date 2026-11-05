@@ -1,4 +1,4 @@
-import { and, desc, eq, sql, type AnyColumn } from "drizzle-orm";
+import { and, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
@@ -25,7 +25,7 @@ export function readWorkspaceRecovery(evidence: Record<string, unknown> | null) 
   return parsed.success ? parsed.data : null;
 }
 
-export function completedWorkspaceRecoveryCondition(runId: string | AnyColumn) {
+export function completedWorkspaceRecoveryCondition(runId: string | AnyColumn | SQL) {
   const operationIds = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
     then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end`;
   return and(

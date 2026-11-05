@@ -2050,7 +2050,9 @@ accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
 
 When the task was reassigned, that file-preservation hold binds the new owner
-only until the exact saved-file receipt verifies the recovery. A new owner's
+only until automatic recovery records its completed saved-file receipt for that
+hold. The receipt is durable, so later reuse of the workspace by the new owner
+cannot apply the hold again. A new owner's
 turn is a fresh assignment, not a replay of the stopped run. The new owner can
 also be the current review participant. After verification, admission, the final
 dispatch gate and stranded-work recovery no longer apply the hold to that owner.
