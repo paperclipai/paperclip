@@ -7,8 +7,8 @@ use paperclip_runner_core::codex_provider::{
     CodexProvider, CodexProviderConfig, CodexProviderEvent,
 };
 use paperclip_runner_core::durable::{
-    Command, CommandExecutor, DurableRunnerConfig, DurableRunnerError, DurableStateStore,
-    EventPriority, PolledEvent, TerminalDeliveryReconciliation,
+    Command, CommandDisposition, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
+    DurableStateStore, EventPriority, PolledEvent, TerminalDeliveryReconciliation,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_backend::CodexCommandExecutor;
@@ -227,6 +227,39 @@ fn source_reconciliation_retains_events_and_only_rotation_releases_execution() {
     assert!(recovered.admit_command(&runner, &attach).is_err());
     runner.apply_ack(runner.highest_source_seq(), 3).unwrap();
     recovered.admit_command(&runner, &attach).unwrap();
+    let mut recorded = attach.clone();
+    recorded.controller_seq = runner.last_controller_command_seq + 1;
+    assert!(matches!(
+        runner.begin_command(&recorded).unwrap(),
+        CommandDisposition::Execute
+    ));
+    runner
+        .complete_command(&recorded, json!({"status":"attached"}))
+        .unwrap();
+    runner
+        .enqueue_event(
+            &config,
+            "runner.diagnostic",
+            EventPriority::P0,
+            json!({"message":"attachment audit still awaiting ACK"}),
+        )
+        .unwrap();
+    recovered.admit_command(&runner, &recorded).unwrap();
+    assert!(
+        matches!(runner.begin_command(&recorded).unwrap(), CommandDisposition::Replay(result) if result.status == "completed")
+    );
+    let mut collision = recorded.clone();
+    collision.payload["changed"] = json!(true);
+    recovered.admit_command(&runner, &collision).unwrap();
+    assert!(runner
+        .begin_command(&collision)
+        .unwrap_err()
+        .to_string()
+        .contains("different command data"));
+    let mut fresh = recorded.clone();
+    fresh.command_id = "fresh-attach".to_owned();
+    fresh.controller_seq += 1;
+    assert!(recovered.admit_command(&runner, &fresh).is_err());
     assert!(recovered
         .execute(&command("still-denied", 6, "turn.start", json!({})))
         .is_err());

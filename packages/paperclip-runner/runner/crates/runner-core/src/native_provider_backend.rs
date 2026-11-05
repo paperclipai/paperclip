@@ -292,6 +292,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     ) -> Result<(), DurableRunnerError> {
         if self.source_reconciliation
             && command.command_type == "run.attach"
+            && !state.processed_commands.contains_key(&command.command_id)
             && (command.payload.get("paperclipNextAuthority").is_none()
                 || !state.outbox.is_empty()
                 || state.acked_source_seq != state.highest_source_seq()
