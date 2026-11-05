@@ -96,6 +96,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
+    enableGoogleWorkspaceConnector: false,
     enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
@@ -241,6 +242,18 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       await flushReact();
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMemoryConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
+  it("defaults the Paperclip Google Workspace connector off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Paperclip Google Workspace connector experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGoogleWorkspaceConnector: enabled });
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
     }
   });
@@ -1174,6 +1187,12 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("offers no Artifacts V1 toggle", async () => {
+    await renderPage([]);
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).not.toContain("Artifacts V1");
   });
 
   it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {

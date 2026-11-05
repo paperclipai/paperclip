@@ -1538,6 +1538,9 @@ function runtimePort(
           ...(input.onElicitation
             ? { onElicitation: input.onElicitation }
             : {}),
+          ...(input.onTerminalSessionFailure
+            ? { onTerminalSessionFailure: input.onTerminalSessionFailure }
+            : {}),
         });
       } catch (error) {
         releaseExtensionTurn();

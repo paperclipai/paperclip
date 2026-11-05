@@ -5609,23 +5609,30 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (lostPredecessor && this.options.sourceRecoveryVersion !== 1) {
       throw new Error("native_runner_recovery_integrity_unsupported");
     }
+    const hasControlPlaneWarmBoundary =
+      controlPlaneState?.warmTransition !== undefined ||
+      controlPlaneState?.schema ===
+        "paperclip.runner.durable.control-plane-state.warm-transition.v1";
+    const hasPendingWarmAttachment =
+      Array.isArray(controlPlaneState?.commands) &&
+      controlPlaneState.commands.some((entry) => {
+        const command = record(entry);
+        return (
+          command.type === "run.attach" &&
+          command.status === "pending" &&
+          record(command.payload).paperclipNextAuthority !== undefined
+        );
+      });
     if (
       !lostPredecessor && this.options.readRunnerState &&
       controlPlaneState &&
-      (controlPlaneState.warmTransition !== undefined ||
+      (hasControlPlaneWarmBoundary ||
         controlPlaneState.completedWarmTransition !== undefined ||
-        controlPlaneState.schema ===
-          "paperclip.runner.durable.control-plane-state.warm-transition.v1" ||
-        (Array.isArray(controlPlaneState.commands) &&
-          controlPlaneState.commands.some((entry) => {
-            const command = record(entry);
-            return (
-              command.type === "run.attach" &&
-              command.status === "pending" &&
-              record(command.payload).paperclipNextAuthority !== undefined
-            );
-          })))
+        hasPendingWarmAttachment)
     ) {
+      if (!this.options.adoptExistingRunner && !hasControlPlaneWarmBoundary && !hasPendingWarmAttachment) {
+        await this.options.prepareExternalRunnerState?.();
+      }
       candidateRunnerState = await this.options.readRunnerState();
     }
     const staged = inspectStagedRunAttachment(controlPlaneState, desiredIdentity);
@@ -5641,9 +5648,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       port?: number;
     } | null = null;
     const hasWarmBoundary =
-      controlPlaneState?.warmTransition !== undefined ||
-      controlPlaneState?.schema ===
-        "paperclip.runner.durable.control-plane-state.warm-transition.v1" ||
+      hasControlPlaneWarmBoundary ||
       hasRunnerWarmBoundary ||
       candidateRunnerState?.warmTransition !== undefined ||
       candidateRunnerState?.schema ===

@@ -405,6 +405,68 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
   }
 }, 15_000);
 
+it("retries a replacement whose staging failed before any process launched", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-staging-"));
+  const stagingError = new Error("runtime context upload: no space left on device");
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    // The first replacement fails during staging: nothing was dispatched.
+    if (launch.mock.calls.length === 2) return {
+      child: { pid: undefined, exitCode: null, kill: () => false },
+      completion: Promise.reject(stagingError),
+      isExitConfirmed: () => true,
+    };
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
+  });
+  try {
+    const opened = await bundle.transport.request("thread/start", { cwd: directory }) as { thread: { id: string } };
+    let failure: unknown = null;
+    const pump = (async () => {
+      for await (const _event of bundle.transport.notifications()) {}
+    })().catch(error => { failure = error; });
+    children[0]!.kill("SIGKILL");
+    // Recovery reports restoration only after the replacement authenticates
+    // as the single active connection to the durable PRP authority.
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain("runner process restored its durable PRP session"),
+      { timeout: 4_000 },
+    );
+    expect(launch).toHaveBeenCalledTimes(3);
+    expect(children).toHaveLength(2);
+    expect(bundle.evidence().runnerPid).toBe(children[1]!.pid);
+    expect(failure).toBeNull();
+    // The restored runner still serves the same provider thread.
+    const resumed = await bundle.transport.request("thread/resume", { threadId: opened.thread.id }) as { thread: { id: string } };
+    expect(resumed.thread.id).toBe(opened.thread.id);
+    expect(failure).toBeNull();
+    void pump;
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
   async (mode) => {

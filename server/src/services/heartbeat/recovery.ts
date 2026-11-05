@@ -32,6 +32,7 @@ import {
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
@@ -198,9 +199,12 @@ const ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20;
 // A provider or plugin destroy rejection can carry a bearer credential, a
 // signed URL, or provider response detail in its name, code, message, cause, or
 // stack. The exception fields cross the server boundary, so they are not a
-// trusted enum. The pending_cleanup sweep logs never read the exception. Each
-// catch site logs a constant, locally generated `errorKind` instead.
+// trusted enum. The pending_cleanup sweep logs never read these fields. Each
+// catch site logs a constant, locally generated `errorKind` instead, plus at most
+// the closed stop-failure reason that `readEnvironmentStopFailure` validates.
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
+
+const PENDING_CLEANUP_TERMINAL_STOP_ERROR_KIND = "provider_stop_terminal";
 
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
 
@@ -1438,10 +1442,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   // Atomically claim the one-time cap warning for a lease. The update only
   // matches when the lease is still pending_cleanup, its stored attempt count is
-  // at or above the cap, and it has not yet carried the warned flag. Two
-  // concurrent sweeps that both reach the cap race here, but only one update
-  // sets the flag and returns a row. The loser skips the warning. This keeps the
-  // warning to one log line per lease.
+  // at or above the cap or the provider reported a terminal stop failure, and it
+  // has not yet carried the warned flag. Two concurrent sweeps that both reach
+  // the cap race here, but only one update sets the flag and returns a row. The
+  // loser skips the warning. This keeps the warning to one log line per lease.
   //
   // The status and cap predicates are the last line of defense. They stop a warn
   // flag write to a lease that left pending_cleanup or dropped below the cap
@@ -1449,6 +1453,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
   async function claimPendingCleanupCapWarning(
     leaseId: string,
+    terminalProviderFailure = false,
   ): Promise<boolean> {
     const now = new Date();
     const claimed = await db
@@ -1461,7 +1466,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         and(
           eq(environmentLeases.id, leaseId),
           eq(environmentLeases.status, "pending_cleanup"),
-          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
+          terminalProviderFailure ? undefined : sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
           sql`${pendingCleanupCapWarnedSql()} = false`,
         ),
       )
@@ -1757,6 +1762,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       pendingCleanupAttemptsInFlight.add(row.id);
       lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
       let activeRenewal: Promise<void> | null = null;
+      let providerStopFailure: PluginEnvironmentStopFailure | null = null;
       const renewal = setInterval(() => {
         if (activeRenewal) return;
         activeRenewal = db.update(environmentLeases).set({
@@ -1803,7 +1809,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             destroyed += 1;
           }
         }
-      } catch {
+      } catch (error) {
+        providerStopFailure = readEnvironmentStopFailure(error);
         // The recorded-data teardown throws on failure, so revert the lease to
         // pending_cleanup for a later sweep. The claimed attempt still counts
         // for backoff, so requests stay bounded. The `destroyRunLease`
@@ -1817,10 +1824,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
         }
         // Log a constant errorKind only. The exception can carry a credential in
-        // its name, code, message, cause, or stack, so the sweep never reads it.
+        // its name, code, message, cause, or stack, so the sweep reads only the
+        // closed, validated provider stop-failure reason from it.
         logger.warn(
           {
-            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
+            errorKind: providerStopFailure?.terminal
+              ? PENDING_CLEANUP_TERMINAL_STOP_ERROR_KIND : PENDING_CLEANUP_RETRY_ERROR_KIND,
+            ...(providerStopFailure ? { providerStopFailure: providerStopFailure.reason } : {}),
             leaseId: row.id,
             environmentId: row.environmentId,
             attempts: attempts + 1,
@@ -1833,15 +1843,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // Late renewals are attempt-fenced and never write the retry cooldown.
         pendingCleanupAttemptsInFlight.delete(row.id);
       }
-      if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+      const escalated = attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP || providerStopFailure?.terminal === true;
+      if (escalated) {
         capped += 1;
         // Warn once, then continue automatic cleanup with backoff. The atomic claim
         // keeps the warning to one log line even when two sweeps overlap.
         if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id);
+          const warned = await claimPendingCleanupCapWarning(row.id, providerStopFailure?.terminal === true);
           if (warned) {
             logger.warn(
-              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              { leaseId: row.id, environmentId: row.environmentId, attempts,
+                ...(providerStopFailure?.terminal ? { providerStopFailure: providerStopFailure.reason } : {}) },
               "environment lease needs operator attention; automatic cleanup continues with backoff",
             );
           }
@@ -1852,7 +1864,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
         metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
           pendingCleanupInFlight: false,
-          pendingCleanupRetryAfterMs: Date.now() + (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP
+          pendingCleanupRetryAfterMs: Date.now() + (escalated
             ? 30 * 60_000 : Math.min(30 * 60_000, Math.max(30_000, backoffMs))),
         })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),

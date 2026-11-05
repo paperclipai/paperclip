@@ -164,6 +164,7 @@ export const parseHarnessRuntimeRequestResolution =
 export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
 export const buildNativeModelEnvelope = runner.buildNativeModelEnvelope;
 export const isProviderMode = runner.isProviderMode;
+export const codexUsageBaselineForNextRun = runner.codexUsageBaselineForNextRun;
 export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =

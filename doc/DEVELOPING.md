@@ -2800,7 +2800,9 @@ Legacy runner; incompatible settings return remediation instead of being ignored
 Saved OpenCode agents keep their runner and runtime policies.
 
 Plugin environment drivers can declare `requiresAgent: true` when their leases
-need an agent-owned resource. Setup saves the draft and environment, runs its
+need an agent-owned resource. The host selects that plugin's lifecycle work only for
+agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
 use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
@@ -3037,6 +3039,18 @@ keeps that exact identity; compatibility is a fresh-launch selection rule.
 Older packs without the declaration retain content verification until the image
 is updated. Selected ACPX agent profile checks remain in force.
 Daytona detects gzip/zstd headers and skips redundant transport compression.
+
+### Daytona duplex close receipts
+
+Lease teardown removes duplex routes from command admission before it closes
+their transports. The provider retains up to 4096 route/session bindings and
+their close promises, so a later host close joins the same cleanup and returns
+the original binding. These records grant no write, stop, or open authority.
+Unknown or evicted routes cannot supply a session acknowledgement. A pending
+close still waits; an unconfirmed close still retires the worker through the
+existing host guard. The acknowledgement identifies the channel. Provider stop
+receipts and unresolved external-work checks still determine process termination.
+No command is replayed or worker restarted by this mechanism.
 
 ### Remote GitHub launcher staging
 
@@ -4567,3 +4581,5 @@ Cached agents retain only safe adapter display fields and an empty runtime confi
 A restored task shows its header and properties while uncached history is still loading. History is not persisted, and its normal placeholder remains until reads recover. The header stays visible across recovery.
 
 Query-cache cleanup snapshots storage keys before deletion because native storage can reorder them as records are removed. Flush cleanup affects only its owning account and yields if another account becomes active.
+
+Run `pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/disconnect-resilience.spec.ts` for the built-UI outage regressions. The suite uses fresh isolated local data, 20-second API interceptions, and a controlled sign-out session response. It covers retained tasks, comment and document recovery, queued-comment reloads, cached settings/sidebar/task reads, legacy Inbox reloads, real error status handling and sign-out clearing across several company records. The existing CI e2e shards discover it automatically. A real hosted restart or deploy remains a separate acceptance check.

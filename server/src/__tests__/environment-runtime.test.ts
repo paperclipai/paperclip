@@ -1,5 +1,6 @@
-import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -389,6 +390,29 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       config: expect.objectContaining({ snapshot: config.snapshot }),
     }), expect.any(Number));
     expect(acquired.lease.metadata?.snapshot).toBe(config.snapshot);
+  });
+
+  it("forwards the run's warm idle window to the provider worker without changing lease identity", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const config = { provider: "daytona", image: "node:20", timeoutMs: 1234 };
+    await insertSandboxProviderPlugin(pluginId, { environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider", displayName: "Daytona", configSchema: { type: "object" } }] });
+    await environmentService(db).update(baseEnvironment.id, { driver: "sandbox", config });
+    const environment: Environment = { ...baseEnvironment, driver: "sandbox", config };
+    const worker = createFreshPluginLeaseWorker(pluginId);
+    vi.mocked(worker.call).mockImplementation(async (_id, method) => {
+      if (method !== "environmentAcquireLease") throw new Error(`Unexpected ${method}`);
+      return { providerLeaseId: "warm-lease", metadata: { provider: "daytona", image: "node:20", remoteCwd: "/workspace" } };
+    });
+    const service = environmentRuntimeService(db, { pluginWorkerManager: worker });
+    const acquired = await service.acquireRunLease({ companyId,
+      environment: resolveRunnerEnvironmentForRun(environment, "paperclip_runner", { lifecycleMode: "warm", idleTimeoutMs: 900_000 }),
+      configuredEnvironment: environment, issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+      adapterType: "paperclip_runner", warmRunnerIdleTimeoutMs: 900_000 });
+    expect(worker.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
+      config: expect.objectContaining({ reuseLease: true, warmRunnerIdleTimeoutMs: 900_000 }),
+    }), expect.any(Number));
+    expect(acquired.lease.metadata).not.toHaveProperty("warmRunnerIdleTimeoutMs");
   });
 
   it.each([["paperclip_runner", false, false], ["paperclip_runner", true, false], ["paperclip_runner", true, undefined], ["claude_local", false, false], [null, false, false]] as const)("pins qualified snapshots only for native execution (%s, warm=%s, savedReuse=%s)", async (adapterType, warm, savedReuse) => {
@@ -1061,8 +1085,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       pluginWorkerManager: offlineManager,
       pluginWorkerReadyTimeoutMs: 0,
     });
-    await expect(runtimeWithStoppedWorker.acquireRunLease(input))
-      .rejects.toThrow("its worker is not running");
+    const refusal = await runtimeWithStoppedWorker.acquireRunLease(input).catch(error => error);
+    expect(refusal).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect((refusal as Error).message).toContain("its worker is not running");
     expect(offlineManager.call).not.toHaveBeenCalled();
   });
 
@@ -3804,7 +3829,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentResumeLease") {
-          throw new Error("stale sandbox");
+          // The real worker RPC path: a message and a numeric RPC code, with the
+          // provider status only in the validated resume-error envelope.
+          throw new JsonRpcCallError({ code: -32000, message: "stale sandbox /home/daytona/private-path",
+            data: environmentResumeErrorData(Object.assign(new Error("private"), { statusCode: 409 })) });
         }
         if (method === "environmentDestroyLease") {
           return undefined;
@@ -3840,7 +3868,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           id: executionWorkspaceId,
           mode: "shared_workspace",
         },
-      })).rejects.toThrow("the lease was preserved and no replacement was created");
+      })).rejects.toThrow(
+        // The provider refusal is named by closed labels; its text stays off the record.
+        /could not be resumed \(cause=provider_error status=409\); the lease was preserved and no replacement was created\.$/,
+      );
     } finally {
       now.mockRestore();
     }

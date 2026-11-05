@@ -8,6 +8,11 @@ import {
   type NoticeMetadataSection,
 } from "./notice-format.js";
 
+/** The saved version is unchanged by a failed restore; the run names the failed step. */
+export const REMOTE_WORKSPACE_RESTORE_NEXT_ACTION =
+  "Open the failed run to see which restore step failed. The saved workspace version was kept. "
+  + "If the sandbox folder is already occupied, inspect and move it aside, then retry the task.";
+
 // Short human-readable body plus the presentation header for one recovery
 // family. The escalation path merges in the metadata rows only it knows
 // (recovery action, owner, source run) via buildStrandedRecoveryEscalationNotice.
@@ -50,6 +55,9 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
+  remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
+  plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "Check the environment plugin's worker status, then retry the task once it is running." },
+  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },

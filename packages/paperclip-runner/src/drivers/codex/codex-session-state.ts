@@ -142,6 +142,12 @@ export class CodexSessionState {
   dispositionOnlyRecoveryTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
+  /**
+   * Turns already terminal in the checkpoint this session was restored from.
+   * A replacement runner can re-deliver their committed history as live
+   * notifications; those replays are not new provider activity.
+   */
+  readonly restoredTerminalTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
   readonly itemChannels = new Map<
@@ -255,6 +261,7 @@ export class CodexSessionState {
         );
       }
       this.terminalTurns.set(terminal.turnId, terminal.fingerprint);
+      this.restoredTerminalTurns.add(terminal.turnId);
     }
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
@@ -335,6 +342,18 @@ export class CodexSessionState {
       pending.settle(safeRequestResponse(pending.request.method, "cancel"));
       this.pendingRuntimeRequestMap.delete(requestId);
     }
+  }
+
+  /**
+   * True for a notification that only replays a turn restored as terminal.
+   * The caller drops it without emitting turn or item events; its terminal
+   * fingerprint was already committed, and turn/completed still checks it.
+   */
+  isRestoredTerminalReplay(turnId: string): boolean {
+    return turnId.length > 0
+      && !this.protocolFailed
+      && turnId !== this.activeTurnId
+      && this.restoredTerminalTurns.has(turnId);
   }
 
   notificationNamesActiveTurn(turnId: string, kind: string): boolean {

@@ -62,10 +62,10 @@ for (const mobile of [false, true]) {
     const document = panel.locator("#document-core-handoff");
     await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
     await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("link", { name: "Download file", exact: true })).toBeVisible();
+    await expect(panel.getByRole("link", { name: "Download loop-inventory.csv", exact: true })).toBeVisible();
     await expectTaskPanelTab(panel, mobile, "Artifacts");
     const download = page.waitForEvent("download");
-    await panel.getByRole("link", { name: "Download file", exact: true }).click();
+    await panel.getByRole("link", { name: "Download loop-inventory.csv", exact: true }).click();
     const downloaded = await download;
     expect(downloaded.suggestedFilename()).toBe("loop-inventory.csv");
     expect(await readFile((await downloaded.path())!, "utf8")).toBe(csv);

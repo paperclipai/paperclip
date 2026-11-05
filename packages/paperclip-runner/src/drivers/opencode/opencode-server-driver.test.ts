@@ -2600,6 +2600,53 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("never settles a post-completion response truncated at the output limit", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-output-limit-after-tool",
+      normalizedSessionId: "output-limit-after-tool",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "output-limit-after-tool" },
+    });
+    const events = await collectTurnEvents(session.events());
+    // The accepted completion report's summary resolves the durable reply;
+    // the runaway text is incomplete by the provider's own finish reason.
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(true);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(
+      events.filter(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "agentMessage" &&
+          event.payload.channel === "final",
+      ),
+    ).toHaveLength(0);
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "harness.diagnostic" &&
+          event.payload.code === "opencode_output_limit_reached",
+      ),
+    ).toBe(true);
+    await session.close({ reason: "test" });
+  });
+
   it("uses provider structure rather than prose length to select a post-tool answer", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));

@@ -206,7 +206,7 @@ export function CoordinatorNeedsYou() {
       </SheetContent>
     </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs you</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
-    <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
+    <div data-canonical-toolbar="coordinator-decisions" role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
       <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search decisions or task IDs…" />
       <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
       <NativeSelect aria-label="Filter decisions by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">All projects</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>

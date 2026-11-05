@@ -1,4 +1,6 @@
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
+import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
@@ -490,6 +492,13 @@ export interface EnvironmentDriverAcquireInput {
    */
   requestedExpiresAt?: Date | null;
   /**
+   * The run's warm runner idle window (ms) when the run keeps a warm runner on
+   * a reusable sandbox. The sandbox-provider driver forwards it to the provider
+   * worker only (never to lease identity or metadata), so the provider can keep
+   * its idle auto-stop strictly after the host's warm idle window.
+   */
+  warmRunnerIdleTimeoutMs?: number;
+  /**
    * Re-check the environment company binding inside the lease insert
    * transaction. The login acquire paths set this so a managed reconciliation
    * that binds the sandbox to another company between the route guard and this
@@ -544,6 +553,8 @@ export interface EnvironmentDriverLeaseInput {
 
 export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInput {
   requestedCwd?: string;
+  /** The run's warm runner idle window, forwarded to the provider worker only. */
+  warmRunnerIdleTimeoutMs?: number;
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
@@ -706,26 +717,7 @@ export interface EnvironmentRuntimeDriver {
   flushDeferredOrphanCleanups?(): Promise<{ recovered: number; pending: number }>;
 }
 
-/** A reusable sandbox could not be resumed, but has not been proven lost. */
-export class ReusableSandboxResumeError extends Error {
-  readonly provider: string;
-  readonly providerLeaseId: string;
-
-  constructor(input: {
-    provider: string;
-    providerLeaseId: string;
-    cause?: unknown;
-  }) {
-    super(
-      `Reusable sandbox lease "${input.providerLeaseId}" could not be resumed; ` +
-        "the lease was preserved and no replacement was created.",
-      input.cause === undefined ? undefined : { cause: input.cause },
-    );
-    this.name = "ReusableSandboxResumeError";
-    this.provider = input.provider;
-    this.providerLeaseId = input.providerLeaseId;
-  }
-}
+export { ReusableSandboxResumeError };
 
 export class RunnerHarnessBackupUnavailableError extends Error {
   readonly providerLeaseId: string;
@@ -1647,12 +1639,17 @@ function createSandboxEnvironmentDriver(
           );
         }
         if (pluginProvider.state === "worker_unavailable") {
-          throw new Error(
-            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
-          );
+          // No request reached the worker, so setup may retry this refusal
+          // within its bootstrap budget once the worker runs again.
+          throw new PluginWorkerUnavailableError({ pluginId: pluginProvider.resolved.plugin.id, workerStatus: null,
+            message: `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.` });
         }
 
-        const workerConfig = stripSandboxProviderEnvelope(parsed.config);
+        const workerConfig = {
+          ...stripSandboxProviderEnvelope(parsed.config),
+          // Provider-only view of the run's warm idle window (see the input doc).
+          ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+        };
         const storedConfig = pinnedSnapshotId ? { ...storedParsed.config, snapshot: pinnedSnapshotId } : storedParsed.config;
         if (pinnedSnapshotId) delete storedConfig.image;
         const providerConfigForLease = sandboxConfigForLeaseMetadata(storedConfig);
@@ -2582,9 +2579,13 @@ function createSandboxEnvironmentDriver(
       }
       // This is a lifecycle resume, never acquisition: no replacement, host
       // seed, lease mutation, or provider turn is allowed at this boundary.
-      const config = stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
-        environment: input.environment, lease: input.lease, provider: providerKey,
-      }) as SandboxEnvironmentConfig);
+      const config = {
+        ...stripSandboxProviderEnvelope(await resolvePluginSandboxRuntimeConfig({
+          environment: input.environment, lease: input.lease, provider: providerKey,
+        }) as SandboxEnvironmentConfig),
+        // Provider-only view of the run's warm idle window (see the input doc).
+        ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+      };
       const resumed = await pluginWorkerManager.call(pluginId, "environmentResumeLease", {
         driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
@@ -3818,6 +3819,8 @@ export function environmentRuntimeService(
        * provider expiry only.
        */
       requestedExpiresAt?: Date | null;
+      /** The run's warm runner idle window, forwarded to the provider worker only. */
+      warmRunnerIdleTimeoutMs?: number;
       /**
        * Re-check the environment company binding inside the lease insert
        * transaction. The login acquire paths set this to reject a foreign-company
@@ -3849,6 +3852,7 @@ export function environmentRuntimeService(
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
         requestedExpiresAt: input.requestedExpiresAt ?? null,
         assertCompanyBinding: input.assertCompanyBinding,
+        ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
       });
 
       return {
