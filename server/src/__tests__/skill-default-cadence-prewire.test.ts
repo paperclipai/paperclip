@@ -151,8 +151,8 @@ it('joins an admitted deferred wake and closes its real child listener before br
       "server.listen(0,'127.0.0.1',()=>process.send({origin:'http://127.0.0.1:'+server.address().port}));",
       "process.on('message',message=>{if(message.stop)server.close(()=>process.disconnect());});"
     ].join('\n'));
-    let release,start,finish,physical,physicalExit,origin,body,stops=0;
-    const released=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{start=resolve;}),finished=new Promise(resolve=>{finish=resolve;});
+    let release,start,finish,fail,physical,physicalExit,origin,body,physicalOutput='',stops=0;
+    const released=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{start=resolve;}),finished=new Promise((resolve,reject)=>{finish=resolve;fail=reject;});
     const state=globalThis[Symbol.for('paperclip.skill.default-cadence.prewire')];
     const stop=async()=>{stops++;if(physical&&physical.exitCode===null){
       if(physical.connected)physical.send({stop:true});else physical.kill('SIGTERM');
@@ -162,10 +162,13 @@ it('joins an admitted deferred wake and closes its real child listener before br
     try{
       bridge=await startDefaultCadenceBridge({checkout,node:process.execPath,physicalStop:stop,physicalWake:async()=>{
         start();await released;
+        try{
         physical=fork(physicalFile,[],{execArgv:['--require',preload],env:process.env,stdio:['ignore','ignore','pipe','ipc']});
+        physical.stderr.on('data',bytes=>{physicalOutput+=String(bytes);});
         physicalExit=new Promise(resolve=>physical.once('exit',resolve));
-        origin=await new Promise((resolve,reject)=>{physical.once('message',message=>resolve(message.origin));physical.once('error',reject);});
+        origin=await new Promise((resolve,reject)=>{physical.once('message',message=>resolve(message.origin));physical.once('error',reject);physical.once('exit',code=>reject(Error('Physical child exited before origin: '+code+' '+physicalOutput)));});
         state.allowOrigin(origin);body=await(await fetch(origin)).text();finish();return{origin};
+        }catch(error){fail(error);throw error;}
       }});
       const trigger=bridge.rpc('trigger').then(()=>null,error=>String(error));await started;await trigger;
       const closing=bridge.close().then(()=>({ok:true}),error=>({ok:false,error:String(error)}));
@@ -183,7 +186,9 @@ it('joins an admitted deferred wake and closes its real child listener before br
   }, ['--import', loader]);
   const diagnostics = JSON.stringify({ stdout: result.stdout, stderr: result.stderr, events });
   expect(result.error, diagnostics).toBeUndefined(); expect(result.status, diagnostics).toBe(0);
-  expect(JSON.parse(result.stdout.trim().split('\n').at(-1)!)).toMatchObject({
+  const observation = result.stdout.trim().split('\n').at(-1)!;
+  expect(observation, diagnostics).toMatch(/^\{/);
+  expect(JSON.parse(observation)).toMatchObject({
     body: 'late real child', closedEarly: false, closed: { ok: true }, reachable: false, stops: 1, physicalExitCode: 0, unexpectedAttempts: [],
   });
 });
