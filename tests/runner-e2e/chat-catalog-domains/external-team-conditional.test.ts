@@ -158,7 +158,7 @@ it.each(["wrong key", "wrong source hash", "wrong version", "foreign version", "
 it("the public observer reads actual saved skill/version and member bindings before recovery admission", async () => {
   const { o, saved, version, member, target } = recovered();
   const originalAgent = { id: "original", companyId: "company", name: "CTO", urlKey: "cto", adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {}, metadata: null };
-  const local = { id: "local", companyId: "company", key: "company/local", slug: target.slug, markdown: "Original local body", currentVersionId: "local-revision", sourceType: "local" };
+  const local = { id: "local", name: "Existing company launch checklist", companyId: "company", key: "company/local", slug: target.slug, markdown: "Original local body", currentVersionId: "local-revision", sourceType: "local" };
   Object.assign(o.state, { conflictAgentId: originalAgent.id, conflictAgentBefore: originalAgent, localSkillId: local.id, localSkillBefore: local });
   const get = vi.fn(async (url: string) => {
     if (url === "/api/agents/original") return originalAgent;
@@ -276,4 +276,23 @@ it("rejects named verb-object installation claims but keeps genuine noninstallat
  expect(gradeTeamConditions(o,"initial").passed).toBe(false);
  o.phaseReplies[0]!.body=start+"We have not installed Launch Checklist. The other three required skills installed.";
  expect(gradeTeamConditions(o,"initial").passed).toBe(true);
+});
+
+it("keeps bounded negated outcome adverbs distinct from affirmative correlative installation", () => {
+ for(const adverb of ["successfully","fully","completely"]){
+  const o=valid();o.phaseReplies[0]!.body=`The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. We have not ${adverb} installed Launch Checklist.`;
+  expect(gradeTeamConditions(o,"initial").passed).toBe(true);
+  const r=recovered();r.o.phaseReplies[1]!.body=`Launch Checklist is not ${adverb} installed.`;
+  expect(gradeTeamConditions(r.o).passed).toBe(false);
+ }
+ const o=valid();o.phaseReplies[0]!.body="The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. We have not only installed Launch Checklist but configured it.";
+ expect(gradeTeamConditions(o,"initial").passed).toBe(false);
+});
+it("distinguishes the actual preserved local skill name from a contained catalog alias", () => {
+ const o=valid();o.state.localSkillBefore={name:"Existing company launch checklist"};
+ const start="The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. ";
+ o.phaseReplies[0]!.body=start+"Existing company launch checklist is available.";
+ expect(gradeTeamConditions(o,"initial").passed).toBe(true);
+ o.phaseReplies[0]!.body+=" Launch Checklist is now installed under another slug.";
+ expect(gradeTeamConditions(o,"initial").passed).toBe(false);
 });
