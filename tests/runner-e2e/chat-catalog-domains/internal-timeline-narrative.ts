@@ -15,7 +15,7 @@ export function truthfulTimelineAccount(input: {
   const mentions = (text: string, name: string) => new RegExp(`\\b${escape(name)}\\b`, "i").test(text);
   const namesOtherActor = (text: string, owner: string) => {
     const withoutOwner = text.replace(new RegExp(`\\b${escape(owner)}\\b`, "gi"), "");
-    return [firstWorker, repairWorker].some(name => name !== owner && new RegExp(`\\b${escape(name)}['’]s\\b`, "i").test(withoutOwner))
+    return [firstWorker, repairWorker, input.personName].some(name => !!name && name !== owner && new RegExp(`\\b${escape(name)}['’]s\\b`, "i").test(withoutOwner))
       || /\b(?:human|operator|person|user|board|CEO)\b/i.test(withoutOwner)
       || [...withoutOwner.matchAll(/\b([A-Z][\p{L}'-]+)['’]s\s+(?:[a-z][a-z0-9_-]*\s+){0,3}(?:attempt|run|verification|check|test|command)\b/gu)].some(match =>
         !calendarWords.has(match[1]!.toLowerCase()) && !/^(?:today|tomorrow|yesterday)$/i.test(match[1]!))
@@ -54,6 +54,7 @@ export function truthfulTimelineAccount(input: {
     const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker), ...text.matchAll(successorOwnership)].filter(() =>
       !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
     return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi")), ...actorUnspecified].filter(match => {
+      if (/\b(?:want(?:ed|s)?|would|should|could|might|if|unless)\b[^;.!?\n]*$/i.test(text.slice(0, match.index))) return false;
       // An explicit other person's role must not become the current human just
       // because earlier milestones share this sentence.
       if (!/^(?:human|person|user|operator|board)\b/i.test(match[0])) return true;
