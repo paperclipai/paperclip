@@ -140,3 +140,9 @@ it("accepts secure entry with a separate negative chat warning", () => {
   expect(deploymentSecretGuidance(context + "Choose Set my value and enter your publishing key there — don't paste it in chat.")).toBe(true);
   expect(deploymentSecretGuidance(context + "Choose Set my value and enter your publishing key there — paste it in chat.")).toBe(false);
 });
+
+it("accepts an excluded chat destination without hiding a later positive request", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Enter and save the key there — not here in chat.")).toBe(true);
+  expect(deploymentSecretGuidance(context + "Enter the key in Settings — then paste it here in chat.")).toBe(false);
+});
