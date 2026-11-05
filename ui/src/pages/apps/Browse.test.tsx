@@ -711,6 +711,20 @@ describe("Connectors landing page", () => {
     expect(rows[0]!.textContent).not.toContain("Connect through Composio");
   });
 
+  it("keeps native Asana on Cloud when the gallery omits its unavailable managed method", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Asana", ["composio", "arcade"]));
+    const asana = getAppStoreDefinition("asana")!;
+    // The gallery removes a Paperclip Cloud method whose broker profile is not advertised.
+    const galleryAsana = { ...asana, methods: asana.methods.filter((method) => !method.oauthStrategy) };
+    listGalleryMock.mockResolvedValue({ apps: [galleryAsana] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="asana"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
   it("keeps a saved built-in Slack connection on its native row on Cloud", async () => {
     experimentalMock.mockResolvedValue({});
     aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));

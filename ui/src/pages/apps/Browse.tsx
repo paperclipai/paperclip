@@ -790,8 +790,11 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       const row = rowsBySlug.get(slug);
       if (row?.connections.length || row?.chatEndpoints.length) return false;
       if (!googleWorkspaceConnectorEnabled && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug)) return true;
+      // Decide from the declared methods: the gallery drops a Cloud managed method
+      // whose broker profile is unavailable, and that must not change setup routes.
+      const declaredMethods = getAppStoreDefinition(slug)?.methods ?? row?.entry?.methods;
       return cloudManaged && Boolean(row?.entry) && hasAggregatorRoute(row!)
-        && nativeConnectorRequiresCustomerOAuthApp(row!.entry, {
+        && nativeConnectorRequiresCustomerOAuthApp({ ...row!.entry!, methods: declaredMethods ?? [] }, {
           enableChatConnectors: chatConnectorsEnabled,
           enableGitHubReviewBots: githubEnabled,
         });
