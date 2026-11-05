@@ -2402,7 +2402,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       const { action, sourceIssueId, previousRunId, companyId, coderId, body } =
         await seedDuplicateReconciliationHolds();
       let unrelatedCompanyId = companyId;
-      let unrelatedIssueId = sourceIssueId;
+      let unrelatedIssueId: string = sourceIssueId;
       let unrelatedAgentId = coderId;
       let unrelatedRunId = previousRunId;
       if (scope === "run") {
