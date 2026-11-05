@@ -13,6 +13,10 @@ const MAX_FILE_CHANGES: usize = 32;
 /// UTF-8 bytes of one file's patch (also within the schema's 32768-character bound).
 const MAX_FILE_DIFF_BYTES: usize = 32 * 1024;
 const MAX_TURN_FILES: usize = 2_000;
+/// Serialized bytes of the listed file entries in one turn snapshot. Entries
+/// past it are counted in the totals but not listed, so the snapshot stays a
+/// bounded display payload instead of falling back to 4 KiB string previews.
+const MAX_TURN_ENTRIES_BYTES: usize = 240 * 1024;
 const MAX_TURN_FILE_DIFF_BYTES: usize = 64 * 1024;
 /// Serialized patch bytes in one turn snapshot, below the 256 KiB durable
 /// display payload bound with room for the file metadata.
@@ -369,15 +373,19 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
                 .collect::<Vec<_>>()
                 .join("\n");
             let (additions, deletions) = count_changes(&body);
+            let mut diff_truncated = false;
             let diff = if file.binary || body.is_empty() {
                 Value::Null
             } else {
-                let (bounded, _) = bounded_diff(&format!("{body}\n"), MAX_TURN_FILE_DIFF_BYTES);
+                let (bounded, truncated) =
+                    bounded_diff(&format!("{body}\n"), MAX_TURN_FILE_DIFF_BYTES);
                 let size = serialized_len(&bounded);
                 if size > budget {
+                    diff_truncated = true;
                     Value::Null
                 } else {
                     budget -= size;
+                    diff_truncated = truncated;
                     Value::String(bounded)
                 }
             };
@@ -389,6 +397,7 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
                 "deletions": if file.binary { Value::Null } else { json!(deletions) },
                 "binary": file.binary,
                 "diff": diff,
+                "diffTruncated": diff_truncated,
             }))
         })
         .take(MAX_TURN_FILES)
@@ -404,6 +413,15 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
                 .sum::<u64>())
         }
     };
+    let mut listed_bytes = 0usize;
+    let listed: Vec<&Value> = projected
+        .iter()
+        .take_while(|file| {
+            listed_bytes +=
+                serde_json::to_string(file).map_or(usize::MAX, |encoded| encoded.len() + 1);
+            listed_bytes <= MAX_TURN_ENTRIES_BYTES
+        })
+        .collect();
     json!({
         "schema": "paperclip.workspace.diff.v1",
         "changeSetId": format!("{turn_id}:workspace"),
@@ -411,7 +429,7 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
         "source": "harness_reported",
         "complete": false,
         "totals": { "files": projected.len(), "additions": sum("additions"), "deletions": sum("deletions") },
-        "files": projected,
+        "files": listed,
         "patchArtifactRef": Value::Null,
     })
 }
@@ -518,6 +536,27 @@ mod tests {
         );
         assert_eq!(snapshot["files"][0]["additions"], 1);
         assert_eq!(snapshot["files"][0]["deletions"], 1);
+    }
+
+    #[test]
+    fn marks_shortened_turn_patches_and_bounds_listed_entries() {
+        let big = format!(
+            "diff --git a/big.txt b/big.txt\n--- a/big.txt\n+++ b/big.txt\n@@ -0,0 +1,9000 @@\n{}",
+            "+0123456789\n".repeat(9_000)
+        );
+        let snapshot = codex_turn_diff_snapshot("t", &big, None);
+        assert_eq!(snapshot["files"][0]["diffTruncated"], true);
+        assert_eq!(snapshot["files"][0]["additions"], 9000);
+        let many: String = (0..2_000)
+            .map(|index| format!("diff --git a/dir/file-{index:04}-with-a-long-name.txt b/dir/file-{index:04}-with-a-long-name.txt\n--- a/dir/file-{index:04}-with-a-long-name.txt\n+++ b/dir/file-{index:04}-with-a-long-name.txt\n@@ -1 +1 @@\n-a\n+b\n"))
+            .collect();
+        let snapshot = codex_turn_diff_snapshot("t", &many, None);
+        assert_eq!(snapshot["totals"]["files"], 2000);
+        assert!(snapshot["files"].as_array().unwrap().len() < 2000);
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "workspace.change.updated",
+            &snapshot
+        ));
     }
 
     #[test]

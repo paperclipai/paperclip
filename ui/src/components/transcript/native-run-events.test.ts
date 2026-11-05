@@ -1135,14 +1135,20 @@ describe("edit diffs", () => {
         revision: 1,
         source: "harness_reported",
         complete: false,
-        files: [{ path: "a.js", operation: "create", previousPath: null, additions: 2, deletions: 0, binary: false, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" }],
+        files: [
+          { path: "a.js", operation: "create", previousPath: null, additions: 2, deletions: 0, binary: false, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" },
+          { path: "huge.js", operation: "modify", previousPath: null, additions: 0, deletions: 0, binary: false, diff: null, diffTruncated: true },
+        ],
         totals: { files: 1, additions: 2, deletions: 0 },
         patchArtifactRef: null,
       }),
       event(2, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
     ]);
     const items = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
-    expect(items.at(-1)).toMatchObject({ surface: "workspace_change", complete: true, totals: { files: 1, additions: 2 } });
+    expect(items.at(-1)).toMatchObject({ surface: "workspace_change", complete: true, totals: { files: 2, additions: 2 } });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files[1]).toMatchObject({ path: "huge.js", diff: null, diffTruncated: true });
     expect(items.filter((item) => item.kind === "protocol" && item.surface === "workspace_change")).toHaveLength(1);
   });
 });

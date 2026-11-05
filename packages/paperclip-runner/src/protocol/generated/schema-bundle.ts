@@ -2987,6 +2987,10 @@ export const workspaceDiffSchema = {
               "null"
             ],
             "maxLength": 262144
+          },
+          "diffTruncated": {
+            "description": "The producer shortened or omitted this file's patch; additions and deletions still cover all of it.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false

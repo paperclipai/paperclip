@@ -363,6 +363,7 @@ export function workspaceChangeEntry(payload: JsonRecord, ts: string): Transcrip
         deletions: nullableNumber(file.deletions),
         binary: file.binary === true,
         diff: nullableText(file.diff),
+        ...(file.diffTruncated === true ? { diffTruncated: true } : {}),
       };
     });
   return {

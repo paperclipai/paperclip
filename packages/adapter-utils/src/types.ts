@@ -636,6 +636,8 @@ export interface TranscriptWorkspaceChangeFile {
   deletions: number | null;
   binary: boolean;
   diff: string | null;
+  /** The producer shortened or omitted this patch; counts still cover all of it. */
+  diffTruncated?: boolean;
 }
 
 export interface TranscriptRunVerification {

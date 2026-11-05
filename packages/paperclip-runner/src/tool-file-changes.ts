@@ -182,7 +182,7 @@ export function toolFileChangesFromAcpContent(
       }
     }
   }
-  const byPath = new Map<string, { hunks: string[]; created: boolean }>();
+  const byPath = new Map<string, { hunks: string[]; created: boolean; nextLine: number }>();
   let blocks = 0;
   for (const value of content) {
     if (!value || typeof value !== "object") continue;
@@ -191,9 +191,13 @@ export function toolFileChangesFromAcpContent(
     const filePath = relativeWorkspacePath(block.path, workingDirectory);
     if (!filePath) continue;
     const oldText = typeof block.oldText === "string" ? block.oldText : null;
-    const entry = byPath.get(filePath) ?? { hunks: [], created: true };
-    const start = lineByPath.get(filePath)?.[entry.hunks.length] ?? 1;
+    const entry = byPath.get(filePath) ?? { hunks: [], created: true, nextLine: 1 };
+    // ACP may report one location per hunk or one per file. Without a location
+    // for this hunk, continue after the previous one so later hunks never all
+    // read "line 1".
+    const start = lineByPath.get(filePath)?.[entry.hunks.length] ?? entry.nextLine;
     entry.hunks.push(unifiedHunkFromTexts(oldText, block.newText, start));
+    entry.nextLine = start + splitLines(block.newText).length;
     entry.created &&= oldText === null;
     byPath.set(filePath, entry);
     blocks += 1;

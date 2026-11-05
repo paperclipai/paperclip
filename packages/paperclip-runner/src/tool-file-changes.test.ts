@@ -118,3 +118,17 @@ describe("byte budgets and hunk content", () => {
     expect(change).toMatchObject({ additions: 1, deletions: 1 });
   });
 });
+
+describe("hunk line numbers", () => {
+  it("continues after the previous hunk when ACP reports one location per file", () => {
+    const [change] = toolFileChangesFromAcpContent(
+      [
+        { type: "diff", path: "/work/repo/a.ts", oldText: "a\nb", newText: "a\nB" },
+        { type: "diff", path: "/work/repo/a.ts", oldText: "c", newText: "C" },
+      ],
+      [{ path: "/work/repo/a.ts", line: 10 }],
+      "/work/repo",
+    )!;
+    expect(change.diff!.match(/^@@[^@]+@@/gm)).toEqual(["@@ -10,2 +10,2 @@", "@@ -12,1 +12,1 @@"]);
+  });
+});
