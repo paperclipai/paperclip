@@ -33,6 +33,14 @@ export function observeCodexUsage(
   return { baseline, latest, ...(state?.accounted ? { accounted: state.accounted } : {}) };
 }
 
+export function codexUsageBaselineForNextRun(state: CodexUsageBaseline): CodexUsageBaseline {
+  return {
+    baseline: { ...(state.accounted ?? state.latest) },
+    latest: { ...state.latest },
+    ...(state.accounted ? { accounted: { ...state.accounted } } : {}),
+  };
+}
+
 export function codexRunUsage(
   state: CodexUsageBaseline,
 ): Record<string, unknown> {
