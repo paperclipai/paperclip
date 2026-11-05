@@ -203,9 +203,6 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     ) : undefined),
   )).limit(1);
   if (service) reasons.push("workspace_runtime_service_unsettled");
-  // A descendant task can use this workspace without becoming its source task.
-  // Discover holds from the exact recorded workspace references as well; the
-  // recovery owner still validates their task relationship and source binding.
   const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...referencedRuns.map(run => run.issueId),
     ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
   const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, sourceIssueId: issueRecoveryActions.sourceIssueId,
@@ -409,8 +406,6 @@ export async function migrateRemoteWorkspace(input: {
         if (reserved.legacyRecoverySources.length) {
           metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
           for (const source of reserved.legacyRecoverySources) {
-            // Completed file finalization retains its ordinary retry path.
-            // Its exact operation receipt redirects only future file recovery.
             const markerKey = source.reference?.state === "finalized"
               ? "finalizedWorkspaceRecoveryMigration" : "legacyWorkspaceRecoveryMigration";
             // The offline deployment fence has stopped the old controller. The

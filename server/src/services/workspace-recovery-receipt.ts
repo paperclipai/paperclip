@@ -62,8 +62,6 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
   };
 }
 
-/** A native merge proves only its exact descriptor allocation. It can coexist
- * with snapshot receipts for other allocations from the same recovery. */
 async function verifiedNativeCopybackReceipt(db: Db, input: {
   companyId: string; issueId: string; runId: string; reference: NativeWorkspaceSyncReference;
 }) {
@@ -108,9 +106,6 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
       if (!allocations?.length) return null;
       let receiptId: string | null = null;
       for (const allocation of allocations) {
-        // Each allocation needs its own saved files. A completed native merge
-        // remains valid for its exact primary source after migration; additional
-        // sources need their own immutable snapshots. Stop checks stay separate.
         const [saved] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata,
           evidence: issueRecoveryActions.evidence }).from(workspaceOperations).innerJoin(issueRecoveryActions, and(
           eq(issueRecoveryActions.companyId, workspaceOperations.companyId), eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),

@@ -27,9 +27,6 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-/** A task hold can outlive completed file finalization. Preserve that hold and
- * its exact source; terminal run status alone never releases a file authority.
- * This is offline admission, not stop verification or recovery completion. */
 export async function inspectFinalizedWorkspaceRecoveryHold(db: ReadDb, input: {
   companyId: string; workspaceId: string; recovery: Recovery;
 }): Promise<FinalizedWorkspaceRecoveryHold | null> {
@@ -51,8 +48,6 @@ export async function inspectFinalizedWorkspaceRecoveryHold(db: ReadDb, input: {
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, reference.workspaceId)));
   if (!workspace || !await isLegacyWorkspaceTaskRelated(db, { companyId: input.companyId,
     issueId: run.nativeIssueId, sourceIssueId: workspace.sourceIssueId })) return null;
-  // Historical folders never borrow the source receipt. Their actual source
-  // remains a separate local record (or its already-published remote authority).
   if (reference.workspaceId !== input.workspaceId && !readRemoteWorkspaceAuthority(workspace.metadata)
     && (!workspace.cwd || !["local_fs", "git_worktree"].includes(workspace.providerType))) return null;
   let finalizeReceipt: string | null = null;
@@ -62,9 +57,6 @@ export async function inspectFinalizedWorkspaceRecoveryHold(db: ReadDb, input: {
       eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, action.sourceIssueId),
       eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, owner.resultId),
       eq(nativeRunResults.completionContractId, run.completionContractId), eq(nativeRunResults.schemaStatus, "accepted")));
-    // Historical finalization receipts may have no workspace FK. The owning
-    // finalizer consumes this exact company/run/task receipt before inspecting
-    // workspace authority; the saved run reference supplies the workspace.
     const [receipt] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
       eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, action.sourceIssueId),
       eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_finalize"),
