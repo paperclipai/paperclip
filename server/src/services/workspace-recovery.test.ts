@@ -44,8 +44,8 @@ import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -80,6 +80,8 @@ import { executionWorkspaceSnapshots } from "@paperclipai/db";
 import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority, reserveRemoteWorkspace, saveRemoteWorkspace } from "./remote-workspaces.js";
 import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
+import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
@@ -662,6 +664,156 @@ describe("automatic retained workspace recovery", () => {
     await adoptSystemRecovery(db, f);
     return { ...f, ...(sourceLayout === "published" ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
   }
+
+  async function pressuredToolCache() {
+    const f = await acceptedRemoteExport();
+    const runner = path.join(f.remote, ".paperclip-runtime", "paperclip-runner");
+    const pack = path.join(runner, "provider-pack"), sessions = path.join(runner, "sessions", "retained");
+    await mkdir(path.join(pack, "node_modules"), { recursive: true });
+    await mkdir(path.join(pack, "provider-assets")); await mkdir(sessions, { recursive: true });
+    await writeFile(path.join(pack, "node_modules", "installed-tool"), "rebuildable dependency\n");
+    await writeFile(path.join(pack, "provider-assets", "installed-agent"), "rebuildable provider\n");
+    await writeFile(path.join(sessions, "pending-receipt.json"), "uncertain action history\n");
+    const payload = { target: { platform: "linux", architecture: "x64" } };
+    const digest = `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}`;
+    await writeFile(path.join(pack, "provider-pack.json"), JSON.stringify({
+      schema: "paperclip-runner/remote-provider-pack/v1", digest, payload,
+    }));
+    const before = await run(f.runId);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before.runnerProfileJson,
+      nativeProviderPackAdmissionState: { schema: "paperclip.native-provider-pack-admission-state.v1",
+        state: "verified", admissionEpoch: randomUUID() },
+      nativeProviderPackAdmission: { schema: "paperclip.native-provider-pack-admission.v1", stage: "session_admitted",
+        authority: "core_verified_selection", runId: f.runId, companyId: f.companyId, agentId: before.agentId,
+        providerPackDigest: digest },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
+    let transfers = 0;
+    target.runner!.syncOut = async operations => {
+      if (++transfers === 1) throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
+      return syncOut(operations);
+    };
+    return { ...f, runner, pack, sessions, digest, transfers: () => transfers };
+  }
+
+  it("reclaims only a verified inactive tool installation before retrying the same workspace save", async () => {
+    const f = await pressuredToolCache();
+    await recoverRetainedWorkspace(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    expect(f.transfers()).toBe(2);
+    await expect(lstat(path.join(f.pack, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(path.join(f.pack, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(path.join(f.pack, "provider-pack.json"), "utf8")).digest).toBe(f.digest);
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: authority.snapshotId! });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+    const audits = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim")));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ status: "succeeded", heartbeatRunId: f.runId,
+      metadata: { manifestDigest: f.digest, changed: true, sessionDirectoryPreserved: true } });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  }, 30_000);
+
+  it("keeps lost cache acknowledgements separate from later verified workspace preservation", async () => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    let lost = false;
+    target.runner!.execute = async input => {
+      const result = await execute(input);
+      if (!lost && input.args?.at(-1) === f.digest) {
+        lost = true;
+        return { ...result, exitCode: null, timedOut: true, stdout: "", stderr: "" };
+      }
+      return result;
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(lost).toBe(true);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    expect(f.transfers()).toBe(1);
+    const [audit] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim")));
+    expect(audit).toMatchObject({ status: "failed", metadata: { outcome: "unconfirmed" } });
+    await makeRetryDue(f.actionId);
+    await recoverRetainedWorkspace(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    expect(f.transfers()).toBe(2);
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  }, 30_000);
+
+  it.each(["unchanged", "replaced"])("rechecks a prepared cache move with an %s installation", async installation => {
+    const f = await pressuredToolCache(), sessions = await lstat(path.dirname(f.sessions), { bigint: true });
+    const work = path.join(f.runner, "cache-reclaims", f.runId);
+    await mkdir(work, { recursive: true });
+    const targets = [];
+    for (const name of ["node_modules", "provider-assets"]) {
+      const entry = await lstat(path.join(f.pack, name), { bigint: true });
+      targets.push({ name, dev: String(entry.dev), ino: String(entry.ino) });
+    }
+    await rename(path.join(f.pack, "node_modules"), path.join(work, "node_modules"));
+    await writeFile(path.join(work, "provider-pack-manifest.json"), await readFile(path.join(f.pack, "provider-pack.json")));
+    await writeFile(path.join(work, "receipt.json"), JSON.stringify({ schema: "paperclip.native-provider-cache-reclaim.v1",
+      sourceRunId: f.runId, manifestDigest: f.digest, sessionsDev: String(sessions.dev), sessionsIno: String(sessions.ino),
+      targets, availableBytesBefore: 0, status: "prepared" }));
+    if (installation === "replaced") {
+      await mkdir(path.join(f.pack, "node_modules"));
+      await writeFile(path.join(f.pack, "node_modules", "replacement-tool"), "replacement installation\n");
+    }
+    await recoverRetainedWorkspace(f.input);
+    if (installation === "unchanged") {
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+      expect(f.transfers()).toBe(2);
+      await expect(lstat(path.join(work, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(path.join(f.pack, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+      expect(f.transfers()).toBe(1);
+      expect(await readFile(path.join(work, "node_modules", "installed-tool"), "utf8")).toBe("rebuildable dependency\n");
+      expect(await readFile(path.join(f.pack, "node_modules", "replacement-tool"), "utf8")).toBe("replacement installation\n");
+      expect(await readFile(path.join(f.pack, "provider-assets", "installed-agent"), "utf8")).toBe("rebuildable provider\n");
+    }
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
+  it.each(["pending", "foreign", "lease", "active", "recoverable", "manifest", "symlink"])("keeps files intact when %s cache authority is unproven", async failure => {
+    const f = await pressuredToolCache(), before = await run(f.runId);
+    if (failure === "pending") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before.runnerProfileJson,
+      nativeProviderPackAdmissionState: { schema: "paperclip.native-provider-pack-admission-state.v1",
+        state: "pending", admissionEpoch: randomUUID() } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (failure === "foreign") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before.runnerProfileJson,
+      nativeProviderPackAdmission: { ...before.runnerProfileJson!.nativeProviderPackAdmission as Record<string, unknown>,
+        companyId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (failure === "lease") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before.runnerProfileJson,
+      remoteWorkspace: { ...before.runnerProfileJson!.remoteWorkspace as Record<string, unknown>, leaseId: randomUUID() } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    if (failure === "active") await db.update(nativeRunFinalizations).set({ leaseOwner: "another-controller" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (failure === "recoverable") await db.update(nativeRunFinalizations).set({ failureDetail: { recoverable: true } })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    if (failure === "manifest") await writeFile(path.join(f.pack, "provider-pack.json"), JSON.stringify({
+      schema: "paperclip-runner/remote-provider-pack/v1", digest: `sha256:${"f".repeat(64)}`, payload: {},
+    }));
+    if (failure === "symlink") {
+      const outside = path.join(path.dirname(f.remote), "retained-installation");
+      await mkdir(outside); await writeFile(path.join(outside, "installed-tool"), "rebuildable dependency\n");
+      await rm(path.join(f.pack, "node_modules"), { recursive: true });
+      await symlink(outside, path.join(f.pack, "node_modules"));
+    }
+    await recoverRetainedWorkspace(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    expect(f.transfers()).toBe(["lease", "active"].includes(failure) ? 0 : 1);
+    expect(await readFile(path.join(f.pack, "node_modules", "installed-tool"), "utf8")).toBe("rebuildable dependency\n");
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
 
   async function interruptedRemotePreparation(interruption: "shutdown" | "lease" = "shutdown", sourceLayout: RecoverySourceLayout = "retained") {
     const f = await acceptedRemoteExport(sourceLayout);

@@ -150,6 +150,23 @@ verified snapshot. Upload operations have stable identities and manifests.
 Recovered snapshots attach separately with provenance; they never become an
 invented baseline for overwriting newer files.
 
+When that owned files-only export reports a full sandbox disk, recovery can
+reclaim a verified inactive native provider installation and retry the same save
+once. The failed source must have a terminal coordinator with no controller
+owner or resumable failure, and its Core-verified provider-pack admission must
+match the exact run, company, agent, workspace and lease. Unverified historical
+installations remain held for operator repair.
+
+Only the reserved provider-pack `node_modules` and `provider-assets` directories
+are eligible. The installation manifest, task files, Git history, sessions,
+checkpoints and action receipts stay intact. A source-bound journal records the
+manifest and directory identities before removal, allowing an interrupted move
+to resume without reclaiming a replacement installation. Changed identities or
+symlinks keep the original export failure. Cleanup has a bounded remote call and
+records its outcome independently; an uncertain acknowledgement never proves
+that files were saved. This adds no provider turn, recovery generation or retry
+budget, and the normal save and stop receipts still govern continuation.
+
 Known publication receipts and exact API mutation receipts carry forward.
 Uncertain API mutations and upstream tool mutations remain fenced across run
 replacement. Reads and independent work remain available. Generic upstream
