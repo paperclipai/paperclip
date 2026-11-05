@@ -4122,10 +4122,10 @@ export function recoveryService(
   }
 
   async function closeRoutineExecutionAfterTransientInfraFailure(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
-  }) {
+  }, tx: DbTransaction, publications: ActivityPublication[]) {
     // Routine execution issues are one-shot scheduled firings, not standing work.
     // There is no retry budget to exhaust: retrying a routine execution issue would
     // only duplicate the firing, while the next scheduled run already supersedes
@@ -4136,71 +4136,68 @@ export function recoveryService(
       `Routine execution lost its live execution path to a transient infrastructure failure${causeCopy}.` +
       " The next scheduled firing supersedes this miss.";
 
-    // Update issue and routine run atomically so a partial failure cannot leave the
-    // issue cancelled while its linked run remains in a non-terminal state.
-    const transition = await db.transaction(async (tx) => {
-      // Lock and compare the execution identity as well as status. A replacement
-      // wake can attach a newer run while leaving the issue `in_progress`; a
-      // status-only update would then cancel live work based on the stale failed
-      // run. Any changed checkout/execution pointer makes this recovery attempt
-      // leave the current path untouched.
-      const locked = await issuesSvc.getByIdForUpdate(input.issue.id, tx);
-      if (!locked) return null;
-      if (
-        locked.status !== input.previousStatus ||
-        locked.checkoutRunId !== input.issue.checkoutRunId ||
-        locked.executionRunId !== input.issue.executionRunId
-      ) {
-        return { kind: "stale" as const, issue: locked };
-      }
-      const rows = await tx
-        .update(issues)
+    // Escalation already holds the issue lock. Reuse its transaction so the issue,
+    // routine run, comment and activity commit together without a second connection
+    // waiting for the same lock.
+    // Lock and compare the execution identity as well as status. A replacement
+    // wake can attach a newer run while leaving the issue `in_progress`; a
+    // status-only update would then cancel live work based on the stale failed
+    // run. Any changed checkout/execution pointer makes this recovery attempt
+    // leave the current path untouched.
+    const locked = await issuesSvc.getByIdForUpdate(input.issue.id, tx);
+    if (!locked) return null;
+    if (
+      locked.status !== input.previousStatus ||
+      locked.checkoutRunId !== input.issue.checkoutRunId ||
+      locked.executionRunId !== input.issue.executionRunId
+    ) {
+      return locked;
+    }
+    const rows = await tx
+      .update(issues)
+      .set({
+        status: "cancelled",
+        // Workspace cleanup measures closed time from cancelledAt.
+        cancelledAt: new Date(),
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, input.issue.id))
+      .returning();
+    const updatedIssue = rows[0];
+    if (!updatedIssue) return null;
+
+    if (input.issue.originRunId) {
+      await tx
+        .update(routineRuns)
         .set({
-          status: "cancelled",
-          // Workspace cleanup measures closed time from cancelledAt.
-          cancelledAt: new Date(),
-          checkoutRunId: null,
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
+          status: "failed",
+          failureReason,
+          completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, input.issue.id))
-        .returning();
-      const updatedIssue = rows[0];
-      if (!updatedIssue) return null;
+        .where(
+          and(
+            eq(routineRuns.id, input.issue.originRunId),
+            notInArray(routineRuns.status, ["completed", "failed"]),
+          ),
+        );
+    }
+    const updated = updatedIssue;
 
-      if (input.issue.originRunId) {
-        await tx
-          .update(routineRuns)
-          .set({
-            status: "failed",
-            failureReason,
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(routineRuns.id, input.issue.originRunId),
-              notInArray(routineRuns.status, ["completed", "failed"]),
-            ),
-          );
-      }
-      return { kind: "cancelled" as const, issue: updatedIssue };
-    });
-    if (!transition) return null;
-    if (transition.kind === "stale") return transition.issue;
-    const updated = transition.issue;
-
-    await issuesSvc.addComment(
+    await issueService(tx as unknown as Db).addComment(
       input.issue.id,
       `${failureReason} Paperclip cancelled this firing instead of blocking it: there is no ` +
         "blocker for a recovery owner to clear, and the next scheduled firing supersedes the miss.",
       {},
       { authorType: "system" },
+      tx,
     );
 
-    await logActivity(db, {
+    await logActivity(tx as unknown as Db, {
       companyId: input.issue.companyId,
       actorType: "system",
       actorId: "system",
@@ -4219,7 +4216,7 @@ export function recoveryService(
         latestRunErrorCode: errorCode,
         routineRunId: input.issue.originRunId ?? null,
       },
-    });
+    }, publications);
 
     return updated;
   }
@@ -4308,7 +4305,7 @@ export function recoveryService(
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
-      });
+      }, tx, publications);
       if (closed) return closed;
     }
 
