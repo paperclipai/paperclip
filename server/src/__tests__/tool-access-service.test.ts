@@ -3654,13 +3654,13 @@ describeEmbeddedPostgres("tool access service", () => {
       name: `headers.${name}`, placement: "header" as const, key: name, secretId,
     });
     const secretRef = (name: string, secretId: string) => ({ secretId, configPath: `headers.${name}` });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Two header remote",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
       credentialRefs: [headerRef("X-First", first.id)],
       credentialSecretRefs: [secretRef("X-First", first.id)],
-    });
+    }));
 
     await service.updateConnection(connection.id, {
       credentialRefs: [headerRef("X-First", first.id), headerRef("X-Second", second.id)],
@@ -3689,13 +3689,13 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     const header = await createKey("header");
     const token = await createKey("token");
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Grant token remote",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
       credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: header.id }],
       credentialSecretRefs: [{ secretId: header.id, configPath: "headers.X-Key" }],
-    });
+    }));
     await db.update(connectionGrants)
       .set({ credentialSecretRefs: [
         { secretId: header.id, configPath: "headers.X-Key" },
@@ -3719,11 +3719,11 @@ describeEmbeddedPostgres("tool access service", () => {
       key: `remote.lease.${randomUUID()}`,
       value: "lease-value",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Refreshing remote",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
-    });
+    }));
     await db.update(connectionGrants)
       .set({ providerTenant: { oauth: { strategy: "direct_oauth", refreshLease: { id: "in-flight", expiresAt: "2999-01-01T00:00:00.000Z" } } } })
       .where(eq(connectionGrants.connectionId, connection.id));
@@ -3748,11 +3748,11 @@ describeEmbeddedPostgres("tool access service", () => {
       key: `remote.null.${randomUUID()}`,
       value: "null-value",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Null tenant remote",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
-    });
+    }));
     await db.execute(sql`update connection_grants set provider_tenant = 'null'::jsonb where connection_id = ${connection.id}`);
 
     await service.updateConnection(connection.id, {
@@ -3774,11 +3774,11 @@ describeEmbeddedPostgres("tool access service", () => {
       key: `remote.revoked.${randomUUID()}`,
       value: "revoked-value",
     });
-    const connection = await service.createConnection(company.id, {
+    const connection = await service.createConnection(company.id, connectionInput({
       name: "Revoked remote",
       transport: "mcp_remote",
       config: { url: "https://93.184.216.34/mcp" },
-    });
+    }));
     await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
       .where(eq(connectionGrants.connectionId, connection.id));
 
