@@ -137,6 +137,11 @@ Permissions page. Check the connected account and the App's access to the intend
 account and repository there. The original provider error remains in the action's
 error details and diagnostic record. Paperclip does not replay the write or hide
 other working tools. Saved GitHub approval errors receive the same presentation.
+The agent's continuation wake carries server-written next steps and tells it
+not to retry the same call. For `create_repository`, the agent asks the user to
+create the repository on GitHub, give the App access, and select **Refresh
+access**, then continues with that repository. GitHub's text stays in the
+untrusted result.
 
 OAuth completion verifies `/user`, every page of `/user/installations`, and every
 page of each installation's accessible repositories. Setup remains incomplete

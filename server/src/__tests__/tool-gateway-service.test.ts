@@ -2043,6 +2043,48 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(consumed.status).toBe("executed");
   });
 
+  it("tells the agent how to recover when GitHub denies an approved repository create (BUG-10)", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const wakeup = vi.fn(async (agentId: string, input: any) => {
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload }).returning();
+      return wake as any;
+    });
+    const deliveries = toolActionDeliveryService(db, { wakeup });
+    const gateway = createTestToolGatewayService(db, { onToolActionSettled: deliveries.deliver });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "n1", body: "repo" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" } });
+    // Record the outcome staging saw: GitHub's integration 403 on the approved
+    // create_repository call, classified as github_access_denied.
+    const denied = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    await db.update(toolActionRequests).set({ status: "failed" }).where(eq(toolActionRequests.id, request.id));
+    await db.update(toolInvocations).set({
+      status: "failed", toolName: "mcp.app-gallery-github-connection:create-repository",
+      errorCode: "github_access_denied", errorMessage: denied,
+    }).where(eq(toolInvocations.id, request.invocationId));
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    await db.update(issueThreadInteractions).set({ result: { ...(interaction.result as object), toolAction: {
+      ...((interaction.result as any)?.toolAction ?? {}), status: "failed", errorCode: "github_access_denied", errorMessage: denied,
+    } } as any }).where(eq(issueThreadInteractions.id, interaction.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    await deliveries.deliverForRun({ companyId: company.id, runId: run.id });
+
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const payload = wakeup.mock.calls[0][1].payload;
+    const instructions: string = payload.toolAction.instructions;
+    // Retrying or re-approving hits the same GitHub refusal.
+    expect(instructions).toMatch(/do not retry/i);
+    // Concrete next step the agent can relay to the user.
+    expect(instructions).toContain("github.com/new");
+    expect(instructions).toMatch(/Refresh access/);
+    expect(payload.paperclipAgentMessage.text).toContain(instructions);
+    // Provider text stays in the untrusted result, not in trusted instructions.
+    expect(instructions).not.toContain("Resource not accessible");
+    expect(payload.paperclipAgentMessage.untrustedToolResults[0].error).toContain("Resource not accessible");
+  });
+
   it("commits one human decision and delivers once after the original run yields, including after service restart", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });

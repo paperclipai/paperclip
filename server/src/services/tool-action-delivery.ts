@@ -22,6 +22,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
+import { githubAccessDeniedInstructions } from "./tool-access/github-access-errors.js";
 
 const terminalStatuses: Array<typeof toolActionRequests.$inferSelect.status> = [
   "executed",
@@ -219,7 +220,7 @@ export function toolActionDeliveryService(
           ({ request, invocation, interaction }) => {
             const result = interaction.result as {
               reason?: string;
-              toolAction?: { resultSummary?: string; errorMessage?: string };
+              toolAction?: { resultSummary?: string; errorMessage?: string; errorCode?: string | null };
             } | null;
             const instructions =
               request.status === "executed"
@@ -229,7 +230,9 @@ export function toolActionDeliveryService(
                   : request.status === "expired" ||
                       request.status === "cancelled"
                     ? "The review is no longer available. Do not execute the stored request. Explain the recorded outcome before requesting another review."
-                    : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
+                    : (result?.toolAction?.errorCode ?? invocation.errorCode) === "github_access_denied"
+                      ? githubAccessDeniedInstructions(invocation.toolName)
+                      : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
             return {
               toolName: invocation.toolName.slice(0, 256),
               actionRequestId: request.id,

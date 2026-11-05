@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { githubAccessError, projectGitHubActionResult } from "./github-access-errors.js";
+import { githubAccessDeniedInstructions, githubAccessError, projectGitHubActionResult } from "./github-access-errors.js";
 
 describe("GitHub tool access failures", () => {
   it.each(["integration", "personal access token"])("classifies GitHub's %s permission denial", kind => {
@@ -30,5 +30,17 @@ describe("GitHub tool access failures", () => {
       errorMessage: "403 Resource not accessible by integration", updatedAt: new Date().toISOString(),
     } };
     expect(projectGitHubActionResult("github", result)).toMatchObject({ toolAction: { errorCode: "github_access_denied" } });
+  });
+
+  it("gives repository-create recovery steps for both GitHub tool name spellings", () => {
+    for (const toolName of ["mcp.github:create-repository", "mcp.github:create_repository"]) {
+      const text = githubAccessDeniedInstructions(toolName);
+      expect(text).toMatch(/Do not retry/);
+      expect(text).toContain("https://github.com/new");
+      expect(text).toContain("Refresh access");
+    }
+    const other = githubAccessDeniedInstructions("mcp.github:create_issue");
+    expect(other).toMatch(/Do not retry/);
+    expect(other).not.toContain("github.com/new");
   });
 });
