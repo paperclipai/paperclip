@@ -28,9 +28,11 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function render() {
+function render(assigneeAgentId: string | null = "agent-1") {
   flushSync(() => root.render(
-    <QueryClientProvider client={client}><IssueContextUsageRow issueId="issue-1" hasActiveRun={false} /></QueryClientProvider>,
+    <QueryClientProvider client={client}>
+      <IssueContextUsageRow issueId="issue-1" assigneeAgentId={assigneeAgentId} hasActiveRun={false} />
+    </QueryClientProvider>,
   ));
 }
 
@@ -62,6 +64,15 @@ describe("IssueContextUsageRow", () => {
     expect(retry).toBeTruthy();
     retry!.click(); await settle();
     expect(container.textContent).toContain("10%");
+  });
+
+  it("drops the previous assignee's reading after an idle reassignment", async () => {
+    api.getContextUsage.mockResolvedValueOnce(reading).mockResolvedValueOnce(null);
+    render("agent-1"); await settle();
+    expect(container.textContent).toContain("10%");
+    render("agent-2"); await settle();
+    expect(api.getContextUsage).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toBe("");
   });
 
   it("keeps the last reading when a refresh fails", async () => {

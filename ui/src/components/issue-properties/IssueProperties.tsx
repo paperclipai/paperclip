@@ -2769,7 +2769,7 @@ export function IssueProperties({
 
         {contextUsage !== undefined
           ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
-          : <IssueContextUsageRow issueId={issue.id} hasActiveRun={hasActiveRun} />}
+          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (

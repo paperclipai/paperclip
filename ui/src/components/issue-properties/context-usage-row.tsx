@@ -35,13 +35,16 @@ export function contextUsageFromIssue(value: IssueContextUsage): ContextUsage {
  */
 export function IssueContextUsageRow({
   issueId,
+  assigneeAgentId,
   hasActiveRun,
 }: {
   issueId: string;
+  /** The reading belongs to the assignee's session, so a reassignment refetches it. */
+  assigneeAgentId: string | null;
   hasActiveRun: boolean;
 }) {
   const query = useQuery({
-    queryKey: queryKeys.issues.contextUsage(issueId),
+    queryKey: queryKeys.issues.contextUsage(issueId, assigneeAgentId),
     queryFn: () => issuesApi.getContextUsage(issueId),
     refetchInterval: hasActiveRun ? ACTIVE_RUN_REFRESH_MS : false,
     staleTime: hasActiveRun ? 0 : 60_000,
