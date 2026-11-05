@@ -95,7 +95,7 @@ import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
-import { readNativeLocalProcessStop, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
+import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import { setNativeExecutionActive } from "./native-active-runs.js";
@@ -3015,7 +3015,8 @@ export function rebaseRetainedNativeCleanupProviderHome(
 export async function verifyStoppedNativeSessionForContinuation(
   db: Db,
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
-    "status" | "finishedAt" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson">,
+    "status" | "finishedAt" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson" |
+    "errorCode" | "createdAt" | "processPid" | "processGroupId" | "processStartedAt">,
 ): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
   try {
     if (run.runtimeMode !== "native" || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
@@ -3024,22 +3025,66 @@ export async function verifyStoppedNativeSessionForContinuation(
     if (!(["codex", "acpx"] as string[]).includes(execution.provider.kind) ||
         execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
         execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
-        nativeSessionKey(execution) !== run.nativeSessionId ||
-        record(run.runnerProfileJson).nativeToolContractFingerprint !== nativeToolContractFingerprintForTarget("local")) return null;
+        nativeSessionKey(execution) !== run.nativeSessionId) return null;
     const scope = nativeSessionScopeKey(execution);
     const idle = () => !activeNativeSessions.has(run.id) && !executingRunnerdSessionScopes.has(scope) &&
       !initializingSessionToolAuthorities.has(scope) && !warmNativeSessions.has(scope);
     if (!idle()) return null;
     const leases = await db.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
-    if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt || lease.cleanupStatus === "failed")) return null;
-    const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id);
-    if (!stopped) return null;
+    if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
+        lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
     const root = scopedRunnerdStateRoot(execution);
     const providerFile = runnerProviderStateFilename(execution);
     const snapshot = cleanupStateSnapshot(root, providerFile);
     const identity = record(snapshot.control.identity);
-    if (!durableIdentityMatchesExecution(identity, execution) || identity.runnerInstanceId !== run.runnerInstanceId ||
+    let owner = run;
+    let ownerExecution = execution;
+    if (identity.runId !== run.id) {
+      if (run.errorCode !== "native_session_cleanup_quarantined" || typeof identity.runId !== "string") return null;
+      const [started] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+          "session.started", "session.resumed", "session.reconciled"]))).limit(1);
+      if (started) return null;
+      const [retainedRow] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, identity.runId),
+        eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.nativeIssueId, run.nativeIssueId),
+        eq(heartbeatRuns.nativeSessionId, run.nativeSessionId), eq(heartbeatRuns.runnerInstanceId, run.runnerInstanceId),
+      )).for("update", { noWait: true }).limit(1);
+      const retained = retainedRow ? await withReleasedNativeRunProcess(db, retainedRow) : null;
+      if (!retained || retained.runtimeMode !== "native" ||
+          !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(retained.status) ||
+          !retained.finishedAt || retained.finishedAt > run.createdAt ||
+          retained.controllerLeaseExpiresAt && retained.controllerLeaseExpiresAt > new Date() ||
+          !retained.processStartedAt || !run.processStartedAt ||
+          retained.processStartedAt.getTime() !== run.processStartedAt.getTime() ||
+          retained.processPid !== run.processPid || retained.processGroupId !== run.processGroupId) return null;
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, run.nativeIssueId),
+        eq(nativeRunFinalizations.runId, retained.id),
+      )).for("update", { noWait: true }).limit(1);
+      if (!coordinator || !["committed", "terminal_failure"].includes(coordinator.phase) || coordinator.leaseOwner ||
+          coordinator.nextAttemptAt || coordinator.recoveryState) return null;
+      ownerExecution = parseNativeExecutionInput(record(retained.runnerProfileJson).nativeExecutionInput);
+      if (ownerExecution.binding.runId !== retained.id || ownerExecution.binding.companyId !== run.companyId ||
+          ownerExecution.binding.agentId !== run.agentId || ownerExecution.binding.issueId !== run.nativeIssueId ||
+          nativeSessionScopeKey(ownerExecution) !== scope || ownerExecution.workspace.cwd !== execution.workspace.cwd) return null;
+      const ownerLeases = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, retained.id)));
+      if (ownerLeases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
+          lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
+      owner = retained;
+    }
+    let stop = await readNativeLocalProcessStop(db, owner.companyId, owner.id);
+    if (!stop && owner.processPid && owner.processPid > 1 && owner.processGroupId === owner.processPid &&
+        await recordedLocalExecutionStopped(db, owner)) {
+      stop = { processPid: owner.processPid, processGroupId: owner.processPid,
+        ...(owner.processStartedAt ? { processStartedAt: owner.processStartedAt.toISOString() } : {}) };
+    }
+    const stopped = stop;
+    if (!stopped || activeNativeSessions.has(owner.id)) return null;
+    if (!durableIdentityMatchesExecution(identity, ownerExecution) || identity.runnerInstanceId !== owner.runnerInstanceId ||
         !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"].every(key =>
           typeof identity[key] === "string" && identity[key] && snapshot.runner[key] === identity[key]) ||
         !Array.isArray(snapshot.control.committedEvents)) return null;
@@ -3048,7 +3093,7 @@ export async function verifyStoppedNativeSessionForContinuation(
     if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(snapshot.control.schema)) ||
         snapshot.runner.schema !== RUNNERD_STATE_SCHEMA ||
         snapshot.provider.schema !== (execution.provider.kind === "codex" ? "paperclip.runner.codex-provider-state.v1" : ACPX_PROVIDER_STATE_SCHEMA) ||
-        !["turn_active", "prepared", "suspended"].includes(String(snapshot.provider.lifecycle)) ||
+        !["turn_active", "prepared", "suspended", "session_open"].includes(String(snapshot.provider.lifecycle)) ||
         snapshot.provider.startupAttempt != null) return null;
     const pending = JSON.stringify([snapshot.runner.outbox, snapshot.provider.pendingEvents, snapshot.provider.queuedEvents]);
     if (/session\.(started|resumed|reconciled)/.test(pending)) return null;
@@ -3056,36 +3101,42 @@ export async function verifyStoppedNativeSessionForContinuation(
     const providerEvents = events.filter(event => ["session.started", "session.resumed", "session.reconciled"].includes(String(event.eventType)));
     if (!providerEvents.length) return null;
     const receipts = await db.select().from(heartbeatRunEvents).where(and(
-      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-      eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, owner.id),
+      eq(heartbeatRunEvents.sourceInstanceId, owner.runnerInstanceId!),
       inArray(heartbeatRunEvents.eventType, ["session.started", "session.resumed", "session.reconciled", "harness.diagnostic"])));
+    const providerReceipts = receipts.filter(row => row.eventType !== "harness.diagnostic")
+      .sort((a, b) => Number(a.sourceSeq) - Number(b.sourceSeq));
+    if (providerReceipts.length !== providerEvents.length) return null;
     const providerPids = new Set<number>();
-    for (const event of providerEvents) {
+    for (const [index, event] of providerEvents.entries()) {
       const provider = record(event.payload);
-      if (!validatePrpEvent(event).ok || event.sourceKind !== "runner" || event.sourceInstanceId !== run.runnerInstanceId ||
-          event.runId !== run.id || event.normalizedSessionId !== run.nativeSessionId ||
+      if (!validatePrpEvent(event).ok || event.sourceKind !== "runner" || event.sourceInstanceId !== owner.runnerInstanceId ||
+          event.runId !== owner.id || event.normalizedSessionId !== run.nativeSessionId ||
           typeof provider.providerSessionId !== "string" || !provider.providerSessionId ||
           !cleanupProcessAbsent(provider.processId) || provider.processId === stopped.processPid) return null;
       if (event.eventType === "session.reconciled" &&
           (!providerPids.has(Number(provider.previousProcessId)) || !cleanupProcessAbsent(provider.previousProcessId))) return null;
-      const receipt = receipts.find(row => row.sourceEventId === `${run.runnerInstanceId}:${run.id}:${event.sourceSeq}`);
+      const receipt = providerReceipts[index];
       const durable = record(record(receipt?.payload).prpEvent);
       const durableProvider = record(durable.payload);
       if (!receipt || !validatePrpEvent(durable).ok || durable.sourceInstanceId !== event.sourceInstanceId ||
-          durable.runId !== run.id || durable.normalizedSessionId !== run.nativeSessionId ||
+          durable.runId !== owner.id || durable.normalizedSessionId !== run.nativeSessionId ||
           // Normalized session-open receipts omit turn/item IDs. Those belong
           // to the durable runner identity checked above, not the open event.
-          durable.sourceSeq !== event.sourceSeq || durable.eventType !== event.eventType ||
+          durable.sourceSeq !== receipt.sourceSeq || durable.eventType !== event.eventType ||
+          receipt.eventType !== durable.eventType || receipt.sourceInstanceId !== durable.sourceInstanceId ||
+          receipt.sourceEventId !== `${owner.runnerInstanceId}:${owner.id}:${durable.sourceSeq}` ||
+          durable.sourceEventId !== receipt.sourceEventId ||
           receipt.sourcePayloadSha256 !== nativeSha256(durable) ||
           (durableProvider.processId !== undefined && durableProvider.processId !== provider.processId) ||
           (durableProvider.driverSessionId ?? durableProvider.providerSessionId) !== provider.providerSessionId) return null;
       providerPids.add(provider.processId);
     }
-    if (receipts.filter(row => record(record(row.payload).prpEvent).eventType !== "harness.diagnostic").length !== providerEvents.length) return null;
     // ACPX's sidecar is not its agent process. Include separately recorded
     // owners from both the durable journal and the independent DB/checkpoint.
     // Extra evidence can only add a stop requirement, never waive one.
     const owners: Record<string, unknown>[] = [record(record(run.runnerProfileJson?.sessionCheckpoint).process),
+      record(record(owner.runnerProfileJson?.sessionCheckpoint).process),
       snapshot.provider, record(snapshot.provider.identity), record(snapshot.provider.descriptor)];
     for (const event of [...events, ...receipts.map(row => record(record(row.payload).prpEvent))]) {
       const payload = record(event.payload);
@@ -3103,16 +3154,18 @@ export async function verifyStoppedNativeSessionForContinuation(
       if (!cleanupProcessAbsent(pid)) return null;
       providerPids.add(pid);
     }
-    const unchanged = () => idle() && cleanupProcessAbsent(stopped.processPid) &&
+    const unchanged = () => idle() && !activeNativeSessions.has(owner.id) && cleanupProcessAbsent(stopped.processPid) &&
       [...providerPids].every(cleanupProcessAbsent) && cleanupStateSnapshot(root, providerFile).fingerprint === snapshot.fingerprint;
     return {
       evidence: { schema: "paperclip.stopped_native_conversation.v1", runId: run.id,
+        ownerRunId: owner.id,
+        executionWorkspaceId: execution.binding.executionWorkspaceId, workspaceCwd: execution.workspace.cwd,
         nativeSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId,
         processPid: stopped.processPid, providerPids: [...providerPids], stateFingerprint: snapshot.fingerprint },
       retire: () => {
-        try { return unchanged() && completeTerminatedLocalNativeSessionCleanup({
-          companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId!,
-        }); } catch { return false; }
+        try { return unchanged() && [owner.id, run.id].every(runId => completeTerminatedLocalNativeSessionCleanup({
+          companyId: run.companyId, runId, runnerInstanceId: run.runnerInstanceId!,
+        })); } catch { return false; }
       },
     };
   } catch { return null; }

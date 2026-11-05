@@ -5972,15 +5972,20 @@ describe("stopped native conversation physical cleanup", () => {
       ...(mode === "startup_intent" ? { startupAttempt: { phase: "intent" } } : {}),
       ...(mode === "pending_identity" ? { pendingEvents: [{ eventType: "session.started" }] } : {}),
     };
-    const normalizedEvent = mode === "normalized_session_receipt" ? { ...event, turnId: undefined, itemId: undefined } : event;
+    const normalizedEvent = { ...event, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`,
+      ...(mode === "normalized_session_receipt" ? { turnId: undefined, itemId: undefined } : {}) };
     const receipt = { sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:1`,
+      sourceSeq: 1, sourceInstanceId: identity.runnerInstanceId, eventType: normalizedEvent.eventType,
       sourcePayloadSha256: mode === "wrong_receipt" ? "wrong" : hash(normalizedEvent), payload: { prpEvent: normalizedEvent } };
+    const normalizedReplacement = { ...replacement, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:2` };
     const stop = { eventType: mode === "new_launch" ? "native.process_start_requested" : "native.local_process_stopped",
       payload: { processPid: mode === "worker_alive" ? process.pid : 99_999_999, processGroupId: mode === "worker_alive" ? process.pid : 99_999_999 } };
     let queryIndex = 0;
     const db = { select() { const rows = [
       [{ provider: mode === "remote" ? "daytona" : "local", releasedAt: mode === "unreleased" ? null : new Date() }],
-      [stop], mode === "missing_receipt" ? [] : [receipt, ...(mode.startsWith("replacement") ? [{ ...receipt, sourceEventId: `${identity.runnerInstanceId}:${identity.runId}:2`, sourcePayloadSha256: hash(replacement), payload: { prpEvent: replacement } }] : [])],
+      [stop], mode === "missing_receipt" ? [] : [receipt, ...(mode.startsWith("replacement") ? [{ ...receipt,
+        sourceEventId: normalizedReplacement.sourceEventId, sourceSeq: 2, eventType: normalizedReplacement.eventType,
+        sourcePayloadSha256: hash(normalizedReplacement), payload: { prpEvent: normalizedReplacement } }] : [])],
     ][queryIndex++] ?? [];
       const q: any = { from: () => q, where: () => q, orderBy: () => q, limit: () => q,
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)) }; return q;
