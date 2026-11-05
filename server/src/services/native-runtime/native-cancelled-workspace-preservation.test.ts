@@ -207,6 +207,91 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     } finally { await worker.stop(); }
   });
 
+  /** A reassignment Stop of a warm (keep_running) run: the executor settles its
+   * coordinator, then terminal release stops and retains the reusable sandbox
+   * before the preservation worker's next check. */
+  async function stopAndRetainReusableSource(f: Awaited<ReturnType<typeof seed>>, options: { stopReceipt?: boolean } = {}) {
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    const confirmedAt = new Date(lease.acquiredAt.getTime() + 1_000);
+    const releasedAt = new Date(confirmedAt.getTime() + 1);
+    const termination = { schema: "paperclip.remote-termination.v1", companyId: f.companyId, runId: f.runId,
+      leaseId: f.leaseId, provider: "daytona", providerLeaseId: f.reference.providerLeaseId, state: "stopped",
+      confirmedAt: confirmedAt.toISOString() };
+    const receipt = { schema: "paperclip.sandbox-stop-and-retain-receipt.v1", companyId: f.companyId, runId: f.runId,
+      leaseId: f.leaseId, provider: "daytona", providerLeaseId: f.reference.providerLeaseId, requestId: randomUUID(),
+      method: "environmentStopLease", pluginId: lease.metadata?.pluginId, confirmedAt: confirmedAt.toISOString() };
+    await db.update(environmentLeases).set({ status: "released", leasePolicy: "reuse_by_environment",
+      cleanupStatus: "success", releasedAt, metadata: { ...lease.metadata, pendingCleanupInFlight: false,
+        ...(options.stopReceipt === false ? {} : { remoteExecutionTermination: termination, sandboxStopAndRetainReceipt: receipt }) },
+    }).where(eq(environmentLeases.id, f.leaseId));
+    await db.update(executionWorkspaces).set({ mode: "shared_workspace" }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await db.update(heartbeatRuns).set({ errorCode: "issue_reassigned", error: "Cancelled before issue reassignment",
+      runnerProfileJson: { remoteWorkspace: f.reference, nativeResourceDisposition: "keep_running" },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_retry_cancelled", recoveryState: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    return (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0];
+  }
+
+  it.each(["worker", "startup-scan"] as const)("preserves files of a cancelled run whose reusable sandbox was already stopped and retained (%s)", async kind => {
+    const f = await seed();
+    const stopped = await stopAndRetainReusableSource(f);
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      if (kind === "startup-scan") await preserveCancelledNativeWorkspaces(db);
+      else await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(retained.resultJson).toMatchObject({ nativeCancellation: f.nativeCancellation, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } });
+      expect(retained).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned", finishedAt: f.run.finishedAt });
+      // The stopped allocation keeps its receipts. Preservation dispatches no
+      // second stop and grants no execute right on the reusable sandbox.
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(stopped);
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0].evidence).toMatchObject({ runId: f.runId, workspaceRestoreRecovery: { leaseIds: [f.leaseId] } });
+      expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, actionId: actions[0].id })).sources).toHaveLength(1);
+      if (kind === "worker") expect(worker.nextWakeAt()).toBeNull();
+      // A repeated pass records nothing again and starts no work.
+      await preserveCancelledNativeWorkspaces(db);
+      const repeated = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await registerCancelledWorkspacePreservationWork(db, repeated, () => true, async () => true).ready;
+        expect(repeated.nextWakeAt()).toBeNull();
+      } finally { await repeated.stop(); }
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toEqual(actions);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].resultJson).toEqual(retained.resultJson);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ phase: "terminal_failure", leaseOwner: null, resultId: null });
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  it.each(["live-owner", "pending-stop", "no-stop-receipt", "running"] as const)
+  ("does not preserve a stopped reusable sandbox for %s", async invalid => {
+    const f = await seed();
+    const stopped = await stopAndRetainReusableSource(f, { stopReceipt: invalid !== "no-stop-receipt" });
+    if (invalid === "live-owner") await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (invalid === "pending-stop") await db.update(heartbeatRuns).set({ resultJson: {
+      nativeCancellation: { ...f.nativeCancellation, dispatchState: "pending" } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (invalid === "running") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.runId));
+    const errors: unknown[] = [];
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { errors.push(error); } });
+    try {
+      await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      await preserveCancelledNativeWorkspaces(db);
+      expect(errors).toEqual([]);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(run.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(stopped);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    } finally { await worker.stop(); }
+  });
+
   it("rolls preservation back with its outer transaction", async () => {
     const f = await seed();
     await expect(db.transaction(async tx => {
