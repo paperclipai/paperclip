@@ -337,6 +337,7 @@ export const teamInstallExternalCases = [
     gradeTeamInstall,
     {
       authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.team-install.v6",
       expectedRunCount: 2,
       expectedHumanMessageCount: 2,
       attemptTimeoutMs: 480_000,
@@ -381,11 +382,11 @@ export const teamInstallExternalCases = [
         state.initialRunId = (await ctx.allRuns())[0]?.id;
         state.firstConditional = await observeTeamConditions(ctx, state);
         const firstObservation = await observeExternal(ctx, state);
-        // A later correct repeat cannot conceal an unreported initial partial.
+        // A later correct repeat cannot conceal an unaccounted initial outcome.
         const firstGrade = gradeTeamConditions(firstObservation, "initial");
         if (!firstGrade.passed)
           throw new Error(
-            "Actual initial installer did not truthfully preserve/report its genuine conflict and partial outcome before repeat",
+            "Actual initial installer did not truthfully account for its genuine conflict or verified recovery before repeat",
           );
         await ctx.input.evidence("chat-catalog-team-initial-conditional.json", {
           initialRunId: state.initialRunId,
