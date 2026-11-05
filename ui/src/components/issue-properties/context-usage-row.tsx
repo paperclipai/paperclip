@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
-import { RotateCw } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueContextUsage } from "@paperclipai/shared";
 import { issuesApi } from "../../api/issues";
 import { queryKeys } from "../../lib/queryKeys";
+import { QueryErrorState, useQueryView } from "../QueryView";
 import { ContextUsageMeter, type ContextUsage } from "../ContextUsageMeter";
 import { PropertyRow } from "./primitives";
 
@@ -29,7 +29,9 @@ export function contextUsageFromIssue(value: IssueContextUsage): ContextUsage {
 
 /**
  * Context row for the task Properties panel. Renders nothing until the
- * agent's harness has reported a context window for this task.
+ * agent's harness has reported a context window for this task. A cached
+ * reading stays visible through a failed refresh; a failed first load shows
+ * the shared error state with Retry.
  */
 export function IssueContextUsageRow({
   issueId,
@@ -44,6 +46,7 @@ export function IssueContextUsageRow({
     refetchInterval: hasActiveRun ? ACTIVE_RUN_REFRESH_MS : false,
     staleTime: hasActiveRun ? 0 : 60_000,
   });
+  const view = useQueryView(query);
   // Pick up the final measurement once the run settles.
   const wasActive = useRef(hasActiveRun);
   const { refetch } = query;
@@ -51,24 +54,24 @@ export function IssueContextUsageRow({
     if (wasActive.current && !hasActiveRun) void refetch();
     wasActive.current = hasActiveRun;
   }, [hasActiveRun, refetch]);
-  const retry = query.isError ? (
-    <button
-      type="button"
-      onClick={() => void refetch()}
-      disabled={query.isFetching}
-      className="flex items-center gap-1 rounded-md px-1 text-xs text-destructive hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-      data-testid="context-usage-retry"
-      title="Retry loading the context window"
-    >
-      <RotateCw className="size-3" aria-hidden />
-      {query.data ? "Retry" : "Couldn't load. Retry"}
-    </button>
-  ) : null;
-  if (!query.data) return retry ? <PropertyRow label="Context">{retry}</PropertyRow> : null;
+
+  if (view.data) {
+    return (
+      <PropertyRow label="Context">
+        <ContextUsageMeter usage={contextUsageFromIssue(view.data)} />
+      </PropertyRow>
+    );
+  }
+  if (view.kind !== "error") return null;
   return (
     <PropertyRow label="Context">
-      <ContextUsageMeter usage={contextUsageFromIssue(query.data)} />
-      {retry}
+      <QueryErrorState
+        error={view.error}
+        size="inline"
+        action="load the context window"
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     </PropertyRow>
   );
 }

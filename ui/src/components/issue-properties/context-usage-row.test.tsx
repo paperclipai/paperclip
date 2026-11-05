@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({ getContextUsage: vi.fn() }));
 vi.mock("@/api/issues", () => ({ issuesApi: { getContextUsage: api.getContextUsage } }));
+import { ApiError } from "@/api/api-error";
 import { IssueContextUsageRow } from "./context-usage-row";
 
 async function settle() {
@@ -53,12 +54,20 @@ describe("IssueContextUsageRow", () => {
   });
 
   it("shows a failed request with a retry that recovers", async () => {
-    api.getContextUsage.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(reading);
+    api.getContextUsage
+      .mockRejectedValueOnce(new ApiError("Internal error", 500, { error: "internal" }))
+      .mockResolvedValue(reading);
     render(); await settle();
-    const retry = container.querySelector<HTMLButtonElement>("[data-testid=context-usage-retry]");
-    expect(retry?.textContent).toContain("Couldn't load");
+    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Retry"));
+    expect(retry).toBeTruthy();
     retry!.click(); await settle();
-    expect(container.querySelector("[data-testid=context-usage-retry]")).toBeNull();
+    expect(container.textContent).toContain("10%");
+  });
+
+  it("keeps the last reading when a refresh fails", async () => {
+    api.getContextUsage.mockResolvedValueOnce(reading).mockRejectedValue(new ApiError("Internal error", 500, { error: "internal" }));
+    render(); await settle();
+    await client.refetchQueries(); await settle();
     expect(container.textContent).toContain("10%");
   });
 });
