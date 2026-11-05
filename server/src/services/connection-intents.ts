@@ -55,6 +55,7 @@ import {
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { createNativeConnectorYield } from "./connection-native-yield.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService, type InteractionResolutionMutationOptions } from "./issue-thread-interactions.js";
@@ -452,6 +453,9 @@ export function connectionIntentService(db: Db) {
     const inventory = await connectionInventory(run.companyId);
     const candidates: Array<{ item: ConnectionSearchResultItem; score: number; nameScore: number }> = [];
     const authorizedCatalogs = new Map<string, Awaited<ReturnType<typeof indexedCatalog>>>();
+    // New setup of these native services is offered through aggregators instead.
+    const yieldsToAggregators = createNativeConnectorYield(settings);
+    const yieldingServices = new Set<string>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
       .filter(method => method.purpose !== "channel" || app.slug === "agentmail"
         || (method.provider === "github" ? settings.enableGitHubReviewBots : settings.enableChatConnectors));
@@ -482,6 +486,7 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
+      if (definition && !matching.length && await yieldsToAggregators(definition)) yieldingServices.add(service);
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
         const authorized = grants.some((grant) => grant.status === "active" && (
@@ -554,7 +559,8 @@ export function connectionIntentService(db: Db) {
     // Native preference applies to the same app or equally strong name matches.
     // A typo match such as Notion must not hide the distinctly named app Motion.
     const exact = candidates.filter(({ item, nameScore }) => ((nameScore >= 200 && Math.floor(nameScore / 100) >= bestExternalTier) || item.service === publicService?.slug)
-      && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
+      && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length))
+      && !yieldingServices.has(item.service));
     const ranked = () => candidates.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));

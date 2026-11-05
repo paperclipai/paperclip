@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getConnectableAppDefinition } from "./app-definitions.js";
-import { isConnectorFeatureEnabled } from "./connector-availability.js";
+import { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 import { appDefinitionSchema } from "./validators/app-definition.js";
 import { instanceExperimentalSettingsSchema } from "./validators/instance.js";
 
@@ -45,5 +45,25 @@ describe("Slack tool connection guidance", () => {
     const method = getConnectableAppDefinition("slack")!.methods.find((candidate) => candidate.key === "mcp-oauth")!;
     expect(method.whenToUse).not.toMatch(/quickest/i);
     expect(method.consoleLinks?.register).toBe("https://api.slack.com/apps");
+  });
+});
+
+describe("native connectors that need a customer-created OAuth app", () => {
+  it("flags Slack only while its chat setup is unavailable", () => {
+    const slack = getConnectableAppDefinition("slack")!;
+    expect(nativeConnectorRequiresCustomerOAuthApp(slack, {})).toBe(true);
+    expect(nativeConnectorRequiresCustomerOAuthApp(slack, { enableChatConnectors: true })).toBe(false);
+  });
+
+  it("does not flag connectors with a managed, dynamic-registration, or credential path", () => {
+    const asana = getConnectableAppDefinition("asana")!;
+    expect(nativeConnectorRequiresCustomerOAuthApp(asana, {})).toBe(true);
+    expect(nativeConnectorRequiresCustomerOAuthApp({ ...asana, ownershipAvailability: {
+      platform_shared: true, platform_provisioned: false, customer: true, dcr: true,
+    } }, {})).toBe(false);
+    for (const slug of ["notion", "linear", "github"]) {
+      expect(nativeConnectorRequiresCustomerOAuthApp(getConnectableAppDefinition(slug)!, {}), slug).toBe(false);
+    }
+    expect(nativeConnectorRequiresCustomerOAuthApp(null, {})).toBe(false);
   });
 });

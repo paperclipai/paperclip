@@ -40,11 +40,13 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   CONNECTABLE_APP_DEFINITIONS,
   normalizeConnectionQuery,
+  nativeConnectorRequiresCustomerOAuthApp,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { useConnectorAvailability } from "@/hooks/useConnectorAvailability";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { appCopyFor } from "@/lib/app-gallery-copy";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -377,6 +379,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const connectorAvailability = useConnectorAvailability();
   const googleWorkspaceConnectorEnabled = connectorAvailability.enabled(getConnectableAppDefinition("google-workspace"));
+  const cloudManaged = useCloudInstance()?.managed === true;
   const { setBreadcrumbs } = useBreadcrumbs();
   const { status: connectivityStatus } = useConnectivity();
   const [query, setQuery] = useState("");
@@ -777,8 +780,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
     // Native definitions take precedence even when temporarily hidden or unavailable.
     // Public metadata never creates an application, account, or installed status.
-    const yieldsToAggregators = (slug: string) => !googleWorkspaceConnectorEnabled
-      && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug) && !(rowsBySlug.get(slug)?.connections.length);
+    // On Cloud, a native connector whose every setup path needs a customer-created
+    // OAuth app (such as Slack without Chat connectors) yields new setup to the
+    // aggregators' managed sign-in. Saved native accounts keep their native row.
+    const hasAggregatorRoute = (row: ConnectorRowModel) => managedCatalog.some((app) =>
+      [app.name, app.slug, ...app.aliases].some((alias) =>
+        [row.slug, row.name].some((name) => aggregatorAppIdentity(alias) === aggregatorAppIdentity(name))));
+    const yieldsToAggregators = (slug: string) => {
+      const row = rowsBySlug.get(slug);
+      if (row?.connections.length || row?.chatEndpoints.length) return false;
+      if (!googleWorkspaceConnectorEnabled && BUILT_IN_GOOGLE_CONNECTOR_SLUGS.has(slug)) return true;
+      return cloudManaged && Boolean(row?.entry) && hasAggregatorRoute(row!)
+        && nativeConnectorRequiresCustomerOAuthApp(row!.entry, {
+          enableChatConnectors: chatConnectorsEnabled,
+          enableGitHubReviewBots: githubEnabled,
+        });
+    };
     const nativeIdentities = new Set([...CONNECTABLE_APP_DEFINITIONS, ...(galleryQuery.data?.apps ?? [])]
       .filter((app) => !yieldsToAggregators(appDefinitionSlug(app)))
       .flatMap((app) => [appDefinitionName(app), appDefinitionSlug(app)].map(aggregatorAppIdentity)));
@@ -800,7 +817,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       }));
 
     return [...rowsBySlug.values(), ...customRows, ...aggregatorRows]
-      .filter((row) => row.aggregatorApp || !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
+      .filter((row) => row.aggregatorApp || (!LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug) && !yieldsToAggregators(row.slug))
         || row.connections.length > 0
         || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
       .map((row) => ({
@@ -831,6 +848,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,
+    cloudManaged,
     upstreamAppsBySlug,
   ]);
 
