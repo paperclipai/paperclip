@@ -17,6 +17,7 @@ export function registerEnvironmentCleanupWork(
   const spacing = input.minimumSpacingMs ?? 30_000;
   function register(queue: DeliveryQueue, run: () => Promise<unknown>, deadline: () => Promise<number | null>, minimumSpacing = spacing) {
     let requested = 1, reconciled = 0, next: number | null = null, earliest = 0;
+    let sweepComplete = false;
     const worker = coordinator.register(queue, {
       retryMs: spacing, pausePassiveMaintenance: true,
       onSettled: () => { requested++; },
@@ -28,15 +29,18 @@ export function registerEnvironmentCleanupWork(
           // cheap owner read can discharge it without advancing the provider
           // sweep cadence; later notifications keep their own generation.
           const generation = requested;
-          if (await deadline() === null) { next = null; reconciled = generation; }
+          if (sweepComplete && await deadline() === null) { next = null; reconciled = generation; }
           return;
         }
         const generation = ++requested;
         earliest = Date.now() + minimumSpacing;
+        // A failed sweep may leave unread work outside the deadline rows.
+        sweepComplete = false;
         await run();
         const due = await deadline();
         next = due === null ? null : Math.max(due, earliest);
         reconciled = generation;
+        sweepComplete = true;
       },
       hasPending: async () => requested !== reconciled,
       nextRunAt: () => next,
