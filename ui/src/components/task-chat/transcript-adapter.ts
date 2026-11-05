@@ -1296,8 +1296,17 @@ export function paperclipRunnerActivityItems(
  * terminal receipt at the request's first-seen position.
  */
 export function paperclipRunnerTimelineItems(
-  parsed: readonly TaskChatItem[],
+  allParsed: readonly TaskChatItem[],
 ): TaskChatItem[] {
+  // Decide retry recovery on the full transcript: the final answer that
+  // proves recovery is filtered out of the display rows below.
+  const parsed = allParsed.map((item, index) =>
+    item.kind === "protocol" && item.surface === "provider_activity" &&
+      statusNoticeCategory(item) === "provider_retry" && !item.resolved &&
+      allParsed.slice(index + 1).some(statusNoticeResolvesRetry)
+      ? { ...item, resolved: true }
+      : item,
+  );
   const activityIds = new Set(
     paperclipRunnerActivityItems(parsed).map((item) => item.id),
   );
@@ -1816,7 +1825,7 @@ export function buildTurnTimelineRows(
       // A compaction still "running" when the turn has ended was cut short.
       const stoppedCompaction = !running && statusNoticeCategory(item) === "context_compaction" &&
         item.details.find((detail) => detail.label === "Phase")?.value === "running";
-      const resolved = retry && later.some(statusNoticeResolvesRetry);
+      const resolved = retry && (item.resolved === true || later.some(statusNoticeResolvesRetry));
       // A retry with no later work in a turn that has ended never recovered.
       const stoppedRetry = retry && !resolved && !running;
       rows.push(resolved

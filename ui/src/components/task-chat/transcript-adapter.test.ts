@@ -2943,6 +2943,15 @@ describe("harness status notices", () => {
     expect(rows(false)[0]).not.toHaveProperty("resolved");
   });
 
+  it("treats a retry followed only by the final answer as recovered", () => {
+    const answer: TranscriptEntry = { kind: "assistant", ts: TS, text: "Done: 8 lines.", channel: "final" } as TranscriptEntry;
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, answer], { runId: "r", running: false })), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[0]).not.toMatchObject({ status: "interrupted" });
+  });
+
   it("lets a context.compacted divider replace the completed compaction chip", () => {
     const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
     const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };
