@@ -15,6 +15,7 @@ import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, verifyN
 import { hasLocalNativeHarnessObligations, migrateNativeHarnessBackups, prestageNativeHarnessBackups } from "./native-harness-backup-migration.js";
 import { nativeHarnessBackupExpirationService } from "./native-harness-backup-expiration.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import * as backupArchive from "./native-harness-backup-archive.js";
 
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
@@ -238,6 +239,31 @@ describeEmbeddedPostgres("durable native provider backups", () => {
       await symlink(f.root + "-retained", f.root);
     } else await writeFile(join(f.root, kind === "manifest" ? "manifest.json" : "runner/runner-state.json"), "{");
   }
+  it.each(["source", "output"])("distinguishes %s ENOENT during archive capture after source preparation", async kind => {
+    const [bad, good] = await releasedFixtures(), capture = backupArchive.captureNativeHarnessArchive;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const archive = vi.spyOn(backupArchive, "captureNativeHarnessArchive").mockImplementation(async (root, target, signal, limit) => {
+      if (root === bad.root) {
+        if (kind === "source") await rename(root, root + "-retained");
+        else target = join(target, "missing-parent", "archive");
+      }
+      return capture(root, target, signal, limit);
+    });
+    try {
+      const preparation = prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) });
+      if (kind === "source") {
+        expect(await preparation).toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_changed: 1 } });
+        expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+          reason: "native_harness_migration_source_unavailable" });
+        expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+      } else {
+        await expect(preparation).rejects.toMatchObject({ code: "ENOENT" });
+        expect(warning).not.toHaveBeenCalled();
+        expect(await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest))).toHaveLength(0);
+      }
+      expect(await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).toHaveLength(0);
+    } finally { archive.mockRestore(); warning.mockRestore(); }
+  });
   it.each(["manifest", "runner", "unsafe"])("defers a damaged %s source and still copies the next eligible backup", async kind => {
     const [bad, good] = await releasedFixtures(), warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
