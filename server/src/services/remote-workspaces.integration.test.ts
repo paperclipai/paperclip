@@ -26,6 +26,7 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { RemoteWorkspaceRestoreError } from "./remote-workspace-transport.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
 import { workspaceFileResourceService } from "./workspace-file-resources.js";
@@ -424,8 +425,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (mode === "occupied root") {
       await fs.mkdir(expectedRemoteRoot, { recursive: true });
       await fs.writeFile(path.join(expectedRemoteRoot, "unpublished.txt"), "preserve unknown preparation\n");
-      await expect(prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second }))
-        .rejects.toThrow("remote_workspace_operation_failed");
+      const occupied = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      // The restore names its step and the occupied folder; it is not retried.
+      expect(occupied).toBeInstanceOf(RemoteWorkspaceRestoreError);
+      expect(occupied).toMatchObject({ step: "sandbox_restore", retryable: false, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=inspect_root reason=occupied_root" });
       expect(await fs.readFile(path.join(expectedRemoteRoot, "unpublished.txt"), "utf8")).toBe("preserve unknown preparation\n");
       expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
         .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));

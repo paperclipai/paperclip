@@ -1035,6 +1035,21 @@ replacement. The run records the refusal by closed labels only (cause label, HTT
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
+A saved workspace that cannot be restored into a new allocation before provider
+dispatch fails with `remote_workspace_restore_failed`. The run error names the
+server step (`snapshot_lookup`, `snapshot_download`, or `sandbox_restore`) and,
+for sandbox commands, the script stage plus closed fields such as
+`reason=occupied_root`, `archive=manifest_mismatch`, `code=EIO`, `disk=full`, or
+`git=auth_failed`. Command output, paths, and provider text are never copied;
+prepare and repository commands use the same grammar. A failed restore never
+publishes over an existing folder and never changes the saved version. The run
+uses the bounded bootstrap budget only when the owner re-reads the same writer,
+epoch, and saved version with no unsaved work, and the sandbox did not name a
+refusal reason. A missing saved version, a named refusal (for example an occupied
+folder), or an exhausted budget leaves a board-owned recovery action. Stranded-work
+recovery names this failure for the statuses it scans; for other statuses, such as
+a `blocked` task woken by a reply, the failure path records the action directly.
+
 The provider's own idle auto-stop must not coincide with the warm runner idle
 window. The host forwards the run's effective warm idle window (environment
 `runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider

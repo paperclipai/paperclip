@@ -493,7 +493,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     return { companyId, agentId, issueId, runId, now };
   }
 
-  it.each(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed"].flatMap(errorCode =>
+  it.each(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed"].flatMap(errorCode =>
     (["resume", "paused", "Stop", "dependency"] as const).map(action => [errorCode, action] as const)))("bounds %s bootstrap retries across restart and honors %s", async (errorCode, action) => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
     await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
