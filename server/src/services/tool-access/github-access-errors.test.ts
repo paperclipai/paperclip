@@ -36,6 +36,7 @@ describe("GitHub tool access failures", () => {
     for (const toolName of ["mcp.github:create-repository", "mcp.github:create_repository"]) {
       const text = githubAccessDeniedInstructions(toolName, "managed");
       expect(text).toMatch(/Do not retry/);
+      expect(text).toMatch(/until GitHub access is repaired/);
       expect(text).toContain("https://github.com/new");
       expect(text).toContain("Refresh access");
     }

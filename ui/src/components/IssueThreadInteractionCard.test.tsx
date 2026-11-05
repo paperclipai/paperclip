@@ -1436,6 +1436,7 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("GitHub access needed");
     expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
     expect(host.textContent).toContain("Check the connected account");
+    expect(host.textContent).toContain("ask the agent to continue");
     expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
     const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
     expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);

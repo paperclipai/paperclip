@@ -20,10 +20,13 @@ import {
   toolInvocations,
   toolActionDeliveries,
   toolConnections,
+  toolApplications,
   type Db,
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
-import { githubAccessDeniedInstructions } from "./tool-access/github-access-errors.js";
+import type { RequestConfirmationResult } from "@paperclipai/shared";
+import { githubAccessDeniedInstructions, projectGitHubActionResult } from "./tool-access/github-access-errors.js";
+import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 
 const terminalStatuses: Array<typeof toolActionRequests.$inferSelect.status> = [
   "executed",
@@ -124,7 +127,8 @@ export function toolActionDeliveryService(
           request: toolActionRequests,
           invocation: toolInvocations,
           interaction: issueThreadInteractions,
-          connectionMethodKey: sql<string | null>`coalesce(${toolConnections.config}->>'connectionMethodKey', ${toolConnections.transportConfig}->>'connectionMethodKey')`,
+          connectionMethodKey: sql<string | null>`case when ${toolApplications.id} is null then null else coalesce(${toolConnections.config}->>'connectionMethodKey', ${toolConnections.transportConfig}->>'connectionMethodKey') end`,
+          sourceTemplateKey: sql<string | null>`case when ${toolApplications.id} is null then null else ${toolSourceTemplateKeySql} end`,
         })
         .from(toolActionDeliveries)
         .innerJoin(
@@ -158,6 +162,10 @@ export function toolActionDeliveryService(
           eq(toolConnections.id, toolInvocations.connectionId),
           eq(toolConnections.companyId, source.companyId),
           or(isNull(toolInvocations.applicationId), eq(toolConnections.applicationId, toolInvocations.applicationId)),
+        ))
+        .leftJoin(toolApplications, and(
+          eq(toolApplications.id, toolConnections.applicationId),
+          eq(toolApplications.companyId, source.companyId),
         ))
         .where(
           and(
@@ -224,8 +232,8 @@ export function toolActionDeliveryService(
         // result reference for omitted or shortened results; never replay calls.
         const inlineOutcomes = outcomes.slice(0, 8);
         const toolActions = inlineOutcomes.map(
-          ({ request, invocation, interaction, connectionMethodKey }) => {
-            const result = interaction.result as {
+          ({ request, invocation, interaction, connectionMethodKey, sourceTemplateKey }) => {
+            const result = projectGitHubActionResult(sourceTemplateKey, interaction.result as RequestConfirmationResult | null) as {
               reason?: string;
               toolAction?: { resultSummary?: string; errorMessage?: string; errorCode?: string | null };
             } | null;
