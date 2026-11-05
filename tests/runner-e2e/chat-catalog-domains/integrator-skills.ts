@@ -19,17 +19,19 @@ function websiteChecklistChecks(markdown: string): boolean[] {
   const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
   const mobileRequirements = [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i];
   const mobileWaiver = (text: string) => {
-    const clauses = text.split(/[.!?;\n]+/);
+    const clauses = text.split(/[.!?;\n]+|,\s*(?:but\s+)?(?=(?:don't|do not|never|avoid|no need to)\b)/i);
     const affirmative = clauses.some(clause => mobileRequirements.every(pattern => pattern.test(clause))
       && !/\b(?:don't|do not|never|avoid|no need to|need not|skip|omit|ignore|optional|not required)\b/i.test(clause));
     return /\b(?:skip|omit|ignore|need not|not required|optional)\b/i.test(text)
+      || clauses.some(clause => /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.test(clause)
+        && /\b(?:unnecessary|not necessary|no requirement to)\b/i.test(clause))
       || clauses.some(clause => [...clause.matchAll(/\b(?:don't|do not|never|avoid|no need to)\s+/gi)].some(negation => {
         const action = clause.slice(negation.index + negation[0].length).trimStart();
         const target = /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.exec(action);
-        const overflow = /\boverflow(?:ing)?\b/i.exec(action);
+        const overflow = /\b(?:overflow(?:ing)?|horizontal scroll(?:ing)?|scroll(?:ing)? horizontally)\b/i.exec(action);
         const restriction = /\b(?:on|with|using|against)\s+(.+)$/i.exec(action)?.[1];
         const qualified = !!restriction
-          && /^(?:(?:a|an|the|any|all|every|this|that|these|those)\s+)?(?:cached|stale|outdated|previous|old|archived)\s+(?:build|version|snapshot|artifact|bundle)s?\b/i.test(restriction)
+          && /^(?:(?:a|an|the|any|all|every|this|that|these|those)\s+)?(?:cached|stale|outdated|previous|old|archived)\s+(?:production\s+)?(?:build|version|snapshot|artifact|bundle)s?\b/i.test(restriction)
           && !/\b(?:current|live|selected|375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
         return !!target && (!overflow || target.index < overflow.index) && !(affirmative && qualified);
       }));
