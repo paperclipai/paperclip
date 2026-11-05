@@ -11,7 +11,8 @@ import { useReducedMotion } from "motion/react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { cn } from "@/lib/utils";
 import { useTaskChatExpansion } from "./expansion-state";
-import type { TaskChatActivityPhaseItem } from "./task-chat-model";
+import type { TaskChatActivityPhaseItem, TaskChatAutoReview } from "./task-chat-model";
+import { AutoApprovedBadge, AutoReviewDetail } from "./TaskChatAutoReview";
 import {
   protocolActivityIsRunning,
   protocolActivityLabel,
@@ -72,6 +73,8 @@ function presentation(item: Activity, active: boolean) {
       target: protocol.detail,
       mono: true,
       running: active && protocolActivityIsRunning(item),
+      tone: protocol.tone,
+      note: protocol.note,
     };
   }
   if (item.kind === "marker")
@@ -114,6 +117,7 @@ function ActivityContent({
   const shimmer = useTaskChatShimmer(item.id);
   if (!row) return null;
   const Icon = row.icon;
+  const autoReview = itemAutoReview(item);
   return (
     <span
       className="flex min-w-0 flex-1 items-center gap-2"
@@ -130,7 +134,10 @@ function ActivityContent({
         className="flex size-5 shrink-0 items-center justify-center"
         data-activity-icon
       >
-        <Icon className="size-3.5" aria-hidden="true" />
+        <Icon
+          className={cn("size-3.5", "tone" in row && (row.tone === "blocked" || row.tone === "failed") && "text-destructive")}
+          aria-hidden="true"
+        />
       </span>
       <span data-conversation-tool-running={row.running && shimmer && (item.kind === "tool" || (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution")) ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
         <span
@@ -154,6 +161,7 @@ function ActivityContent({
           </span>
         ) : null}
       </span>
+      {autoReview ? <AutoApprovedBadge review={autoReview} /> : null}
     </span>
   );
 }
@@ -210,7 +218,23 @@ function RollingActivity({
   );
 }
 
+function itemAutoReview(item: Activity): TaskChatAutoReview | undefined {
+  if (item.kind === "tool") return item.autoReview;
+  if (item.kind === "protocol" && item.surface === "provider_activity") return item.autoReview;
+  return undefined;
+}
+
 function ActivityDetails({ item }: { item: Activity }) {
+  const autoReview = itemAutoReview(item);
+  return (
+    <>
+      <ActivityDetailsBody item={item} />
+      {autoReview ? <AutoReviewDetail review={autoReview} /> : null}
+    </>
+  );
+}
+
+function ActivityDetailsBody({ item }: { item: Activity }) {
   if (item.kind === "thinking")
     return <div data-conversation-text="progress"><MarkdownBody softBreaks>{item.lines.join("\n")}</MarkdownBody></div>;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
@@ -243,6 +267,7 @@ function ActivityDetails({ item }: { item: Activity }) {
 }
 
 function hasActivityDetails(item: Activity): boolean {
+  if (itemAutoReview(item)) return true;
   if (item.kind === "protocol") return hasTaskChatProtocolActivityDetails(item);
   if (item.kind === "thinking") return item.lines.some((line) => line.trim());
   if (item.kind === "tool")
@@ -273,6 +298,8 @@ function ExpandedActivity({
   const detailId = useId();
   const expandable = hasActivityDetails(item);
   const content = <ActivityContent item={item} active={active} />;
+  const row = presentation(item, active);
+  const note = row && "note" in row ? row.note : undefined;
   return (
     <li className="min-w-0" data-activity-item-id={item.id}>
       {expandable ? (
@@ -294,6 +321,14 @@ function ExpandedActivity({
           {content}
         </div>
       )}
+      {note ? (
+        <p
+          className="-mt-1 mb-1 min-w-0 whitespace-pre-wrap break-words pl-7 text-xs text-muted-foreground"
+          data-testid="task-chat-governance-note"
+        >
+          {note}
+        </p>
+      ) : null}
       {expandable && open ? (
         <div
           id={detailId}

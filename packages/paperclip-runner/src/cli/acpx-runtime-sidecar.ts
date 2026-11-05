@@ -28,6 +28,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { claudeHookCanonicalEvent } from "../governance-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -681,6 +682,13 @@ async function pumpTurn(
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
+      // Claude hook lifecycle rides on session_info_update `_meta`; publish it
+      // as schema-validated display activity rather than a raw status event.
+      const hook = claudeHookCanonicalEvent(event);
+      if (hook) {
+        try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
+        continue;
+      }
       emit(
         "runtime.event",
         sanitizeRuntimeEvent(

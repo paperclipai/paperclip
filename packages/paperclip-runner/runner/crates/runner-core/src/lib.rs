@@ -23,6 +23,7 @@ pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;
+mod governance_events;
 #[cfg(unix)]
 pub mod host_control;
 pub mod local_runner;

@@ -2525,7 +2525,9 @@ export const providerEventSchema = {
             "running",
             "completed",
             "failed",
-            "cancelled"
+            "cancelled",
+            "blocked",
+            "stopped"
           ]
         },
         "blocking": {
@@ -2540,6 +2542,34 @@ export const providerEventSchema = {
         },
         "summary": {
           "$ref": "#/$defs/nullableShortText"
+        },
+        "outcome": {
+          "enum": [
+            "running",
+            "passed",
+            "context",
+            "feedback",
+            "blocked",
+            "stopped",
+            "failed"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
+        },
+        "toolName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
         }
       },
       "additionalProperties": false
@@ -2620,11 +2650,60 @@ export const providerEventSchema = {
             "allowed",
             "denied",
             "user_required",
+            "timed_out",
+            "aborted",
             "unknown"
           ]
         },
         "summary": {
           "$ref": "#/$defs/nullableShortText"
+        },
+        "actionKind": {
+          "enum": [
+            "command",
+            "execve",
+            "writeStdin",
+            "applyPatch",
+            "networkAccess",
+            "mcpToolCall",
+            "requestPermissions",
+            "unknown"
+          ]
+        },
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000
+        },
+        "riskLevel": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            null
+          ]
+        },
+        "userAuthorization": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high",
+            null
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
         }
       },
       "additionalProperties": false

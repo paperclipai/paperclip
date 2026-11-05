@@ -864,6 +864,41 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // Governance records (hooks, automatic approval reviews) keep their full
+    // payload so the task chat can show the decision, reason and target.
+    if ((event.eventType === "hook.started" || event.eventType === "hook.completed")
+      && payload.schema === "paperclip.hook.v1" && text(payload.hookId)) {
+      const outcome = text(payload.outcome) ?? text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "hook",
+        eventType: event.eventType,
+        status: outcome === "running" ? "running" : outcome === "failed" ? "failed" : "completed",
+        title: "Hook",
+        summary: text(payload.message)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+    if ((event.eventType === "safety.review.started" || event.eventType === "safety.review.completed")
+      && payload.schema === "paperclip.safety.review.v1" && text(payload.reviewId)) {
+      const decision = text(payload.decision);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "safety",
+        eventType: event.eventType,
+        status: decision === "pending" || payload.status === "running"
+          ? "running"
+          : decision === "denied" || decision === "timed_out" ? "failed" : "completed",
+        title: "Auto-review",
+        summary: text(payload.rationale)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+
     const providerActivity = providerActivityPresentation(event, payload);
     if (providerActivity) {
       if (!startedToolIds.has(providerActivity.id)) {

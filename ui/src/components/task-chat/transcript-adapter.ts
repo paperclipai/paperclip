@@ -5,6 +5,7 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatDiff,
@@ -312,9 +313,17 @@ const PROVIDER_DETAIL_KEYS: Record<
     "failure",
   ],
   review: ["state", "scope"],
-  hook: ["event", "scope", "status", "blocking", "durationMs", "summary"],
+  hook: ["event", "toolName", "outcome", "status", "source", "durationMs", "blocking", "scope"],
   memory: ["label", "available", "reference"],
-  safety: ["status", "decision", "targetExecutionId", "summary"],
+  safety: [
+    "decision",
+    "actionKind",
+    "action",
+    "riskLevel",
+    "userAuthorization",
+    "decidedBy",
+    "targetExecutionId",
+  ],
   terminal: ["origin", "inputClass", "byteCount"],
   wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
   provider_notice: [
@@ -379,7 +388,8 @@ function providerActivityItem(
         value,
         entry.family === "provider_notice" && (key === "summary" || key === "message")
           ? 4000
-          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+          : key === "message" || key === "summary" || key === "reason" ? 320
+            : entry.family === "safety" && key === "action" ? 1000 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -1107,7 +1117,7 @@ export function transcriptToTaskChatItems(
     }
   }
 
-  return items;
+  return foldApprovedAutoReviews(items, runId);
 }
 
 /**

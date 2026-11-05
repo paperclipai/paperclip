@@ -796,7 +796,7 @@ describe("TaskChatRunnerTurn", () => {
         family: "safety",
         eventType: "safety.review.started",
         status: "running",
-        expected: "Reviewing safety",
+        expected: "Auto-reviewing",
       },
       {
         family: "terminal",

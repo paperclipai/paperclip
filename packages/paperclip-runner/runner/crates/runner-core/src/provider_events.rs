@@ -897,6 +897,26 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 ),
             }),
         ),
+        "hook/started" | "hook/completed" => push(
+            &mut events,
+            if method == "hook/started" {
+                "hook.started"
+            } else {
+                "hook.completed"
+            },
+            EventPriority::P2,
+            crate::governance_events::codex_hook_payload(method, params),
+        ),
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => push(
+            &mut events,
+            if method.ends_with("started") {
+                "safety.review.started"
+            } else {
+                "safety.review.completed"
+            },
+            EventPriority::P1,
+            crate::governance_events::codex_safety_review_payload(method, params),
+        ),
         "item/agentMessage/delta" => push(
             &mut events,
             "item.delta",

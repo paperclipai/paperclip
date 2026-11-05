@@ -11,6 +11,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { WorkspaceFileLink } from "@/components/WorkspaceFileLink";
 import { cn } from "@/lib/utils";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { AutoApprovedBadge, AutoReviewDetail } from "./TaskChatAutoReview";
 import type {
   TaskChatProtocolDetail,
   TaskChatProtocolItem,
@@ -257,6 +258,7 @@ function safeActivityHref(value: string | null | undefined): string | undefined 
 }
 
 export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
+  if (item.surface === "provider_activity" && item.autoReview) return true;
   if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
   return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
 }
@@ -267,7 +269,7 @@ export function TaskChatProtocolActivityDetails({ item, neutral = false }: { ite
     const href = safeActivityHref(item.href);
     return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
   }
-  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
+  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}{item.surface === "provider_activity" && item.autoReview ? <AutoReviewDetail review={item.autoReview} /> : null}</>;
 }
 
 function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "failed" | "interrupted" | "informational" {
@@ -304,7 +306,9 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
       </div>
     );
   }
-  const detail = detailContent(item);
+  const detail = item.surface === "provider_activity" && item.autoReview
+    ? <>{detailContent(item)}<AutoReviewDetail review={item.autoReview} /></>
+    : detailContent(item);
   const expandable = detail !== null;
   const Icon = presentation.icon;
   const label = protocolActivityLabel(item, presentation);
@@ -313,13 +317,14 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
   const row = (
     <>
       <span className="flex w-5 shrink-0 items-center justify-center">
-        <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
+        <Icon className={cn("h-3.5 w-3.5 shrink-0", (presentation.tone === "blocked" || presentation.tone === "failed") && "text-destructive")} aria-hidden data-testid="task-chat-protocol-activity-icon" />
       </span>
       <span data-conversation-tool-running={active && shimmer && item.surface === "provider_activity" && item.family === "tool_execution" ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         <span className={cn("shrink-0 font-medium", active && shimmer && "shimmer-text shimmer-text-muted")}>{label}{active ? "…" : ""}</span>
         {presentation.detail ? <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro)">{presentation.detail}</span> : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2">
+        {item.surface === "provider_activity" && item.autoReview ? <AutoApprovedBadge review={item.autoReview} /> : null}
         {expandable ? (
           <ChevronRight
             className={cn("tc-hover-disclosure-caret h-3 w-3 transition-[opacity,transform] group-hover/activity:opacity-80 group-focus-visible/activity:opacity-80", open ? "rotate-90 opacity-80" : "opacity-0")}
@@ -359,6 +364,11 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
   return (
     <div className="flex min-w-0 flex-col text-xs" data-testid="task-chat-protocol-activity-row" data-activity-family={item.surface === "provider_activity" ? item.family : item.surface}>
       {activityRow}
+      {presentation.note ? (
+        <p className="min-w-0 whitespace-pre-wrap break-words pb-1 pl-7 text-muted-foreground" data-testid="task-chat-governance-note">
+          {presentation.note}
+        </p>
+      ) : null}
       {open && detail ? (
         <div id={detailId} className="ml-2.5 mt-0.5 border-l-2 border-border py-1 pl-2.5" data-testid="task-chat-protocol-activity-detail">
           {detail}

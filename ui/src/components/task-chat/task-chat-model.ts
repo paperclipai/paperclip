@@ -191,6 +191,14 @@ export interface TaskChatThinkingItem {
   transcriptIndex?: number;
 }
 
+/** An automatic approval review folded onto the tool row it approved. */
+export interface TaskChatAutoReview {
+  decision: "allowed";
+  riskLevel?: string;
+  userAuthorization?: string;
+  rationale?: string;
+}
+
 /** A tool invocation row (ACP tool_call / tool_call_update). */
 export interface TaskChatToolItem {
   id: string;
@@ -210,6 +218,8 @@ export interface TaskChatToolItem {
   diff?: TaskChatDiff;
   /** Resolved permission decision badge, when one applied. */
   decision?: "allowed" | "rejected";
+  /** Automatic approval review that let this call run. */
+  autoReview?: TaskChatAutoReview;
 }
 
 /**
@@ -381,6 +391,8 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** Automatic approval review that let this tool execution run. */
+  autoReview?: TaskChatAutoReview;
 }
 
 export interface TaskChatWorkspaceChangeItem {
