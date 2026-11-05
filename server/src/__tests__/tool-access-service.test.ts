@@ -3765,6 +3765,52 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(grant!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["headers.X-Key"]);
   });
 
+  it("locks a remote connection's grants before the connection when its credentials change", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote lock ${randomUUID()}`,
+      key: `remote.lock.${randomUUID()}`,
+      value: "lock-value",
+    });
+    const connection = await service.createConnection(company.id, connectionInput({
+      name: "Lock order remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+    }));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const grantsLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connection.id)).for("update");
+      locked();
+      await held;
+    });
+    await grantsLocked;
+
+    const update = service.updateConnection(connection.id, {
+      credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const connectionRowFree = await db.transaction(async (tx) => {
+      try {
+        await tx.execute(sql`select id from tool_connections where id = ${connection.id} for update nowait`);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    release();
+    await holder;
+    await update;
+    expect(connectionRowFree).toBe(true);
+  });
+
   it("leaves a revoked organization grant alone when a remote connection's credentials change", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

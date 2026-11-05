@@ -4698,6 +4698,11 @@ export function toolAccessService(
               await notifyGitHubCredentialChange(tx, { companyId: existing.companyId, config });
             }
             if (existing.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: existing.id });
+            if (existing.transport === "mcp_remote" && input.credentialSecretRefs !== undefined) {
+              await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+                .where(and(eq(connectionGrants.companyId, existing.companyId), eq(connectionGrants.connectionId, existing.id)))
+                .orderBy(connectionGrants.id).for("update");
+            }
             const rows = await write(tx);
             if (existing.transport === "mcp_remote" && input.credentialSecretRefs !== undefined) {
               const nextRefs = rows[0]!.credentialSecretRefs;
