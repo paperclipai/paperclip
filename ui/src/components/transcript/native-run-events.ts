@@ -550,7 +550,9 @@ function cardProviderActivityEntry(
     eventType: event.eventType,
     status,
     title: card.title,
-    summary: presentation.summary === event.eventType ? card.title : presentation.summary,
+    // No query, URL or reason: leave the row's label to speak for itself
+    // rather than echoing a generic family title as if it were a subject.
+    summary: presentation.summary === event.eventType ? "" : presentation.summary,
     payload,
   };
 }

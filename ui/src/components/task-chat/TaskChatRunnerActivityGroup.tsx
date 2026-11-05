@@ -184,7 +184,7 @@ function ActivityContent({
           </span>
         ) : null}
         {row.trailing ? (
-          <span className="shrink-0 text-xs text-muted-foreground" data-testid="task-chat-activity-trailing">
+          <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="task-chat-activity-trailing">
             {row.trailing}
           </span>
         ) : null}

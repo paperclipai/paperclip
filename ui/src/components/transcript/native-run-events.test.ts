@@ -915,6 +915,21 @@ describe("nativeRunEventsToTranscript", () => {
     }));
   });
 
+  it("does not invent a subject for a search the provider reported without a query", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "research.completed", {
+        schema: "paperclip.research.v1",
+        researchId: "research-2",
+        action: "other",
+        query: null,
+        url: null,
+        pattern: null,
+        status: "completed",
+        sources: [],
+      }),
+    ])).toEqual([expect.objectContaining({ kind: "provider_activity", family: "research", summary: "" })]);
+  });
+
   it("keeps model reroutes and waits as provider activity with their payload", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "model.route.changed", {
