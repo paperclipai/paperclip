@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, run_durable_runner, Command, CommandExecution, CommandExecutor,
@@ -23,6 +23,10 @@ struct Script {
     receipt_file: PathBuf,
     #[serde(default)]
     accounting: bool,
+    #[serde(default)]
+    provider_stop_ms: Option<u64>,
+    #[serde(default)]
+    reconnect_delay_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -129,6 +133,8 @@ fn workload(script: Script, shared: Shared) {
 struct ScriptedExecutor {
     shared: Shared,
     worker: Option<thread::JoinHandle<()>>,
+    stop_after: Option<Duration>,
+    stop_at: Option<Instant>,
 }
 
 impl ScriptedExecutor {
@@ -137,6 +143,8 @@ impl ScriptedExecutor {
         let worker_shared = shared.clone();
         Self {
             shared,
+            stop_after: script.provider_stop_ms.map(Duration::from_millis),
+            stop_at: None,
             worker: Some(thread::spawn(move || workload(script, worker_shared))),
         }
     }
@@ -151,6 +159,7 @@ impl CommandExecutor for ScriptedExecutor {
                     return Err(DurableRunnerError::invalid("fixture turn started twice"));
                 }
                 work.started = true;
+                self.stop_at = self.stop_after.map(|delay| Instant::now() + delay);
             }
             "turn.steer" => work.resumed = true,
             "session.snapshot" => {}
@@ -168,6 +177,14 @@ impl CommandExecutor for ScriptedExecutor {
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.retained_events()
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        if self.stop_at.is_some_and(|due| due <= Instant::now()) {
+            self.shutdown()?;
+            self.stop_at = None;
+        }
+        Ok(self.stop_at)
     }
 
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
@@ -247,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_outbox_bytes: value("--max-outbox-bytes")?.parse()?,
         p0_reserve_bytes: value("--p0-reserve-bytes")?.parse()?,
         max_frame_bytes: 1024 * 1024,
-        reconnect_delay: Duration::from_millis(20),
+        reconnect_delay: Duration::from_millis(script.reconnect_delay_ms.unwrap_or(20)),
         reconnect_grace: Some(Duration::from_millis(
             value("--reconnect-grace-ms")?.parse()?,
         )),

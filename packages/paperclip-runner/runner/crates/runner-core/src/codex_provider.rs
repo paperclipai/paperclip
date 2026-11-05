@@ -835,6 +835,13 @@ pub struct CodexProvider {
     exit_drain: Option<ProviderExitDrain>,
 }
 
+#[derive(Debug)]
+pub(crate) struct FencedProviderOutput {
+    pub stdout_drained: bool,
+    pub output_empty: bool,
+    pub next_drain_deadline: Option<std::time::Instant>,
+}
+
 struct ProviderExitDrain {
     process_generation: u64,
     deadline: std::time::Instant,
@@ -2482,7 +2489,7 @@ impl CodexProvider {
         } else {
             json!({"id": rpc_id, "error": {"code": -32000, "message": message}})
         };
-        self.send_frame(&response)?;
+        self.send_courtesy_response(&response)?;
         if self.notification_identity_diagnostics >= 32 {
             return Ok(None);
         }
@@ -2521,7 +2528,7 @@ impl CodexProvider {
         // The terminal notification is already authoritative and may be
         // waiting in the durable outbox. A courtesy rejection must not turn a
         // provider that has closed stdin into a fatal polling error.
-        let _ = self.send_frame(&response);
+        let _ = self.send_courtesy_response(&response);
         Ok(Some(CodexProviderEvent::Notification {
             method: "warning".to_owned(),
             params: json!({"message": message, "providerMethod": bounded_method(method)}),
@@ -2829,7 +2836,7 @@ impl CodexProvider {
                     "Codex tool name",
                 )?;
                 if !self.authorized_tool_ids.contains(&operation_id) {
-                    self.send_frame(&json!({
+                    self.send_courtesy_response(&json!({
                         "id": rpc_id,
                         "result": codex_tool_failure("Paperclip did not authorize this tool for the run"),
                     }))?;
@@ -3016,7 +3023,7 @@ impl CodexProvider {
                 if self.pending_runtime_requests.len() >= MAX_PENDING_RUNTIME_REQUESTS
                     || retained_request_bytes.is_none()
                 {
-                    self.send_frame(&json!({
+                    self.send_courtesy_response(&json!({
                         "id": rpc_id,
                         "error": {
                             "code": -32000,
@@ -3059,7 +3066,7 @@ impl CodexProvider {
                     question_set,
                 }));
             }
-            self.send_frame(&json!({
+            self.send_courtesy_response(&json!({
                 "id": rpc_id,
                 "error": {"code": -32601, "message": "provider request is unavailable in this runner layer"},
             }))?;
@@ -3302,6 +3309,21 @@ impl CodexProvider {
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
+        self.deliver_tool_result_with_courtesy(result, false)
+    }
+
+    pub(crate) fn deliver_tool_rejection(
+        &mut self,
+        result: &ToolResult,
+    ) -> Result<(), LocalRunnerError> {
+        self.deliver_tool_result_with_courtesy(result, true)
+    }
+
+    fn deliver_tool_result_with_courtesy(
+        &mut self,
+        result: &ToolResult,
+        courtesy_rejection: bool,
+    ) -> Result<(), LocalRunnerError> {
         let pending = self
             .pending_tool_requests
             .get(&result.call_id)
@@ -3324,13 +3346,18 @@ impl CodexProvider {
         }
         let text = String::from_utf8(result_bytes)
             .expect("serde_json always serializes JSON values as valid UTF-8");
-        self.send_frame(&json!({
+        let response = json!({
             "id": pending.rpc_id,
             "result": {
                 "success": !result.is_error,
                 "contentItems": [{"type": "inputText", "text": text}],
             },
-        }))?;
+        });
+        if courtesy_rejection && result.is_error {
+            self.send_courtesy_response(&response)?;
+        } else {
+            self.send_frame(&response)?;
+        }
         if let Some(completed) = self.pending_tool_requests.remove(&result.call_id) {
             self.pending_tool_request_bytes = self
                 .pending_tool_request_bytes
@@ -3352,6 +3379,92 @@ impl CodexProvider {
                 "receivedTurnId": notification_turn_id(params).map(|id| id.chars().take(256).collect::<String>()),
             }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn process_exited(&mut self) -> Result<bool, LocalRunnerError> {
+        self.process.try_wait().map(|exit| exit.is_some())
+    }
+
+    /// Fence only the already-owned local process. Keep every buffered frame
+    /// for connected interpretation; no courtesy response or provider RPC runs.
+    /// Reserve one maximum frame before reading; a full FIFO cannot certify EOF.
+    pub(crate) fn fence_local_receipt_limit(
+        &mut self,
+    ) -> Result<FencedProviderOutput, LocalRunnerError> {
+        if self.config.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "local receipt-limit fence requires Codex",
+            ));
+        }
+        self.expected_shutdown = true;
+        self.process.terminate_group_immediately()?;
+        if self
+            .exit_drain
+            .as_ref()
+            .is_none_or(|drain| drain.process_generation != self.process_generation)
+        {
+            self.exit_drain = Some(ProviderExitDrain {
+                process_generation: self.process_generation,
+                deadline: std::time::Instant::now() + self.process.shutdown_grace(),
+                timed_out: false,
+                warning_emitted: false,
+            });
+        }
+        let tick = std::time::Instant::now() + Duration::from_millis(5);
+        while !self.process.stdout_drained() && std::time::Instant::now() < tick {
+            if self
+                .pending_messages
+                .len()
+                .saturating_add(self.deferred_ambiguous_messages.len())
+                >= MAX_BUFFERED_MESSAGES
+                || self.pending_message_bytes
+                    > MAX_BUFFERED_MESSAGE_BYTES.saturating_sub(CODEX_APP_SERVER_MAX_FRAME_BYTES)
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Fenced Codex output reached its bounded raw buffer; EOF remains unverified",
+                ));
+            }
+            let wait = Duration::from_millis(1)
+                .min(tick.saturating_duration_since(std::time::Instant::now()));
+            let Some(line) = self.process.receive_stdout_line(wait)? else {
+                break;
+            };
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line)?;
+            let bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, bytes).ok_or_else(
+                    || {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    },
+                )?;
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+        }
+        let drain = self
+            .exit_drain
+            .as_ref()
+            .expect("fenced process has a drain deadline");
+        let stdout_drained = !self.process.stdout_failed() && self.process.stdout_drained();
+        if drain.timed_out || !stdout_drained && std::time::Instant::now() >= drain.deadline {
+            return Err(LocalRunnerError::invalid("Fenced Codex stdout did not reach verified EOF within shutdown grace; output requires reconciliation"));
+        }
+        Ok(FencedProviderOutput {
+            stdout_drained,
+            output_empty: stdout_drained
+                && self.pending_messages.is_empty()
+                && self.deferred_ambiguous_messages.is_empty(),
+            next_drain_deadline: (!stdout_drained).then_some(
+                drain
+                    .deadline
+                    .min(std::time::Instant::now() + Duration::from_millis(25)),
+            ),
+        })
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
@@ -3439,7 +3552,7 @@ impl CodexProvider {
             } else {
                 json!({"answers": {}})
             };
-            if let Err(error) = self.send_frame(&json!({
+            if let Err(error) = self.send_courtesy_response(&json!({
                 "id": request.rpc_id,
                 "result": result,
             })) {
@@ -3447,7 +3560,7 @@ impl CodexProvider {
             }
         }
         for request in pending.into_values() {
-            if let Err(error) = self.send_frame(&json!({
+            if let Err(error) = self.send_courtesy_response(&json!({
                 "id": request.rpc_id,
                 "result": codex_tool_failure("Paperclip stopped the active provider turn"),
             })) {
@@ -3463,6 +3576,18 @@ impl CodexProvider {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, LocalRunnerError> {
         self.request_classified(method, params)
             .map_err(ProviderRequestError::into_inner)
+    }
+
+    fn send_courtesy_response(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
+        // A reply cannot affect a deliberately stopped local conversation.
+        // Commands and authoritative results must still use strict delivery.
+        if self.config.provider == "codex"
+            && self.expected_shutdown
+            && self.process.try_wait()?.is_some()
+        {
+            return Ok(());
+        }
+        self.send_frame(value)
     }
 
     fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
@@ -4794,6 +4919,125 @@ done
             }
         }
         provider
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_tool_rejection_keeps_identity_and_real_delivery_strict() {
+        let mut provider = completion_tail_provider();
+        provider.expected_shutdown = false;
+        provider.pending_tool_requests.insert(
+            "denied-call".to_owned(),
+            PendingToolRequest {
+                rpc_id: json!(91),
+                operation_id: "denied-operation".to_owned(),
+                input: json!({}),
+                retained_bytes: 0,
+            },
+        );
+        let mut rejection = ToolResult {
+            call_id: "denied-call".to_owned(),
+            operation_id: "denied-operation".to_owned(),
+            result: json!({"error": "denied"}),
+            is_error: true,
+        };
+        provider.process.terminate_group_immediately().unwrap();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        provider.fence_local_receipt_limit().unwrap();
+        assert!(provider.deliver_tool_result(&rejection).is_err());
+        assert!(provider.request("thread/read", json!({})).is_err());
+        provider.config.provider = "cursor_cloud".to_owned();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        provider.config.provider = "codex".to_owned();
+        rejection.operation_id = "foreign-operation".to_owned();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        rejection.operation_id = "denied-operation".to_owned();
+        rejection.is_error = false;
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        rejection.is_error = true;
+        provider.deliver_tool_rejection(&rejection).unwrap();
+        assert!(provider.pending_tool_requests.is_empty());
+        assert!(provider.completed_tool_call_ids.contains("denied-call"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_receipt_output_keeps_prefix_when_stdout_never_closes() {
+        let mut provider = completion_tail_provider();
+        let (sender, receiver) = mpsc::channel();
+        let _original = provider.process.replace_output_receiver_for_test(receiver);
+        let prefix = json!({"method":"configWarning","params":{"message":"retained prefix"}});
+        sender
+            .send(ProcessOutput::Stdout(prefix.to_string()))
+            .unwrap();
+        let status = provider.fence_local_receipt_limit().unwrap();
+        assert!(!status.stdout_drained && !status.output_empty);
+        assert!(
+            status.next_drain_deadline.unwrap()
+                <= std::time::Instant::now() + Duration::from_millis(25)
+        );
+        assert!(
+            status.next_drain_deadline.unwrap() <= provider.exit_drain.as_ref().unwrap().deadline
+        );
+        let bytes = provider.pending_message_bytes;
+        assert_eq!(provider.pending_messages.front().unwrap().value, prefix);
+        provider.exit_drain.as_mut().unwrap().deadline = std::time::Instant::now();
+        assert!(provider
+            .fence_local_receipt_limit()
+            .unwrap_err()
+            .to_string()
+            .contains("EOF"));
+        assert_eq!(provider.pending_messages.front().unwrap().value, prefix);
+        assert_eq!(provider.pending_message_bytes, bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_receipt_output_reports_capacity_without_dropping_known_frames() {
+        for (count, text_bytes, eof_waiting) in [
+            (MAX_BUFFERED_MESSAGES, 1, false),
+            (MAX_BUFFERED_MESSAGES, 1, true),
+            (4, 13 * 1024 * 1024 / 4, false),
+        ] {
+            let mut provider = completion_tail_provider();
+            let (sender, receiver) = mpsc::channel();
+            let _original = provider.process.replace_output_receiver_for_test(receiver);
+            // A full FIFO cannot consume a possibly unstoreable next frame,
+            // even if this controlled reader has only EOF waiting.
+            if eof_waiting {
+                sender.send(ProcessOutput::StdoutClosed).unwrap();
+            }
+            for index in 0..count {
+                let value = json!({"method":"configWarning","params":{"index":index,"message":"x".repeat(text_bytes)}});
+                provider.pending_message_bytes += json_size(&value, "fixture").unwrap();
+                provider
+                    .pending_messages
+                    .push_back(BufferedProviderMessage {
+                        value,
+                        trace_frame_id: Some(index as u64),
+                    });
+            }
+            let bytes = provider.pending_message_bytes;
+            assert!(provider
+                .fence_local_receipt_limit()
+                .unwrap_err()
+                .to_string()
+                .contains("bounded raw buffer"));
+            assert_eq!(provider.pending_messages.len(), count);
+            assert_eq!(provider.pending_message_bytes, bytes);
+            assert_eq!(
+                provider.pending_messages.front().unwrap().trace_frame_id,
+                Some(0)
+            );
+            assert_eq!(
+                provider.pending_messages.back().unwrap().trace_frame_id,
+                Some((count - 1) as u64)
+            );
+            assert_eq!(
+                provider.pending_messages.back().unwrap().value["params"]["index"],
+                count - 1
+            );
+        }
     }
 
     #[cfg(unix)]
