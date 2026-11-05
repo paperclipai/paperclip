@@ -12701,8 +12701,13 @@ export function issueRoutes(
       // deeper request is placed beside the requester, never rejected. The
       // service applies the same placement; authorization below checks both the
       // requested parent and the parent that is actually written.
+      // Watchdog-scoped runs are authorized for the watched subtree, so their
+      // tasks keep the requested parent, as on the /children route.
       const parentDepthPolicy: IssueParentDepthPolicy =
-        req.actor.type === "board" ? "allow_nested" : "flatten";
+        req.actor.type === "board" ||
+        (Boolean(effectiveParentId) && (await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none")
+          ? "allow_nested"
+          : "flatten";
       const parentPlacement = await resolveRouteParentPlacement(
         companyId,
         effectiveParentId ?? null,
@@ -13235,7 +13240,11 @@ export function issueRoutes(
       const childSerializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, parent);
       const childParentDepthPolicy: IssueParentDepthPolicy =
-        req.actor.type === "board" || childSerializationContext ? "allow_nested" : "flatten";
+        req.actor.type === "board" ||
+        childSerializationContext ||
+        (await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none"
+          ? "allow_nested"
+          : "flatten";
       const childPlacement = await resolveRouteParentPlacement(
         parent.companyId, parent.id, childParentDepthPolicy,
       );
@@ -14291,7 +14300,8 @@ export function issueRoutes(
           parentDepthPolicy,
         );
         parentAdjusted = parentPlan.adjustment;
-        expectedParentId = parentPlan.parentId ?? existing.parentId;
+        // `undefined` means the move is skipped; `null` is a valid top-level placement.
+        expectedParentId = parentPlan.parentId === undefined ? existing.parentId : parentPlan.parentId;
         if (
           req.actor.type === "agent" &&
           parentPlan.parentId &&

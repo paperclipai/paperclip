@@ -11238,7 +11238,8 @@ export function issueService(db: Db) {
         // A skipped move drops only `parentId`; the rest of the patch applies.
         const requestedParentId = data.parentId;
         const plan = await planIssueParentChange(dbOrTx, existing, requestedParentId, data.parentDepthPolicy ?? "flatten");
-        if (data.expectedParentId !== undefined && (plan.parentId ?? existing.parentId) !== data.expectedParentId) {
+        const plannedParentId = plan.parentId === undefined ? existing.parentId : plan.parentId;
+        if (data.expectedParentId !== undefined && plannedParentId !== data.expectedParentId) {
           throw conflict("The task tree changed while this move was checked. Read the tasks again and retry.", {
             code: "issue_parent_placement_changed",
           });

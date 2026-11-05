@@ -21,6 +21,7 @@ describePostgres("agent task hierarchy depth through the issue routes", () => {
   const conversationId = randomUUID();
   const runOnChild = randomUUID();
   const runOnConversation = randomUUID();
+  const legacyConversationChildId = randomUUID();
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-agent-task-depth-routes-");
@@ -36,6 +37,10 @@ describePostgres("agent task hierarchy depth through the issue routes", () => {
       { id: conversationId, companyId, title: "Chat", identifier: "DEP-3", issueNumber: 3, status: "in_review", assigneeAgentId: agentId,
         conversationAgentId: agentId, conversationUserId: "board-user", conversationState: "waiting" },
     ]);
+    await db.insert(issues).values({
+      id: legacyConversationChildId, companyId, parentId: conversationId, title: "Legacy chat child",
+      identifier: "DEP-4", issueNumber: 4, status: "todo", assigneeAgentId: agentId,
+    });
     await db.insert(heartbeatRuns).values([
       { id: runOnChild, companyId, agentId, scopeKind: "issue", issueId: childId, nativeIssueId: childId, status: "running", contextSnapshot: { issueId: childId } },
       { id: runOnConversation, companyId, agentId, scopeKind: "issue", issueId: conversationId, status: "running", contextSnapshot: { issueId: conversationId } },
@@ -149,6 +154,22 @@ describePostgres("agent task hierarchy depth through the issue routes", () => {
     expect(byBoard.status, JSON.stringify(byBoard.body)).toBe(200);
     expect(byBoard.body.parentId).toBe(childId);
     expect(byBoard.body).not.toHaveProperty("parentAdjusted");
+  });
+
+  it("records a top-level placement when an agent moves under a legacy conversation child", async () => {
+    const movingId = randomUUID();
+    await db.insert(issues).values({ id: movingId, companyId, parentId: rootId, title: "Move to top", status: "todo", assigneeAgentId: agentId });
+
+    const moved = await request(app(agentActor(runOnChild)))
+      .patch(`/api/issues/${movingId}`)
+      .send({ parentId: legacyConversationChildId });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(moved.body.parentId).toBeNull();
+    expect(moved.body.parentAdjusted).toMatchObject({ reason: "max_agent_depth", effectiveParent: null });
+    expect((await activity(movingId, "issue.updated"))?.details).toMatchObject({
+      parentId: null,
+      requestedParentId: legacyConversationChildId,
+    });
   });
 
   it("lets a chat create a top-level task and a child under it", async () => {
