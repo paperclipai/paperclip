@@ -1659,6 +1659,7 @@ describe("issue execution policy transitions", () => {
     it("throws a defensive 422 when an unnormalized policy leaves the next stage without participants", () => {
       const policy = {
         mode: "normal" as const,
+        commentRequired: true,
         stages: [
           {
             id: "11111111-1111-4111-8111-111111111111",
