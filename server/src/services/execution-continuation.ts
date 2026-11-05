@@ -20,6 +20,32 @@ import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js"
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 
+const savedRecordOperations = new Set([
+  "PUT /api/issues/{id}/documents/{key}",
+  "POST /api/issues/{id}/comments",
+  "PATCH /api/issues/{id}",
+]);
+
+/** Project duplicate saved content, never the original execution receipt or user input. */
+function continuationApiResult(operationId: string, result: unknown, companyId: string): unknown {
+  const response = object(result);
+  const data = object(response.data);
+  if (!savedRecordOperations.has(operationId) || response.operationId !== operationId
+    || response.ok !== true || typeof response.status !== "number" || response.status < 200 || response.status >= 300
+    || data.companyId !== companyId || !z.string().uuid().safeParse(data.id).success) return result;
+  const serialized = JSON.stringify(data);
+  if (Buffer.byteLength(serialized) <= 4 * 1024) return result;
+  const reference: Record<string, unknown> = {};
+  for (const key of ["id", "companyId", "issueId", "key", "latestRevisionId", "latestRevisionNumber",
+    "identifier", "status", "statusVersion", "createdAt", "updatedAt"]) {
+    const value = data[key];
+    if (value === null || typeof value === "string" && value.length <= 256
+      || typeof value === "number" && Number.isSafeInteger(value)) reference[key] = value;
+  }
+  return { ...response, data: { ...reference, contentOmitted: true,
+    contentSha256: `sha256:${createHash("sha256").update(serialized).digest("hex")}` } };
+}
+
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
     super(code);
@@ -381,7 +407,7 @@ export async function buildExecutionContinuation(input: {
                 runId: run.id,
                 receiptId,
                 operationId: value.operationId,
-                result: value.result,
+                result: continuationApiResult(value.operationId, value.result, companyId),
               },
             ]
           : [];
