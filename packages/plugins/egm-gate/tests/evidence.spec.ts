@@ -8,6 +8,7 @@ function snapshot(overrides: Partial<IssueSnapshot> = {}): IssueSnapshot {
     companyId: "company-1",
     identifier: "OMA-1",
     title: "Tarea",
+    description: null,
     status: "done",
     priority: "high",
     comments: [],
@@ -45,7 +46,7 @@ describe("gate de entrega", () => {
     expect(result.kind).toBe("patch");
   });
 
-  it("acepta una medición verificada declarada en el plan", () => {
+  it("acepta una medicion verificada declarada en el plan", () => {
     const result = evaluateIssue(
       snapshot({ planBody: "EGM-VERIFIED: `curl -s https://api/health` -> 200" }),
     );
@@ -53,7 +54,7 @@ describe("gate de entrega", () => {
     expect(result.kind).toBe("measurement");
   });
 
-  it("acepta una decisión documentada (issue sin código por diseño)", () => {
+  it("acepta una decision documentada (issue sin codigo por diseno)", () => {
     const result = evaluateIssue(snapshot({ planBody: "EGM-DELIVERABLE: decision" }));
     expect(result.ok).toBe(true);
     expect(result.kind).toBe("decision");
@@ -61,7 +62,7 @@ describe("gate de entrega", () => {
 
   it("un plan sin marca de entrega no es evidencia", () => {
     const result = evaluateIssue(
-      snapshot({ planBody: "# Plan\n\nHice un análisis XYZ y creo que convendría..." }),
+      snapshot({ planBody: "# Plan\n\nHice un analisis XYZ y creo que convendria..." }),
     );
     expect(result.ok).toBe(false);
   });
@@ -77,7 +78,7 @@ describe("gate de entrega", () => {
     expect(result.missing).toContain("otro repo");
   });
 
-  it("un PR del repo del proyecto sí cuenta", () => {
+  it("un PR del repo del proyecto si cuenta", () => {
     const result = evaluateIssue(
       snapshot({
         expectedRepo: "gampify/gampify",
@@ -88,32 +89,33 @@ describe("gate de entrega", () => {
     expect(result.kind).toBe("pull_request");
   });
 
-  it("sin repo conocido, un PR cuenta (no hay contra qué comparar)", () => {
+  it("sin repo conocido, un PR cuenta (no hay contra que comparar)", () => {
     const result = evaluateIssue(
       snapshot({ comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }] }),
     );
     expect(result.ok).toBe(true);
   });
-});
 
-describe("parseRepoSlug", () => {
-  it("normaliza https, ssh y git@", () => {
-    expect(parseRepoSlug("https://github.com/gampify/gampify")).toBe("gampify/gampify");
-    expect(parseRepoSlug("https://github.com/gampify/gampify.git")).toBe("gampify/gampify");
-    expect(parseRepoSlug("git@github.com:gampify/gampify.git")).toBe("gampify/gampify");
-    expect(parseRepoSlug("ssh://git@github.com/gampify/gampify.git")).toBe("gampify/gampify");
-    expect(parseRepoSlug("gampify/gampify")).toBe("gampify/gampify");
-    expect(parseRepoSlug(null)).toBe(null);
-    expect(parseRepoSlug("")).toBe(null);
+  it("un PR ajeno antes que el valido no hiding del valido", () => {
+    const result = evaluateIssue(
+      snapshot({
+        expectedRepo: "gampify/gampify",
+        comments: [
+          { id: "c1", body: "mira https://github.com/vicinapp/vicin/pull/37 y tambien https://github.com/gampify/gampify/pull/91" },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("pull_request");
   });
 });
 
-describe("nivel de revisión (EGM sólo cuando hace falta)", () => {
-  it("sin entrega no hay revisión", () => {
+describe("nivel de revision (EGM solo cuando hace falta)", () => {
+  it("sin entrega no hay revision", () => {
     expect(decideLevel(collectDeliveryFacts(snapshot()))).toBe("off");
   });
 
-  it("una decisión o una medición no requieren revisión de código", () => {
+  it("una decision o una medicion no requieren revision de codigo", () => {
     const facts = collectDeliveryFacts(snapshot({ planBody: "EGM-VERIFIED: listo" }));
     expect(decideLevel(facts)).toBe("off");
   });
@@ -138,14 +140,46 @@ describe("nivel de revisión (EGM sólo cuando hace falta)", () => {
     expect(decideLevel(facts)).toBe("full");
   });
 
-  it("tocar producción exige aprobación humana, no revisión de IA", () => {
+  it("tocar produccion exige aprobacion de una persona", () => {
     const facts = collectDeliveryFacts(
       snapshot({
-        title: "Deploy del worker a producción",
+        title: "Deploy del worker a produccion",
         comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }],
       }),
     );
     expect(decideLevel(facts)).toBe("human");
+  });
+
+  it("la descripcion tambien cuenta (no solo el titulo)", () => {
+    const facts = collectDeliveryFacts(
+      snapshot({
+        title: "Actualizar el worker",
+        description: "desplegar a produccion el bundle nuevo",
+        comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }],
+      }),
+    );
+    expect(decideLevel(facts)).toBe("human");
+  });
+
+  it("una tarea humana no cierra sin la firma en el plan", () => {
+    const sinFirma = evaluateIssue(
+      snapshot({
+        title: "Deploy a produccion",
+        comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }],
+      }),
+    );
+    expect(sinFirma.ok).toBe(false);
+    expect(sinFirma.missing).toContain("EGM-APPROVED");
+
+    const conFirma = evaluateIssue(
+      snapshot({
+        title: "Deploy a produccion",
+        comments: [{ id: "c1", body: "https://github.com/gampify/gampify/pull/91" }],
+        planBody: "EGM-APPROVED: Ana (2026-11-05)",
+      }),
+    );
+    expect(conFirma.ok).toBe(true);
+    expect(conFirma.level).toBe("human");
   });
 
   it("el umbral de full es configurable", () => {
@@ -157,5 +191,17 @@ describe("nivel de revisión (EGM sólo cuando hace falta)", () => {
     );
     expect(decideLevel(facts, DEFAULT_CONFIG)).toBe("full");
     expect(decideLevel(facts, { ...DEFAULT_CONFIG, fullDiffLines: 1000 })).toBe("lite");
+  });
+});
+
+describe("parseRepoSlug", () => {
+  it("normaliza https, ssh y git@", () => {
+    expect(parseRepoSlug("https://github.com/gampify/gampify")).toBe("gampify/gampify");
+    expect(parseRepoSlug("https://github.com/gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("git@github.com:gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("ssh://git@github.com/gampify/gampify.git")).toBe("gampify/gampify");
+    expect(parseRepoSlug("gampify/gampify")).toBe("gampify/gampify");
+    expect(parseRepoSlug(null)).toBe(null);
+    expect(parseRepoSlug("")).toBe(null);
   });
 });

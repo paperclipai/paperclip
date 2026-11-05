@@ -15,6 +15,7 @@ export type DeliveryKind =
   | "patch"
   | "measurement"
   | "decision"
+  | "human_approval"
   | "none";
 
 export type EvidenceSignal = {
@@ -41,6 +42,8 @@ export type IssueSnapshot = {
   companyId: string;
   identifier: string;
   title: string;
+  /** Descripción de la issue: también dice qué toca (producción, dinero...). */
+  description?: string | null;
   status: string;
   priority: string;
   comments: { id: string; body: string; createdAt?: string }[];

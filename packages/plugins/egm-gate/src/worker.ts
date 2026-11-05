@@ -9,12 +9,14 @@ import { buildGateComment, evaluateIssue, parseRepoSlug } from "./evidence.js";
 import { TOOL_KEY_LEVEL } from "./manifest.js";
 
 const PLUGIN_NAME = "egm-gate";
-const STATE_KEY = "gate:last-action";
 const MAX_COMMENTS_PER_ISSUE = 3;
-/** El mapa de estado se poda: las entradas viejas no sirven de nada. */
-const STATE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
+/** El registro por issue vive en su propia clave de state: dos issues no se pisan. */
+const stateKeyFor = (issueId: string) => `gate:issue:${issueId}`;
 
 type GateRecord = { at: string; count: number };
+
+/** Un chequeo por issue a la vez: dos eventos simultáneos no se pisan. */
+const inFlight = new Map<string, Promise<void>>();
 
 async function readConfig(ctx: PluginContext, companyId?: string): Promise<EgmGateConfig> {
   const raw = (await ctx.config.get(companyId).catch(() => ({}))) as Record<string, unknown>;
@@ -35,48 +37,77 @@ async function projectRepo(ctx: PluginContext, projectId: string | null, company
   }
 }
 
-/** Arma la foto de una issue con todo lo que el gate puede verificar. */
-async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: string): Promise<IssueSnapshot | null> {
-  const issue = await ctx.issues.get(issueId, companyId);
-  if (!issue) return null;
-  const [comments, attachments, plan, expectedRepo] = await Promise.all([
-    ctx.issues.listComments(issueId, companyId).catch(() => []),
-    ctx.issues.listAttachments(issueId, companyId).catch(() => []),
-    ctx.issues.documents.get(issueId, "plan", companyId).catch(() => null),
+type SnapshotResult =
+  | { ok: true; snapshot: IssueSnapshot }
+  | { ok: false; reason: string };
+
+/**
+ * Arma la foto de una issue con todo lo que el gate puede verificar.
+ *
+ * Una lectura fallida NO es lo mismo que "no hay evidencia": si falla, el gate
+ * no toca el estado de la issue (no puede afirmar que no hay entrega porque no
+ * pudo leer).
+ */
+async function snapshotIssue(ctx: PluginContext, issueId: string, companyId: string): Promise<SnapshotResult> {
+  let issue;
+  try {
+    issue = await ctx.issues.get(issueId, companyId);
+  } catch (error) {
+    return { ok: false, reason: `no se pudo leer la issue: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!issue) return { ok: false, reason: "la issue no existe" };
+
+  const reads = await Promise.allSettled([
+    ctx.issues.listComments(issueId, companyId),
+    ctx.issues.listAttachments(issueId, companyId),
+    ctx.issues.documents.get(issueId, "plan", companyId),
     projectRepo(ctx, issue.projectId ?? null, companyId),
   ]);
+  const failed = reads.filter((r) => r.status === "rejected");
+  if (failed.length > 0) {
+    return {
+      ok: false,
+      reason: `lectura fallida (${failed.length}): no se puede afirmar que no hay evidencia`,
+    };
+  }
+  const [comments, attachments, plan, expectedRepo] = reads.map((r) => (r as PromiseFulfilledResult<unknown>).value) as [
+    Awaited<ReturnType<typeof ctx.issues.listComments>>,
+    Awaited<ReturnType<typeof ctx.issues.listAttachments>>,
+    Awaited<ReturnType<typeof ctx.issues.documents.get>>,
+    string | null,
+  ];
   return {
-    issueId: issue.id,
-    companyId,
-    identifier: issue.identifier ?? issue.id,
-    title: issue.title,
-    status: issue.status,
-    priority: issue.priority,
-    comments: comments.map((c) => ({ id: c.id, body: c.body, createdAt: String(c.createdAt ?? "") })),
-    attachments: attachments.map((a) => ({
-      id: a.id,
-      fileName: a.originalFilename ?? null,
-      contentType: a.contentType ?? null,
-    })),
-    planBody: plan?.body ?? null,
-    expectedRepo,
+    ok: true,
+    snapshot: {
+      issueId: issue.id,
+      companyId,
+      identifier: issue.identifier ?? issue.id,
+      title: issue.title,
+      description: issue.description ?? null,
+      status: issue.status,
+      priority: issue.priority,
+      comments: comments.map((c) => ({ id: c.id, body: c.body, createdAt: String(c.createdAt ?? "") })),
+      attachments: attachments.map((a) => ({
+        id: a.id,
+        fileName: a.originalFilename ?? null,
+        contentType: a.contentType ?? null,
+      })),
+      planBody: plan?.body ?? null,
+      expectedRepo,
+    },
   };
 }
 
-async function readRecords(ctx: PluginContext, companyId: string): Promise<Record<string, GateRecord>> {
-  const raw = await ctx.state.get({ scopeKind: "company", scopeId: companyId, stateKey: STATE_KEY });
-  const records = (raw ?? {}) as Record<string, GateRecord>;
-  const cutoff = Date.now() - STATE_MAX_AGE_MS;
-  for (const [id, record] of Object.entries(records)) {
-    if (!record?.at || Date.parse(record.at) < cutoff) delete records[id];
-  }
-  return records;
+async function readRecord(ctx: PluginContext, issueId: string): Promise<GateRecord | null> {
+  const raw = await ctx.state.get({ scopeKind: "company", scopeId: "", stateKey: stateKeyFor(issueId) });
+  return (raw as GateRecord | null) ?? null;
 }
 
 async function writeRecord(ctx: PluginContext, companyId: string, issueId: string, record: GateRecord): Promise<void> {
-  const records = await readRecords(ctx, companyId);
-  records[issueId] = record;
-  await ctx.state.set({ scopeKind: "company", scopeId: companyId, stateKey: STATE_KEY }, records);
+  await ctx.state.set(
+    { scopeKind: "company", scopeId: companyId, stateKey: stateKeyFor(issueId) },
+    record,
+  );
 }
 
 /**
@@ -87,8 +118,12 @@ async function writeRecord(ctx: PluginContext, companyId: string, issueId: strin
  */
 async function enforceGate(ctx: PluginContext, issueId: string, companyId: string): Promise<void> {
   const config = await readConfig(ctx, companyId);
-  let snapshot = await snapshotIssue(ctx, issueId, companyId);
-  if (!snapshot) return;
+  const first = await snapshotIssue(ctx, issueId, companyId);
+  if (!first.ok) {
+    ctx.logger.warn("gate: no se pudo leer la issue, no se toca su estado", { issueId, reason: first.reason });
+    return;
+  }
+  let snapshot = first.snapshot;
   if (snapshot.status !== "done") return;
 
   let evaluation = evaluateIssue(snapshot, config);
@@ -98,10 +133,21 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
   if (!evaluation.ok) {
     await new Promise((resolve) => setTimeout(resolve, 4000));
     const again = await snapshotIssue(ctx, issueId, companyId);
-    if (again && again.status === "done") {
-      snapshot = again;
-      evaluation = evaluateIssue(snapshot, config);
+    if (!again.ok) {
+      ctx.logger.warn("gate: relectura fallida, no se toca el estado", { issueId, reason: again.reason });
+      return;
     }
+    // Si mientras tanto la issue cambio de estado (la.cancelaron, la reiniciaron),
+    // NO se toca: se respeta el estado mas reciente.
+    if (again.snapshot.status !== "done") {
+      ctx.logger.info("gate: la issue cambio de estado durante la espera", {
+        issueId,
+        status: again.snapshot.status,
+      });
+      return;
+    }
+    snapshot = again.snapshot;
+    evaluation = evaluateIssue(snapshot, config);
   }
 
   if (evaluation.ok) {
@@ -115,8 +161,7 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
     return;
   }
 
-  const records = await readRecords(ctx, companyId);
-  const previous = records[issueId];
+  const previous = await readRecord(ctx, issueId);
   const count = (previous?.count ?? 0) + 1;
 
   if (count <= MAX_COMMENTS_PER_ISSUE) {
@@ -160,24 +205,41 @@ async function enforceGate(ctx: PluginContext, issueId: string, companyId: strin
   });
 }
 
+/** Un chequeo por issue: los eventos simultáneos no se pisan. */
+async function runGate(ctx: PluginContext, issueId: string, companyId: string): Promise<void> {
+  const previous = inFlight.get(issueId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => enforceGate(ctx, issueId, companyId));
+  inFlight.set(issueId, next);
+  try {
+    await next;
+  } finally {
+    if (inFlight.get(issueId) === next) inFlight.delete(issueId);
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info(`${PLUGIN_NAME}: setup`);
 
-    // 1. Gate de cierre, en vivo.
-    ctx.events.on("issue.updated", async (event: PluginEvent) => {
+    // 1. Gate de cierre, en vivo. `issue.created` tambien: una issue creada ya
+    //    cerrada tiene que pasar por el gate tambien.
+    const onIssueChange = async (event: PluginEvent) => {
       const issueId = event.entityId;
       const companyId = event.companyId;
       if (!issueId || !companyId) return;
       try {
-        await enforceGate(ctx, issueId, companyId);
+        await runGate(ctx, issueId, companyId);
       } catch (error) {
         ctx.logger.error("gate: fallo al evaluar el cierre", {
           issueId,
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    });
+    };
+    ctx.events.on("issue.updated", onIssueChange);
+    ctx.events.on("issue.created", onIssueChange);
 
     // 2. Herramienta nativa: "¿qué nivel de revisión necesita esta tarea?".
     ctx.tools.register(
@@ -194,11 +256,11 @@ const plugin = definePlugin({
       },
       async (params, runCtx) => {
         const issueId = String((params as { issueId?: unknown }).issueId ?? "");
-        const companyId = runCtx?.companyId ?? String((params as { companyId?: unknown }).companyId ?? "");
+        const companyId = String((params as { companyId?: unknown }).companyId ?? runCtx?.companyId ?? "");
         if (!issueId || !companyId) return { error: "issueId es obligatorio" };
-        const snapshot = await snapshotIssue(ctx, issueId, companyId);
-        if (!snapshot) return { error: "issue no encontrada" };
-        const evaluation = evaluateIssue(snapshot, await readConfig(ctx, companyId));
+        const result = await snapshotIssue(ctx, issueId, companyId);
+        if (!result.ok) return { error: result.reason };
+        const evaluation = evaluateIssue(result.snapshot, await readConfig(ctx, companyId));
         return {
           content: `nivel=${evaluation.level} entrega=${evaluation.kind} evidencia=${evaluation.signals.length}`,
           data: {
@@ -212,20 +274,18 @@ const plugin = definePlugin({
       },
     );
 
-    // 3. Barrido horario de cierres sin evidencia (sustituye al gate en shell).
-
     // 3. Datos para la UI: estado del gate por issue.
     ctx.data.register("gate-status", async (params) => {
       const issueId = String(params.issueId ?? "");
       const companyId = String(params.companyId ?? "");
       if (!issueId) throw new Error("issueId es obligatorio");
-      const snapshot = await snapshotIssue(ctx, issueId, companyId);
-      if (!snapshot) return { found: false };
-      const evaluation = evaluateIssue(snapshot, await readConfig(ctx, companyId));
+      const result = await snapshotIssue(ctx, issueId, companyId);
+      if (!result.ok) return { found: false, reason: result.reason };
+      const evaluation = evaluateIssue(result.snapshot, await readConfig(ctx, companyId));
       return {
         found: true,
-        identifier: snapshot.identifier,
-        status: snapshot.status,
+        identifier: result.snapshot.identifier,
+        status: result.snapshot.status,
         ok: evaluation.ok,
         level: evaluation.level,
         kind: evaluation.kind,

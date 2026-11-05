@@ -25,6 +25,7 @@ propio host:
 | `patch` | Adjunto `.patch`/`.diff` | Hay un parche para aplicar. |
 | `measurement` | `EGM-VERIFIED:` en el documento `plan` | Hay una medición real (comando + salida). |
 | `decision` | `EGM-DELIVERABLE: decision` en el `plan` | La issue no lleva código por diseño. |
+| `human_approval` | `EGM-APPROVED: <quien>` en el `plan` | Una persona aprobó (tareas de producción, dinero o datos). |
 
 El PR tiene que ser **del repo del proyecto** (el de su workspace principal): un
 link a un PR de otro repo —o de otro proyecto— no cuenta como entrega, y el
@@ -55,7 +56,7 @@ El nivel se decide con la entrega verificable que ya existe:
 | `off` | No hay entrega, o la entrega es una medición/decisión | No hay diff que revisar: no hay ciclo. |
 | `lite` | Hay diff chico (debajo de los umbrales) | 1 revisor. |
 | `full` | Hay diff grande (`EGM-DIFF: <líneas> <archivos>`) | 2-3 revisores. Nunca 7. |
-| `human` | El texto de la issue toca producción, dinero, datos o secretos | Aprobación humana nativa (`review_policy` + `approvals`), no revisión de IA. |
+| `human` | El título, la descripción o el plan tocan producción, dinero, datos o secretos | Hace falta la firma de una persona: `EGM-APPROVED: <quien>` en el `plan`. Sin firma, la issue no cierra. |
 
 Umbrales configurables por instancia: `fullDiffLines` (300) y `fullDiffFiles` (8).
 
@@ -78,6 +79,14 @@ paperclipai plugin enable paperclip.egm-gate
   "¿qué nivel necesita esta tarea?".
 - **Repo del proyecto**: `ctx.projects.listWorkspaces` — para exigir que el PR
   sea del repo que toca.
+- **Un registro por issue**: `ctx.state` con clave `gate:issue:<id>` — dos
+  issues no se pisan, y un chequeo por issue a la vez (no dos eventos
+  simultáneos).
+- **Una lectura fallida no es evidencia ausente**: si no se puede leer, el gate
+  no toca el estado de la issue; no puede afirmar que no hay entrega porque no
+  pudo leer.
+- **El estado más reciente gana**: durante la gracia de 4 s, si la issue cambió
+  de estado (la cancelaron, la reiniciaron), el gate no la toca.
 
 El watchdog de runs mudos ya lo tiene el servidor
 (`scanSilentActiveRuns`, `reconcileTaskWatchdogs`); no hace falta un guardián
