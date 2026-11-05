@@ -1767,6 +1767,13 @@ A generic resume wake policy cannot substitute for either this proof or normal
 Recover preservation receipts. Both paths wait for old effects and projection
 to settle before closing the notice, without releasing physical resources.
 
+Recover transfers an accepted export's repair to the system without removing
+the board's explicit export Retry path. A system-owned action must carry valid
+recovery records for that same source run. Explicit export Retry still requires
+the unchanged accepted result, exact stopped allocation, current task ownership
+and the shared physical export lock. It cannot take over an active exporter or
+start another provider turn.
+
 An ACPX sidecar transport failure carries its redacted cause and code in the
 terminal event's structured `error` field. The session facade must retain that
 cause instead of reporting a failed turn with `error: null`. A transport failure
