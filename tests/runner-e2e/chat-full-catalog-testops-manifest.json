@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "2ec214914cdaa11148ab2527d2203303f1485e2f",
+  "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "41038d984f045f593923da53ac036a9a6adefed5edcaedc609e55991e2fa03b7",
+      "candidateDescriptorSha256": "744a566faaa90b8048fff526e0a30b7475b86c2de88d697783f8da9e02f70e20",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -232,7 +232,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v8"
+          "current": "paperclip.chat-catalog.work-timeline.v9"
         },
         {
           "key": "activity.work-timeline",
@@ -970,7 +970,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v8"
+          "current": "paperclip.chat-catalog.work-timeline.v9"
         },
         {
           "key": "agents.choose-primary",
@@ -1809,7 +1809,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "2ec214914cdaa11148ab2527d2203303f1485e2f",
+        "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "c88df15f509b2ac8638af826647a97d45f16bd1f"
       }
@@ -2352,7 +2352,7 @@
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.work-timeline.v8",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v9",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
