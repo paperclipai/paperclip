@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "../../live-run-recovery-notifications.js";
+import { invokerLaneRow } from "../inbound/trust-lanes.js";
 import { notifyChatInboundWakeNotices } from "../../chat-inbound-wake-notice-notifications.js";
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 
@@ -152,9 +153,10 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
       );
       if (!currentEndpoint || currentEndpoint.provider !== "slack") return null;
 
-      const conversation = await tx
-        .select()
+      const conversations = await tx
+        .select({ conversation: chatConversations, issue: { id: issues.id, sourceTrust: issues.sourceTrust, executionRunId: issues.executionRunId } })
         .from(chatConversations)
+        .innerJoin(issues, and(eq(issues.companyId, chatConversations.companyId), eq(issues.id, chatConversations.issueId)))
         .where(
           and(
             eq(chatConversations.companyId, currentEndpoint.companyId),
@@ -164,9 +166,57 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
           ),
         )
         .orderBy(desc(chatConversations.sessionGeneration))
-        .limit(1)
-        .for("update")
-        .then((rows) => rows[0] ?? null);
+        .for("update", { of: chatConversations });
+      const conversation = await (async () => {
+        if (conversations[0]?.conversation.isDirectMessage) return conversations[0].conversation;
+        if (conversations.length === 0) return null;
+        const runIssues = await tx
+          .select({ issueId: issues.id })
+          .from(issues)
+          .innerJoin(heartbeatRuns, and(
+            eq(heartbeatRuns.id, issues.executionRunId),
+            eq(heartbeatRuns.companyId, issues.companyId),
+            eq(heartbeatRuns.agentId, currentEndpoint.assignedAgentId),
+            inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+            lte(heartbeatRuns.createdAt, event.occurredAt),
+            or(isNull(heartbeatRuns.startedAt), lte(heartbeatRuns.startedAt, event.occurredAt)),
+            or(
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
+              sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${issues.id}::text`,
+            ),
+          ))
+          .where(and(
+            eq(issues.companyId, currentEndpoint.companyId),
+            eq(issues.assigneeAgentId, currentEndpoint.assignedAgentId),
+            inArray(issues.id, conversations.map((row) => row.issue.id)),
+          ));
+        const queuedWakeIssues = await tx
+          .select({ issueId: issues.id })
+          .from(agentWakeupRequests)
+          .innerJoin(issues, and(
+            eq(issues.companyId, agentWakeupRequests.companyId),
+            inArray(issues.id, conversations.map((row) => row.issue.id)),
+            eq(issues.assigneeAgentId, currentEndpoint.assignedAgentId),
+            isNull(issues.executionRunId),
+            or(
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issues.id}::text`,
+              sql`${agentWakeupRequests.payload}->>'taskId' = ${issues.id}::text`,
+              sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId' = ${issues.id}::text`,
+              sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId' = ${issues.id}::text`,
+            ),
+          ))
+          .where(and(
+            eq(agentWakeupRequests.companyId, currentEndpoint.companyId),
+            eq(agentWakeupRequests.agentId, currentEndpoint.assignedAgentId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+            isNull(agentWakeupRequests.runId),
+            lte(agentWakeupRequests.requestedAt, event.occurredAt),
+          ));
+        const runIssueIds = new Set(runIssues.map((row) => row.issueId));
+        const queuedIssueIds = new Set(queuedWakeIssues.map((row) => row.issueId));
+        const withWork = conversations.filter((row) => runIssueIds.has(row.issue.id) || queuedIssueIds.has(row.issue.id));
+        return invokerLaneRow(withWork.length > 0 ? withWork : conversations, true)?.conversation ?? null;
+      })();
       const principal = await tx
         .select()
         .from(chatExternalPrincipals)
@@ -252,6 +302,7 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
               inArray(agentWakeupRequests.status, [
                 "queued",
                 "deferred_issue_execution",
+                "claimed",
               ]),
               isNull(agentWakeupRequests.runId),
               lte(agentWakeupRequests.requestedAt, eventCutoff),

@@ -23,6 +23,7 @@ import {
 import { companyPortabilityService } from "../services/company-portability.js";
 import { issueService } from "../services/issues.js";
 import { workProductService } from "../services/work-products.js";
+import { taskForbidsProviderOutput } from "../services/task-provider-output-policy.js";
 import type { ImportIssueWorkProductRow } from "../services/import-write-types.js";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
@@ -398,6 +399,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     await issueService(db).importIssues(companyId, [{
       id: randomUUID(),
       ref: "carried-over",
+      providerOutputDisposition: "forbidden",
       projectId: null,
       projectWorkspaceId: null,
       title: "Carried-over work",
@@ -570,25 +572,15 @@ describeEmbeddedPostgres("company import batches inserts", () => {
   });
 
   it("rolls back the whole work-product batch when a later chunk fails", async () => {
-    // Seed a real company + issue to hang work products off of.
-    const bundle = buildSyntheticBundle({ issueCount: 1, commentsPerIssue: 0, documentsPerIssue: 0 });
-    const portability = companyPortabilityService(db);
-    const seeded = await portability.importBundle(
-      {
-        source: { type: "inline", rootPath: bundle.rootPath, files: bundle.files },
-        include: { company: true, agents: false, projects: false, issues: true },
-        target: { mode: "new_company", newCompanyName: "Work Product Atomicity Co" },
-        collisionStrategy: "rename",
-      },
-      "user-work-product-atomicity",
-    );
-    const companyId = seeded.company.id;
-    const [issueRow] = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.companyId, companyId))
-      .limit(1);
-    expect(issueRow?.id).toBeTruthy();
+    // Qualify the bulk writer independently of the public task-import hold.
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Work Product Atomicity Co",
+      issuePrefix: `W${companyId.slice(0, 8)}`,
+    });
+    const issueRow = await issueService(db).create(companyId, { title: "Native rollback control" });
+    expect(await taskForbidsProviderOutput(db, { companyId, issueId: issueRow.id })).toBe(false);
 
     const buildRow = (issueId: string, index: number): ImportIssueWorkProductRow => ({
       companyId,
@@ -611,21 +603,34 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       sourceTrust: null,
     });
 
-    // 501 rows span two chunks (chunk size is 500). The first 500 are valid;
-    // the 501st points at a non-existent issue so the *second* chunk's insert
-    // fails after the first chunk already ran. Without a wrapping transaction
-    // the first 500 would have committed; with it, nothing may persist.
-    const rows: ImportIssueWorkProductRow[] = [];
-    for (let i = 0; i < 500; i += 1) rows.push(buildRow(issueRow!.id, i));
-    rows.push(buildRow(randomUUID(), 500));
+    // All 501 destinations pass ownership preflight. A real constraint fails
+    // only the second chunk, after the first 500 inserts and policy write.
+    const rows = Array.from({ length: 501 }, (_, index) => buildRow(issueRow.id, index));
+    await db.execute(sql`alter table issue_work_products add constraint work_product_chunk_fault
+      check (title <> 'Work product 500')`);
+    counts.reset();
+    try {
+      await expect(workProductService(db).createManyForImport(rows)).rejects.toMatchObject({
+        cause: { code: "23514", constraint_name: "work_product_chunk_fault" },
+      });
+      expect(counts.byTable.get("issue_work_products")).toBe(2);
+      const [{ workProductRows }] = await db
+        .select({ workProductRows: sql<number>`count(*)::int` })
+        .from(issueWorkProducts)
+        .where(eq(issueWorkProducts.companyId, companyId));
+      expect(workProductRows).toBe(0);
+      expect(await taskForbidsProviderOutput(db, { companyId, issueId: issueRow.id })).toBe(false);
+    } finally {
+      await db.execute(sql`alter table issue_work_products drop constraint work_product_chunk_fault`);
+    }
 
-    await expect(workProductService(db).createManyForImport(rows)).rejects.toThrow();
-
-    const [{ workProductRows }] = await db
-      .select({ workProductRows: sql<number>`count(*)::int` })
-      .from(issueWorkProducts)
-      .where(eq(issueWorkProducts.companyId, companyId));
-    expect(workProductRows).toBe(0);
+    counts.reset();
+    await workProductService(db).createManyForImport(rows);
+    expect(counts.byTable.get("issue_work_products")).toBe(2);
+    const retained = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.companyId, companyId));
+    expect(retained).toHaveLength(501);
+    expect(new Set(retained.map(row => row.title))).toEqual(new Set(rows.map(row => row.title)));
+    expect(await taskForbidsProviderOutput(db, { companyId, issueId: issueRow.id })).toBe(true);
   });
 
   const benchmark = process.env.PORTABILITY_IMPORT_BENCH === "1" ? it : it.skip;

@@ -23,6 +23,7 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
 import { publishLiveEvent } from "./live-events.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export interface ExternalObjectSourceContext {
@@ -53,6 +54,7 @@ export interface ExternalObjectDetector {
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    canDetect?: () => Promise<boolean>;
   }): Promise<ExternalObjectDetection[]> | ExternalObjectDetection[];
 }
 
@@ -89,6 +91,7 @@ export interface ExternalObjectResolver {
     companyId: string;
     object: ExternalObjectRecord;
     signal?: AbortSignal;
+    canResolve?: () => Promise<boolean>;
   }): Promise<ExternalObjectResolveResult>;
 }
 
@@ -192,12 +195,14 @@ export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDe
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    canDetect?: () => Promise<boolean>;
   }) {
     const claimed = new Set<string>();
     const detections: ExternalObjectDetection[] = [];
     for (const detector of entries) {
       const remaining = input.urls.filter((url) => !claimed.has(url.canonicalIdentityHash));
       if (remaining.length === 0) break;
+      if (input.canDetect && !(await input.canDetect())) return [];
       try {
         const detected = await detector.detect({ ...input, urls: remaining });
         for (const detection of detected) {
@@ -295,6 +300,7 @@ function createPluginProviderDetector(
       for (const provider of providers) {
         const manifest = provider.manifestJson;
         if (!manifest.capabilities.includes("external.objects.detect")) continue;
+        if (input.canDetect && !(await input.canDetect())) return [];
         try {
           const result = await pluginWorkerManager.call(provider.id, "detectExternalObjects", {
             companyId: input.companyId,
@@ -346,6 +352,7 @@ async function resolveViaPluginProvider(
   db: Db,
   pluginWorkerManager: PluginWorkerManager | undefined,
   object: ExternalObjectRecord,
+  canResolve: () => Promise<boolean>,
 ): Promise<{ pluginId: string; result: PluginExternalObjectResolveResult } | null> {
   if (!pluginWorkerManager) return null;
   const providers = await readyObjectReferencePlugins(db, object.companyId);
@@ -353,6 +360,7 @@ async function resolveViaPluginProvider(
     const manifest = provider.manifestJson;
     if (!manifest.capabilities.includes("external.objects.read")) continue;
     if (!manifestProvidesObject(manifest, object)) continue;
+    if (!(await canResolve())) return null;
     try {
       const result = await pluginWorkerManager.call(provider.id, "resolveExternalObject", {
         companyId: object.companyId,
@@ -513,15 +521,25 @@ export function externalObjectService(
     const urls = extractExternalObjectCanonicalUrls(input.text ?? "");
     const previous: Array<{ objectId: string | null }> = await dbOrTx.selectDistinct({ objectId: externalObjectMentions.objectId })
       .from(externalObjectMentions).where(sourceWhere(input));
-    for (const row of previous) if (row.objectId) await notifyExternalObjectRefresh(dbOrTx, input.companyId, row.objectId);
-    await dbOrTx.delete(externalObjectMentions).where(sourceWhere(input));
-    if (urls.length === 0) return;
-
-    const detections = await detectorRegistry.detect({
+    if (urls.length === 0 && previous.length === 0) return;
+    const canDetect = async () => !(await taskForbidsProviderOutput(dbOrTx, { companyId: input.companyId, issueId: input.sourceIssueId }));
+    if (!(await canDetect())) return;
+    const detections = urls.length === 0 ? [] : await detectorRegistry.detect({
       companyId: input.companyId,
       urls,
-      sourceContext: input,
+      sourceContext: {
+        companyId: input.companyId,
+        sourceIssueId: input.sourceIssueId,
+        sourceKind: input.sourceKind,
+        sourceRecordId: input.sourceRecordId,
+        documentKey: input.documentKey,
+        propertyKey: input.propertyKey,
+      },
+      canDetect,
     });
+    if (!(await canDetect())) return;
+    for (const row of previous) if (row.objectId) await notifyExternalObjectRefresh(dbOrTx, input.companyId, row.objectId);
+    await dbOrTx.delete(externalObjectMentions).where(sourceWhere(input));
     if (detections.length === 0) return;
 
     const seen = new Set<string>();
@@ -586,10 +604,22 @@ export function externalObjectService(
 
   async function deleteMissingSourceMentions(kind: "comment" | "document", recordId: string, tx: any) {
     const source = and(eq(externalObjectMentions.sourceKind, kind), eq(externalObjectMentions.sourceRecordId, recordId));
-    const owners: Array<{ companyId: string; objectId: string | null }> = await tx.selectDistinct({ companyId: externalObjectMentions.companyId, objectId: externalObjectMentions.objectId })
-      .from(externalObjectMentions).where(source);
-    for (const owner of owners) if (owner.objectId) await notifyExternalObjectRefresh(tx, owner.companyId, owner.objectId);
-    await tx.delete(externalObjectMentions).where(source);
+    const owners: Array<{ companyId: string; issueId: string; objectId: string | null }> = await tx.selectDistinct({
+      companyId: externalObjectMentions.companyId, issueId: externalObjectMentions.sourceIssueId, objectId: externalObjectMentions.objectId,
+    }).from(externalObjectMentions).where(source);
+    const sources = new Map<string, { companyId: string; issueId: string; objectIds: Set<string> }>();
+    for (const owner of owners) {
+      const key = `${owner.companyId}:${owner.issueId}`;
+      const entry = sources.get(key) ?? { companyId: owner.companyId, issueId: owner.issueId, objectIds: new Set<string>() };
+      if (owner.objectId) entry.objectIds.add(owner.objectId);
+      sources.set(key, entry);
+    }
+    for (const entry of sources.values()) {
+      if (await taskForbidsProviderOutput(tx, entry)) continue;
+      for (const objectId of entry.objectIds) await notifyExternalObjectRefresh(tx, entry.companyId, objectId);
+      await tx.delete(externalObjectMentions).where(and(source,
+        eq(externalObjectMentions.companyId, entry.companyId), eq(externalObjectMentions.sourceIssueId, entry.issueId)));
+    }
   }
 
   async function syncComment(commentId: string, dbOrTx: any = db) {
@@ -885,6 +915,28 @@ export function externalObjectService(
     });
   }
 
+  async function objectForbidsProviderOutput(object: ExternalObjectRecord) {
+    const sources = await db.selectDistinct({ issueId: issues.id }).from(externalObjectMentions)
+      .leftJoin(issues, and(eq(issues.id, externalObjectMentions.sourceIssueId), eq(issues.companyId, object.companyId)))
+      .where(and(eq(externalObjectMentions.companyId, object.companyId), eq(externalObjectMentions.objectId, object.id)));
+    for (const source of sources) {
+      if (!source.issueId || await taskForbidsProviderOutput(db, { companyId: object.companyId, issueId: source.issueId })) return true;
+    }
+    return false;
+  }
+
+  async function denyObjectRefresh(object: ExternalObjectRecord, now: Date, token?: string) {
+    await db.transaction(async tx => {
+      await notifyExternalObjectRefresh(tx, object.companyId, object.id);
+      await tx.update(externalObjects).set({ nextRefreshAt: null, refreshStartedAt: null, refreshToken: null,
+        lastErrorCode: "task_output_forbidden", lastErrorMessage: null, updatedAt: now })
+        .where(token ? refreshOwnerWhere(object, token) : and(eq(externalObjects.id, object.id),
+          eq(externalObjects.companyId, object.companyId), isNull(externalObjects.refreshToken)));
+    });
+    const latest = await refreshSupersededResult(object, now);
+    return { ...latest, reason: "task_output_forbidden" as const };
+  }
+
   async function resolveObjectRefresh(
     object: ExternalObjectRecord,
     input: RefreshObjectInput,
@@ -892,7 +944,10 @@ export function externalObjectService(
     refreshToken: string,
   ) {
     input.signal?.throwIfAborted();
-    const pluginResolution = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object), input.signal);
+    const canResolve = async () => !(await objectForbidsProviderOutput(object));
+    if (!(await canResolve())) return denyObjectRefresh(object, now, refreshToken);
+    const pluginResolution = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object, canResolve), input.signal);
+    if (!(await canResolve())) return denyObjectRefresh(object, now, refreshToken);
     const resolver = pluginResolution ? null : resolverRegistry.find(object);
     if (!pluginResolution && !resolver) {
       const [updated] = await persistRefresh(object, refreshToken, {
@@ -907,8 +962,9 @@ export function externalObjectService(
     }
 
     const result = pluginResolution?.result ?? await observeRefreshCancellation(
-      resolver!.resolve({ companyId: object.companyId, object, signal: input.signal }), input.signal);
+      resolver!.resolve({ companyId: object.companyId, object, signal: input.signal, canResolve }), input.signal);
     input.signal?.throwIfAborted();
+    if (!(await canResolve())) return denyObjectRefresh(object, now, refreshToken);
     if (!result.ok) {
       // A failed refresh means the object's status is currently unknown, not
       // terminal. Clear a previous terminal verdict so the object keeps being
@@ -1069,6 +1125,7 @@ export function externalObjectService(
       .where(and(eq(externalObjects.id, objectId), eq(externalObjects.companyId, input.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!object) throw notFound("External object not found");
+    if (await objectForbidsProviderOutput(object)) return denyObjectRefresh(object, now);
     if (!input.force && object.nextRefreshAt && object.nextRefreshAt > now) {
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }

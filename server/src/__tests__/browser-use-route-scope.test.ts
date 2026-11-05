@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import http from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import { instanceUserRoles, type Db } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { browserUseRoutes } from "../routes/browser-use.js";
 
@@ -23,7 +23,9 @@ describe("browser task route scope", () => {
   ])("keeps canonical PostgreSQL task UUIDs queryable: %s", async (id) => {
     const companyId = randomUUID();
     const limit = vi.fn().mockResolvedValue([{ companyId }]);
-    const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+    const db = { select: () => ({ from: (table: unknown) => ({ where: () => ({
+      limit: table === instanceUserRoles ? vi.fn().mockResolvedValue([]) : limit,
+    }) }) }) } as unknown as Db;
     const list = vi.fn().mockResolvedValue([]);
     const service = { list } as unknown as NonNullable<Parameters<typeof browserUseRoutes>[1]>;
     const app = express();

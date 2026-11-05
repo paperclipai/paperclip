@@ -36,6 +36,10 @@ import {
   financeEvents,
   budgetPolicies,
   budgetReservations,
+  chatEndpoints,
+  chatConversations,
+  taskProviderOutputPolicies,
+  issueAccessGrants,
 } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -1241,6 +1245,377 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(resizeSpy).toHaveBeenCalledTimes(2);
       resizeSpy.mockRestore();
     });
+    describe("task output policy during browser recovery", () => {
+      async function policyFixture() {
+        const f = await fixture();
+        const [endpoint] = await db.insert(chatEndpoints).values({ companyId: f.company.id,
+          connectionId: f.grant.connectionId, provider: "slack", publicId: randomUUID(), assignedAgentId: f.agent.id }).returning();
+        await db.insert(chatConversations).values({ companyId: f.company.id, endpointId: endpoint.id,
+          issueId: f.issue.id, externalConversationId: randomUUID(), externalLabel: "Browser source" });
+        await db.insert(taskProviderOutputPolicies).values({ companyId: f.company.id, issueId: f.issue.id, disposition: "ordinary" });
+        const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);
+        const call = (name: string, parameters: Record<string, unknown>) => f.gateway.executeTool({
+          sessionToken: f.gatewaySession.token, tool: tools.find(t => t.upstreamToolName === name)!.name,
+          parameters, idempotencyKey: randomUUID(),
+        });
+        const restrict = (disposition: "forbidden" | "missing") => disposition === "missing"
+          ? db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id))
+          : db.update(taskProviderOutputPolicies).set({ disposition }).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+        const worker = () => browserUseService(db, f.request, {}, (session, run) => f.gateway.browserUseSessionAuthorized({
+          companyId: session.companyId, agentId: session.agentId, issueId: session.issueId,
+          runId: run.heartbeatRunId, connectionId: session.connectionId, grantId: session.grantId, invocationId: run.invocationId,
+        }));
+        const tick = async () => {
+          await db.update(browserUseSessions).set({ nextPollAt: new Date(0) }).where(eq(browserUseSessions.companyId, f.company.id));
+          await worker().sweep(f.grant.connectionId);
+        };
+        const rows = async () => ({
+          sessions: await db.select().from(browserUseSessions).where(eq(browserUseSessions.companyId, f.company.id)),
+          runs: await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id)),
+          browsers: await db.select().from(browserUseBrowsers).where(eq(browserUseBrowsers.companyId, f.company.id)),
+        });
+        const assertCleanupOnly = () => {
+          expect(f.request).toHaveBeenCalled();
+          for (const [url, init] of f.request.mock.calls) {
+            expect(url).not.toContain("synthetic protected browser task");
+            if (init.method === "POST") {
+              expect(new URL(url).pathname).toMatch(/\/runs\/[\da-f-]+\/cancel$/);
+              expect(init.body).toBeUndefined();
+            } else if (init.method === "PATCH") {
+              expect(new URL(url).pathname).toMatch(/\/browsers\/[\da-f-]+$/);
+              expect(JSON.parse(String(init.body))).toEqual({ action: "stop" });
+            } else expect(init.method).toBe("GET");
+          }
+        };
+        return { ...f, call, restrict, worker, tick, rows, assertCleanupOnly };
+      }
+
+      const humanOperations = ["list", "viewer", "presence", "resize", "release", "keep_open", "cancel", "end"] as const;
+      async function viewFixture() {
+        const f = await policyFixture();
+        await f.call("browser_start", { task: "ordinary browser task", maxCostUsd: 1 });
+        f.ready(); f.complete(); await f.tick();
+        const current = await f.rows();
+        expect(current.sessions).toMatchObject([{ status: "idle" }]);
+        const browser = current.browsers[0];
+        const viewerId = randomUUID();
+        let mode: "board" | "agent" | "other-company" = "board";
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => {
+          req.actor = mode === "agent"
+            ? { type: "agent", companyId: f.company.id, agentId: f.agent.id, source: "agent_jwt", runId: f.run.id }
+            : { type: "board", userId: actor.actorId, source: "session", companyIds: mode === "board" ? [f.company.id] : [] };
+          next();
+        });
+        app.use(browserUseRoutes(db, f.worker()));
+        app.use(errorHandler);
+        const root = `/issues/${f.issue.id}/browsers`;
+        const invoke = (operation: typeof humanOperations[number]) => {
+          const path = `${root}/${browser.id}`;
+          if (operation === "list") return http(app).get(root);
+          if (operation === "viewer") return http(app).get(`${path}/viewer`).query({ viewerId });
+          if (operation === "presence") return http(app).post(`${path}/presence`);
+          if (operation === "resize") return http(app).post(`${path}/viewport`).send({ preset: "phone", viewerId });
+          if (operation === "release") return http(app).post(`${path}/viewport/release`).send({ viewerId });
+          return http(app).post(`${path}/control`).send({ action: operation });
+        };
+        f.request.mockClear();
+        return { ...f, browser, viewerId, invoke, mode: (value: typeof mode) => { mode = value; } };
+      }
+
+      it.each(["ordinary", "forbidden", "missing"] as const)("denies agent access to all native browser controls under %s policy", async disposition => {
+        const f = await viewFixture();
+        if (disposition !== "ordinary") await f.restrict(disposition);
+        const before = await f.rows();
+        f.mode("agent");
+        const resize = vi.spyOn(browserUseViewports, "resize");
+        const release = vi.spyOn(browserUseViewports, "releaseLease");
+        try {
+          for (const operation of humanOperations) {
+            const response = await f.invoke(operation);
+            expect(response.status, operation).toBe(403);
+            expect(response.body).toEqual({ error: "Board access required" });
+          }
+          expect(f.request).not.toHaveBeenCalled();
+          expect(resize).not.toHaveBeenCalled();
+          expect(release).not.toHaveBeenCalled();
+          expect(await f.rows()).toEqual(before);
+        } finally { resize.mockRestore(); release.mockRestore(); }
+      });
+
+      it.each(["ordinary", "forbidden", "missing"] as const)("retains native human viewing without authorizing %s browser execution", async disposition => {
+        const f = await viewFixture();
+        if (disposition !== "ordinary") await f.restrict(disposition);
+        const resize = vi.spyOn(browserUseViewports, "resize").mockResolvedValue({ preset: "phone", applied: true });
+        const release = vi.spyOn(browserUseViewports, "releaseLease").mockResolvedValue();
+        try {
+          const listed = await f.invoke("list");
+          expect(listed.status).toBe(200);
+          expect(listed.body).toMatchObject([{ id: f.browser.id, status: "idle" }]);
+          expect(JSON.stringify(listed.body)).not.toContain("live.browser-use.com");
+          const viewed = await f.invoke("viewer");
+          expect(viewed.status).toBe(200);
+          expect(viewed.headers["cache-control"]).toBe("no-store");
+          expect(viewed.headers["referrer-policy"]).toBe("no-referrer");
+          expect(viewed.body.url).toBe("https://live.browser-use.com/canary");
+          expect(JSON.stringify(viewed.body)).not.toContain("cdp.browser-use.com");
+          expect((await f.invoke("resize")).status).toBe(200);
+          expect(resize).toHaveBeenCalledExactlyOnceWith(f.browser.providerBrowserId,
+            `https://${f.browser.providerBrowserId}.cdp.browser-use.com`, { preset: "phone", viewerId: f.viewerId },
+            expect.any(String), `${actor.actorId}:${f.viewerId}`);
+          expect((await f.invoke("release")).status).toBe(200);
+          expect(release).toHaveBeenCalledExactlyOnceWith(f.browser.providerBrowserId, `${actor.actorId}:${f.viewerId}`);
+          await db.update(browserUseSessions).set({ idleDeadline: new Date(Date.now() + 1000) })
+            .where(eq(browserUseSessions.companyId, f.company.id));
+          expect((await f.invoke("presence")).body).toEqual({ accepted: true });
+          expect((await f.invoke("keep_open")).body).toEqual({ accepted: true });
+          expect((await f.rows()).sessions[0].idleDeadline!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+          expect(f.request.mock.calls.every(([, init]) => init.method === "GET")).toBe(true);
+          expect((await f.rows()).runs).toHaveLength(1);
+          if (disposition !== "ordinary") {
+            await expect(f.call("browser_continue", { sessionId: f.browser.sessionId, task: "synthetic protected browser task", maxCostUsd: 1 }))
+              .rejects.toMatchObject({ status: 403 });
+            f.request.mockClear();
+            await f.tick();
+            expect((await f.rows()).sessions).toMatchObject([{ status: "closed" }]);
+            f.assertCleanupOnly();
+            expect((await f.invoke("keep_open")).status).toBe(409);
+            expect((await f.invoke("viewer")).status).toBe(409);
+          } else {
+            expect((await f.invoke("end")).status).toBe(200);
+            await f.tick();
+            expect((await f.rows()).sessions).toMatchObject([{ status: "closed" }]);
+          }
+        } finally { resize.mockRestore(); release.mockRestore(); }
+      });
+
+      it.each(humanOperations)("does not expose a private task's browser through %s without task-read access", async operation => {
+        const f = await viewFixture();
+        await f.restrict("forbidden");
+        await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issue.id));
+        const before = await f.rows();
+        const resize = vi.spyOn(browserUseViewports, "resize").mockResolvedValue({ preset: "phone" });
+        const release = vi.spyOn(browserUseViewports, "releaseLease").mockResolvedValue();
+        try {
+          const response = await f.invoke(operation);
+          expect(response.status).toBe(404);
+          expect(response.body).toEqual({ error: "Task not found" });
+          expect(f.request).not.toHaveBeenCalled();
+          expect(resize).not.toHaveBeenCalled();
+          expect(release).not.toHaveBeenCalled();
+          expect(await f.rows()).toEqual(before);
+        } finally { resize.mockRestore(); release.mockRestore(); }
+      });
+
+      it.each(["task", "ancestor", "project"] as const)("rechecks native %s read grants after revocation without removing output denial", async scope => {
+        const f = await viewFixture();
+        await f.restrict("forbidden");
+        let grantIssueId = f.issue.id;
+        if (scope === "ancestor") {
+          const [parent] = await db.insert(issues).values({ companyId: f.company.id, title: "Private parent", visibility: "private" }).returning();
+          grantIssueId = parent.id;
+          await db.update(issues).set({ privacyParentIssueId: parent.id }).where(eq(issues.id, f.issue.id));
+        } else if (scope === "project") {
+          const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Private project", visibility: "private" }).returning();
+          await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issue.id));
+        } else await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, f.issue.id));
+        expect((await f.invoke("viewer")).status).toBe(404);
+        const [grant] = await db.insert(issueAccessGrants).values({ issueId: grantIssueId,
+          subjectType: "user", subjectId: actor.actorId, source: "explicit" }).returning();
+        expect((await f.invoke("list")).status).toBe(200);
+        expect((await f.invoke("viewer")).status).toBe(200);
+        f.mode("other-company");
+        expect((await f.invoke("viewer")).status).toBe(404);
+        f.mode("board");
+        await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+        f.request.mockClear();
+        const before = await f.rows();
+        for (const operation of humanOperations) expect((await f.invoke(operation)).status, operation).toBe(404);
+        expect(f.request).not.toHaveBeenCalled();
+        expect(await f.rows()).toEqual(before);
+        expect(await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id)))
+          .toMatchObject([{ disposition: "forbidden" }]);
+      });
+
+      for (const state of ["running", "idle", "detached"] as const) {
+        for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+          it(`${state} worker retains ${disposition} output policy after restart`, async () => {
+            const f = await policyFixture();
+            await f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 });
+            f.ready();
+            if (state === "idle") f.complete();
+            await f.tick();
+            let current = await f.rows();
+            expect(current.browsers).toMatchObject([{ status: "active" }]);
+            expect(current.sessions).toMatchObject([{ status: state === "idle" ? "idle" : "running" }]);
+            if (state === "detached") {
+              await db.update(browserUseRuns).set({ detachedUntil: new Date(Date.now() + 60_000) })
+                .where(eq(browserUseRuns.id, current.runs[0].id));
+              await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
+            }
+            if (disposition !== "ordinary") await f.restrict(disposition);
+            f.request.mockClear();
+            await f.tick();
+            current = await f.rows();
+            if (disposition === "ordinary") {
+              expect(current.sessions).toMatchObject([{ status: state === "idle" ? "idle" : "running" }]);
+              expect(current.browsers).toMatchObject([{ status: "active" }]);
+              expect(f.request.mock.calls.every(([, init]) => init.method === "GET")).toBe(true);
+            } else {
+              expect(current.sessions).toMatchObject([{ status: "closed", stopRequested: null, leaseToken: null, leaseUntil: null }]);
+              expect(current.browsers).toMatchObject([{ status: "stopped" }]);
+              expect(current.runs).toMatchObject([{ status: state === "idle" ? "completed" : "cancelled", eventsDrained: 1,
+                accountedCents: 15, result: { paperclipBudgetHold: { state: "settled" } } }]);
+              f.assertCleanupOnly();
+              expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(1);
+              const calls = f.request.mock.calls.length;
+              await f.tick();
+              expect(f.request).toHaveBeenCalledTimes(calls);
+              expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(1);
+            }
+          });
+        }
+      }
+
+      for (const continuation of [false, true]) {
+        for (const disposition of ["forbidden", "missing"] as const) {
+          it(`recovers a lost ${continuation ? "continuation" : "start"} under ${disposition} policy without resubmission`, async () => {
+            const f = await policyFixture();
+            let sessionId: string | undefined;
+            if (continuation) {
+              await f.call("browser_start", { task: "ordinary first task", maxCostUsd: 1 });
+              f.ready(); f.complete(); await f.tick();
+              sessionId = (await f.rows()).sessions[0].id;
+            }
+            f.loseReply(); f.recoveryPages(6);
+            await expect(f.call(continuation ? "browser_continue" : "browser_start", {
+              task: "synthetic protected browser task", maxCostUsd: 1, ...(sessionId ? { sessionId } : {}),
+            })).rejects.toMatchObject({ status: 502 });
+            await f.restrict(disposition);
+            f.request.mockClear();
+            await f.tick();
+            let current = await f.rows();
+            const unknown = current.runs.find(r => r.status === "unknown")!;
+            expect(unknown).toMatchObject({ providerRunId: null, recoveryCursor: "5", eventsDrained: 0,
+              result: { paperclipBudgetHold: { state: "held", billingUnknown: true } } });
+            expect(current.sessions).toMatchObject([{ status: "stopping", stopRequested: "end" }]);
+            expect(await f.worker().nextSweepAt()).not.toBeNull();
+            await f.tick();
+            current = await f.rows();
+            expect(current.sessions).toMatchObject([{ status: "closed", leaseToken: null, leaseUntil: null }]);
+            expect(current.runs.find(r => r.id === unknown.id)).toMatchObject({ status: "cancelled", eventsDrained: 1,
+              providerRunId: expect.any(String), recoveryCursor: null, accountedCents: 15,
+              result: { paperclipBudgetHold: { state: "settled" } } });
+            expect(current.browsers).toMatchObject([{ status: "stopped" }]);
+            expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(continuation ? 2 : 1);
+            f.assertCleanupOnly();
+            const calls = f.request.mock.calls.length;
+            await f.tick();
+            expect(f.request).toHaveBeenCalledTimes(calls);
+          });
+        }
+      }
+
+      it("retains an unresolved unknown hold and deadline under forbidden policy", async () => {
+        const f = await policyFixture();
+        f.failCreate();
+        await expect(f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 }))
+          .rejects.toMatchObject({ status: 502 });
+        await f.restrict("forbidden");
+        f.request.mockClear();
+        await f.tick();
+        await f.tick();
+        const current = await f.rows();
+        expect(current.sessions).toMatchObject([{ status: "stopping", stopRequested: "end", leaseToken: null, leaseUntil: null }]);
+        expect(current.runs).toMatchObject([{ status: "unknown", providerRunId: null, eventsDrained: 0,
+          result: { paperclipBudgetHold: { state: "held", billingUnknown: true } } }]);
+        expect(await f.worker().nextSweepAt()).not.toBeNull();
+        expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toEqual([]);
+        f.assertCleanupOnly();
+      });
+
+      it("retains a locally denied unknown creation through worker recovery", async () => {
+        const f = await policyFixture();
+        await db.execute(sql.raw(`CREATE FUNCTION test_browser_worker_dispatch_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+            WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+          CREATE TRIGGER test_browser_worker_dispatch_restrict AFTER UPDATE ON browser_use_runs FOR EACH ROW
+            WHEN (NEW.result->'paperclipBudgetHold'->>'dispatchCommittedAt' IS NOT NULL
+              AND OLD.result->'paperclipBudgetHold'->>'dispatchCommittedAt' IS NULL) EXECUTE FUNCTION test_browser_worker_dispatch_restrict();`));
+        try {
+          f.request.mockClear();
+          await expect(f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 }))
+            .rejects.toMatchObject({ status: 502 });
+          expect(f.request).not.toHaveBeenCalled();
+          await f.tick();
+          const current = await f.rows();
+          expect(current.sessions).toMatchObject([{ status: "stopping", stopRequested: "end" }]);
+          expect(current.runs).toMatchObject([{ status: "unknown", providerRunId: null, eventsDrained: 0,
+            result: { paperclipBudgetHold: { state: "held", billingUnknown: true, dispatchCommittedAt: expect.any(String) } } }]);
+          expect(await f.worker().nextSweepAt()).not.toBeNull();
+          f.assertCleanupOnly();
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_browser_worker_dispatch_restrict ON browser_use_runs; DROP FUNCTION IF EXISTS test_browser_worker_dispatch_restrict();"));
+        }
+      });
+
+      it("preserves credential-removal cleanup after task output is forbidden", async () => {
+        const f = await policyFixture();
+        await f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 });
+        f.ready(); await f.tick();
+        await f.restrict("forbidden");
+        f.request.mockClear();
+        await f.access.archiveConnection(f.grant.connectionId, f.company.id, actor);
+        const current = await f.rows();
+        expect(current.sessions).toMatchObject([{ status: "closed" }]);
+        expect(current.browsers).toMatchObject([{ status: "stopped" }]);
+        expect(current.runs).toMatchObject([{ status: "cancelled", eventsDrained: 1, accountedCents: 15 }]);
+        expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id)))[0].status).toBe("revoked");
+        f.assertCleanupOnly();
+      });
+
+      it("retains failed shutdown for a restarted worker without reopening forbidden work", async () => {
+        const f = await policyFixture();
+        await f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 });
+        f.ready(); await f.tick();
+        await f.restrict("forbidden");
+        const transport = f.request.getMockImplementation()!;
+        f.request.mockClear();
+        f.request.mockImplementation(async (url, init) => url.endsWith("/cancel")
+          ? new Response("cleanup temporarily unavailable", { status: 503 }) : transport(url, init));
+        await f.tick();
+        expect(f.request.mock.calls.some(([url]) => url.endsWith("/cancel"))).toBe(true);
+        expect((await f.rows()).sessions).toMatchObject([{ status: "running", leaseToken: null, leaseUntil: null, error: expect.any(String) }]);
+        expect(await f.worker().nextSweepAt()).not.toBeNull();
+        f.request.mockImplementation(transport);
+        await f.tick();
+        expect((await f.rows()).sessions).toMatchObject([{ status: "closed" }]);
+        expect((await f.rows()).browsers).toMatchObject([{ status: "stopped" }]);
+        f.assertCleanupOnly();
+      });
+
+      it("rechecks restriction committed during worker credential resolution", async () => {
+        const f = await policyFixture();
+        await f.call("browser_start", { task: "synthetic protected browser task", maxCostUsd: 1 });
+        f.ready(); await f.tick();
+        await db.execute(sql.raw(`CREATE FUNCTION test_browser_worker_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+            WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+          CREATE TRIGGER test_browser_worker_restrict AFTER INSERT ON secret_access_events FOR EACH ROW
+            EXECUTE FUNCTION test_browser_worker_restrict();`));
+        try {
+          f.request.mockClear();
+          await f.tick();
+          expect((await f.rows()).sessions).toMatchObject([{ status: "closed" }]);
+          expect((await f.rows()).browsers).toMatchObject([{ status: "stopped" }]);
+          f.assertCleanupOnly();
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_browser_worker_restrict ON secret_access_events; DROP FUNCTION IF EXISTS test_browser_worker_restrict();"));
+        }
+      });
+    });
+
     it("rechecks current gateway access and closes browsers when it is removed", async () => {
       const f = await fixture();
       const start = (

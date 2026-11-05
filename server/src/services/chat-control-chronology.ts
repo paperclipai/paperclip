@@ -2,6 +2,7 @@ import {
   and,
   desc,
   eq,
+  exists,
   inArray,
   isNotNull,
   isNull,
@@ -17,8 +18,10 @@ import {
   chatDeliveries,
   chatEndpoints,
   chatPublications,
+  issues,
   type Db,
 } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
@@ -84,7 +87,10 @@ export async function readChatControlChronology(
     typeof chatDeliveries.$inferSelect,
     "normalizedEvent" | "receivedAt"
   >,
-  options: { requirePublishedControlProofForConversationId?: string } = {},
+  options: {
+    requirePublishedControlProofForConversationId?: string;
+    trustLane?: "guest" | "verified";
+  } = {},
 ): Promise<ChatControlChronology> {
   // This proves only source chronology, never current task/provider authority.
   // Intake ignores unproved control candidates. Presentation's stricter mode
@@ -183,7 +189,7 @@ export async function readChatControlChronology(
           isNotNull(chatActions.principalId),
           sql`${chatActions.providerActionId} = 'task-control-authorization:' || ${chatPublications.id}::text`,
           sql`${chatActions.payload}->>'publicationId' = ${chatPublications.id}::text`,
-          sql`${chatActions.result}->>'code' in ('task_control_authorized_and_sent', 'task_control_marked_delivered_by_operator')`,
+          sql`${chatActions.result}->>'code' in ('task_control_authorized_and_sent', 'task_control_marked_delivered_by_operator', 'task_control_internal_completion')`,
         ),
       )
       .leftJoin(
@@ -254,6 +260,24 @@ export async function readChatControlChronology(
         and(
           eq(chatPublications.companyId, endpoint.companyId),
           eq(chatPublications.endpointId, endpoint.id),
+          ...(options.trustLane
+            ? [
+                exists(
+                  database
+                    .select({ id: issues.id })
+                    .from(issues)
+                    .where(
+                      and(
+                        eq(issues.companyId, endpoint.companyId),
+                        eq(issues.id, chatConversations.issueId),
+                        options.trustLane === "guest"
+                          ? sql`${issues.sourceTrust}->>'preset' = ${LOW_TRUST_REVIEW_PRESET}`
+                          : sql`${issues.sourceTrust}->>'preset' is distinct from ${LOW_TRUST_REVIEW_PRESET}`,
+                      ),
+                    ),
+                ),
+              ]
+            : []),
           sql`${chatPublications.idempotencyKey} ~ '^control:(close|new):'`,
           or(
             and(

@@ -6,6 +6,7 @@ import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRu
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
+import { normalizeImportedSourceTrust, retainImportedTaskOutputPolicies } from "./import-write-authorization.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -18,6 +19,7 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { inheritTaskProviderOutputPolicy, inheritTaskProviderOutputPolicyFromRun } from "./task-provider-output-policy.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -281,6 +283,7 @@ export function workProductService(
           await notifyApprovalQueueWork(tx, companyId);
         }
         await validateExecutionWorkspace(tx, companyId, data.executionWorkspaceId);
+        await inheritTaskProviderOutputPolicyFromRun(tx, { companyId, issueId, runId: data.createdByRunId });
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -306,7 +309,7 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>, options: { actorRunId?: string | null } = {}) => {
       const row = await db.transaction(async (tx) => {
         const existing = await tx
           .select()
@@ -325,6 +328,13 @@ export function workProductService(
         }
 
         await validateExecutionWorkspace(tx, existing.companyId, patch.executionWorkspaceId);
+        const destination = { companyId: patch.companyId ?? existing.companyId, issueId: patch.issueId ?? existing.issueId };
+        for (const runId of new Set([existing.createdByRunId, patch.createdByRunId, options.actorRunId])) {
+          await inheritTaskProviderOutputPolicyFromRun(tx, { ...destination, runId });
+        }
+        if (destination.issueId !== existing.issueId) {
+          await inheritTaskProviderOutputPolicy(tx, { ...destination, sourceIssueId: existing.issueId });
+        }
 
         if (patch.isPrimary === true) {
           await tx
@@ -380,10 +390,10 @@ export function workProductService(
         healthStatus: row.healthStatus,
         summary: row.summary ?? null,
         metadata: row.metadata ?? null,
-        executionWorkspaceId: row.executionWorkspaceId ?? null,
-        runtimeServiceId: row.runtimeServiceId ?? null,
-        createdByRunId: row.createdByRunId ?? null,
-        sourceTrust: row.sourceTrust ?? null,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        createdByRunId: null,
+        sourceTrust: normalizeImportedSourceTrust(row.sourceTrust),
       }));
       // Chunked writes are wrapped in a single transaction so a large import
       // that spans multiple insert statements is atomic: if a later chunk
@@ -391,6 +401,7 @@ export function workProductService(
       // prefix behind (which a retry would then duplicate). Mirrors the
       // per-writer transaction the batched issue/document writers use.
       await db.transaction(async (tx) => {
+        await retainImportedTaskOutputPolicies(tx, rows);
         for (const scope of new Map(values.map(value => [value.issueId, { companyId: value.companyId, issueId: value.issueId }])).values()) {
           await notifyNativeStatusReassessment(tx, scope);
         }

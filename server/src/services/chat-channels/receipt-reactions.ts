@@ -18,6 +18,7 @@ import {
   and,
   asc,
   eq,
+  inArray,
   like,
   sql,
 } from "drizzle-orm";
@@ -26,6 +27,7 @@ import type { Db } from "@paperclipai/db";
 
 import {
   chatActions,
+  chatConversations,
   chatDeliveries,
   chatEndpoints,
   toolConnections,
@@ -52,6 +54,7 @@ import type {
 
 import type { EndpointRecord } from "./runtime-types.js";
 import { isSlackReceiptReactionAlreadyApplied } from "./slack/messages.js";
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import { beginSlackReceiptTiming } from "./slack/receipt-timing.js";
 
 type ReceiptReactionsOptions = {
@@ -115,6 +118,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
   // after task acceptance, and a rollback can never leave a visible receipt.
   async function stageReceiptReaction(tx: DbOrTransaction, input: {
     deliveryId: string;
+    conversationId?: string;
     endpoint: EndpointRow;
     threadId: string;
     messageId: string;
@@ -128,6 +132,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
           companyId: input.endpoint.companyId,
           endpointId: input.endpoint.id,
           deliveryId: input.deliveryId,
+          conversationId: input.conversationId ?? null,
           kind: "receipt_reaction",
           providerActionId: `receipt_reaction:${input.deliveryId}`,
           payload: {
@@ -159,6 +164,33 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
         )
         .then((rows) => rows[0]?.id ?? null));
     return actionId;
+  }
+
+  async function receiptForbidsProviderOutput(tx: DbOrTransaction, action: typeof chatActions.$inferSelect) {
+    const conversationIds = new Set<string>();
+    if (action.conversationId) conversationIds.add(action.conversationId);
+    if (action.deliveryId) {
+      const [delivery] = await tx.select({ conversationId: chatDeliveries.conversationId })
+        .from(chatDeliveries).where(and(
+          eq(chatDeliveries.id, action.deliveryId), eq(chatDeliveries.companyId, action.companyId),
+          eq(chatDeliveries.endpointId, action.endpointId),
+        ));
+      if (!delivery) return true;
+      if (delivery.conversationId) conversationIds.add(delivery.conversationId);
+    }
+    // An unbound legacy receipt cannot prove which task authorized its output.
+    if (!conversationIds.size) return true;
+    const conversations = await tx.select({ issueId: chatConversations.issueId })
+      .from(chatConversations).where(and(
+        eq(chatConversations.companyId, action.companyId), eq(chatConversations.endpointId, action.endpointId),
+        inArray(chatConversations.id, [...conversationIds]),
+      ));
+    if (conversations.length !== conversationIds.size) return true;
+    for (const conversation of conversations) {
+      if (await taskForbidsProviderOutput(tx, { companyId: action.companyId, issueId: conversation.issueId }))
+        return true;
+    }
+    return false;
   }
 
   async function processReceiptReaction(actionId: string): Promise<void> {
@@ -318,6 +350,15 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
     const [claimed] = await db.transaction(async (tx) => {
       await credentialLease.assertOwned(tx);
       await notifyChatActionWork(tx, "receipt_reaction");
+      if (await receiptForbidsProviderOutput(tx, action)) {
+        await tx.update(chatActions).set({
+          status: "cancelled",
+          result: { code: "receipt_reaction_provider_output_forbidden" },
+          updatedAt: new Date(),
+        }).where(and(eq(chatActions.id, action.id), eq(chatActions.status, action.status)));
+        await credentialLease.assertOwned(tx);
+        return [];
+      }
       const rows = await tx
         .update(chatActions)
         .set({

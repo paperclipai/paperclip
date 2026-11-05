@@ -63,6 +63,8 @@ import type {
 } from "chat";
 
 import type { EndpointRecord } from "../runtime-types.js";
+import { chatTrustLaneOfIssue, invokerLaneRow, TRUST_LANE_THREAD_ROWS_MAX } from "../inbound/trust-lanes.js";
+import { taskForbidsProviderOutput } from "../../task-provider-output-policy.js";
 
 type DiscordCommandsOptions = {
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
@@ -378,8 +380,9 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
               : null
             : invocation.sourceKind !== "guild_channel"
               ? await tx
-                  .select()
+                  .select({ conversation: chatConversations, issue: { sourceTrust: issues.sourceTrust } })
                   .from(chatConversations)
+                  .innerJoin(issues, and(eq(issues.companyId, chatConversations.companyId), eq(issues.id, chatConversations.issueId)))
                   .where(
                     and(
                       eq(chatConversations.companyId, scope.companyId),
@@ -395,9 +398,11 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
                     ),
                   )
                   .orderBy(desc(chatConversations.sessionGeneration))
-                  .limit(1)
-                  .for("update")
-                  .then((rows) => rows[0] ?? null)
+                  .limit(invocation.sourceKind === "native_thread" ? TRUST_LANE_THREAD_ROWS_MAX : 1)
+                  .for("update", { of: chatConversations })
+                  .then((rows) => invocation.sourceKind === "native_thread"
+                    ? (invokerLaneRow(rows, principal.userId !== null)?.conversation ?? null)
+                    : (rows[0]?.conversation ?? null))
               : null;
           if (
             (receipt?.target && !conversation) ||
@@ -489,8 +494,13 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
             !discordGatewayRuntimeIsCurrent(scope.endpointId, runtimeContext)
           )
             return denied;
+          const suppressOutput = issue !== null && await taskForbidsProviderOutput(tx, {
+            companyId: scope.companyId, issueId: issue.id,
+          });
           if (receipt)
-            return { kind: "accepted", content: receipt.result.content };
+            return suppressOutput
+              ? { kind: "suppressed" }
+              : { kind: "accepted", content: receipt.result.content };
           const target: DiscordNativeCommandTarget | null = conversation
             ? {
                 conversationId: conversation.id,
@@ -541,6 +551,9 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
                   message: { providerMessageId: invocation.interactionId },
                 },
               },
+              invocation.sourceKind === "native_thread"
+                ? { trustLane: chatTrustLaneOfIssue(issue) }
+                : undefined,
             )) === "before_or_unproven"
           ) {
             content =
@@ -622,7 +635,7 @@ export function createDiscordCommands(db: Db, options: DiscordCommandsOptions) {
           )
             throw authorityChanged;
           publish = publicationId !== null;
-          return { kind: "accepted", content };
+          return suppressOutput ? { kind: "suppressed" } : { kind: "accepted", content };
         },
       );
       if (publish)

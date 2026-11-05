@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { withHumanDirectedWork } from "./human-directed-work.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import {
@@ -3038,6 +3039,7 @@ export async function canPublishIssueToChatAudience(
     const [privacyIssue] = await tx.select().from(issues)
       .where(and(eq(issues.id, publication.issueId), eq(issues.companyId, publication.companyId)));
     if (!privacyIssue) return false;
+    if (await taskForbidsProviderOutput(tx, publication)) return false;
     if (!(await canActorReadIssuePrivacy(tx, { type: "none" }, privacyIssue))) {
       const [conversation] = await tx.select().from(chatConversations).where(and(
         eq(chatConversations.id, publication.conversationId), eq(chatConversations.companyId, publication.companyId),

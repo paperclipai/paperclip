@@ -274,6 +274,21 @@ describe("Discord native command Gateway boundary", () => {
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
+  it("keeps a suppressed completion silent after the independent content-free ingress defer", async () => {
+    const callback = vi.fn(async () => ({ kind: "suppressed" as const }));
+    const f = await setup(callback);
+    const command = f.command();
+    await f.adapter.handleGatewayInteraction(command);
+    await f.adapter.handleGatewayInteraction(command);
+    expect(callback).toHaveBeenCalledOnce();
+    expect(f.post).toHaveBeenCalledOnce();
+    expect(f.post.mock.calls[0]?.[1]).toMatchObject({
+      body: { type: 5, data: { flags: 64 } },
+    });
+    expect(f.patch).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it("does not turn a throwing callback into accepted text or a second initial response", async () => {
     const callback = vi.fn(async () => {
       throw new Error("sensitive-bootstrap-error");

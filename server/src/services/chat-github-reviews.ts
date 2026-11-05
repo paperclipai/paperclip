@@ -5,6 +5,7 @@ import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 import { boundRunIssueId } from "./run-task-binding.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
@@ -134,6 +135,12 @@ const formalSchema = commentSchema
   .strict();
 
 export function githubChatReviewService(db: Db, fetchImpl = fetch) {
+  async function assertProviderOutputAllowed(source: { issue: { id: string; companyId: string } }) {
+    if (await taskForbidsProviderOutput(db, { companyId: source.issue.companyId, issueId: source.issue.id })) {
+      throw forbidden("This task cannot publish to a provider", { reasonCode: "github_provider_output_forbidden" });
+    }
+  }
+
   async function scope(session: Session, publishing = false) {
     if (!session.agentId || !session.issueId || !session.runId)
       throw forbidden(
@@ -588,7 +595,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ) {
     const deadline = Date.now() + GITHUB_INLINE_RETRY_WINDOW_MS;
     const source = await scope(session);
-    if (invocationId && ["comment", "update_comment", "submit_review"].includes(name)) {
+    if (["comment", "update_comment", "begin_review", "submit_review", "formal_review"].includes(name)) await assertProviderOutputAllowed(source);
+    if (invocationId && ["comment", "update_comment", "submit_review", "formal_review"].includes(name)) {
       const [existing] = await db.select().from(chatActions).where(and(
         eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, source.endpoint.id),
         eq(chatActions.conversationId, source.conversation.id), eq(chatActions.kind, "github_review_publication"),
@@ -942,6 +950,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     source: Awaited<ReturnType<typeof scope>>,
     action: typeof chatActions.$inferSelect,
   ) {
+    await assertProviderOutputAllowed(source);
     if (
       (source.endpoint.setup as { runtimeGeneration?: number })
         .runtimeGeneration !== action.payload.runtimeGeneration &&
@@ -1104,6 +1113,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                   .where(eq(chatActions.id, action.id));
               });
             }
+            if (options?.method && options.method !== "GET") await assertProviderOutputAllowed(source);
             return providerApi.request(path, options);
           } };
           const publicationMarker = marker(

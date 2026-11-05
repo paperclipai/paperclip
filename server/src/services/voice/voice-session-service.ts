@@ -17,6 +17,7 @@ import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
 import { issueService } from "../issues.js";
+import { retainTaskProviderOutputPolicy, taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
@@ -84,16 +85,19 @@ export function voiceSessionService(db: Db, options: {
         : await issueSvc.create(input.companyId, { title: "Voice conversation", status: "todo", priority: "medium", assigneeAgentId: endpoint.assignedAgentId, createdByUserId: input.caller.id, responsibleUserId: input.caller.id, originKind: "chat_channel", originId: endpoint.id, idempotencyKey: `voice:${input.caller.id}:${input.idempotencyKey}` }, tx);
       if (!task) throw notFound("Task not found");
       if (task.assigneeAgentId !== endpoint.assignedAgentId) throw conflict("Choose a voice connection for this task's assigned agent");
+      if (await taskForbidsProviderOutput(tx, { companyId: input.companyId, issueId: task.id })) throw forbidden("This task forbids provider output, including voice sessions");
       const existing = await tx.select().from(chatConversations).where(and(eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, task.id))).limit(1).then((rows) => rows[0]);
       if (existing) {
         if (!["active", "waiting"].includes(existing.state)) throw conflict("This voice conversation is no longer available");
         return { issueId: task.id, conversationId: existing.id };
       }
+      await retainTaskProviderOutputPolicy(tx, { companyId: input.companyId, issueId: task.id, disposition: "ordinary" });
       const conversationId = randomUUID(), threadId = `speko:${conversationId}`;
       const [resource] = await tx.insert(chatEndpointResources).values({ companyId: input.companyId, endpointId: input.endpointId, type: "direct_message", providerResourceId: threadId, label: "Voice conversation", enabled: true, availability: "available" }).returning();
       await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice conversation", communicationGuidance: buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: endpoint.communicationInstructions }), isDirectMessage: true });
       return { issueId: task.id, conversationId };
     } });
+    if (await taskForbidsProviderOutput(db, { companyId: input.companyId, issueId: reserved.session.issueId })) throw forbidden("This task forbids provider output, including voice sessions");
     // Media credentials are intentionally not stored or reissued. An uncertain
     // browser response must inspect/end this attempt, never blindly create again.
     if (!reserved.created || input.mode === "inbound_phone") return { session: serializeVoiceSession(reserved.session) };
@@ -108,6 +112,7 @@ export function voiceSessionService(db: Db, options: {
       await db.transaction((tx) => store.authorizeSession(tx, input.companyId, session.id, ["creating"]));
       client = provider(credentials.apiKey);
       const shared = { agentId: credentials.agentId, bindingId: session.id, toolToken: reserved.token, maxDurationSeconds: input.maxDurationSeconds };
+      if (await taskForbidsProviderOutput(db, { companyId: input.companyId, issueId: session.issueId })) throw forbidden("This task forbids provider output, including voice sessions");
       created = input.mode === "outbound_phone"
         ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: PHONE_VOICE_PROMPT })
         : await client.createBrowserSession({ ...shared, systemPrompt: VOICE_PROMPT });

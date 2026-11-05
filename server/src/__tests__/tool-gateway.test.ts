@@ -1,6 +1,9 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
 import request from "supertest";
@@ -10,6 +13,9 @@ import {
   agents,
   agentWakeupRequests,
   companySecretBindings,
+  chatConversations,
+  chatEndpoints,
+  taskProviderOutputPolicies,
   companySecrets,
   companySecretVersions,
   companyMemberships,
@@ -575,6 +581,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolProfileEntries);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfiles);
+    await db.delete(chatConversations);
+    await db.delete(chatEndpoints);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(secretAccessEvents);
@@ -1726,6 +1734,138 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
     });
+  });
+
+  describe("configured stdio task output confinement", () => {
+    const methods = ["tools/call", "resources/list", "resources/read", "prompts/list", "prompts/get"] as const;
+    let directory: string | undefined;
+
+    afterEach(async () => {
+      if (directory) {
+        await rm(directory, { recursive: true, force: true });
+        directory = undefined;
+      }
+    });
+
+    async function fixture(disposition: "ordinary" | "forbidden" | "missing") {
+      directory = await mkdtemp(join(tmpdir(), "paperclip-stdio-output-"));
+      const transcript = join(directory, "protocol.jsonl");
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+      const local = await createLocalStdioMcpTool(db, company.id, {
+        applicationKey: "output-local",
+        connectionName: "Output local",
+        stdioScript: `
+const fs = require("node:fs");
+const transcript = ${JSON.stringify(transcript)};
+fs.appendFileSync(transcript, JSON.stringify({ started: true }) + "\\n");
+require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(transcript, JSON.stringify(message) + "\\n");
+  if (!message.id) return;
+  const result = message.method === "initialize"
+    ? { protocolVersion: "2024-11-05", capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: "output-local", version: "1" } }
+    : message.method === "tools/call" ? { content: [{ type: "text", text: "echo:" + message.params.arguments.message }] }
+    : message.method === "resources/list" ? { resources: [{ uri: "notes://one", name: "Note" }] }
+    : message.method === "resources/read" ? { contents: [{ uri: message.params.uri, text: "resource body" }] }
+    : message.method === "prompts/list" ? { prompts: [{ name: "summarize" }] }
+    : { messages: [{ role: "user", content: { type: "text", text: message.params.arguments.text } }] };
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");
+});
+`,
+      });
+      const [endpoint] = await db.insert(chatEndpoints).values({ companyId: company.id,
+        connectionId: local.connection.id, provider: "slack", publicId: randomUUID(), assignedAgentId: agent.id }).returning();
+      await db.insert(chatConversations).values({ companyId: company.id, endpointId: endpoint!.id,
+        issueId: issue.id, externalConversationId: randomUUID(), externalLabel: "Local output source" });
+      if (disposition !== "missing") await db.insert(taskProviderOutputPolicies).values({ companyId: company.id, issueId: issue.id, disposition });
+      const profile = await allowAllToolsForAgent(db, company.id, agent.id);
+      await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id,
+        selectorType: "connection", effect: "include", connectionId: local.connection.id });
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const named = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "Local output", profileId: profile.id, agentId: agent.id, issueId: issue.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id,
+        body: { name: "Local output", subjectType: "heartbeat_run", subjectId: run.id } });
+      const tool = expectedConnectedToolName({ applicationKey: local.application.applicationKey,
+        connectionId: local.connection.id, toolName: local.catalogEntry.toolName });
+      const uri = `paperclip-resource://${local.connection.id}/${Buffer.from("notes://one").toString("base64url")}`;
+      const prompt = `paperclip-prompt://${local.connection.id}/${Buffer.from("summarize").toString("base64url")}`;
+      const call = (service: typeof gateway, method: typeof methods[number]) => method === "tools/call"
+        ? service.executeTool({ sessionToken: session.token, tool, parameters: { message: "ordinary body" } })
+        : service.executeContextForNamedGateway({ gatewayId: named.id, bearerToken: token.token, method,
+          params: method === "resources/read" ? { uri } : method === "prompts/get" ? { name: prompt, arguments: { text: "ordinary body" } } : {} });
+      const readTranscript = async () => {
+        try { return (await readFile(transcript, "utf8")).trim().split("\n").map(line => JSON.parse(line)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+      };
+      const restrict = () => db.insert(taskProviderOutputPolicies).values({ companyId: company.id, issueId: issue.id, disposition: "forbidden" })
+        .onConflictDoUpdate({ target: taskProviderOutputPolicies.issueId, set: { disposition: "forbidden" } });
+      return { company, issue, gateway, call, readTranscript, restrict, uri, prompt };
+    }
+
+    for (const method of methods) {
+      for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+        it(`${method} retains ${disposition} policy before subprocess start`, async () => {
+          const f = await fixture(disposition);
+          if (disposition !== "ordinary") {
+            await expect(f.call(f.gateway, method)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(await f.readTranscript()).toEqual([]);
+            expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+            expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+            return;
+          }
+          const result = await f.call(f.gateway, method);
+          if (method === "tools/call") expect(result).toMatchObject({ status: "completed", result: { content: "echo:ordinary body", data: { spawnedLocalProcess: true } } });
+          if (method === "resources/list") expect(result).toMatchObject({ resources: [{ uri: f.uri, name: "Output local: Note" }] });
+          if (method === "resources/read") expect(result).toMatchObject({ contents: [{ uri: f.uri, text: "resource body" }] });
+          if (method === "prompts/list") expect(result).toMatchObject({ prompts: [{ name: f.prompt, title: "Output local: summarize" }] });
+          if (method === "prompts/get") expect(result).toMatchObject({ messages: [{ role: "user", content: { type: "text", text: "ordinary body" } }] });
+          const transcript = await f.readTranscript();
+          expect(transcript.map(entry => entry.method ?? "started")).toEqual(["started", "initialize", "notifications/initialized", method]);
+          expect(transcript[3].params).toEqual(method === "tools/call" ? { name: "echo", arguments: { message: "ordinary body" } }
+            : method === "resources/read" ? { uri: "notes://one" }
+              : method === "prompts/get" ? { name: "summarize", arguments: { text: "ordinary body" } } : {});
+        });
+      }
+
+      it(`${method} rechecks restriction committed during runtime slot acquisition`, async () => {
+        const f = await fixture("ordinary");
+        await db.execute(sql.raw(`CREATE FUNCTION test_stdio_output_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            UPDATE task_provider_output_policies SET disposition = 'forbidden'
+              WHERE company_id = '${f.company.id}' AND issue_id = '${f.issue.id}';
+            RETURN NEW;
+          END $$`));
+        try {
+          await db.execute(sql.raw(`CREATE TRIGGER test_stdio_output_restrict AFTER INSERT ON tool_runtime_slots
+            FOR EACH ROW EXECUTE FUNCTION test_stdio_output_restrict()`));
+          await expect(f.call(f.gateway, method)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(await f.readTranscript()).toEqual([]);
+          expect(await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id)))
+            .toEqual([expect.objectContaining({ disposition: "forbidden" })]);
+          expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, f.company.id)))
+            .toEqual([expect.objectContaining({ status: "failed", healthStatus: "error" })]);
+          expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_stdio_output_restrict ON tool_runtime_slots"));
+          await db.execute(sql.raw("DROP FUNCTION test_stdio_output_restrict()"));
+        }
+      });
+
+      it(`${method} retains restriction across service restart and saved handles`, async () => {
+        const f = await fixture("ordinary");
+        await f.call(f.gateway, method);
+        const before = await f.readTranscript();
+        expect(before).toHaveLength(4);
+        await f.restrict();
+        const restarted = createTestToolGatewayService(db);
+        await expect(f.call(restarted, method)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+        expect(await f.readTranscript()).toEqual(before);
+      });
+    }
   });
 
   it("passes only approved env values to local stdio MCP processes", async () => {

@@ -17,6 +17,8 @@ import type {
 
 /** A resolved issue row with a pre-generated id, ready for batch insert. */
 export interface ImportIssueRow {
+  /** Server-resolved deny; editable package metadata cannot grant ordinary output. */
+  providerOutputDisposition: "forbidden";
   /** Pre-generated issue id (app-supplied uuid). */
   id: string;
   /** Source slug, so the caller can correlate the row after the batch. */
@@ -60,6 +62,7 @@ export interface ImportIssueCommentRow {
   authorUserId: string | null;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  sourceTrust?: SourceTrustMetadata | null;
   createdAt: Date | string | null;
 }
 

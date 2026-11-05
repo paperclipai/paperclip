@@ -13,6 +13,7 @@ import { notifyScheduledRetryCancellation } from "../../../services/scheduled-re
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { taskForbidsProviderOutput } from "../../../services/task-provider-output-policy.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -1275,6 +1276,16 @@ export function createPostgresRunDispatchAdapter(
     );
   }
 
+  async function taskOutputExecutionBlockReason(tx: Db, run: HeartbeatRun): Promise<string | null> {
+    const context = parseObject(run.contextSnapshot);
+    const issueId = run.nativeIssueId ?? run.issueId ?? readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!issueId || !isUuidLike(issueId)) return null;
+    if (!await taskForbidsProviderOutput(tx, { companyId: run.companyId, issueId })) return null;
+    // Gateway/transport guards do not confine provider-native tools or arbitrary
+    // processes. No runtime currently qualifies to execute forbidden-output work.
+    return "Task provider output is forbidden; no confined execution runtime is qualified";
+  }
+
   async function dispatchResolvedInteractionIfCurrent<T>(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
@@ -1327,6 +1338,10 @@ export function createPostgresRunDispatchAdapter(
           return { dispatched: false as const, cancellation };
         }
       }
+
+      const outputBlock = stopRecovery ? null : await taskOutputExecutionBlockReason(tx, run);
+      if (outputBlock) return { dispatched: false as const, admissionBlockReason: outputBlock,
+        admissionBlockCode: "task_provider_output_execution_unqualified" as const };
 
       const admissionBlockReason = await recheckRunBudgetReservationInTransaction(
         tx, publications, run, input.reservationId, input.recoveryLeaseOwner,
@@ -1411,6 +1426,9 @@ export function createPostgresRunDispatchAdapter(
             cancellation: await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now, true) };
         }
       }
+      const outputBlock = stopRecovery ? null : await taskOutputExecutionBlockReason(tx, run);
+      if (outputBlock) return { dispatched: false as const, admissionBlockReason: outputBlock,
+        admissionBlockCode: "task_provider_output_execution_unqualified" as const };
       const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
         runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };

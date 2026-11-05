@@ -91,6 +91,7 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { normalizeImportedSourceTrust } from "./import-write-authorization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
@@ -926,6 +927,7 @@ function readPortableIssueComments(
       authorUserId: asString(entry.authorUserId),
       presentation: presentation ? presentation.data : null,
       metadata: metadata ? metadata.data : null,
+      sourceTrust: normalizeImportedSourceTrust(entry.sourceTrust),
       createdAt: createdAt && Number.isNaN(Date.parse(createdAt)) ? null : createdAt,
     });
   }
@@ -1043,6 +1045,7 @@ function normalizePortableIssueDocuments(
       title: asString(entry.title),
       format: asString(entry.format) ?? "markdown",
       path: normalizePortablePath(documentPath),
+      sourceTrust: normalizeImportedSourceTrust(entry.sourceTrust),
     });
   }
   return documents;
@@ -1069,6 +1072,7 @@ function normalizePortableIssueWorkProducts(value: unknown): CompanyPortabilityI
       healthStatus: asString(entry.healthStatus) ?? "unknown",
       summary: asString(entry.summary),
       metadata: isPlainRecord(entry.metadata) ? entry.metadata : null,
+      sourceTrust: normalizeImportedSourceTrust(entry.sourceTrust),
     });
   }
   return workProducts;
@@ -4472,6 +4476,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           title: document.title ?? null,
           format: document.format,
           path: documentPath,
+          sourceTrust: normalizeImportedSourceTrust(document.sourceTrust),
         };
       });
       const workProductRows = details.workProductRows;
@@ -4491,6 +4496,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           healthStatus: workProduct.healthStatus !== "unknown" ? workProduct.healthStatus : undefined,
           summary: workProduct.summary ?? null,
           metadata: workProduct.metadata ?? null,
+          sourceTrust: normalizeImportedSourceTrust(workProduct.sourceTrust),
         });
       });
       // Attachment bytes travel as content-addressed blobs/<sha256> entries,
@@ -4568,6 +4574,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               authorUserId: null,
               presentation: comment.presentation,
               metadata: comment.metadata,
+              sourceTrust: normalizeImportedSourceTrust(comment.sourceTrust),
               createdAt: comment.createdAt instanceof Date
                 ? comment.createdAt.toISOString()
                 : new Date(comment.createdAt).toISOString(),
@@ -4952,6 +4959,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.issues) {
+      errors.push(
+        "Task-content import is unavailable until native-only quarantine and derived-content confinement are qualified. "
+        + "Editable package metadata cannot authorize provider output. Cancel or explicitly deselect tasks to import only the remaining package entities.",
+      );
       const projectBySlug = new Map(manifest.projects.map((project) => [project.slug, project]));
       for (const issue of manifest.issues) {
         const markdown = readPortableTextFile(source.files, ensureMarkdownPath(issue.path));
@@ -5045,7 +5056,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingProjectSlugs.add(existing.urlKey);
       }
 
-      const existingSkills = await companySkills.listFull(input.target.companyId);
+      // Inventory discovery can persist snapshot maintenance; rejected selections must not start it.
+      const existingSkills = errors.length > 0 ? [] : await companySkills.listFull(input.target.companyId);
       const existingSkillKeys = new Set(existingSkills.map((skill) => skill.key));
       const existingSkillSlugs = new Set(existingSkills.map((skill) => normalizeSkillSlug(skill.slug) ?? skill.slug));
       for (const skill of manifest.skills) {
@@ -5267,6 +5279,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
+    // Hash validation proves byte integrity, not ordinary-output authority.
+    for (const [filePath, fileEntry] of Object.entries(plan.source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const declaredSha = filePath.slice("blobs/".length);
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== declaredSha) {
+        throw unprocessable(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
     }
@@ -5316,18 +5337,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             );
           }
         }
-      }
-    }
-
-    // Content-addressed blobs double as the bundle's tamper seal. Verify every
-    // blob before any row is written so a corrupted package cannot leave a
-    // partially imported company behind.
-    for (const [filePath, fileEntry] of Object.entries(plan.source.files)) {
-      if (!filePath.startsWith("blobs/")) continue;
-      const declaredSha = filePath.slice("blobs/".length);
-      const body = portableFileToBuffer(fileEntry, filePath);
-      if (sha256HexOfBytes(body) !== declaredSha) {
-        throw unprocessable(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
       }
     }
 
@@ -6199,6 +6208,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               authorUserId: authorType === "user" ? actorUserId ?? null : null,
               presentation: comment.presentation ?? null,
               metadata: comment.metadata ?? null,
+              sourceTrust: normalizeImportedSourceTrust(comment.sourceTrust),
               createdAt: comment.createdAt ?? null,
             });
             createdCommentIds.push(commentId);
@@ -6226,7 +6236,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               createdByAgentId: null,
               createdByUserId: actorUserId ?? null,
               createdByRunId: null,
-              sourceTrust: null,
+              sourceTrust: normalizeImportedSourceTrust(documentEntry.sourceTrust),
             });
           }
           for (const workProductEntry of manifestIssue.workProducts ?? []) {
@@ -6249,7 +6259,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               executionWorkspaceId: null,
               runtimeServiceId: null,
               createdByRunId: null,
-              sourceTrust: null,
+              sourceTrust: normalizeImportedSourceTrust(workProductEntry.sourceTrust),
             });
           }
           // Monitors land un-armed: notes and provenance are restored on the
@@ -6319,6 +6329,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }
           }
           issueRows.push({
+            providerOutputDisposition: "forbidden",
             id: issueId,
             ref: manifestIssue.slug,
             projectId: projectId ?? null,

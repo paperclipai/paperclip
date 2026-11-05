@@ -420,6 +420,7 @@ export interface ChatSdkCallbackEvent<T> {
 /** Private command completion only; task publications use the ordinary FIFO. */
 export type DiscordNativeCommandResponse =
   | { kind: "accepted"; content: string }
+  | { kind: "suppressed" }
   | { kind: "denied" };
 
 export interface DiscordRootMentionAdmissionEvent {
@@ -851,6 +852,8 @@ function installDiscordNativeCommands(
             !Array.isArray(response)
           ) {
             const record = response as Record<string, unknown>;
+            if (record.kind === "suppressed" && Object.keys(record).length === 1)
+              return;
             if (record.kind === "denied" && Object.keys(record).length === 1)
               content = denied;
             else if (

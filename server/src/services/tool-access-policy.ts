@@ -1,6 +1,7 @@
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash } from "node:crypto";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import type { ToolApprovalClaim } from "./tool-approval-execution.js";
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1514,6 +1515,13 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const loaded = await loadContext(input, cache);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
+    if (ctx.issueId && ["mcp_http_fixture", "mcp_stdio_fixture", "mcp_remote_http", "mcp_local_stdio", "provider_rest", "paperclip_plugin"].includes(ctx.providerType ?? "")
+      && await cachedRead(cache, `task-provider-output:${ctx.companyId}:${ctx.issueId}`, () =>
+        taskForbidsProviderOutput(db, { companyId: ctx.companyId, issueId: ctx.issueId! }))) {
+      return decision("deny", "deny_policy_block", "Task policy forbids provider output through this tool.", [], [], {
+        redactionPlan: redaction.redactionPlan, policyExplanation: { taskProviderOutput: "forbidden" },
+      });
+    }
     // A final handoff rechecks current permissions for work already admitted by
     // the gateway. Its own last consumed slot cannot reject that same work.
     // Only durable consumption of an unchanged rule retains that slot; new or

@@ -130,6 +130,7 @@ import type {
 } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
 import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js";
@@ -1300,6 +1301,12 @@ export function createToolGatewayService(
         decideGatewayPolicy(admissionInput, { admittedInvocationId: invocationId, requiredGatewayAction: "tools/call" }, policy, transaction));
     },
   };
+
+  async function assertTaskProviderOutput(session: ToolGatewaySession) {
+    if (session.issueId && await taskForbidsProviderOutput(db, { companyId: session.companyId, issueId: session.issueId })) {
+      throw new ToolGatewayHttpError(403, "Task policy forbids provider output through this tool.", "deny_policy_block");
+    }
+  }
 
   async function assertGatewayIssuerAuthority(input: ToolAccessDecisionInput, requiredAction?: ToolMcpGatewayTokenAction, database: Db = db) {
     const [row] = await database.select({ token: toolMcpGatewayTokens, gateway: toolMcpGateways }).from(toolMcpGatewayTokens)
@@ -3296,6 +3303,7 @@ export function createToolGatewayService(
     invocationId?: string,
   ) {
     const params = asRecord(parameters) ?? {};
+    if (tool.providerType === "mcp_http_fixture" || tool.providerType === "mcp_stdio_fixture") await assertTaskProviderOutput(session);
 
     if (tool.providerType === "paperclip_speko_voice") {
       try {
@@ -5279,6 +5287,7 @@ export function createToolGatewayService(
     protocolMethod?: string;
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
+    beforeDispatch: () => Promise<void>;
   }): Promise<unknown> {
     if (input.template.templateId === "paperclip.cognee-cloud") {
       if (input.protocolMethod === "resources/list") return { resources: [] };
@@ -5291,6 +5300,7 @@ export function createToolGatewayService(
         tool: input.entry?.toolName ?? "", parameters: asRecord(input.parameters) ?? {},
         signal: AbortSignal.timeout(input.timeoutMs),
         request: async (url, init) => {
+          await input.beforeDispatch();
           const response = await guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions());
           const body = await readBoundedRemoteResponse(response);
           if (!response.ok) throw new ToolGatewayHttpError(502,
@@ -5536,6 +5546,7 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
+    await assertTaskProviderOutput(input.session);
     const response = await guardedRemoteHttpFetch(
       endpoint,
       {
@@ -5617,6 +5628,7 @@ export function createToolGatewayService(
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
   }): Promise<unknown> {
+    await assertTaskProviderOutput(input.session);
     const [application] = await db.select({ applicationKey: toolApplications.applicationKey }).from(toolApplications)
       .where(and(eq(toolApplications.id, input.connection.applicationId), eq(toolApplications.companyId, input.session.companyId))).limit(1);
     if (!application) throw new ToolGatewayHttpError(404, "MCP connection not found", "connection_not_found");
@@ -5643,8 +5655,10 @@ export function createToolGatewayService(
       grant,
     );
     if (template.templateId === "paperclip.cognee-cloud") {
+      await assertTaskProviderOutput(input.session);
       return callLocalStdioMcp({ connection: input.connection, template, env,
-        protocolMethod: input.method, protocolParams: input.params ?? {}, timeoutMs: DEFAULT_TOOL_TIMEOUT_MS });
+        protocolMethod: input.method, protocolParams: input.params ?? {}, timeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
+        beforeDispatch: () => assertTaskProviderOutput(input.session) });
     }
     return runtimeSupervisor.useConnectionSlot(
       {
@@ -5661,15 +5675,18 @@ export function createToolGatewayService(
           protocolMethod: input.method,
         },
       },
-      async () =>
-        callLocalStdioMcp({
+      async () => {
+        await assertTaskProviderOutput(input.session);
+        return callLocalStdioMcp({
           connection: input.connection,
           template,
           env,
           protocolMethod: input.method,
           protocolParams: input.params ?? {},
           timeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
-        }),
+          beforeDispatch: () => assertTaskProviderOutput(input.session),
+        });
+      },
     );
   }
 
@@ -5714,6 +5731,7 @@ export function createToolGatewayService(
       callerHeaders: input.callerHeaders,
     });
     await assertGatewayTokenAction(session, input.method);
+    await assertTaskProviderOutput(session);
     const connections = await fullyAssignedMcpConnections(session);
     if (input.method === "resources/list") {
       const resources = [] as Array<Record<string, unknown>>;
@@ -6184,6 +6202,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
+    await assertTaskProviderOutput(session);
     const { entry, connection } = await resolveConnectedRemoteTool(
       session,
       tool,
@@ -6197,14 +6216,17 @@ export function createToolGatewayService(
       ms = railwayCommandBudgetMs(parameters);
     }
     const grant = await resolveConnectionGrant(session, connection);
+    const request = async (url: string, init: RequestInit) => {
+      await assertTaskProviderOutput(session);
+      return options.remoteHttpRequest ? options.remoteHttpRequest(url, init)
+        : guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions());
+    };
     const restConnector = restConnectorFor(connection);
     if (restConnector) {
       const budgetMs = Math.min(ms, 30_000);
       const deadlineAt = Date.now() + budgetMs;
       const signal = AbortSignal.timeout(budgetMs);
-      const client = restConnector.client(connection, await resolveCredentialHeaders(session, connection, grant),
-        (url, init) => options.remoteHttpRequest ? options.remoteHttpRequest(url, init)
-          : guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions()), signal, deadlineAt);
+      const client = restConnector.client(connection, await resolveCredentialHeaders(session, connection, grant), request, signal, deadlineAt);
       const data = await client.invoke(entry.toolName, parameters);
       return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
     }
@@ -6215,13 +6237,12 @@ export function createToolGatewayService(
       const signal = AbortSignal.timeout(budgetMs);
       const data = await nativeProvider.execute({ binding: session, connection,
         headers: await resolveCredentialHeaders(session, connection, grant),
-        request: (url, init) => options.remoteHttpRequest ? options.remoteHttpRequest(url, init)
-          : guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions()),
+        request,
         toolName: entry.toolName, parameters, signal, deadlineAt });
       return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
     }
     if (isBrowserUseConnection(connection)) {
-      const data = await browserUseService(db, options.remoteHttpRequest).execute(session, grant, invocationId!, entry.toolName, parameters);
+      const data = await browserUseService(db, request).execute(session, grant, invocationId!, entry.toolName, parameters);
       return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
     }
     const workspaceTarget = connection.config.sourceTemplateKey === "google-workspace"
@@ -6284,6 +6305,7 @@ export function createToolGatewayService(
             throw new ToolGatewayHttpError(403, "This Google action is not covered by the current permission grant.", "oauth_insufficient_scope");
           }
         }
+        await assertTaskProviderOutput(session);
         return options.remoteHttpRequest
           ? options.remoteHttpRequest(target, init)
           : guardedRemoteHttpFetch(target, init, {
@@ -6328,11 +6350,16 @@ export function createToolGatewayService(
           signal: controller.signal,
           request: dispatchRemote,
           runCommand: ssh?.grantId === grant.id && ssh?.enabled === true && sshRef
-            ? async (input) => runRailwaySshCommand({
-                ...input,
-                privateKey: await resolveGrantSecretValue(session, connection, grant, sshRef),
-                knownHosts: typeof ssh.knownHosts === "string" ? ssh.knownHosts : "",
-              })
+            ? async (input) => {
+                await assertTaskProviderOutput(session);
+                const privateKey = await resolveGrantSecretValue(session, connection, grant, sshRef);
+                await assertTaskProviderOutput(session);
+                return runRailwaySshCommand({
+                  ...input,
+                  privateKey,
+                  knownHosts: typeof ssh.knownHosts === "string" ? ssh.knownHosts : "",
+                });
+              }
             : undefined,
         });
         const data = await client.call(entry.toolName, parameters);
@@ -6674,6 +6701,7 @@ export function createToolGatewayService(
     ms: number,
     useProviderDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
+    await assertTaskProviderOutput(session);
     const { entry, connection } = await resolveConnectedLocalStdioTool(
       session,
       tool,
@@ -6686,8 +6714,12 @@ export function createToolGatewayService(
       template,
       grant,
     );
-    const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters,
-      timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms });
+    const invoke = async () => {
+      await assertTaskProviderOutput(session);
+      return callLocalStdioMcp({ connection, entry, template, env, parameters,
+        timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms,
+        beforeDispatch: () => assertTaskProviderOutput(session) });
+    };
     // Cognee is a bundled HTTP client. Provider failures are tool failures, not
     // crashed local processes, and must never consume slots or restart budgets.
     const result = template.templateId === "paperclip.cognee-cloud"
@@ -11032,6 +11064,8 @@ export function createToolGatewayService(
           }
         }
         if (recorded.replayed && !retryingSlackRateLimit && !retryingGitHubPublication) {
+          if (accessDecision.policyExplanation?.taskProviderOutput === "forbidden")
+            throw new ToolGatewayHttpError(403, accessDecision.explanation, accessDecision.reasonCode);
           if (gitHubPublicationReplay && !gitHubReplayPolicyAllowed)
             throw new ToolGatewayHttpError(policyErrorStatus(accessDecision), accessDecision.explanation, accessDecision.reasonCode);
           await writeAudit({
@@ -11150,6 +11184,7 @@ export function createToolGatewayService(
             "agent_context_required",
           );
         }
+        if (tool.providerType === "paperclip_plugin") await assertTaskProviderOutput(session);
         const connectedMcpExecution =
           (tool.providerType === "mcp_remote_http" || tool.providerType === "provider_rest")
             ? await executeRemoteHttpTool(
@@ -11521,6 +11556,8 @@ export function createToolGatewayService(
       invocationId = recorded.invocation.id;
 
       if (recorded.replayed) {
+        if (accessDecision.policyExplanation?.taskProviderOutput === "forbidden")
+          throw new ToolGatewayHttpError(403, accessDecision.explanation, accessDecision.reasonCode);
         return recorded.invocation.resultSummary;
       }
 
@@ -11600,6 +11637,7 @@ export function createToolGatewayService(
 
       const startedAt = Date.now();
       try {
+        await assertTaskProviderOutput(sessionLike);
         const result = await pluginToolDispatcher.executeTool(
           input.tool,
           requestedParameters,

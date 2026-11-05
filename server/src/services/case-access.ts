@@ -5,14 +5,16 @@ import { forbidden, notFound } from "../errors.js";
 import { authorizationService, issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { isLowTrustQuarantined, resolveActorSourceTrustForIssue } from "./source-trust.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { boundRunIssueId, runTaskContextColumn } from "./run-task-binding.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 
 type CaseDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type CaseIdentity = { id: string; companyId: string };
 
 const CASE_TRUST_ERROR = "Low-trust work must use its governed review path before writing or executing case work";
 
-function runIssueId(run: { issueId: string | null; nativeIssueId: string | null; contextIssueId: unknown }) {
-  const id = run.issueId ?? run.nativeIssueId ?? run.contextIssueId;
+function runIssueId(run: { issueId: string | null; nativeIssueId: string | null; contextSnapshot: Record<string, unknown>; contextIssueId: unknown }) {
+  const id = boundRunIssueId(run) ?? run.contextIssueId;
   return typeof id === "string" && isUuidLike(id) ? id : null;
 }
 
@@ -24,6 +26,7 @@ export async function assertActorCanWriteCase(db: CaseDb, actor: AuthorizationAc
   if (!actor.agentId || (actor.runId && !isUuidLike(actor.runId))) throw forbidden(CASE_TRUST_ERROR);
   const [run] = actor.runId ? await db.select({
     agentId: heartbeatRuns.agentId, issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+    contextSnapshot: runTaskContextColumn,
     contextIssueId: sql<unknown>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->>'id', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, input.companyId))).limit(1) : [];
   if (actor.runId && (!run || run.agentId !== actor.agentId)) throw forbidden(CASE_TRUST_ERROR);
@@ -39,6 +42,11 @@ export async function assertActorCanWriteCase(db: CaseDb, actor: AuthorizationAc
     id: issues.id, companyId: issues.companyId, projectId: issues.projectId, executionPolicy: issues.executionPolicy,
   }).from(issues).where(and(eq(issues.companyId, input.companyId), inArray(issues.id, issueIds))) : [];
   if (issueRows.length !== issueIds.length) throw forbidden(CASE_TRUST_ERROR);
+  for (const issue of issueRows) {
+    if (await taskForbidsProviderOutput(db, { companyId: input.companyId, issueId: issue.id })) {
+      throw forbidden("Tasks that forbid provider output cannot write case content");
+    }
+  }
   const contexts = [...issueRows, { id: input.companyId, companyId: input.companyId, projectId: input.projectId }];
   for (const issue of contexts) {
     if (await resolveActorSourceTrustForIssue({ db: db as Db, issue, actor: {
@@ -74,6 +82,7 @@ export async function assertCaseTrustedForExecution(db: CaseDb, identity: CaseId
   const runs = runIds.length ? await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
     issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
     executionPolicy: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionPolicy'`,
+    contextSnapshot: runTaskContextColumn,
     contextIssueId: sql<unknown>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->>'id', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, identity.companyId), inArray(heartbeatRuns.id, runIds))) : [];
   const runMap = new Map(runs.map(row => [row.id, row]));
@@ -96,7 +105,12 @@ export async function assertCaseTrustedForExecution(db: CaseDb, identity: CaseId
   };
   for (const agent of agentRows) standard(resolveCoreTrustPreset({ companyId: identity.companyId, agent }));
   for (const project of projectRows) standard(resolveCoreTrustPreset({ companyId: identity.companyId, project }));
-  for (const issue of issueRows) standard(resolveCoreTrustPreset({ companyId: identity.companyId, issue }));
+  for (const issue of issueRows) {
+    if (await taskForbidsProviderOutput(db, { companyId: identity.companyId, issueId: issue.id })) {
+      throw forbidden("Case content from a task that forbids provider output cannot execute");
+    }
+    standard(resolveCoreTrustPreset({ companyId: identity.companyId, issue }));
+  }
   for (const run of runs) standard(resolveCoreTrustPreset({ companyId: identity.companyId, run: { companyId: identity.companyId, executionPolicy: run.executionPolicy } }));
 }
 

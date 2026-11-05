@@ -137,6 +137,7 @@ export interface CompanyPortabilityIssueCommentManifestEntry {
   authorUserId: string | null;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  sourceTrust?: import("../trust-policy.js").SourceTrustMetadata | null;
   createdAt: string | null;
 }
 
@@ -145,6 +146,7 @@ export interface CompanyPortabilityIssueDocumentManifestEntry {
   title: string | null;
   format: string;
   path: string;
+  sourceTrust?: import("../trust-policy.js").SourceTrustMetadata | null;
 }
 
 export interface CompanyPortabilityIssueWorkProductManifestEntry {
@@ -159,6 +161,7 @@ export interface CompanyPortabilityIssueWorkProductManifestEntry {
   healthStatus: string;
   summary: string | null;
   metadata: Record<string, unknown> | null;
+  sourceTrust?: import("../trust-policy.js").SourceTrustMetadata | null;
 }
 
 export interface CompanyPortabilityIssueMonitorManifestEntry {

@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { forbidden, HttpError } from "../errors.js";
 import {
   githubBotRepositoryToken,
   githubBotRequest,
@@ -104,7 +105,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
           if (currentState.disposition !== "publish") {
             await lease.commit(async tx => {
               await tx.update(chatActions).set({
-                status: currentState.disposition === "connection_changed" ? "cancelled" : "processed",
+                status: ["connection_changed", "provider_output_forbidden"].includes(currentState.disposition) ? "cancelled" : "processed",
                 result: { code: currentState.disposition,
                   ...(currentState.disposition === "assessment_owns_check" ? { reviewId: currentState.reviewId } : {}) },
                 updatedAt: new Date(),
@@ -136,16 +137,16 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             lease.fetch,
           );
           const prefix = `/repos/${event.repository.split("/").map(encodeURIComponent).join("/")}`;
-          const request = <T>(
+          const request = async <T>(
             path: string,
             options?: Parameters<typeof githubBotRequest>[3],
-          ) =>
-            githubBotRequest<T>(
-              lease.fetch,
-              token,
-              `${prefix}${path}`,
-              options,
-            );
+          ) => {
+            if (options?.method && options.method !== "GET" &&
+                (await githubReviewCheckState(db, fresh)).disposition === "provider_output_forbidden") {
+              throw forbidden("This task cannot publish provider output", { code: "provider_output_forbidden" });
+            }
+            return githubBotRequest<T>(lease.fetch, token, `${prefix}${path}`, options);
+          };
           const current = await request<{ head: { sha: string } }>(
             `/pulls/${event.pullNumber}`,
           );
@@ -266,18 +267,20 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
         } catch (error) {
           if (error instanceof GitHubPublicationLeaseLost || !canContinue()) return;
           attempts++;
+          const outputDenied = error instanceof HttpError &&
+            (error.details as { code?: string } | undefined)?.code === "provider_output_forbidden";
           await lease.commit(async (tx) => {
             await tx
               .update(chatActions)
               .set({
-                status: "failed",
+                status: outputDenied ? "cancelled" : "failed",
                 result: {
                   attempts,
-                  retryable: attempts < 8,
+                  retryable: !outputDenied && attempts < 8,
                   retryAt: new Date(
                     Date.now() + Math.min(300000, 1000 * 2 ** attempts),
                   ).toISOString(),
-                  code: "check_publication_failed",
+                  code: outputDenied ? "provider_output_forbidden" : "check_publication_failed",
                 },
                 updatedAt: new Date(),
               })

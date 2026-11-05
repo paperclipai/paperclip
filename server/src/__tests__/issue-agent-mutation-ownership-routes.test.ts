@@ -1308,6 +1308,21 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
   });
 
+  it.each([{}, { createdByRunId: null }])("forwards the current writer separately from work product attribution: %j", async attribution => {
+    const app = await createApp(ownerActor());
+    await request(app).patch("/api/work-products/product-1").send({ title: "Writer output", ...attribution }).expect(200);
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", expect.objectContaining({ title: "Writer output" }), { actorRunId: ownerRunId });
+    if (!("createdByRunId" in attribution)) {
+      expect(mockWorkProductService.update.mock.calls[0][1]).not.toHaveProperty("createdByRunId");
+    }
+  });
+
+  it("does not accept caller-provided writer context for work product updates", async () => {
+    const app = await createApp(ownerActor());
+    await request(app).patch("/api/work-products/product-1").send({ title: "Writer output", actorRunId: "66666666-6666-4666-8666-666666666666" }).expect(200);
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", expect.not.objectContaining({ actorRunId: expect.anything() }), { actorRunId: ownerRunId });
+  });
+
   it("rejects board-created work products with a foreign-company run id", async () => {
     const app = await createApp(
       boardActor(),
@@ -1702,7 +1717,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
-    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" }, { actorRunId: ownerRunId });
   });
 
   it("preserves board mutations on active checkouts", async () => {

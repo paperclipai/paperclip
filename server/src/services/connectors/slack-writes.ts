@@ -31,6 +31,7 @@ import {
   type SlackObject,
 } from "./slack-client.js";
 import { logActivity } from "../activity-log.js";
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 
 const richText = (text: unknown) => [
   {
@@ -49,7 +50,12 @@ export async function executeSlackWrite(
   fetchImpl = fetch,
 ) {
   const tool = SLACK_TOOLS.find((t) => t.name === name)!;
+  const assertProviderOutputAllowed = async () => {
+    if (await taskForbidsProviderOutput(db, binding))
+      throw forbidden("This task forbids provider output, including explicit Slack writes", { code: "slack_provider_output_forbidden" });
+  };
   let authority = await resolveSlackTaskAuthority(db, binding);
+  await assertProviderOutputAllowed();
   if (authority.workMode !== "standard")
     throw forbidden("Slack writes require standard work mode");
   const [invocation] = invocationId
@@ -75,6 +81,10 @@ export async function executeSlackWrite(
       "Slack writes require a governed invocation and any required approval",
     );
   const api = slackClient(authority.botToken, fetchImpl);
+  const mutate: typeof api = async (method, parameters) => {
+    await assertProviderOutputAllowed();
+    return api(method, parameters);
+  };
   await recordSlackOriginBoundary(db, authority, api);
   if (
     name === "slack_create_channel" &&
@@ -168,6 +178,7 @@ export async function executeSlackWrite(
   if (!claimed) return { actionId: action.id, state: "processing" };
   try {
     authority = await resolveSlackTaskAuthority(db, binding);
+    await assertProviderOutputAllowed();
     if (authority.workMode !== "standard")
       throw forbidden("Slack writes require standard work mode");
     if (authority.revision !== action.payload.revision)
@@ -199,7 +210,7 @@ export async function executeSlackWrite(
         throw forbidden(
           "The linked Slack user is no longer an active workspace member",
         );
-      result = await api(tool.method, { users: authority.slackUserId });
+      result = await mutate(tool.method, { users: authority.slackUserId });
     } else if (name === "slack_upload_file") {
       const [attachment] = await db
         .select({ asset: assets })
@@ -245,7 +256,7 @@ export async function executeSlackWrite(
         attachment.asset.sha256
       )
         throw forbidden("Attachment changed before upload");
-      const upload = await api("files.getUploadURLExternal", {
+      const upload = await mutate("files.getUploadURLExternal", {
         filename: attachment.asset.originalFilename ?? "attachment",
         length: bytes.length,
       });
@@ -269,6 +280,7 @@ export async function executeSlackWrite(
           })
           .where(eq(chatActions.id, action.id));
       });
+      await assertProviderOutputAllowed();
       const uploaded = await fetchImpl(url, {
         method: "POST",
         body: bytes,
@@ -285,7 +297,7 @@ export async function executeSlackWrite(
       )
         throw forbidden("Slack authorization changed during upload");
       await authorizeSlackWrite(db, authority, api, String(args.channel));
-      result = await api("files.completeUploadExternal", {
+      result = await mutate("files.completeUploadExternal", {
         files: [
           {
             id: upload.file_id,
@@ -296,7 +308,7 @@ export async function executeSlackWrite(
         thread_ts: args.thread_ts,
       });
     } else if (name === "slack_post_message")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         ...parameters,
         client_msg_id: args.idempotencyKey,
         ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
@@ -312,25 +324,25 @@ export async function executeSlackWrite(
       ].includes(name)
     ) {
       const { ts, ...rest } = parameters;
-      result = await api(tool.method, { ...rest, timestamp: ts });
+      result = await mutate(tool.method, { ...rest, timestamp: ts });
     } else if (
       name === "slack_add_bookmark" ||
       name === "slack_remove_bookmark"
     ) {
       const { channel, ...rest } = parameters;
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         ...rest,
         channel_id: channel,
         ...(name === "slack_add_bookmark" ? { type: "link" } : {}),
       });
     } else if (name === "slack_create_canvas")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         channel_id: args.channel,
         title: args.title,
         document_content: { type: "markdown", markdown: args.markdown },
       });
     else if (name === "slack_edit_canvas")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         canvas_id: args.file,
         changes: [
           {
@@ -340,7 +352,7 @@ export async function executeSlackWrite(
         ],
       });
     else if (name === "slack_replace_canvas_section")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         canvas_id: args.file,
         changes: [
           {
@@ -351,24 +363,24 @@ export async function executeSlackWrite(
         ],
       });
     else if (name === "slack_share_list")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         list_id: args.file,
         channel_ids: [args.channel],
         access_level: args.access_level,
       });
     else if (name === "slack_edit_list")
-      result = await api(tool.method, { list_id: args.file, name: args.name });
+      result = await mutate(tool.method, { list_id: args.file, name: args.name });
     else if (name === "slack_create_list")
-      result = await api(tool.method, { name: args.name });
+      result = await mutate(tool.method, { name: args.name });
     else if (name === "slack_create_list_item")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         list_id: args.file,
         initial_fields: [
           { column_id: args.column_id, rich_text: richText(args.text) },
         ],
       });
     else if (name === "slack_update_list_item")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         list_id: args.file,
         cells: [
           {
@@ -379,7 +391,7 @@ export async function executeSlackWrite(
         ],
       });
     else if (name === "slack_invite")
-      result = await api(tool.method, {
+      result = await mutate(tool.method, {
         channel: args.channel,
         users: (args.users as string[]).join(","),
       });
@@ -398,7 +410,7 @@ export async function executeSlackWrite(
             ),
           )
           .for("update");
-        const created = await api(tool.method, parameters);
+        const created = await mutate(tool.method, parameters);
         const channel = object(created.channel);
         if (typeof channel.id !== "string")
           throw conflict("Slack did not return the created channel ID");
@@ -427,7 +439,7 @@ export async function executeSlackWrite(
           });
         return created;
       });
-    } else result = await api(tool.method, parameters);
+    } else result = await mutate(tool.method, parameters);
     const receipt = {
       channel:
         typeof result.channel === "string"

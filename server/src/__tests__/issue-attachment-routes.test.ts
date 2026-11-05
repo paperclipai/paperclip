@@ -885,6 +885,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.webm",
         },
       }),
+      { actorRunId: null },
     );
   });
 });

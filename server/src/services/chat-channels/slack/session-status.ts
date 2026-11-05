@@ -43,6 +43,7 @@ import {
 } from "../../chat-slack-session-outbox.js";
 
 import { classifyChatPublicationError } from "../../chat-publication-errors.js";
+import { taskForbidsProviderOutput } from "../../task-provider-output-policy.js";
 
 import type { EndpointRecord } from "../runtime-types.js";
 
@@ -241,13 +242,19 @@ export function createSlackSessionStatus(db: Db, options: SlackSessionStatusOpti
               )
               .limit(1)
               .then((rows) => rows[0] ?? null);
-            if (!publication) {
+            const providerOutputForbidden = await taskForbidsProviderOutput(tx, {
+              companyId: endpoint.companyId, issueId: conversation.issueId,
+            }) || Boolean(publication && publication.issueId !== conversation.issueId &&
+              await taskForbidsProviderOutput(tx, { companyId: endpoint.companyId, issueId: publication.issueId }));
+            if (!publication || providerOutputForbidden) {
               await notifyChatActionWork(tx, "slack_session_sync");
               await tx
                 .update(chatActions)
                 .set({
                   status: "cancelled",
-                  result: { code: "slack_session_no_published_state" },
+                  result: { code: providerOutputForbidden
+                    ? "slack_session_provider_output_forbidden"
+                    : "slack_session_no_published_state" },
                   updatedAt: new Date(),
                 })
                 .where(selectedSnapshotWhere);

@@ -38,6 +38,7 @@ import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { reserveRunBudget } from "../../../services/budget-reservations.js";
 import { budgetService, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { costService } from "../../../services/costs.js";
+import { retainTaskProviderOutputPolicy } from "../../../services/task-provider-output-policy.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -514,6 +515,155 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       server.closeAllConnections();
       await new Promise<void>(resolve => { server.close(() => resolve()); });
     }
+  });
+
+  describe("task output execution admission", () => {
+    const blockReason = "Task provider output is forbidden; no confined execution runtime is qualified";
+
+    async function seedTaskRun() {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      const reservation = await reserveRunBudget(db, companyId, runId, null);
+      return { companyId, agentId, issueId, runId, reservation };
+    }
+
+    const runtimes = [
+      { adapterType: "process", runtimeMode: "legacy" },
+      { adapterType: "http", runtimeMode: "legacy" },
+      { adapterType: "claude_local", runtimeMode: "legacy" },
+      { adapterType: "codex_local", runtimeMode: "legacy" },
+      { adapterType: "paperclip_runner", runtimeMode: "native" },
+      { adapterType: "fixture_external_plugin", runtimeMode: "legacy" },
+    ];
+    it.each(runtimes.flatMap(runtime => ["ordinary", "forbidden"].map(disposition => ({ ...runtime, disposition }))))(
+      "$disposition task with $adapterType/$runtimeMode cannot select its own confinement qualification", async ({ adapterType, runtimeMode, disposition }) => {
+        const f = await seedTaskRun();
+        await db.update(agents).set({ adapterType, adapterConfig: { allowProviderOutput: true, confined: true } }).where(eq(agents.id, f.agentId));
+        await db.update(heartbeatRuns).set({ runtimeMode, nativeIssueId: runtimeMode === "native" ? f.issueId : null,
+          contextSnapshot: { issueId: f.issueId, allowProviderOutput: true, confined: true },
+        }).where(eq(heartbeatRuns.id, f.runId));
+        await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: disposition as "ordinary" | "forbidden" });
+        const dispatch = vi.fn(async () => "provider entered");
+        const input = { companyId: f.companyId, runId: f.runId, reservationId: f.reservation.id,
+          expectedStatus: "running" as const, now: new Date(), dispatch };
+        for (let attempt = 0; attempt < (disposition === "forbidden" ? 2 : 1); attempt++) {
+          const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent(input);
+          if (disposition === "forbidden") expect(gate).toMatchObject({ dispatched: false, admissionBlockReason: blockReason });
+          else {
+            expect(gate.dispatched).toBe(true);
+            if (gate.dispatched) expect(await gate.resultPromise).toBe("provider entered");
+          }
+        }
+        expect(dispatch).toHaveBeenCalledTimes(disposition === "forbidden" ? 0 : 1);
+        if (disposition === "forbidden") {
+          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].usageJson?.budgetDispatch).toBeUndefined();
+          expect((await db.select().from(budgetReservations).where(eq(budgetReservations.id, f.reservation.id)))[0].state).toBe("held");
+        }
+      });
+
+    it.each(["native", "legacy", "context-issue", "context-task"] as const)("checks the durable %s task binding even without continuation ownership enforcement", async binding => {
+      const f = await seedTaskRun();
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+      await db.update(heartbeatRuns).set({ nativeIssueId: binding === "native" ? f.issueId : null,
+        issueId: binding === "legacy" ? f.issueId : null,
+        contextSnapshot: binding.startsWith("context-") ? { [binding === "context-task" ? "taskId" : "issueId"]: f.issueId } : {},
+      }).where(eq(heartbeatRuns.id, f.runId));
+      const dispatch = vi.fn(async () => "must not run");
+      expect(await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, expectedStatus: "running", now: new Date(), enforceContinuationOwnership: false, dispatch }))
+        .toMatchObject({ dispatched: false, admissionBlockReason: blockReason });
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it("rechecks a restriction committed between accounting admission and ownership handoff", async () => {
+      const f = await seedTaskRun();
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "ordinary" });
+      const transaction = db.transaction.bind(db);
+      let admitted = false;
+      const race = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+        const value = await transaction(callback, config);
+        if (!admitted) {
+          admitted = true;
+          await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+        }
+        return value;
+      });
+      const dispatch = vi.fn(async () => "must not run");
+      try {
+        expect(await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+          reservationId: f.reservation.id, expectedStatus: "running", now: new Date(), dispatch }))
+          .toMatchObject({ dispatched: false, admissionBlockReason: blockReason });
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally { race.mockRestore(); }
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].usageJson?.budgetDispatch)
+        .toMatchObject({ reservationId: f.reservation.id });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].usageJson?.budgetDispatch).not.toHaveProperty("handedOffAt");
+    });
+
+    it.each(["native", "legacy"] as const)("does not replace the canonical %s task with an ordinary context task", async binding => {
+      const f = await seedTaskRun();
+      const ordinaryId = randomUUID();
+      await seedIssue({ companyId: f.companyId, issueId: ordinaryId, status: "in_progress", assigneeAgentId: f.agentId });
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+      await db.update(heartbeatRuns).set({ nativeIssueId: binding === "native" ? f.issueId : null,
+        issueId: binding === "legacy" ? f.issueId : null, contextSnapshot: { issueId: ordinaryId },
+      }).where(eq(heartbeatRuns.id, f.runId));
+      const dispatch = vi.fn(async () => "must not run");
+      expect(await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, expectedStatus: "running", now: new Date(), enforceContinuationOwnership: false, dispatch }))
+        .toMatchObject({ dispatched: false, admissionBlockReason: blockReason });
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it("does not treat an ordinary native recovery lease as confinement authority", async () => {
+      const f = await seedRecoveryAdmission();
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+      const dispatch = vi.fn(async () => "must not run");
+      expect(await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, recoveryLeaseOwner: f.owner, expectedStatus: "running", now: new Date(), dispatch }))
+        .toMatchObject({ dispatched: false, admissionBlockReason: blockReason });
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it.each(["claimed-stop", "missing-audit", "content-effect"] as const)("retains only the existing %s resource-release exception", async mode => {
+      const f = await seedRecoveryAdmission();
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+      const intentAuditId = randomUUID();
+      if (mode !== "missing-audit") await db.insert(activityLog).values({ id: intentAuditId, companyId: f.companyId,
+        actorType: "system", actorId: "native-session-cancellation", action: "native.cancellation_intent_recorded",
+        entityType: "heartbeat_run", entityId: f.runId, runId: f.runId, agentId: f.agentId });
+      await db.update(nativeRunFinalizations).set({ controllerGeneration: 2, attempt: 1, recoveryState: "awaiting_runner_reattach",
+        recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(heartbeatRuns).set({ resultJson: {
+        startupCancellation: { beforeNativeSelection: false, errorCode: "cancelled", requestedAt: new Date().toISOString() },
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", companyId: f.companyId, runId: f.runId,
+          issueId: f.issueId, scope: "run", reasonCode: "cancellation_run_only", intentId: `native-cancellation:${randomUUID()}`,
+          intentAuditId, dispatchState: "pending", dispatched: false,
+          effects: mode === "content-effect" ? ["release_run_resources", "continue_task"] : ["release_run_resources"] },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      const dispatch = vi.fn(async () => "release existing resources only");
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, recoveryLeaseOwner: f.owner, expectedStatus: "running", now: new Date(), dispatch });
+      expect(gate.dispatched).toBe(mode === "claimed-stop");
+      if (gate.dispatched) expect(await gate.resultPromise).toBe("release existing resources only");
+      expect(dispatch).toHaveBeenCalledTimes(mode === "claimed-stop" ? 1 : 0);
+    });
+
+    it("does not apply a foreign company's policy to ordinary work", async () => {
+      const f = await seedTaskRun();
+      const foreign = await seedTaskRun();
+      await retainTaskProviderOutputPolicy(db, { companyId: foreign.companyId, issueId: foreign.issueId, disposition: "forbidden" });
+      const dispatch = vi.fn(async () => "ordinary result");
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, expectedStatus: "running", now: new Date(), dispatch });
+      expect(gate.dispatched).toBe(true);
+      if (gate.dispatched) expect(await gate.resultPromise).toBe("ordinary result");
+      expect(dispatch).toHaveBeenCalledOnce();
+    });
   });
 
   it("does not hand off when another run takes issue ownership after accounting admission commits", async () => {

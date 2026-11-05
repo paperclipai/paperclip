@@ -1,3 +1,4 @@
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
 import { notifyVoiceReplies } from "./voice-reply-notifications.js";
 import { notifyVoiceChange } from "./voice-recovery-notifications.js";
@@ -278,7 +279,20 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
               (a.status = 'completed' and coalesce(a.payload->>'questionNotification', 'false') = 'false'))
         )))`;
   }
+  async function authorizeProviderOutput(tx: VoiceTransaction, session: VoiceSessionRow, publicationId?: string) {
+    if (await taskForbidsProviderOutput(tx, { companyId: session.companyId, issueId: session.issueId })) {
+      throw forbidden("This task cannot produce provider output");
+    }
+    if (publicationId) {
+      const [publication] = await tx.select().from(chatPublications).where(and(
+        eq(chatPublications.id, publicationId), eq(chatPublications.companyId, session.companyId),
+        eq(chatPublications.endpointId, session.endpointId), eq(chatPublications.conversationId, session.conversationId),
+        eq(chatPublications.issueId, session.issueId), inArray(chatPublications.state, ["streaming", "published"])));
+      if (!publication) throw forbidden("The voice publication binding changed");
+    }
+  }
   async function collectMissedReplies(tx: VoiceTransaction, session: VoiceSessionRow) {
+    await authorizeProviderOutput(tx, session);
     // Only publications since this caller joined this exact conversation are
     // eligible. Transport acceptance in any prior call suppresses automatic
     // replay; uncertain playback requires an explicit repeat, not an assumption.
@@ -361,6 +375,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     return db.transaction(async (tx) => {
       const context = await authorizeSession(tx, input.companyId, input.sessionId), { session } = context;
       if (session.endpointId !== input.endpointId || session.providerSessionId !== input.envelope.session_id || !timingSafeEqual(Buffer.from(session.toolTokenHash, "hex"), Buffer.from(voiceTokenHash(input.token), "hex"))) throw forbidden("Voice tool scope does not match this session");
+      await authorizeProviderOutput(tx, session);
       if (session.state === "connecting") {
         await notifyVoiceChange(tx, { kind: "session", id: session.id });
         await tx.update(chatVoiceSessions).set({ state: "active", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
@@ -456,6 +471,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
           ...(session.mode !== "browser" ? {delivery: "Approved task answers are pushed into this live call. Keep conversing; no completion polling is required."} : {}),
         };
       }
+      await authorizeProviderOutput(tx, session);
       await tx.insert(chatVoiceToolCalls).values({ companyId: session.companyId, sessionId: session.id, providerToolCallId: input.envelope.tool_call_id, webhookId: input.webhookId, fingerprint: input.fingerprint, tool: input.envelope.tool, deliveryId, response });
       return response;
     });
@@ -495,6 +511,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       try {
         await db.transaction(async (tx) => {
           const { session } = await authorizeSession(tx, companyId, candidate.id);
+          await authorizeProviderOutput(tx, session, publication.id);
           const prior = await tx.select({ id: chatVoiceReplies.id }).from(chatVoiceReplies).where(and(eq(chatVoiceReplies.sessionId, session.id), eq(chatVoiceReplies.publicationId, publication.id))).then((rows) => rows[0]);
           if (prior) return;
           const [priorCall] = await tx.select({blocked: priorCallDeliveryBarrier(session, publication.id)})
@@ -525,5 +542,5 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       return next ? { sessionId, generation: session.generation, publicationId: next.publicationId, attempt: Math.max(0, Math.floor((Date.now() - next.createdAt.getTime()) / 10_000)) } : null;
     });
   }
-  return { endpointContext, authorizeConnection, reserve, stageDelivery, runTool, authorizeSession, authorizeCaller, authorizeTask, authorizePrincipal, enqueuePublication, notification, collectMissedReplies };
+  return { endpointContext, authorizeConnection, reserve, stageDelivery, runTool, authorizeSession, authorizeProviderOutput, authorizeCaller, authorizeTask, authorizePrincipal, enqueuePublication, notification, collectMissedReplies };
 }

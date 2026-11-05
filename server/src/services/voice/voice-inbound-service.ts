@@ -1,3 +1,4 @@
+import { retainTaskProviderOutputPolicy, taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import { voiceInboundRetention } from "./voice-inbound-retention.js";
 import { voiceInboundCleanup } from "./voice-inbound-cleanup.js";
 import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
@@ -186,12 +187,16 @@ export function voiceInboundService(db: Db, options: {
       if (call.state === "guest_intake") {
         const [line] = await tx.select().from(chatVoicePhoneLines).where(and(eq(chatVoicePhoneLines.companyId, row.companyId), eq(chatVoicePhoneLines.endpointId, row.id), eq(chatVoicePhoneLines.enabled, true), eq(chatVoicePhoneLines.guestIntake, true))).for("share");
         if (!line) throw forbidden("Guest intake is no longer enabled");
+        if (call.intakeIssueId && await taskForbidsProviderOutput(tx, { companyId: row.companyId, issueId: call.intakeIssueId })) {
+          throw forbidden("This task cannot produce provider output");
+        }
         if (envelope.tool === "get_updates") return {authorization: "guest_intake", status: call.intakeIssueId ? "intake_received" : "ready_for_intake", updates: [], cursor: 0};
         if (envelope.tool !== "submit_request") throw forbidden("Guest callers cannot answer private questions or approve actions");
         if (!call.sessionId) {
           const taskId = randomUUID(), conversationId = randomUUID(), threadId = `speko:${conversationId}`;
           const reviewPreset = {id: LOW_TRUST_REVIEW_PRESET, version: LOW_TRUST_REVIEW_PRESET_VERSION, rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION};
           const task = await issueSvc.create(row.companyId, {id: taskId, title: "Incoming phone conversation", description: "Conversation with an unverified phone caller. The agent runs under a task-scoped low-trust policy. You are on a live phone call and must attempt to answer as quickly as possible. Immediately post a brief, caller-safe task comment explaining what you are doing, then find the answer and post the result on this task so it can be spoken to the caller. Continue working after the initial update; do not treat it as the final answer. Preserve the task-scoped low-trust policy and ordinary permissions.", status: "todo", priority: "medium", assigneeAgentId: row.assignedAgentId, executionWorkspaceSettings: {mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}, ...(line.lowTrustEnvironmentId ? {environmentId: line.lowTrustEnvironmentId} : {})}, originKind: "chat_channel", originId: row.id, idempotencyKey: `guest-intake:${call.id}`, sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: taskId}, executionPolicy: {mode: "normal", commentRequired: true, stages: [], reviewPreset, authorizationPolicy: {trustPreset: LOW_TRUST_REVIEW_PRESET, reviewPreset, trustBoundary: {mode: LOW_TRUST_REVIEW_PRESET, companyId: row.companyId, rootIssueId: taskId, issueIds: [taskId], allowedAgentIds: [row.assignedAgentId], allowedToolClasses: [], allowedSecretBindingIds: []}}}}, tx);
+          await retainTaskProviderOutputPolicy(tx, { companyId: row.companyId, issueId: task.id, disposition: "ordinary" });
           const [resource] = await tx.insert(chatEndpointResources).values({companyId: row.companyId, endpointId: row.id, type: "direct_message", providerResourceId: threadId, label: "Incoming phone conversation", enabled: true, availability: "available"}).returning();
           await tx.insert(chatConversations).values({id: conversationId, companyId: row.companyId, endpointId: row.id, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Incoming phone conversation", isDirectMessage: true, communicationGuidance: [buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: row.communicationInstructions }), "This conversation is its own low-trust task. Ask clarifications as brief task comments; the caller answers through submit_request follow-ups. Do not use ask_user_questions or create a protected human-input wait. Use only context supplied in this conversation; do not browse other company tasks, secrets or private tools. Spoken consent does not grant governed authority."].join("\n\n")});
           const sessionId = randomUUID();

@@ -8,7 +8,9 @@ import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/s
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
+import { normalizeImportedSourceTrust, retainImportedTaskOutputPolicies } from "./import-write-authorization.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
+import { inheritTaskProviderOutputPolicyFromRun } from "./task-provider-output-policy.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -241,6 +243,7 @@ export function documentService(db: Db) {
         try {
           return await db.transaction(async (tx) => {
           await notifyStatusCardIssueChange(tx, issue.companyId);
+          await inheritTaskProviderOutputPolicyFromRun(tx, { companyId: issue.companyId, issueId: issue.id, runId: input.createdByRunId });
           const now = new Date();
           const existing = await tx
             .select({
@@ -551,6 +554,7 @@ export function documentService(db: Db) {
       const documentRows: Array<Record<string, unknown>> = [];
       const revisionRows: Array<Record<string, unknown>> = [];
       const linkRows: Array<Record<string, unknown>> = [];
+      rows = rows.map(row => ({ ...row, createdByRunId: null, sourceTrust: normalizeImportedSourceTrust(row.sourceTrust) }));
       for (const row of rows) {
         const key = normalizeDocumentKey(row.key);
         const documentId = randomUUID();
@@ -598,6 +602,7 @@ export function documentService(db: Db) {
         });
       }
       await db.transaction(async (tx) => {
+        await retainImportedTaskOutputPolicies(tx, rows);
         for (const companyId of new Set(rows.map(row => row.companyId))) {
           await notifyStatusCardIssueChange(tx, companyId);
           await notifyIssueRecovery(tx, { companyId });

@@ -12096,7 +12096,7 @@ export function issueRoutes(
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
-      });
+      }, { actorRunId: actor.runId });
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
         return;

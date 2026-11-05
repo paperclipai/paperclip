@@ -1,6 +1,7 @@
 import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { createTelegramCallbackNoticeAuthority } from "./telegram/callback-notices.js";
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 
 import { slackThreadChannelId } from "./slack/messages.js";
 
@@ -68,10 +69,11 @@ import type { EndpointRecord } from "./runtime-types.js";
 type ProviderEffectTarget = {
   post: Thread["post"];
   postEphemeral?: Thread["postEphemeral"];
+  startTyping?: Thread["startTyping"];
 };
 type ProviderEffectPayload = {
   version: 1;
-  effect: "thread_message" | "ephemeral_message" | "telegram_callback_notice";
+  effect: "thread_message" | "ephemeral_message" | "telegram_callback_notice" | "typing";
   telegramCallback?: TelegramCallbackReceipt;
   telegramAuthorizationSha256?: string;
   authorizationMode?: "principal" | "safe_notice";
@@ -93,7 +95,8 @@ function providerEffectPayload(
     payload.version !== 1 ||
     (payload.effect !== "thread_message" &&
       payload.effect !== "ephemeral_message" &&
-      payload.effect !== "telegram_callback_notice") ||
+      payload.effect !== "telegram_callback_notice" &&
+      payload.effect !== "typing") ||
     typeof payload.threadId !== "string" ||
     !payload.threadId ||
     typeof payload.text !== "string" ||
@@ -130,6 +133,11 @@ function providerEffectPayload(
   ) {
     return null;
   }
+  if (payload.effect === "typing" && (
+    payload.text !== "Working…" || payload.settleDelivery ||
+    payload.authorizationMode !== "principal" || payload.userId !== undefined ||
+    payload.fallbackText !== undefined || payload.completeConversationId !== undefined
+  )) return null;
   if (payload.effect === "telegram_callback_notice") {
     const receipt = parseTelegramCallbackReceipt(payload.telegramCallback);
     if (
@@ -219,6 +227,33 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function startInboundTyping(input: {
+    deliveryId: string;
+    endpoint: EndpointRow;
+    runtimeContext?: LifecycleRuntimeFence;
+    thread: Thread;
+  }): Promise<void> {
+    // Slack's least-privilege manifest deliberately omits assistant:write.
+    if (input.endpoint.provider === "slack" || !input.runtimeContext) return;
+    const context = input.runtimeContext;
+    const effect = await db.transaction(async tx => {
+      const [wake] = await tx.select().from(chatActions).where(and(
+        eq(chatActions.companyId, input.endpoint.companyId), eq(chatActions.endpointId, input.endpoint.id),
+        eq(chatActions.deliveryId, input.deliveryId), eq(chatActions.kind, "inbound_wakeup"),
+        eq(chatActions.status, "processed"),
+      ));
+      if (!wake?.conversationId || !wake.principalId) return null;
+      return stageProviderEffect(tx, {
+        endpoint: input.endpoint, deliveryId: input.deliveryId, conversationId: wake.conversationId,
+        principalId: wake.principalId, providerActionId: `inbound_typing:${input.deliveryId}`,
+        payload: { version: 1, effect: "typing", authorizationMode: "principal", threadId: input.thread.id,
+          text: "Working…", settleDelivery: false },
+        runtimeContext: context,
+      });
+    });
+    if (effect) await processProviderEffect(effect.id, input.thread);
   }
 
   function providerEffectDisposition(
@@ -448,6 +483,32 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
     endpoint: EndpointRow,
     payload: ProviderEffectPayload,
   ): Promise<boolean> {
+    const sourceConversationIds = new Set<string>();
+    if (action.conversationId) sourceConversationIds.add(action.conversationId);
+    if (payload.completeConversationId) sourceConversationIds.add(payload.completeConversationId);
+    if (action.deliveryId) {
+      const [delivery] = await tx.select({ conversationId: chatDeliveries.conversationId })
+        .from(chatDeliveries).where(and(
+          eq(chatDeliveries.companyId, endpoint.companyId),
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.id, action.deliveryId),
+        ));
+      if (!delivery) return false;
+      if (delivery.conversationId) sourceConversationIds.add(delivery.conversationId);
+    }
+    if (sourceConversationIds.size > 0) {
+      const sources = await tx.select({ issueId: chatConversations.issueId })
+        .from(chatConversations).where(and(
+          eq(chatConversations.companyId, endpoint.companyId),
+          eq(chatConversations.endpointId, endpoint.id),
+          inArray(chatConversations.id, [...sourceConversationIds]),
+        ));
+      if (sources.length !== sourceConversationIds.size) return false;
+      for (const source of sources) {
+        if (await taskForbidsProviderOutput(tx, { companyId: endpoint.companyId, issueId: source.issueId }))
+          return false;
+      }
+    }
     if (payload.effect === "telegram_callback_notice") {
       const receipt = parseTelegramCallbackReceipt(payload.telegramCallback);
       if (!receipt || !action.deliveryId) return false;
@@ -500,6 +561,23 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
           .then((rows) => rows[0] ?? null)
       : null;
     if (action.conversationId && !conversation) return false;
+    if (payload.effect === "typing") {
+      if (endpoint.provider === "slack" || !conversation || !action.deliveryId ||
+          conversation.externalThreadId !== payload.threadId) return false;
+      const [delivery] = await tx.select().from(chatDeliveries).where(and(
+        eq(chatDeliveries.companyId, endpoint.companyId), eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.id, action.deliveryId), eq(chatDeliveries.state, "processed"),
+        eq(chatDeliveries.conversationId, conversation.id),
+      ));
+      if (!delivery || delivery.principalId !== action.principalId) return false;
+      const [wake] = await tx.select().from(chatActions).where(and(
+        eq(chatActions.companyId, endpoint.companyId), eq(chatActions.endpointId, endpoint.id),
+        eq(chatActions.deliveryId, delivery.id), eq(chatActions.kind, "inbound_wakeup"),
+        eq(chatActions.status, "processed"), eq(chatActions.conversationId, conversation.id),
+      ));
+      if (!wake || wake.principalId !== action.principalId || wake.payload.issueId !== conversation.issueId)
+        return false;
+    }
     const inferredResourceId = providerEffectThreadResourceId(
       endpoint.provider,
       payload.threadId,
@@ -740,7 +818,7 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
             // authorization linearization point. Its transaction has committed
             // before provider I/O begins. The renewable credential lease keeps
             // runtime identity stable without holding database row locks.
-            let sent: { id: string; threadId: string } | null = null;
+            let sent: { id?: string; threadId: string } | null = null;
             if (payload.effect === "telegram_callback_notice") {
               sent = await (
                 await runtimeFor(claim.endpoint)
@@ -752,7 +830,14 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
               const target =
                 liveTarget ??
                 (await runtimeFor(claim.endpoint)).thread(payload.threadId);
-              if (payload.effect === "ephemeral_message") {
+              if (payload.effect === "typing") {
+                if (!target.startTyping) {
+                  throw Object.assign(new Error("Provider does not support typing"),
+                    { code: "CHAT_PROVIDER_PRETRANSPORT_REJECTED" });
+                }
+                await target.startTyping(payload.text);
+                sent = { threadId: payload.threadId };
+              } else if (payload.effect === "ephemeral_message") {
                 if (!target.postEphemeral) {
                   if (!payload.fallbackText) {
                     throw Object.assign(
@@ -821,7 +906,7 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
                   status: "processed",
                   result: {
                     attempts: attempt,
-                    providerMessageId: sent.id,
+                    ...(sent.id !== undefined ? { providerMessageId: sent.id } : { code: "typing_accepted" }),
                     threadId: sent.threadId,
                     ...(payload.effect === "telegram_callback_notice"
                       ? {
@@ -955,5 +1040,5 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
     }
     return actions.length;
   }
-  return { stageProviderEffect, processProviderEffect, processPendingProviderEffects };
+  return { stageProviderEffect, startInboundTyping, processProviderEffect, processPendingProviderEffects };
 }

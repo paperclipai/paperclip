@@ -21,6 +21,7 @@ import { githubResponseAuthorityFields } from "./chat-channels/github/response-a
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { logActivity } from "./activity-log.js";
 import { boundRunIssueId } from "./run-task-binding.js";
+import { taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 import { isMainPullResponse, legacyPullResponseMarkers, pullResponseMarker, requestResponseMarker,
   retireLegacyResponsePlaceholder, stagePullResponse, type GitHubResponseSource } from "./chat-channels/github/response-target.js";
@@ -34,6 +35,12 @@ const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtim
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
+
+async function assertResponseOutputAllowed(db: Db, source: Pick<Source, "endpoint" | "conversation">) {
+  if (!source.conversation.issueId || await taskForbidsProviderOutput(db, {
+    companyId: source.endpoint.companyId, issueId: source.conversation.issueId,
+  })) throw forbidden("This task cannot publish provider output");
+}
 
 async function findResponseComment(source: Source, api: Api, legacyMarkers: string[] = []): Promise<Comment | null> {
   const list = source.replyId ? `/pulls/${source.number}/comments` : `/issues/${source.number}/comments`;
@@ -83,6 +90,12 @@ export async function writeGitHubResponseComment(
   assertCurrent: () => Promise<void>,
 ) {
   await assertCurrent();
+  await assertResponseOutputAllowed(db, source);
+  const request = api.request.bind(api);
+  api = { request: async (path, options) => {
+    if (options?.method && options.method !== "GET") await assertResponseOutputAllowed(db, source);
+    return request(path, options);
+  } };
   const response = await stageResponse(db, source);
   const shared = isMainPullResponse(source);
   const target = shared ? await stagePullResponse(db, source) : response;
@@ -175,6 +188,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         !["active", "verifying"].includes(row.endpoint.status) || !row.toolsEnabled ||
         !row.resource.enabled || row.resource.availability !== "available" || row.assignee !== row.endpoint.assignedAgentId)
       throw forbidden("GitHub request is no longer authorized");
+    await assertResponseOutputAllowed(db, row);
     const access = await githubChatPrincipalAccess(db, row.endpoint, row.delivery.principalId);
     if (!access?.allowed) throw forbidden("The initiating GitHub person is no longer authorized");
     const automatic = (row.delivery.normalizedEvent.githubAutomatic ?? row.delivery.normalizedEvent.githubIssue) as
@@ -307,6 +321,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
   async function finishRun(input: { companyId: string; endpointId: string; issueId: string; runId: string; closePrimary?: boolean },
     primary: Source, receipt: { id: string; url: string }, api: Api, lease: Lease, assertCurrent: () => Promise<void>) {
     const { run, links } = await requestsForRun(input);
+    await assertResponseOutputAllowed(db, primary);
     if (run.agentId !== primary.endpoint.assignedAgentId) throw forbidden("GitHub response authority changed");
     for (const link of links) {
       if (!link.deliveryId || (link.deliveryId === primary.delivery.id && !input.closePrimary)) continue;
@@ -387,6 +402,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
   }
   async function hasWorkingResponseForRun(input: { companyId: string; endpointId: string; issueId: string; runId: string }) {
     const { links } = await requestsForRun(input);
+    if (await taskForbidsProviderOutput(db, input)) return false;
     const ids = links.map(link => link.deliveryId).filter((id): id is string => !!id);
     if (!ids.length) return false;
     const responses = await db.select({ result: chatActions.result }).from(chatActions).where(and(

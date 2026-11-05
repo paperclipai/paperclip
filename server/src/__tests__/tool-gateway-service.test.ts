@@ -7,6 +7,8 @@ import { deleteCompany } from "../services/company-deletion.js";
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +21,12 @@ import {
   agents,
   approvals,
   companies,
+  chatConversations,
+  chatEndpoints,
+  browserUseSettings,
+  browserUseSessions,
+  browserUseRuns,
+  taskProviderOutputPolicies,
   companySecretBindings,
   companySecrets,
   companyMemberships,
@@ -40,10 +48,21 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  toolProfiles,
+  toolProfileEntries,
   toolRateLimitCounters,
 } from "@paperclipai/db";
+import { BROWSER_USE_API_URL, BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { VercelConnectClient } from "../services/vercel-connect.js";
+import { createVercelConnectClient, type VercelConnectClient } from "../services/vercel-connect.js";
+import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import * as railwaySsh from "../services/railway-ssh.js";
+import * as remoteHttp from "../services/remote-http-fetch.js";
+import { COGNEE_STDIO_TEMPLATE } from "../services/cognee-connection.js";
+import { descriptorHash, stableHash } from "../services/tool-catalog-hash.js";
+import { VERCEL_API_URL, VERCEL_METHOD, VERCEL_TOOLS } from "../services/connectors/vercel/index.js";
+import { RAILWAY_QUERIES, RAILWAY_MCP_URL } from "../services/railway.js";
+import { deploymentData, instanceId, target, targetData } from "./fixtures/railway/provider.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { issueService } from "../services/issues.js";
 import { approvalService } from "../services/approvals.js";
@@ -242,11 +261,16 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolCallEvents);
     await db.delete(toolAccessAuditEvents);
     await db.delete(toolActionRequests);
+    await db.delete(browserUseRuns);
+    await db.delete(browserUseSessions);
+    await db.delete(browserUseSettings);
     await db.delete(toolInvocations);
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueThreadInteractions);
     await db.delete(toolCatalogEntries);
+    await db.delete(chatConversations);
+    await db.delete(chatEndpoints);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companySecrets);
@@ -262,6 +286,929 @@ describeEmbeddedPostgres("tool gateway service", () => {
   afterAll(async () => {
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
+  });
+
+  describe("task provider output confinement", () => {
+    async function fixture(disposition: "ordinary" | "forbidden" | "missing") {
+      const f = await createRunFixture(db);
+      const remote = await createRemoteMcpToolFixture(db, f.company.id);
+      const [endpoint] = await db.insert(chatEndpoints).values({ companyId: f.company.id,
+        connectionId: remote.connection.id, provider: "slack", publicId: randomUUID(), assignedAgentId: f.agent.id }).returning();
+      await db.insert(chatConversations).values({ companyId: f.company.id, endpointId: endpoint!.id,
+        issueId: f.issue.id, externalConversationId: randomUUID(), externalLabel: "Gateway source" });
+      if (disposition !== "missing") await db.insert(taskProviderOutputPolicies).values({ companyId: f.company.id, issueId: f.issue.id, disposition });
+      await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Allow tools", policyType: "allow", selectors: {} });
+      const request = vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
+          result: body.method === "initialize" ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
+            : { content: [{ type: "text", text: "ordinary result" }] } }), { headers: { "content-type": "application/json" } });
+      });
+      const dispatcher = fakePluginDispatcher();
+      const plugin = vi.fn(dispatcher.executeTool);
+      dispatcher.executeTool = plugin;
+      const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher, remoteHttpRequest: request });
+      const session = await gateway.createSession(runSessionInput(f.company, f.agent, f.run));
+      const restrict = () => db.insert(taskProviderOutputPolicies).values({ companyId: f.company.id, issueId: f.issue.id, disposition: "forbidden" })
+        .onConflictDoUpdate({ target: taskProviderOutputPolicies.issueId, set: { disposition: "forbidden" } });
+      return { ...f, remote, request, plugin, dispatcher, gateway, session, restrict };
+    }
+
+    describe("indirect browser confinement", () => {
+      async function browserFixture(name: string) {
+        const f = await fixture("ordinary");
+        await db.update(toolApplications).set({ type: "rest_api" }).where(eq(toolApplications.id, f.remote.application.id));
+        await db.update(toolConnections).set({ transport: "rest_api", config: { sourceTemplateKey: "browser-use-cloud", url: BROWSER_USE_API_URL } })
+          .where(eq(toolConnections.id, f.remote.connection.id));
+        const secret = await secretService(db).create(f.company.id, { provider: "local_encrypted", name: "Browser fixture", value: "synthetic-browser-key" });
+        await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: secret.id,
+          targetType: "tool_connection", targetId: f.remote.connection.id, configPath: "credentials.apiKey" });
+        const [grant] = await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.apiKey", versionSelector: "latest" }] })
+          .where(eq(connectionGrants.connectionId, f.remote.connection.id)).returning();
+        const profileId = randomUUID(), providerSessionId = randomUUID(), providerRunId = randomUUID();
+        await db.insert(browserUseSettings).values({ companyId: f.company.id, grantId: grant.id, allowedProfileIds: [profileId] });
+        const [browser] = await db.insert(browserUseSessions).values({ companyId: f.company.id, issueId: f.issue.id, agentId: f.agent.id,
+          connectionId: f.remote.connection.id, grantId: grant.id, status: "idle", providerSessionId: name === "browser_start" ? null : providerSessionId }).returning();
+        const descriptor = BROWSER_USE_TOOLS.find(t => t.name === name)!;
+        await db.update(toolCatalogEntries).set({ name, toolName: name, inputSchema: descriptor.inputSchema,
+          riskLevel: descriptor.annotations.readOnlyHint ? "read" : "destructive", isReadOnly: descriptor.annotations.readOnlyHint })
+          .where(eq(toolCatalogEntries.id, f.remote.catalogEntry.id));
+        f.request.mockImplementation(async (url, init) => {
+          expect(new Headers(init.headers).get("x-browser-use-api-key")).toBe("synthetic-browser-key");
+          if (new URL(url).pathname.endsWith("/profiles")) return Response.json({ items: [{ id: profileId, name: "Allowed fixture" }], totalItems: 1 });
+          expect(url).toBe(`${BROWSER_USE_API_URL}/runs`);
+          return Response.json({ id: providerRunId, sessionId: providerSessionId, status: "running", model: "fixture" });
+        });
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+        const parameters = name === "browser_start" ? { task: "synthetic task result", profileId }
+          : name === "browser_continue" ? { sessionId: browser.id, task: "synthetic task result" }
+            : ["browser_sessions", "browser_profiles"].includes(name) ? {} : { sessionId: browser.id };
+        const input = { sessionToken: f.session.token, tool: tool.name, parameters, idempotencyKey: name };
+        return { ...f, input, secret, browser, grant, profileId, providerSessionId };
+      }
+
+      for (const { name } of BROWSER_USE_TOOLS) {
+        for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+          it(`${name} retains ${disposition} task policy`, async () => {
+            const f = await browserFixture(name);
+            if (disposition === "forbidden") await f.restrict();
+            if (disposition === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+            const call = f.gateway.executeTool(f.input);
+            if (disposition === "ordinary") {
+              const result = await call;
+              expect(result.status).toBe("completed");
+              if (name === "browser_start" || name === "browser_continue") {
+                expect(f.request).toHaveBeenCalledTimes(1);
+                const body = JSON.parse(String(f.request.mock.calls[0]![1].body));
+                expect(body.task).toContain("synthetic task result");
+                expect(body.browserSettings.record).toBe(false);
+                if (name === "browser_continue") expect(body.sessionId).toBe(f.providerSessionId);
+                else expect(body.browserSettings.profileId).toBe(f.profileId);
+                expect(await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id))).toHaveLength(1);
+              } else if (name === "browser_profiles") {
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(result.result?.data).toMatchObject({ structuredContent: { profiles: [{ id: f.profileId, name: "Allowed fixture" }] } });
+              } else {
+                expect(f.request).not.toHaveBeenCalled();
+                const [browser] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.id, f.browser.id));
+                expect(browser.stopRequested).toBe(name === "browser_cancel" ? "cancel" : name === "browser_end" ? "end" : null);
+                expect(JSON.stringify(result.result)).toContain(f.browser.id);
+              }
+            } else {
+              await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+              expect(f.request).not.toHaveBeenCalled();
+              expect(await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id))).toEqual([]);
+              const [browser] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.id, f.browser.id));
+              expect(browser).toMatchObject({ status: "idle", stopRequested: null });
+            }
+          });
+        }
+      }
+
+      for (const name of ["browser_start", "browser_continue", "browser_profiles"] as const) {
+        it(`${name} rechecks restriction committed during actual credential resolution`, async () => {
+          const f = await browserFixture(name);
+          await db.execute(sql.raw(`CREATE FUNCTION test_browser_output_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+              WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+            CREATE TRIGGER test_browser_output_restrict AFTER INSERT ON secret_access_events FOR EACH ROW
+              WHEN (NEW.secret_id = '${f.secret.id}') EXECUTE FUNCTION test_browser_output_restrict();`));
+          try {
+            await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: name === "browser_profiles" ? 502 : 403 });
+            expect(f.request).not.toHaveBeenCalled();
+            expect(await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id))).toEqual([]);
+            const [policy] = await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+            expect(policy.disposition).toBe("forbidden");
+          } finally {
+            await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_browser_output_restrict ON secret_access_events; DROP FUNCTION IF EXISTS test_browser_output_restrict();"));
+          }
+        });
+      }
+
+      it("rechecks browser profile policy before the next page", async () => {
+        const f = await browserFixture("browser_profiles");
+        f.request.mockImplementation(async () => { await f.restrict(); return Response.json({ items: [], totalItems: 101 }); });
+        await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 502 });
+        expect(f.request).toHaveBeenCalledTimes(1);
+      });
+
+      it("denies browser transport after the final dispatch commit strengthens policy", async () => {
+        const f = await browserFixture("browser_start");
+        await db.execute(sql.raw(`CREATE FUNCTION test_browser_dispatch_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+            WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+          CREATE TRIGGER test_browser_dispatch_restrict AFTER UPDATE ON browser_use_runs FOR EACH ROW
+            WHEN (NEW.result->'paperclipBudgetHold'->>'dispatchCommittedAt' IS NOT NULL
+              AND OLD.result->'paperclipBudgetHold'->>'dispatchCommittedAt' IS NULL) EXECUTE FUNCTION test_browser_dispatch_restrict();`));
+        try {
+          await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 502 });
+          expect(f.request).not.toHaveBeenCalled();
+          const [run] = await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id));
+          expect(run).toMatchObject({ status: "unknown", providerRunId: null,
+            result: { paperclipBudgetHold: { state: "held", billingUnknown: true, dispatchCommittedAt: expect.any(String) } } });
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_browser_dispatch_restrict ON browser_use_runs; DROP FUNCTION IF EXISTS test_browser_dispatch_restrict();"));
+        }
+      });
+
+      for (const name of ["browser_start", "browser_profiles"] as const) {
+        it(`${name} denies retained receipt replay after restriction and service restart`, async () => {
+          const f = await browserFixture(name);
+          await f.gateway.executeTool(f.input);
+          await f.restrict(); f.request.mockClear();
+          const restarted = createTestToolGatewayService(db, { remoteHttpRequest: f.request });
+          await expect(restarted.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(f.request).not.toHaveBeenCalled();
+        });
+      }
+    });
+
+    describe("bundled Cognee confinement", () => {
+      afterEach(() => vi.restoreAllMocks());
+
+      async function cogneeFixture(name: "remember" | "recall" | "forget") {
+        const f = await fixture("ordinary");
+        await db.update(toolApplications).set({ type: "mcp_stdio" }).where(eq(toolApplications.id, f.remote.application.id));
+        await db.update(toolConnections).set({ transport: "local_stdio", config: { templateId: "paperclip.cognee-cloud" } })
+          .where(eq(toolConnections.id, f.remote.connection.id));
+        const refs = [];
+        for (const [key, value] of Object.entries({ COGNEE_BASE_URL: "https://fixture.aws.cognee.ai", COGNEE_API_KEY: "synthetic-cognee-key" })) {
+          const secret = await secretService(db).create(f.company.id, { provider: "local_encrypted", name: key, value });
+          const configPath = `env.${key}`;
+          await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: secret.id,
+            targetType: "tool_connection", targetId: f.remote.connection.id, configPath });
+          refs.push({ secretId: secret.id, configPath, versionSelector: "latest" });
+        }
+        await db.update(connectionGrants).set({ credentialSecretRefs: refs }).where(eq(connectionGrants.connectionId, f.remote.connection.id));
+        const descriptor = COGNEE_STDIO_TEMPLATE.tools.find(t => t.name === name)!;
+        await db.update(toolCatalogEntries).set({ name, toolName: name, inputSchema: descriptor.inputSchema,
+          riskLevel: name === "recall" ? "read" : name === "forget" ? "destructive" : "write", isReadOnly: name === "recall" })
+          .where(eq(toolCatalogEntries.id, f.remote.catalogEntry.id));
+        const request = vi.spyOn(remoteHttp, "guardedRemoteHttpFetch").mockImplementation(async url =>
+          Response.json(new URL(url).pathname === "/api/v1/datasets/" ? [{ name: "ordinary-dataset" }] : { result: "ordinary memory" }));
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+        const parameters = name === "remember" ? { data: "synthetic task result", dataset_name: "ordinary-dataset" }
+          : name === "recall" ? { query: "synthetic task result" } : { dataset: "ordinary-dataset" };
+        const input = { sessionToken: f.session.token, tool: tool.name, parameters, idempotencyKey: `cognee-${name}` };
+        return { ...f, request, input, refs };
+      }
+
+      for (const name of ["remember", "recall", "forget"] as const) {
+        for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+          it(`${name} retains ${disposition} policy through the real bundled bridge`, async () => {
+            const f = await cogneeFixture(name);
+            if (disposition === "forbidden") await f.restrict();
+            if (disposition === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+            const call = f.gateway.executeTool(f.input);
+            if (disposition === "ordinary") {
+              const result = await call;
+              expect(result).toMatchObject({ status: "completed", result: { data: { transport: "cognee_cloud", spawnedLocalProcess: false } } });
+              expect(JSON.stringify(result.result)).toContain("ordinary memory");
+              expect(f.request.mock.calls.map(([url]) => new URL(url).pathname)).toEqual(name === "recall"
+                ? ["/api/v1/datasets/", "/api/v1/recall"] : [`/api/v1/${name}`]);
+              const init = f.request.mock.calls.at(-1)![1]!;
+              expect(new Headers(init.headers).get("x-api-key")).toBe("synthetic-cognee-key");
+              if (name === "remember") expect(Buffer.from(init.body as Buffer).toString()).toContain("synthetic task result");
+              else expect(JSON.parse(Buffer.from(init.body as Buffer).toString())).toMatchObject(name === "recall"
+                ? { query: "synthetic task result", datasets: ["ordinary-dataset"] } : { dataset: "ordinary-dataset", everything: false });
+            } else {
+              await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+              expect(f.request).not.toHaveBeenCalled();
+            }
+            expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+            expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+          });
+        }
+
+        it(`${name} rechecks after secret resolution before the bundled request`, async () => {
+          const f = await cogneeFixture(name);
+          await db.execute(sql.raw(`CREATE FUNCTION test_cognee_output_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+              WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+            CREATE TRIGGER test_cognee_output_restrict AFTER INSERT ON secret_access_events FOR EACH ROW
+              WHEN (NEW.secret_id = '${f.refs[1].secretId}') EXECUTE FUNCTION test_cognee_output_restrict();`));
+          try {
+            await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(f.request).not.toHaveBeenCalled();
+            const [policy] = await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+            expect(policy.disposition).toBe("forbidden");
+          } finally {
+            await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_cognee_output_restrict ON secret_access_events; DROP FUNCTION IF EXISTS test_cognee_output_restrict();"));
+          }
+        });
+
+        it(`${name} denies retained output replay after restriction and restart`, async () => {
+          const f = await cogneeFixture(name);
+          await f.gateway.executeTool(f.input);
+          await f.restrict(); f.request.mockClear();
+          const restarted = createTestToolGatewayService(db);
+          await expect(restarted.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(f.request).not.toHaveBeenCalled();
+        });
+      }
+
+      it("rechecks Cognee policy between dataset discovery and recall POST", async () => {
+        const f = await cogneeFixture("recall");
+        const original = f.request.getMockImplementation()!;
+        f.request.mockImplementation(async (...args) => { const response = await original(...args); await f.restrict(); return response; });
+        await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+        expect(f.request).toHaveBeenCalledTimes(1);
+        expect(new URL(f.request.mock.calls[0]![0]).pathname).toBe("/api/v1/datasets/");
+        const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+        expect(invocation).toMatchObject({ status: "failed", errorCode: "deny_policy_block" });
+        expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+      });
+    });
+
+    describe("indirect Railway SSH", () => {
+      async function railwayFixture() {
+        const f = await fixture("ordinary");
+        const secrets = secretService(db);
+        const refs = [];
+        for (const [configPath, value] of [["oauth.access_token", "fixture-railway-token"], [railwaySsh.RAILWAY_SSH_SECRET_PATH, "fixture-private-key"]]) {
+          const secret = await secrets.create(f.company.id, { provider: "local_encrypted", name: configPath, value });
+          await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: secret.id,
+            targetType: "tool_connection", targetId: f.remote.connection.id, configPath });
+          refs.push({ secretId: secret.id, configPath, versionSelector: "latest" });
+        }
+        const [grant] = await db.update(connectionGrants).set({ credentialSecretRefs: refs })
+          .where(eq(connectionGrants.connectionId, f.remote.connection.id)).returning();
+        await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault", config: {
+          url: RAILWAY_MCP_URL, sourceTemplateKey: "railway", connectionMethodKey: "mcp-oauth", railwayApiStatus: "available",
+          railwaySsh: { grantId: grant.id, enabled: true, knownHosts: "fixture-host-key" },
+        } }).where(eq(toolConnections.id, f.remote.connection.id));
+        await db.update(toolCatalogEntries).set({ name: "paperclip-railway-run-command", toolName: "paperclip-railway-run-command",
+          riskLevel: "destructive", isReadOnly: false }).where(eq(toolCatalogEntries.id, f.remote.catalogEntry.id));
+        f.request.mockImplementation(async (_url, init) => {
+          const { query } = JSON.parse(String(init.body));
+          return Response.json({ data: query === RAILWAY_QUERIES.target ? targetData : deploymentData });
+        });
+        const ssh = vi.spyOn(railwaySsh, "runRailwaySshCommand").mockResolvedValue({ exitCode: 0, stdout: "ordinary result", stderr: "", truncated: false, timedOut: false });
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+        const input = { sessionToken: f.session.token, tool: tool.name,
+          parameters: { ...target, deploymentInstanceId: instanceId, command: "true" }, idempotencyKey: "ssh-retained" };
+        return { ...f, ssh, input, refs };
+      }
+
+      afterEach(() => vi.restoreAllMocks());
+
+      for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+        it(`retains ${disposition} policy before GraphQL and SSH`, async () => {
+          const f = await railwayFixture();
+          if (disposition === "forbidden") await f.restrict();
+          if (disposition === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+          const call = f.gateway.executeTool(f.input);
+          if (disposition === "ordinary") {
+            const result = await call;
+            expect(result.status).toBe("completed");
+            expect(JSON.stringify(result.result)).toContain("ordinary result");
+            expect(f.request.mock.calls.map(([, init]) => JSON.parse(String(init.body)).query)).toEqual([RAILWAY_QUERIES.target, RAILWAY_QUERIES.deployment]);
+            expect(f.ssh).toHaveBeenCalledTimes(1);
+            expect(f.ssh).toHaveBeenCalledWith(expect.objectContaining({ command: "true", deploymentInstanceId: instanceId,
+              privateKey: "fixture-private-key", knownHosts: "fixture-host-key" }));
+          } else {
+            await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(f.request).not.toHaveBeenCalled(); expect(f.ssh).not.toHaveBeenCalled();
+          }
+        });
+      }
+
+      for (const boundary of ["deployment-response", "ssh-secret"] as const) {
+        it(`rechecks policy after ${boundary} before SSH dispatch`, async () => {
+          const f = await railwayFixture();
+          if (boundary === "deployment-response") {
+            const original = f.request.getMockImplementation()!;
+            f.request.mockImplementation(async (url, init) => {
+              const result = await original(url, init);
+              if (JSON.parse(String(init.body)).query === RAILWAY_QUERIES.deployment) await f.restrict();
+              return result;
+            });
+          } else {
+            await db.execute(sql.raw(`CREATE FUNCTION test_ssh_output_restrict() RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+                WHERE issue_id = '${f.issue.id}' AND company_id = '${f.company.id}'; RETURN NEW; END $$;
+              CREATE TRIGGER test_ssh_output_restrict AFTER INSERT ON secret_access_events FOR EACH ROW
+                WHEN (NEW.secret_id = '${f.refs[1].secretId}') EXECUTE FUNCTION test_ssh_output_restrict();`));
+          }
+          try {
+            await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(f.request).toHaveBeenCalledTimes(2); expect(f.ssh).not.toHaveBeenCalled();
+            const [policy] = await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+            expect(policy.disposition).toBe("forbidden");
+            const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+            expect(invocation).toMatchObject({ status: "failed", errorCode: "deny_policy_block" });
+            expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+            const accesses = await db.execute(sql`SELECT count(*)::integer AS count FROM secret_access_events
+              WHERE secret_id = ${f.refs[1].secretId} AND company_id = ${f.company.id}`);
+            expect(accesses[0].count).toBe(boundary === "ssh-secret" ? 1 : 0);
+          } finally {
+            if (boundary === "ssh-secret") await db.execute(sql.raw("DROP TRIGGER IF EXISTS test_ssh_output_restrict ON secret_access_events; DROP FUNCTION IF EXISTS test_ssh_output_restrict();"));
+          }
+        });
+      }
+
+      it("denies retained SSH receipt replay after restriction and service restart", async () => {
+        const f = await railwayFixture();
+        await f.gateway.executeTool(f.input);
+        await f.restrict(); f.ssh.mockClear(); f.request.mockClear();
+        const restarted = createTestToolGatewayService(db, { remoteHttpRequest: f.request });
+        await expect(restarted.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+        expect(f.request).not.toHaveBeenCalled(); expect(f.ssh).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("indirect REST confinement", () => {
+      async function restFixture() {
+        const f = await fixture("ordinary");
+        await db.update(toolApplications).set({ type: "rest_api" }).where(eq(toolApplications.id, f.remote.application.id));
+        await db.update(toolConnections).set({ transport: "rest_api", config: { url: VERCEL_API_URL,
+          sourceTemplateKey: "vercel", connectionMethodKey: VERCEL_METHOD, methodConfig: { teamId: "team_fixture" } } })
+          .where(eq(toolConnections.id, f.remote.connection.id));
+        const secret = await secretService(db).create(f.company.id, { provider: "local_encrypted", name: "REST fixture", value: "synthetic-token" });
+        await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: secret.id,
+          targetType: "tool_connection", targetId: f.remote.connection.id, configPath: "oauth.access_token" });
+        await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token", versionSelector: "latest" }] })
+          .where(eq(connectionGrants.connectionId, f.remote.connection.id));
+        const descriptor = VERCEL_TOOLS.find(t => t.name === "vercel_update_project")!;
+        await db.update(toolCatalogEntries).set({ name: descriptor.name, toolName: descriptor.name, riskLevel: "write", isReadOnly: false,
+          inputSchema: descriptor.inputSchema, versionHash: descriptorHash(descriptor, "write"), schemaHash: stableHash(descriptor.inputSchema) })
+          .where(eq(toolCatalogEntries.id, f.remote.catalogEntry.id));
+        f.request.mockImplementation(async () => Response.json({ id: "prj_fixture", name: "fixture", accountId: "team_fixture", framework: "nextjs" }));
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+        const input = { sessionToken: f.session.token, tool: tool.name,
+          parameters: { projectId: "prj_fixture", settings: { framework: "nextjs" } }, idempotencyKey: "rest-retained" };
+        return { ...f, input };
+      }
+
+      for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+        it(`retains ${disposition} policy through a configured REST provider`, async () => {
+          const f = await restFixture();
+          if (disposition === "forbidden") await f.restrict();
+          if (disposition === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+          const call = f.gateway.executeTool(f.input);
+          if (disposition === "ordinary") {
+            await expect(call).resolves.toMatchObject({ status: "completed" });
+            expect(f.request.mock.calls.map(([, init]) => init.method)).toEqual(["GET", "PATCH"]);
+            expect(JSON.parse(String(f.request.mock.calls[1]![1].body))).toEqual({ framework: "nextjs" });
+          } else {
+            await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(f.request).not.toHaveBeenCalled();
+          }
+        });
+      }
+
+      it("rechecks REST output after the provider ownership preflight", async () => {
+        const f = await restFixture();
+        const original = f.request.getMockImplementation()!;
+        f.request.mockImplementation(async (url, init) => { const result = await original(url, init); await f.restrict(); return result; });
+        await expect(f.gateway.executeTool(f.input)).rejects.toMatchObject({ status: 502, details: { code: "vercel_outcome_unknown" } });
+        expect(f.request).toHaveBeenCalledTimes(1);
+        expect(f.request.mock.calls[0]![1].method).toBe("GET");
+        const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+        expect(invocation.status).toBe("failed");
+      });
+
+      it("denies retained REST replay after restriction and restart", async () => {
+        const f = await restFixture();
+        await f.gateway.executeTool(f.input);
+        await f.restrict(); f.request.mockClear();
+        const restarted = createTestToolGatewayService(db, { remoteHttpRequest: f.request });
+        await expect(restarted.executeTool(f.input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+        expect(f.request).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("credential refresh confinement", () => {
+      describe("production OAuth refresh owner", () => {
+        for (const strategy of ["direct_oauth", "paperclip_cloud_connector"] as const) {
+          for (const boundary of ["ordinary", "forbidden", "missing", "refresh-restriction", "401", "401-restriction", "refresh-failure", "restart-restriction"] as const) {
+            it(`${strategy} retains policy at ${boundary}`, async () => {
+              const f = await fixture("ordinary");
+              const secrets = secretService(db);
+              const refs = [];
+              for (const [configPath, value] of [["oauth.access_token", "synthetic-old-access"], ["oauth.refresh_token", "synthetic-old-refresh"]]) {
+                const secret = await secrets.create(f.company.id, { provider: "local_encrypted", name: configPath, value });
+                await db.insert(companySecretBindings).values({ companyId: f.company.id, secretId: secret.id,
+                  targetType: "tool_connection", targetId: f.remote.connection.id, configPath });
+                refs.push({ secretId: secret.id, configPath, versionSelector: "latest" as const });
+              }
+              const forcing = boundary === "401" || boundary === "401-restriction";
+              const expiresAt = new Date(forcing ? Date.now() + 7_200_000 : 0).toISOString();
+              await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault", config: {
+                url: "https://8.8.8.8/mcp", oauth: { strategy, provider: "fixture", clientId: "synthetic-client",
+                  clientTokenEndpointAuthMethod: "none", tokenUrl: "https://8.8.8.8/oauth/token", resource: "https://8.8.8.8/mcp",
+                  connectorProfile: "github.code", connectorSubjectUserId: "synthetic-subject" },
+              } }).where(eq(toolConnections.id, f.remote.connection.id));
+              const [grant] = await db.update(connectionGrants).set({ credentialSecretRefs: refs, providerTenant: {
+                oauth: { strategy, accessTokenExpiresAt: expiresAt, refreshedAt: new Date().toISOString(), scopes: ["read:user"], requestedScopes: ["read:user"] },
+              } }).where(eq(connectionGrants.connectionId, f.remote.connection.id)).returning();
+              const refresh = vi.fn(async () => {
+                const [leased] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+                expect(leased.providerTenant?.oauth?.refreshLease).toMatchObject({ id: expect.any(String) });
+                if (boundary === "refresh-restriction" || boundary === "401-restriction") await f.restrict();
+                if (boundary === "refresh-failure") throw new Error("synthetic refresh transport failure");
+                return { v: 1 as const, accessToken: "synthetic-new-access", refreshToken: "synthetic-new-refresh",
+                  tokenType: "Bearer", accessTokenExpiresAt: new Date(Date.now() + 7_200_000).toISOString(), scopes: ["read:user"],
+                  subject: "synthetic-subject", companyId: f.company.id, instanceId: "synthetic-instance",
+                  environment: "test" as const, provider: "github" as const, profile: "github.code" as const };
+              });
+              const exchange = vi.fn(async (url: string, init: RequestInit) => {
+                expect(url).toBe("https://8.8.8.8/oauth/token");
+                const body = new URLSearchParams(String(init.body));
+                expect(body.get("grant_type")).toBe("refresh_token");
+                expect(body.get("refresh_token")).toBe("synthetic-old-refresh");
+                expect(body.get("client_id")).toBe("synthetic-client");
+                expect(body.get("resource")).toBe("https://8.8.8.8/mcp");
+                expect(String(init.body)).not.toContain("synthetic task result");
+                const credentials = await refresh();
+                return Response.json({ access_token: credentials.accessToken, refresh_token: credentials.refreshToken,
+                  token_type: credentials.tokenType, expires_in: 3600, scope: "read:user" });
+              });
+              const connector: PaperclipCloudConnector = { refresh: vi.fn(async input => {
+                expect(input).toEqual({ subject: "synthetic-subject", companyId: f.company.id,
+                  profile: "github.code", refreshToken: "synthetic-old-refresh" });
+                return refresh();
+              }), getCapabilities: vi.fn(), startAuthorization: vi.fn(), claim: vi.fn(), revoke: vi.fn() };
+              const accessOptions = { remoteHttpRequest: exchange, paperclipCloudConnector: strategy === "direct_oauth" ? null : connector };
+              const makeGateway = () => createTestToolGatewayService(db, { remoteHttpRequest: f.request,
+                oauthGrantRefresher: toolAccessService(db, accessOptions).refreshOAuthGrantCredentials });
+              const gateway = makeGateway();
+              const tool = (await gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+              const input = { sessionToken: f.session.token, tool: tool.name, parameters: { message: "synthetic task result" } };
+              if (boundary === "forbidden") await f.restrict();
+              if (boundary === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+              if (forcing) f.request.mockResolvedValueOnce(new Response(null, { status: 401 }));
+              const call = gateway.executeTool(input);
+              if (boundary === "forbidden" || boundary === "missing" || boundary === "refresh-restriction") {
+                await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                expect(f.request).not.toHaveBeenCalled();
+              } else if (forcing) {
+                await expect(call).rejects.toMatchObject({ status: 409, reasonCode: "oauth_refreshed_retry_required" });
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(new Headers(f.request.mock.calls[0]![1].headers).get("authorization")).toBe("Bearer synthetic-old-access");
+                if (boundary === "401-restriction") {
+                  await expect(makeGateway().executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                  expect(f.request).toHaveBeenCalledTimes(1);
+                } else {
+                  await expect(makeGateway().executeTool(input)).resolves.toMatchObject({ status: "completed" });
+                  expect(f.request).toHaveBeenCalledTimes(2);
+                  expect(new Headers(f.request.mock.calls[1]![1].headers).get("authorization")).toBe("Bearer synthetic-new-access");
+                }
+              } else if (boundary === "refresh-failure") {
+                await expect(call).rejects.toMatchObject({ reasonCode: "oauth_refresh_failed", message: "synthetic refresh transport failure" });
+                expect(f.request).not.toHaveBeenCalled();
+              } else {
+                await expect(call).resolves.toMatchObject({ status: "completed" });
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(new Headers(f.request.mock.calls[0]![1].headers).get("authorization")).toBe("Bearer synthetic-new-access");
+                expect(JSON.parse(String(f.request.mock.calls[0]![1].body)).params.arguments).toEqual(input.parameters);
+                if (boundary === "restart-restriction") {
+                  await f.restrict();
+                  await expect(makeGateway().executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                  expect(f.request).toHaveBeenCalledTimes(1);
+                }
+              }
+              const attempted = boundary !== "forbidden" && boundary !== "missing";
+              const rotated = attempted && boundary !== "refresh-failure";
+              expect(refresh).toHaveBeenCalledTimes(attempted ? 1 : 0);
+              expect(exchange).toHaveBeenCalledTimes(strategy === "direct_oauth" && attempted ? 1 : 0);
+              expect(connector.refresh).toHaveBeenCalledTimes(strategy === "paperclip_cloud_connector" && attempted ? 1 : 0);
+              const [storedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+              expect(storedGrant.status).toBe("active");
+              expect(storedGrant.providerTenant?.oauth).not.toHaveProperty("refreshLease");
+              expect(JSON.stringify(storedGrant)).not.toMatch(/synthetic-(old|new)-(access|refresh)/);
+              const versions = await db.select().from(companySecrets).where(eq(companySecrets.companyId, f.company.id));
+              expect(versions).toHaveLength(2);
+              expect(versions.map(row => row.latestVersion)).toEqual([rotated ? 2 : 1, rotated ? 2 : 1]);
+              if (rotated) expect(Date.parse(storedGrant.providerTenant!.oauth!.accessTokenExpiresAt!)).toBeGreaterThan(Date.now());
+              expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+            });
+          }
+        }
+      });
+
+      describe("production Vercel credential owner", () => {
+        for (const boundary of ["ordinary", "forbidden", "missing", "initial-restriction", "401", "401-restriction", "cached-restriction", "token-failure"] as const) {
+          it(`retains policy at ${boundary} with the installed SDK`, async () => {
+            const f = await fixture("ordinary");
+            const connectorUid = `fixture-${randomUUID()}`;
+            const externalCredential = { provider: "vercel_connect" as const, connectorId: "scl_fixture", connectorUid, service: "fixture",
+              connectorType: "api-key" as const, principalMode: "app" as const, headerName: "Authorization", headerPrefix: "Bearer ", scopes: ["*"] };
+            await db.update(toolConnections).set({ credentialSource: "vercel_connect", externalCredential })
+              .where(eq(toolConnections.id, f.remote.connection.id));
+            const [grant] = await db.update(connectionGrants).set({ externalCredential: { provider: "vercel_connect", subjectType: "app" } })
+              .where(eq(connectionGrants.connectionId, f.remote.connection.id)).returning();
+            vi.stubEnv("VERCEL_OIDC_TOKEN", "");
+            vi.stubEnv("VERCEL_REGION", "");
+            vi.stubEnv("PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN", "synthetic-bootstrap");
+            let tokenRequests = 0;
+            const sdkFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+              tokenRequests += 1;
+              expect(String(url)).toBe(`https://api.vercel.com/v1/connect/token/${connectorUid}`);
+              expect(init?.method).toBe("POST");
+              expect(new Headers(init?.headers).get("authorization")).toBe("Bearer synthetic-bootstrap");
+              const body = JSON.parse(String(init?.body));
+              expect(body).toEqual({ subject: { type: "app" }, scopes: ["*"] });
+              expect(String(init?.body)).not.toContain("synthetic task result");
+              if (boundary === "initial-restriction" || (boundary === "401-restriction" && tokenRequests === 2)) await f.restrict();
+              if (boundary === "token-failure") return Response.json({ error: { code: "synthetic_failure" } }, { status: 503 });
+              return Response.json({ token: `synthetic-provider-${tokenRequests}`, tokenId: "stk_fixture", expiresAt: Date.now() + 3_600_000,
+                connector: { id: "scl_fixture", uid: connectorUid, type: "api-key" } });
+            });
+            try {
+              const makeGateway = () => createTestToolGatewayService(db, { remoteHttpRequest: f.request, vercelConnectClient: createVercelConnectClient() });
+              const gateway = makeGateway();
+              const tool = (await gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+              const input = { sessionToken: f.session.token, tool: tool.name, parameters: { message: "synthetic task result" } };
+              if (boundary === "forbidden") await f.restrict();
+              if (boundary === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+              const forcing = boundary === "401" || boundary === "401-restriction";
+              if (forcing) f.request.mockResolvedValueOnce(new Response(null, { status: 401 }));
+              const call = gateway.executeTool(input);
+              if (boundary === "forbidden" || boundary === "missing" || boundary === "initial-restriction") {
+                await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                expect(f.request).not.toHaveBeenCalled();
+              } else if (forcing) {
+                await expect(call).rejects.toMatchObject({ status: 409, reasonCode: "oauth_refreshed_retry_required" });
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(sdkFetch).toHaveBeenCalledTimes(2);
+                expect(new Headers(f.request.mock.calls[0]![1].headers).get("authorization")).toBe("Bearer synthetic-provider-1");
+                if (boundary === "401-restriction") {
+                  await expect(makeGateway().executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                  expect(f.request).toHaveBeenCalledTimes(1);
+                } else {
+                  await expect(makeGateway().executeTool(input)).resolves.toMatchObject({ status: "completed" });
+                  expect(f.request).toHaveBeenCalledTimes(2);
+                  expect(new Headers(f.request.mock.calls[1]![1].headers).get("authorization")).toBe("Bearer synthetic-provider-2");
+                }
+              } else if (boundary === "token-failure") {
+                await expect(call).rejects.toMatchObject({ status: 502, reasonCode: "vercel_connect_request_failed" });
+                await expect(sdkFetch.mock.results[0]!.value).resolves.toMatchObject({ status: 503 });
+                expect(f.request).not.toHaveBeenCalled();
+              } else {
+                await expect(call).resolves.toMatchObject({ status: "completed" });
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(new Headers(f.request.mock.calls[0]![1].headers).get("authorization")).toBe("Bearer synthetic-provider-1");
+                if (boundary === "cached-restriction") {
+                  await f.restrict();
+                  await expect(makeGateway().executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                  expect(f.request).toHaveBeenCalledTimes(1);
+                } else {
+                  await expect(makeGateway().executeTool(input)).resolves.toMatchObject({ status: "completed" });
+                  expect(f.request).toHaveBeenCalledTimes(2);
+                }
+              }
+              expect(sdkFetch).toHaveBeenCalledTimes(boundary === "forbidden" || boundary === "missing" ? 0 : forcing ? 2 : 1);
+              const [stored] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+              expect(JSON.stringify(stored)).not.toMatch(/synthetic-(provider|bootstrap)/);
+              expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+            } finally {
+              sdkFetch.mockRestore();
+            }
+          });
+        }
+      });
+
+      for (const provider of ["oauth", "vercel"] as const) {
+        for (const boundary of ["ordinary", "initial", "401", "forbidden"] as const) {
+          it(`${provider} retains policy during ${boundary} credential resolution`, async () => {
+            const f = await fixture("ordinary");
+            if (provider === "oauth") {
+              await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault" }).where(eq(toolConnections.id, f.remote.connection.id));
+            } else {
+              await db.update(toolConnections).set({ credentialSource: "vercel_connect", externalCredential: {
+                provider: "vercel_connect", connectorId: "scl_fixture", connectorUid: "fixture", service: "fixture",
+                connectorType: "api-key", principalMode: "app", headerName: "Authorization", headerPrefix: "Bearer ", scopes: ["*"],
+              } }).where(eq(toolConnections.id, f.remote.connection.id));
+              await db.update(connectionGrants).set({ externalCredential: { provider: "vercel_connect", subjectType: "app" } })
+                .where(eq(connectionGrants.connectionId, f.remote.connection.id));
+            }
+            const refresh = vi.fn(async (forceRefresh?: boolean) => {
+              if (boundary === "initial" || (boundary === "401" && forceRefresh)) await f.restrict();
+            });
+            const getToken = vi.fn<VercelConnectClient["getToken"]>(async (_input, options) => {
+              await refresh(options?.forceRefresh);
+              return { token: "synthetic-provider-token", tokenId: "stk_fixture", expiresAt: Date.now() + 60_000,
+                connector: { id: "scl_fixture", uid: "fixture", type: "api-key" } };
+            });
+            const gatewayOptions: ToolGatewayServiceOptions = { remoteHttpRequest: f.request,
+              ...(provider === "oauth" ? { oauthGrantRefresher: async ({ grantId, forceRefresh }) => {
+                await refresh(forceRefresh);
+                return db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)).then(rows => rows[0]!);
+              } } : { vercelConnectClient: { getToken, evict: vi.fn(), getConnectorMetadata: vi.fn(), startAuthorization: vi.fn(), revoke: vi.fn() } }),
+            };
+            const gateway = createTestToolGatewayService(db, gatewayOptions);
+            const tool = (await gateway.listToolsForSession(f.session.token)).find(t => t.catalogEntryId === f.remote.catalogEntry.id)!;
+            const input = { sessionToken: f.session.token, tool: tool.name, parameters: { message: "synthetic task result" } };
+            if (boundary === "forbidden") await f.restrict();
+            if (boundary === "401") f.request.mockResolvedValue(new Response(null, { status: 401 }));
+            const call = gateway.executeTool(input);
+            if (boundary === "ordinary") {
+              await expect(call).resolves.toMatchObject({ status: "completed" });
+              expect(f.request).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalledTimes(1);
+            } else if (boundary === "401") {
+              await expect(call).rejects.toMatchObject({ status: 409, reasonCode: "oauth_refreshed_retry_required" });
+              expect(f.request).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalledTimes(2);
+              expect(refresh.mock.calls[1]).toEqual([true]);
+              const restarted = createTestToolGatewayService(db, gatewayOptions);
+              await expect(restarted.executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+              expect(f.request).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalledTimes(2);
+            } else {
+              await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+              expect(f.request).not.toHaveBeenCalled();
+              expect(refresh).toHaveBeenCalledTimes(boundary === "initial" ? 1 : 0);
+            }
+            expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+          });
+        }
+      }
+    });
+
+    describe("named context protocols", () => {
+      const methods = ["resources/list", "resources/read", "prompts/list", "prompts/get"] as const;
+      let contextServer: ReturnType<typeof createServer> | undefined;
+      afterEach(async () => {
+        if (contextServer) {
+          const server = contextServer; contextServer = undefined;
+          await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+      });
+
+      async function namedFixture(disposition: "ordinary" | "forbidden" | "missing", subjectType: "heartbeat_run" | "gateway_client" = "heartbeat_run") {
+        const f = await fixture(disposition);
+        f.request.mockImplementation(async (_url, init) => {
+          const body = JSON.parse(String(init.body));
+          const result = body.method === "resources/list" ? { resources: [{ uri: "notes://one", name: "Note" }] }
+            : body.method === "resources/read" ? { contents: [{ uri: body.params.uri, text: "resource body" }] }
+              : body.method === "prompts/list" ? { prompts: [{ name: "summarize" }] }
+                : { messages: [{ role: "user", content: { type: "text", text: "Summary" } }] };
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { headers: { "content-type": "application/json" } });
+        });
+        contextServer = createServer(async (request, response) => {
+          try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const result = await f.request("http://127.0.0.1/mcp", { method: request.method, body: Buffer.concat(chunks).toString("utf8") });
+            response.writeHead(result.status, { "content-type": "application/json" });
+            response.end(await result.text());
+          } catch { response.writeHead(500); response.end(); }
+        });
+        await new Promise<void>(resolve => contextServer!.listen(0, "127.0.0.1", resolve));
+        const url = `http://127.0.0.1:${(contextServer.address() as AddressInfo).port}/mcp`;
+        await db.update(toolConnections).set({ config: { url } }).where(eq(toolConnections.id, f.remote.connection.id));
+        const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Context", defaultAction: "deny" }).returning();
+        await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: profile.id, selectorType: "connection", effect: "include", connectionId: f.remote.connection.id });
+        const named = await f.gateway.createNamedGateway({ companyId: f.company.id,
+          body: { name: "Context", profileId: profile.id, agentId: f.agent.id, issueId: f.issue.id } });
+        const token = await f.gateway.createNamedGatewayToken({ companyId: f.company.id, gatewayId: named.id,
+          body: { name: "Context test", subjectType, ...(subjectType === "heartbeat_run" ? { subjectId: f.run.id } : {}) } });
+        const params = (method: typeof methods[number]) => method === "resources/read"
+          ? { uri: `paperclip-resource://${f.remote.connection.id}/${Buffer.from("notes://one").toString("base64url")}` }
+          : method === "prompts/get" ? { name: `paperclip-prompt://${f.remote.connection.id}/${Buffer.from("summarize").toString("base64url")}`, arguments: { text: "task result" } } : {};
+        const input = (method: typeof methods[number]) => ({ gatewayId: named.id, bearerToken: token.token, method, params: params(method) });
+        return { ...f, profile, named, token, input };
+      }
+
+      for (const subjectType of ["heartbeat_run", "gateway_client"] as const) {
+        for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+          for (const method of methods) {
+            it(`${subjectType} ${method} retains ${disposition} policy`, async () => {
+              const f = await namedFixture(disposition, subjectType);
+              const call = f.gateway.executeContextForNamedGateway(f.input(method));
+              if (disposition === "ordinary") {
+                const result = await call;
+                if (method === "resources/list") expect(result.resources).toEqual([{ uri: f.input("resources/read").params.uri, name: "Remote connection: Note" }]);
+                if (method === "resources/read") expect(result.contents).toEqual([{ uri: f.input(method).params.uri, text: "resource body" }]);
+                if (method === "prompts/list") expect(result.prompts).toEqual([{ name: f.input("prompts/get").params.name, title: "Remote connection: summarize" }]);
+                if (method === "prompts/get") expect(result.messages).toEqual([{ role: "user", content: { type: "text", text: "Summary" } }]);
+                expect(f.request).toHaveBeenCalledTimes(1);
+                expect(JSON.parse(String(f.request.mock.calls[0]![1].body))).toMatchObject({ method,
+                  params: method === "resources/read" ? { uri: "notes://one" } : method === "prompts/get" ? { name: "summarize", arguments: { text: "task result" } } : {} });
+              } else {
+                await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+                expect(f.request).not.toHaveBeenCalled();
+                expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+                expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+              }
+            });
+          }
+        }
+      }
+
+      for (const method of methods) {
+        it(`${method} rechecks retained handles after restriction and restart`, async () => {
+          const f = await namedFixture("ordinary");
+          await f.gateway.executeContextForNamedGateway(f.input(method));
+          await f.restrict(); f.request.mockClear();
+          const restarted = createTestToolGatewayService(db, { remoteHttpRequest: f.request });
+          await expect(restarted.executeContextForNamedGateway(f.input(method))).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(f.request).not.toHaveBeenCalled();
+        });
+
+        it(`${method} rechecks after credential resolution before dispatch`, async () => {
+          const f = await namedFixture("ordinary");
+          await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault" }).where(eq(toolConnections.id, f.remote.connection.id));
+          const refresh = vi.fn(async ({ grantId }: { grantId: string }) => {
+            await f.restrict();
+            const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
+            return grant;
+          });
+          const gateway = createTestToolGatewayService(db, { remoteHttpRequest: f.request, oauthGrantRefresher: refresh });
+          await expect(gateway.executeContextForNamedGateway(f.input(method))).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(refresh).toHaveBeenCalledTimes(1);
+          expect(f.request).not.toHaveBeenCalled();
+        });
+      }
+
+      for (const method of ["resources/list", "prompts/list"] as const) {
+        it(`${method} rechecks before the next assigned connection`, async () => {
+          const f = await namedFixture("ordinary");
+          await db.update(toolApplications).set({ name: "First context" }).where(eq(toolApplications.id, f.remote.application.id));
+          const second = await createRemoteMcpToolFixture(db, f.company.id);
+          const [first] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.remote.connection.id));
+          await db.update(toolConnections).set({ config: first.config }).where(eq(toolConnections.id, second.connection.id));
+          await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: f.profile.id, selectorType: "connection", effect: "include", connectionId: second.connection.id });
+          const original = f.request.getMockImplementation()!;
+          f.request.mockImplementation(async (url, init) => { const result = await original(url, init); await f.restrict(); return result; });
+          await expect(f.gateway.executeContextForNamedGateway(f.input(method))).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(f.request).toHaveBeenCalledTimes(1);
+        });
+      }
+
+      it("keeps token action and current run authority independent of output policy", async () => {
+        const f = await namedFixture("ordinary");
+        const limited = await f.gateway.createNamedGatewayToken({ companyId: f.company.id, gatewayId: f.named.id,
+          body: { name: "No context", subjectType: "heartbeat_run", subjectId: f.run.id, allowedActions: ["tools/list"] } });
+        await expect(f.gateway.executeContextForNamedGateway({ ...f.input("prompts/get"), bearerToken: limited.token }))
+          .rejects.toMatchObject({ status: 403, reasonCode: "gateway_token_action_denied" });
+        await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
+        await expect(f.gateway.executeContextForNamedGateway(f.input("prompts/get"))).rejects.toMatchObject({ reasonCode: "gateway_token_run_inactive" });
+        expect(f.request).not.toHaveBeenCalled();
+      });
+    });
+
+    for (const disposition of ["ordinary", "forbidden", "missing"] as const) {
+      it(`filters external tool discovery but preserves native reads for ${disposition} policy`, async () => {
+        const f = await fixture(disposition);
+        const tools = await f.gateway.listToolsForSession(f.session.token);
+        expect(tools.some(t => t.providerType === "paperclip_self")).toBe(true);
+        expect(tools.some(t => t.providerType === "mcp_remote_http")).toBe(disposition === "ordinary");
+        expect(tools.some(t => t.providerType === "paperclip_plugin")).toBe(disposition === "ordinary");
+        expect(f.request).not.toHaveBeenCalled();
+        expect(f.plugin).not.toHaveBeenCalled();
+      });
+
+      for (const route of ["remote", "plugin", "plugin-route", "stdio-fixture"] as const) {
+        it(`${route} retains ${disposition} task output policy`, async () => {
+          const f = await fixture("ordinary");
+          const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.providerType === "mcp_remote_http")!;
+          if (disposition === "forbidden") await f.restrict();
+          if (disposition === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+          const call = route === "plugin-route" ? f.gateway.executePluginTool({
+            actor: { type: "agent", companyId: f.company.id, agentId: f.agent.id, runId: f.run.id },
+            runContext: runSessionInput(f.company, f.agent, f.run), tool: "fixture:delete_everything", parameters: { message: "task result" },
+          }) : f.gateway.executeTool({ sessionToken: f.session.token,
+            tool: route === "remote" ? tool.name : route === "plugin" ? "fixture:delete_everything" : "mcp-stdio-fixture:increment_counter",
+            parameters: route === "stdio-fixture" ? {} : { message: "task result" } });
+          if (disposition === "ordinary") {
+            await expect(call).resolves.toBeDefined();
+            if (route === "remote") expect(f.request).toHaveBeenCalled();
+            if (route.startsWith("plugin")) expect(f.plugin).toHaveBeenCalledTimes(1);
+          } else {
+            await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+            expect(f.request).not.toHaveBeenCalled();
+            expect(f.plugin).not.toHaveBeenCalled();
+            expect(await f.gateway.listRuntimeSlots(f.company.id)).toEqual([]);
+            const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+            expect(invocation).toMatchObject({ status: "denied", errorCode: "deny_policy_block" });
+            expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id))).toEqual([]);
+          }
+        });
+      }
+    }
+
+    for (const route of ["remote", "plugin"] as const) {
+      it(`denies ${route} retained receipt replay after restriction and restart`, async () => {
+        const f = await fixture("ordinary");
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.providerType === "mcp_remote_http")!;
+        const input = { sessionToken: f.session.token, tool: route === "remote" ? tool.name : "fixture:delete_everything", parameters: { message: "task result" }, idempotencyKey: "retained" };
+        await f.gateway.executeTool(input);
+        const before = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+        f.request.mockClear(); f.plugin.mockClear();
+        await f.restrict();
+        const restarted = createTestToolGatewayService(db, { pluginToolDispatcher: f.dispatcher, remoteHttpRequest: f.request });
+        await expect(restarted.executeTool(input)).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+        expect(f.request).not.toHaveBeenCalled(); expect(f.plugin).not.toHaveBeenCalled();
+        expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id))).toEqual(before);
+      });
+    }
+
+    it("does not let Ask first override forbidden task output", async () => {
+      const f = await fixture("forbidden");
+      await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Ask first", policyType: "require_approval", priority: -100, selectors: {} });
+      await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "one", body: "task result" } }))
+        .rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+      expect(await db.select().from(toolActionRequests)).toEqual([]);
+      expect(await db.select().from(issueThreadInteractions)).toEqual([]);
+    });
+
+    for (const route of ["remote", "plugin-route"] as const) {
+      it(`denies ${route} when policy strengthens after invocation admission`, async () => {
+        const f = await fixture("ordinary");
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.providerType === "mcp_remote_http")!;
+        await db.execute(sql.raw(`CREATE FUNCTION gateway_restrict_output() RETURNS trigger AS $$
+          BEGIN UPDATE task_provider_output_policies SET disposition = 'forbidden'
+            WHERE issue_id = NEW.issue_id AND company_id = NEW.company_id; RETURN NEW; END;
+          $$ LANGUAGE plpgsql;
+          CREATE TRIGGER gateway_restrict_output BEFORE UPDATE OF status ON tool_invocations
+          FOR EACH ROW WHEN (NEW.status = 'executing') EXECUTE FUNCTION gateway_restrict_output();`));
+        try {
+          const call = route === "remote" ? f.gateway.executeTool({ sessionToken: f.session.token, tool: tool.name, parameters: {} })
+            : f.gateway.executePluginTool({ actor: { type: "agent", companyId: f.company.id, agentId: f.agent.id, runId: f.run.id },
+              tool: "fixture:delete_everything", parameters: {}, runContext: runSessionInput(f.company, f.agent, f.run) });
+          await expect(call).rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          expect(f.request).not.toHaveBeenCalled(); expect(f.plugin).not.toHaveBeenCalled();
+          const [policy] = await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issue.id));
+          expect(policy.disposition).toBe("forbidden");
+          const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+          expect(invocation).toMatchObject({ status: "failed", errorCode: "deny_policy_block" });
+        } finally {
+          await db.execute(sql.raw("DROP TRIGGER gateway_restrict_output ON tool_invocations; DROP FUNCTION gateway_restrict_output();"));
+        }
+      });
+    }
+
+    for (const recovery of [false, true]) {
+      it(`denies a restricted pending approval with recovery=${recovery}`, async () => {
+        const f = await fixture("ordinary");
+        const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.providerType === "mcp_remote_http")!;
+        await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Review remote", policyType: "require_approval", priority: -100, selectors: { toolName: tool.name } });
+        await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "approval_required" });
+        const [pending] = await db.select().from(toolActionRequests);
+        if (recovery) await commitToolActionReview(db, { companyId: f.company.id, actionRequestId: pending.id, decision: "approved", actor: { userId: "board" } });
+        await f.restrict();
+        const restarted = createTestToolGatewayService(db, { remoteHttpRequest: f.request });
+        if (recovery) {
+          await restarted.recoverApprovedActionReviews(f.company.id);
+          const [settled] = await db.select().from(toolActionRequests);
+          expect(settled.status).toBe("failed");
+          const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId));
+          expect(invocation).toMatchObject({ status: "failed", errorCode: "deny_policy_block" });
+        } else {
+          await expect(restarted.approveActionRequest({ companyId: f.company.id, actionRequestId: pending.id, actor: { userId: "board" } }))
+            .rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+          const [retained] = await db.select().from(toolActionRequests);
+          expect(retained.status).toBe("pending");
+        }
+        expect(f.request).not.toHaveBeenCalled();
+      });
+    }
+
+    it("preserves authenticated native task reads for forbidden work", async () => {
+      const f = await fixture("forbidden");
+      const result = await f.gateway.executeTool({ sessionToken: f.session.token, tool: "paperclip-self:get_issue_context", parameters: { issueId: f.issue.id } });
+      expect(result.status).toBe("completed");
+      expect(JSON.stringify(result.result)).toContain(f.issue.id);
+      expect(f.request).not.toHaveBeenCalled(); expect(f.plugin).not.toHaveBeenCalled();
+    });
+
+    it("rechecks each HTTP dispatch after initialize restricts the task", async () => {
+      const f = await fixture("ordinary");
+      await db.update(toolConnections).set({ config: { ...f.remote.connection.config, mcpSessionRequired: true } }).where(eq(toolConnections.id, f.remote.connection.id));
+      const tool = (await f.gateway.listToolsForSession(f.session.token)).find(t => t.providerType === "mcp_remote_http")!;
+      const original = f.request.getMockImplementation()!;
+      f.request.mockImplementation(async (url, init) => {
+        const response = await original(url, init);
+        await f.restrict();
+        return response;
+      });
+      await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: tool.name, parameters: { message: "task result" } }))
+        .rejects.toMatchObject({ status: 403, reasonCode: "deny_policy_block" });
+      expect(f.request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(f.request.mock.calls[0]![1].body)).method).toBe("initialize");
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation.status).toBe("failed");
+    });
   });
 
   describe("pending review expiry worker", () => {

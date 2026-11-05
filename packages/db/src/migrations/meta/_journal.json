@@ -2983,6 +2983,13 @@
       "when": 1793736361959,
       "tag": "0427_ordinary_xavin",
       "breakpoints": true
+    },
+    {
+      "idx": 428,
+      "version": "7",
+      "when": 1793760611896,
+      "tag": "0428_medical_alex_power",
+      "breakpoints": true
     }
   ]
 }

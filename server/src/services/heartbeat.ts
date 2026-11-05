@@ -355,7 +355,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { conflict, HttpError, notFound } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -2872,7 +2872,10 @@ export function heartbeatService(
         });
 
         if (gate.dispatched) return gate;
-        if ("admissionBlockReason" in gate) throw conflict(gate.admissionBlockReason);
+        if ("admissionBlockReason" in gate) {
+          if (gate.admissionBlockCode) throw unprocessable(gate.admissionBlockReason, { code: gate.admissionBlockCode });
+          throw conflict(gate.admissionBlockReason);
+        }
         if (gate.cancellation.outcome === "cancelled") {
           applyRunDispatchPostCommitEffects(
             gate.cancellation.postCommitEffects,
