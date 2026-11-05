@@ -490,6 +490,9 @@ A new run that finds such a recently ended writer waits for the workspace. It do
 not fail setup. The wait uses the same one-hour holder cutoff as a quiet live
 writer, measured from the time the writer ended. After the cutoff, preparation
 fails with the unfinished-writer error and leaves the held files unchanged.
+This wait is also one parked retry, for example after a reassignment stops the
+writer. It is re-checked every minute while the ended writer's hold settles, is
+admitted once the hold releases, and stops parking at the same cutoff.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for

@@ -36,6 +36,10 @@ export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
 // Fallback re-check for a parked workspace wait. The holder ending wakes the
 // waiter directly; this only bounds a missed wake.
 export const WORKSPACE_BUSY_PARKED_RECHECK_MS = 5 * 60 * 1000;
+// Re-check for a wait behind an ended remote writer whose save or sandbox
+// release has not settled. Settling has no single completion point to wake
+// from, so the parked run re-checks on this cadence (one DB read, no new run).
+export const WORKSPACE_BUSY_SETTLING_RECHECK_MS = 60 * 1000;
 export const WORKSPACE_BUSY_WAIT_KEY = "workspaceBusyWait";
 
 /** What a workspace-busy retry is waiting behind, recorded at deferral. */
