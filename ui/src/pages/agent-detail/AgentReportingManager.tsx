@@ -2,6 +2,7 @@ import { Pencil, UserRound } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { ReportsToPicker } from "@/components/ReportsToPicker";
 import { AgentIdentityChipContent, agentIdentityChipClass } from "@/components/agents/AgentIdentityChip";
 import { queryKeys } from "@/lib/queryKeys";
@@ -31,13 +32,14 @@ export function AgentReportingManager({ agent }: { agent: Agent }) {
     queryKey: queryKeys.agents.list(agent.companyId),
     queryFn: () => agentsApi.list(agent.companyId),
   });
+  const directoryView = useQueryView(directory);
   const update = useMutation({
     mutationFn: (reportsTo: string | null) => agentsApi.update(agent.id, { reportsTo }, agent.companyId),
     onSuccess: () => client.invalidateQueries({ queryKey: ["agents"] }),
   });
   const agents = directory.data ?? [];
   const manager = agents.find((candidate) => candidate.id === agent.reportsTo);
-  const disabled = directory.isPending || directory.isError || update.isPending;
+  const disabled = !directory.data || directoryView.kind === "error" || update.isPending;
   return <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
     <span className="text-muted-foreground">Reports to:</span>
     <div className="flex items-center gap-1.5">
@@ -56,7 +58,7 @@ export function AgentReportingManager({ agent }: { agent: Agent }) {
         </button>}
       />
     </div>
-    {directory.isError ? <button type="button" className="self-start text-xs text-destructive underline" onClick={() => void directory.refetch()}>Could not load agents. Retry</button> : null}
-    {update.isError ? <p role="alert" className="text-xs text-destructive">{update.error instanceof Error ? update.error.message : "Could not change manager. Try again."}</p> : null}
+    {directoryView.kind === "error" ? <QueryErrorState error={directoryView.error} size="inline" action="load agents" onRetry={directoryView.retry} retrying={directoryView.isFetching} /> : null}
+    {update.error ? <QueryErrorState error={update.error} size="inline" action="change manager" /> : null}
   </div>;
 }

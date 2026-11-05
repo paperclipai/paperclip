@@ -23,6 +23,7 @@ async function mount(value = directory[0]) {
   client.setQueryData(queryKeys.agents.list("company"), directory);
   api.list.mockResolvedValue(directory);
   await act(() => root!.render(<QueryClientProvider client={client}><AgentReportingManager agent={value} /></QueryClientProvider>));
+  return client;
 }
 
 describe("Agent reporting manager", () => {
@@ -40,6 +41,15 @@ describe("Agent reporting manager", () => {
     await act(() => buttons.find(button => button.textContent?.startsWith("Morgan"))!.click());
     await flush();
     expect(api.update).toHaveBeenCalledWith("Alex", { reportsTo: "Morgan" }, "company");
+  });
+  it("keeps the cached manager and picker available after a transient directory failure", async () => {
+    const client = await mount({ ...directory[0], reportsTo: "Morgan" });
+    api.list.mockRejectedValue(new TypeError("Failed to fetch"));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.agents.list("company") }); });
+    await flush();
+    expect(host.querySelector("a")?.textContent).toBe("Morgan");
+    expect((host.querySelector('[aria-label="Change manager"]') as HTMLButtonElement).disabled).toBe(false);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
   it("links the current manager and reports failed changes without hiding them", async () => {
     api.update.mockRejectedValue(new Error("Could not save manager"));
