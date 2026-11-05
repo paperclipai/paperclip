@@ -142,7 +142,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     await expect(svc.create(f.companyId, { title: "Invalid", parentId: f.issueId })).rejects.toThrow(/cannot have new subtasks/);
     await expect(svc.createChild(f.issueId, { title: "Invalid" })).rejects.toThrow(/cannot have new subtasks/);
     await expect(svc.importIssues(f.companyId, [{
-      id: randomUUID(), ref: "imported", title: "Imported child", parentId: f.issueId,
+      id: randomUUID(), ref: "imported", title: "Imported child", parentId: f.issueId, providerOutputDisposition: "forbidden",
       projectId: null, projectWorkspaceId: null, description: null, assigneeAgentId: null,
       status: "backlog", priority: "medium", billingCode: null, assigneeAdapterOverrides: null,
       executionWorkspaceSettings: null, labelIds: [], monitorNotes: null, monitorScheduledBy: null,

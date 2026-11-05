@@ -73,7 +73,10 @@ export async function pushVoiceReplies(db: Db, options: {
       try {
         const credentials = await options.credentials(claim.endpoint, claim.session.credentialFingerprint);
         // Recheck authority after resolving credentials, immediately before egress.
-        await db.transaction(tx => options.store.authorizeSession(tx, candidate.companyId, candidate.id));
+        await db.transaction(async tx => {
+          const { session } = await options.store.authorizeSession(tx, candidate.companyId, candidate.id);
+          await options.store.authorizeProviderOutput(tx, session, claim.reply.publicationId);
+        });
         const receipt = await options.provider(credentials.apiKey!).sendCallMessage(claim.session.providerSessionId!, claim.text, "respond");
         messageId = receipt.messageId;
       } catch (error) {

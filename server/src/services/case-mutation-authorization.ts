@@ -4,6 +4,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { forbidden, notFound } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 import { assertActorCanReadCase, assertActorCanWriteCase, retainCaseAccessSource } from "./case-access.js";
 
 /** Must run in the case write transaction. The task -> run -> case order matches
@@ -16,8 +17,7 @@ async function authorizeCaseRunMutation(tx: Db, actor: AuthorizationActor, compa
       actor.agentId ? eq(heartbeatRuns.agentId, actor.agentId) : undefined,
     )).limit(1);
     if (!source || !actor.agentId) throw forbidden("Run binding unavailable");
-    const snapshot = source.contextSnapshot;
-    const issueId = source.nativeIssueId ?? source.issueId ?? snapshot?.issueId ?? snapshot?.taskId;
+    const issueId = boundRunIssueId(source);
     const [task] = typeof issueId === "string" && isUuidLike(issueId) ? await tx.select().from(issues).where(and(
       eq(issues.id, issueId), eq(issues.companyId, companyId),
     )).for("update") : [];

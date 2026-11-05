@@ -51,7 +51,7 @@ export type DispatchResolvedInteractionInput<T> = CancelStaleQueuedRunInput & {
 
 export type DispatchResolvedInteractionOutcome<T> =
   | { dispatched: true; resultPromise: Promise<T> }
-  | { dispatched: false; admissionBlockReason: string }
+  | { dispatched: false; admissionBlockReason: string; admissionBlockCode?: "task_provider_output_execution_unqualified" }
   | { dispatched: false; cancellation: CancelStaleQueuedRunOutcome };
 
 /** Semantic database operations; persistence rows and transaction handles stay inside the adapter. */

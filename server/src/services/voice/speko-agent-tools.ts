@@ -4,6 +4,7 @@ import { forbidden, HttpError } from "../../errors.js";
 import { authorizationService } from "../authorization.js";
 import { captureRunIdentity } from "../run-identity.js";
 import { boundRunIssueId } from "../run-task-binding.js";
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import { chatVoiceCallbacks, instanceUserRoles, companyMemberships } from "@paperclipai/db";
 import type { VoiceCaller } from "./voice-session-store.js";
 import { z } from "zod";
@@ -21,6 +22,7 @@ async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: s
   if (!runtimes.has(db) || !session.agentId || !session.runId || !session.issueId) throw forbidden("Speko tools require an active task run");
   const { run, context } = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId }, { readScope: "task_authorization" });
   if (boundRunIssueId(run) !== session.issueId || !run.responsibleUserId || session.identityContextId && session.identityContextId !== context?.id) throw forbidden("The accepted requester or task changed");
+  if (await taskForbidsProviderOutput(db, { companyId: session.companyId, issueId: session.issueId })) throw forbidden("This task forbids provider output, including phone callbacks");
   const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.companyId, session.companyId), eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "speko"), eq(chatEndpoints.assignedAgentId, session.agentId), eq(chatEndpoints.status, "active")));
   if (!endpoint) throw forbidden("This agent has no active Speko connection");
   const userId = run.responsibleUserId;

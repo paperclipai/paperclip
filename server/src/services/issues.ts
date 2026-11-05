@@ -1,4 +1,5 @@
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
+import { inheritTaskProviderOutputPolicy, inheritTaskProviderOutputPolicyFromRun, taskForbidsProviderOutput } from "./task-provider-output-policy.js";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
@@ -126,6 +127,7 @@ import {
   toolActionDeliveries,
   toolInvocations,
   issues,
+  taskProviderOutputPolicies,
   labels,
   projectWorkspaces,
   projects,
@@ -220,6 +222,7 @@ import {
   DEFAULT_INSERT_CHUNK_ROWS,
   insertRowsInChunks,
 } from "./batch-insert.js";
+import { assertImportedAttachmentStorageScope, normalizeImportedSourceTrust, retainImportedTaskOutputPolicies } from "./import-write-authorization.js";
 import type {
   ImportIssueRow,
   ImportIssueCommentRow,
@@ -10726,6 +10729,10 @@ export function issueService(db: Db) {
         await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.privacyParentIssueId) {
+          await inheritTaskProviderOutputPolicy(tx, { companyId, issueId: issue.id, sourceIssueId: issue.privacyParentIssueId });
+        }
+        await inheritTaskProviderOutputPolicyFromRun(tx, { companyId, issueId: issue.id, runId: actorRunId });
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
           await tx.insert(issueAccessGrants).values({
@@ -10818,6 +10825,9 @@ export function issueService(db: Db) {
       rows: ImportIssueRow[],
     ): Promise<void> => {
       if (rows.length === 0) return;
+      if (rows.some(row => row?.providerOutputDisposition !== "forbidden")) {
+        throw unprocessable("Imported tasks require a server-resolved forbidden output disposition");
+      }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
@@ -11011,6 +11021,9 @@ export function issueService(db: Db) {
 
         await notifyStatusCardIssueChange(tx, companyId);
         await insertRowsInChunks(tx, issues, issueRows);
+        await insertRowsInChunks(tx, taskProviderOutputPolicies, issueRows.map(row => ({
+          companyId, issueId: row.id, disposition: "forbidden",
+        })));
         await insertRowsInChunks(tx, issueLabels, labelRows);
       });
     },
@@ -11023,9 +11036,11 @@ export function issueService(db: Db) {
       rows: ImportIssueCommentRow[],
     ): Promise<void> => {
       if (rows.length === 0) return;
+      rows = rows.map((row) => ({ ...row, sourceTrust: normalizeImportedSourceTrust(row.sourceTrust) }));
       const censorUsernameInLogs = (await instanceSettings.getGeneral())
         .censorUsernameInLogs;
       await db.transaction(async (tx) => {
+        await retainImportedTaskOutputPolicies(tx, rows);
         for (const companyId of new Set(rows.map(row => row.companyId))) await notifyStatusCardIssueChange(tx, companyId);
         const commentRows = rows.map((row) => {
           const createdAt = row.createdAt ? new Date(row.createdAt) : null;
@@ -11042,7 +11057,7 @@ export function issueService(db: Db) {
             }),
             presentation: row.presentation ?? null,
             metadata: row.metadata ?? null,
-            sourceTrust: null,
+            sourceTrust: row.sourceTrust ?? null,
             createdAt:
               createdAt && !Number.isNaN(createdAt.getTime())
                 ? createdAt
@@ -11095,7 +11110,9 @@ export function issueService(db: Db) {
       rows: ImportIssueAttachmentRow[],
     ): Promise<void> => {
       if (rows.length === 0) return;
+      assertImportedAttachmentStorageScope(rows);
       await db.transaction(async (tx) => {
+        await retainImportedTaskOutputPolicies(tx, rows);
         const assetRows: Array<Record<string, unknown>> = [];
         const attachmentRows: Array<Record<string, unknown>> = [];
         for (const row of rows) {
@@ -12087,6 +12104,8 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        const [owner] = await tx.select({ companyId: issues.companyId }).from(issues)
+          .where(eq(issues.id, id)).for("update");
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)
@@ -12100,7 +12119,6 @@ export function issueService(db: Db) {
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
-          const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {
             await notifyIssueAttentionRetentionWork(tx, { companyId: owner.companyId, issueId: id });
             await notifyExternalConversationSettlement(tx, { companyId: owner.companyId });
@@ -12111,6 +12129,10 @@ export function issueService(db: Db) {
                 eq(externalObjectMentions.sourceIssueId, id),
                 isNotNull(externalObjectMentions.objectId),
               ));
+            if (mentionedObjects.length > 0 && await taskForbidsProviderOutput(tx,
+              { companyId: owner.companyId, issueId: id }, { lock: "share", noWait: false })) {
+              throw conflict("Issue cannot be deleted while shared external objects retain its restricted output provenance.");
+            }
             for (const mention of mentionedObjects) await notifyExternalObjectRefresh(tx, owner.companyId, mention.objectId!);
             await notifyApprovalWork(tx, owner.companyId);
             await notifyStatusCardIssueChange(tx, owner.companyId);
@@ -13134,6 +13156,7 @@ export function issueService(db: Db) {
         actor.runId,
       );
       const createdByRunId = createdByRun?.id ?? null;
+      await inheritTaskProviderOutputPolicyFromRun(dbOrTx, { companyId: issue.companyId, issueId, runId: createdByRunId });
       if (
         createdByRunId &&
         options?.authorizationReason === CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON
@@ -13736,6 +13759,7 @@ export function issueService(db: Db) {
                 .then((rows) => rows[0] ?? null)
             : null;
         const registeredRunId = registeredRun?.id ?? null;
+        await inheritTaskProviderOutputPolicyFromRun(tx, { companyId: issue.companyId, issueId: issue.id, runId: registeredRunId });
         const parentComment = input.issueCommentId
           ? await tx
               .select({

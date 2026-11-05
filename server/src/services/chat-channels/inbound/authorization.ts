@@ -28,6 +28,7 @@ import {
 
 import {
   HttpError,
+  conflict,
   forbidden,
 } from "../../../errors.js";
 
@@ -176,6 +177,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
     tx: DbOrTransaction,
     endpoint: EndpointRow,
     principalId: string,
+    nonblocking = false,
   ): Promise<{
     allowed: boolean;
     linkedDenied: boolean;
@@ -198,9 +200,18 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
     // Taking it at the final task mutation boundary prevents a newly confirmed
     // identity from racing the authorization snapshot. Row locks below also
     // serialize revocation and membership changes that do not use this key.
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${endpoint.companyId}:${principalId}`}, 0))`,
-    );
+    if (nonblocking) {
+      const identity = await tx.execute(
+        sql`select pg_try_advisory_xact_lock(hashtextextended(${`chat-identity:${endpoint.companyId}:${principalId}`}, 0)) as locked`,
+      );
+      if (!identity[0]?.locked) {
+        throw conflict("Chat participant authorization is busy", { code: "chat_participant_authorization_busy" });
+      }
+    } else {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${endpoint.companyId}:${principalId}`}, 0))`,
+      );
+    }
     const link = await tx
       .select({
         status: chatIdentityLinks.status,
@@ -214,7 +225,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
           eq(chatIdentityLinks.principalId, principalId),
         ),
       )
-      .for("update")
+      .for("update", nonblocking ? { noWait: true } : undefined)
       .then((rows) => rows[0] ?? null);
     if (link?.status === "linked") {
       if (!link.userId) {
@@ -233,7 +244,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
             eq(companyMemberships.principalId, link.userId),
           ),
         )
-        .for("update")
+        .for("update", nonblocking ? { noWait: true } : undefined)
         .then((rows) => rows[0] ?? null);
       const allowed =
         membership?.status === "active" &&
@@ -263,7 +274,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
           eq(companyMemberships.principalId, endpoint.sponsorUserId),
         ),
       )
-      .for("update")
+      .for("update", nonblocking ? { noWait: true } : undefined)
       .then((rows) => rows[0] ?? null);
     return {
       allowed:
@@ -272,6 +283,17 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       linkedDenied: false,
       userId: null,
     };
+  }
+
+  async function lockThreadParticipantAuthorization(
+    tx: DbOrTransaction,
+    endpoint: EndpointRow,
+    principalId: string,
+  ) {
+    if (endpoint.provider !== "slack" && endpoint.provider !== "discord") {
+      throw new Error("Thread participant authorization requires a native Slack or Discord thread");
+    }
+    return lockCurrentPrincipalAuthorization(tx, endpoint, principalId, true);
   }
 
   async function requireCurrentExternalActionAuthorization(
@@ -425,5 +447,5 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       .returning();
     return resource;
   }
-  return { findAuthorizedIdentityLink, ensurePrincipal, sponsorAllowsGuest, lockCurrentPrincipalAuthorization, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, ensureResource };
+  return { findAuthorizedIdentityLink, ensurePrincipal, sponsorAllowsGuest, lockCurrentPrincipalAuthorization, lockThreadParticipantAuthorization, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, ensureResource };
 }

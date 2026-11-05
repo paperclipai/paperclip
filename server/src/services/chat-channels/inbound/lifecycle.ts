@@ -44,6 +44,7 @@ import {
   chatEndpoints,
   chatExternalPrincipals,
   chatMessageLinks,
+  issues,
 } from "@paperclipai/db";
 import type {
   ChatProvider,
@@ -66,6 +67,7 @@ import type {
   MessageDeletedEvent,
 } from "chat";
 import { normalizedDeliveryThreadId, lifecycleRuntimeFence } from "./delivery-ledger.js";
+import { chatTrustLaneOfIssue } from "./trust-lanes.js";
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
 type MessageLifecycleOptions = {
   DELIVERY_PROCESSING_STALE_MS: number;
@@ -73,7 +75,7 @@ type MessageLifecycleOptions = {
   ORPHAN_FOLLOW_UP_MAX_ATTEMPTS: number;
   INGRESS_REORDER_WINDOW_MS: Partial<Record<ChatProvider, number>>;
   issuesSvc: ReturnType<typeof issueService>;
-  lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; linkedDenied: boolean; userId?: string | null }>;
+  lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; linkedDenied: boolean; userId: string | null }>;
   nonDirectDestinationAllowed: (endpoint: EndpointRow, resource: typeof chatEndpointResources.$inferSelect | null | undefined) => boolean;
   redactError: (error: unknown) => string;
   runtimeCallbackEndpoint: (tx: DbTransaction, endpointId: string, context: LifecycleRuntimeFence, statuses: EndpointRow["status"][]) => Promise<EndpointRow | null>;
@@ -840,7 +842,16 @@ export function createChatMessageLifecycle(db: Db, options: MessageLifecycleOpti
                   lifecyclePrincipal.id,
                 )
               : null;
-          const authorizedPrincipalId = authorization?.allowed
+          const guestEditsVerifiedTask = authorization?.allowed === true &&
+            authorization.userId === null &&
+            (currentEndpoint.provider === "slack" || currentEndpoint.provider === "discord") &&
+            currentConversation !== null && !currentConversation.isDirectMessage &&
+            (await tx
+              .select({ sourceTrust: issues.sourceTrust })
+              .from(issues)
+              .where(and(eq(issues.companyId, currentEndpoint.companyId), eq(issues.id, linkedTarget.issueId)))
+              .then((rows) => rows[0] ? chatTrustLaneOfIssue(rows[0]) === "verified" : true));
+          const authorizedPrincipalId = authorization?.allowed && !guestEditsVerifiedTask
             ? (lifecyclePrincipal?.id ?? null)
             : null;
           if (!authorizedPrincipalId) {

@@ -88,7 +88,7 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
       issueId = created.id;
     } else {
       issueId = randomUUID();
-      await issueService(db).importIssues(f.companyId, [{ id: issueId, ref: "inherited", title: "Import inherited storage", projectId: f.input.projectId,
+      await issueService(db).importIssues(f.companyId, [{ id: issueId, ref: "inherited", title: "Import inherited storage", projectId: f.input.projectId, providerOutputDisposition: "forbidden",
         projectWorkspaceId: null, description: null, assigneeAgentId: f.input.agentId, status: "todo", priority: "medium", billingCode: null,
         assigneeAdapterOverrides: null, executionWorkspaceSettings: null, labelIds: [], monitorNotes: null, monitorScheduledBy: null }]);
     }

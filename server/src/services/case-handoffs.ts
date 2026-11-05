@@ -10,7 +10,8 @@ import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { assertActorCanReadCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
+import { assertActorCanReadCase, assertActorCanWriteCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
@@ -362,7 +363,7 @@ export function caseHandoffService(db: Db) {
         if (actor.type === "agent" && actor.runId) {
           [source] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, actor.agentId!))).limit(1);
           if (!source || source.status !== "running") throw conflict("Source run no longer has execution authority");
-          const sourceId = source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId;
+          const sourceId = boundRunIssueId(source);
           if (typeof sourceId === "string") [sourceIssue] = await tx.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, companyId))).for("update");
           const authorizedSource = await assertAgentRunWriteAllowed(tx, companyId, { agentId: actor.agentId, runId: source.id });
           if (!authorizedSource || authorizedSource.status !== "running") throw conflict("Source run no longer has execution authority");
@@ -382,6 +383,7 @@ export function caseHandoffService(db: Db) {
           if (!sourceIssue || sourceIssue.assigneeAgentId !== actor.agentId || sourceIssue.assigneeUserId || sourceIssue.executionRunId !== source.id) throw conflict("Source run no longer owns its task");
           if (sourceIssue && sourceIssue.workMode !== "standard") throw unprocessable("Case handoff is available in standard work mode");
         }
+        await assertActorCanWriteCase(tx, actor, { companyId });
         if (input.to === "done") return acceptTerminal(tx, companyId, actor, input, source, sourceIssue, fingerprint, publications);
         let caseRow = "id" in input.case ? await visible(actor, input.case.id, tx) : null;
         const priorWorkIssueId = caseRow?.workIssueId ?? null;

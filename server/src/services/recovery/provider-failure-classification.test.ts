@@ -10,8 +10,8 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
-  it("does not automatically replay a project access denial", () => {
-    expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
+  it.each(["project_access_denied", "task_provider_output_execution_unqualified"])("does not automatically replay %s", errorCode => {
+    expect(classifyContinuationFailure({ errorCode, resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
   it("waits for model configuration changes instead of retrying a typed native model rejection", () => {

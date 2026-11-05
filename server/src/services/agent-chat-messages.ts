@@ -14,6 +14,7 @@ import { resolveTaskWatchdogMutationScope } from "./task-watchdog-scope.js";
 import { readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { nativeRunKeyScope } from "./native-runtime/native-skill-test-scope.js";
 import { crossIssueInfluenceLimitError, observeCrossIssueInfluence } from "./cross-issue-influence-limit.js";
+import { inheritTaskProviderOutputPolicy } from "./task-provider-output-policy.js";
 
 type Actor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null;
   keyScope?: AgentApiKeyScope | null; onBehalfOfUserId?: string | null;
@@ -162,6 +163,7 @@ export async function sendAgentChatMessage(
         if (options.receiptOnly) return null;
         throw conflict("Chat message retry key was already used with different content");
       }
+      await inheritTaskProviderOutputPolicy(tx, { companyId: actor.companyId, issueId: conversation.id, sourceIssueId: source.id });
       return receipt(prior.id, true);
     }
     if (options.receiptOnly) return null;

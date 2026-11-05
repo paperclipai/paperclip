@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { issues, type Db } from "@paperclipai/db";
 import {
@@ -15,6 +15,7 @@ import {
   getAccessibleResource,
 } from "./authz.js";
 import { browserUseService } from "../services/browser-use.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 
 const issueIdSchema = z.string().uuid();
 
@@ -32,7 +33,7 @@ export function browserUseRoutes(db: Db, service = browserUseService(db)) {
     const [issue] = await db
       .select({ companyId: issues.companyId })
       .from(issues)
-      .where(eq(issues.id, req.params.issueId))
+      .where(and(eq(issues.id, req.params.issueId), await issueReadSqlCondition(db, req.actor)))
       .limit(1);
     if (!(await getAccessibleResource(req, res, issue, "Task not found")))
       return;

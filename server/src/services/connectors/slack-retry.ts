@@ -1,6 +1,7 @@
 import { notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { chatActions, toolInvocations, type Db } from "@paperclipai/db";
+import { taskForbidsProviderOutput } from "../task-provider-output-policy.js";
 import {
   resolveSlackTaskAuthority,
   type SlackTaskBinding,
@@ -16,6 +17,7 @@ export async function claimSlackRateLimitRetry(
 ) {
   const authority = await resolveSlackTaskAuthority(db, binding);
   return db.transaction(async (tx) => {
+    if (await taskForbidsProviderOutput(tx, binding)) return false;
     const [invocation] = await tx
       .select()
       .from(toolInvocations)

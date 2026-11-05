@@ -958,6 +958,35 @@ executor; other migrations remain transactional
 per file. Apply these migrations through `pnpm db:migrate` using a direct
 connection, before enabling the new server and UI.
 
+## Draft chat task output provenance
+
+Migration `0432` adds the server-only `task_provider_output_policies` table.
+Its composite company/task foreign key follows the task's lifetime. The retention
+service can strengthen `ordinary` to `forbidden`, but never downgrade a denial;
+issue metadata updates do not edit this record. It is not an API-editable consent
+field, and has no client DTO or UI setting. The isolated verified admission and
+issue-creation inheritance paths write it in the task transaction before commit.
+
+The migration also backfills `forbidden` for each distinct company/task with a
+retained chat binding, including completed and removed-endpoint generations.
+Legacy bindings have no server-owned ordinary classification. Their existing
+quarantine must survive later deletion of the last binding or endpoint cascade.
+A transaction-held `SHARE` lock on `chat_conversations` orders concurrent source
+mutations with the backfill; reads remain available. This is a one-time scan of
+retained bindings, not recurring startup work. Apply the migration transactionally
+before starting the new server; do not keep an old writer running after migration.
+
+This cannot reconstruct bindings lost before migration or all previously copied
+content. The initial actual company export/import diagnostic lost the disposition
+while retaining task descriptions, comments and documents. Editable bundle metadata
+cannot establish an ordinary output grant. The draft portability preview/apply owner
+now rejects task selections before mutation while complete native-only quarantine
+is unqualified; it does not fix the separate bulk writers or historical copies.
+Import/copy provenance, complete legacy/derived reconstruction and output-claim
+ordering remain release blockers.
+Do not enable verified execution based on this migration alone. See
+[chat trust lanes](chat-trust-lanes.md).
+
 ## Migration snapshots
 
 `drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.

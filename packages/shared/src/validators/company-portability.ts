@@ -7,6 +7,7 @@ import {
   issueCommentPresentationSchema,
 } from "./issue.js";
 import { routineVariableSchema } from "./routine.js";
+import { sourceTrustMetadataSchema } from "./trust-policy.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -163,6 +164,7 @@ export const portabilityIssueCommentManifestEntrySchema = z.object({
   authorUserId: z.string().nullable(),
   presentation: issueCommentPresentationSchema.nullable(),
   metadata: issueCommentMetadataSchema.nullable(),
+  sourceTrust: sourceTrustMetadataSchema.nullable().optional(),
   createdAt: z.string().datetime().nullable(),
 });
 
@@ -171,6 +173,7 @@ export const portabilityIssueDocumentManifestEntrySchema = z.object({
   title: z.string().nullable(),
   format: z.string().min(1),
   path: z.string().min(1),
+  sourceTrust: sourceTrustMetadataSchema.nullable().optional(),
 });
 
 export const portabilityIssueWorkProductManifestEntrySchema = z.object({
@@ -185,6 +188,7 @@ export const portabilityIssueWorkProductManifestEntrySchema = z.object({
   healthStatus: z.string().min(1),
   summary: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  sourceTrust: sourceTrustMetadataSchema.nullable().optional(),
 });
 
 export const portabilityIssueMonitorManifestEntrySchema = z.object({

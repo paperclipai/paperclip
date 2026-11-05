@@ -753,6 +753,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                 });
                 return;
               }
+              if (authorizationClaim.kind === "internal_control") return;
               // The durable claim above is the authorization linearization
               // point. Provider I/O runs without a database transaction or
               // row lock. The renewable lease preserves credential/runtime

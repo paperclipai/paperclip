@@ -1,4 +1,5 @@
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
+import { taskForbidsProviderOutput } from "../../task-provider-output-policy.js";
 
 import type { EndpointRow, DbTransaction, DbOrTransaction, LifecycleRuntimeFence } from "../runtime-types.js";
 import { createChatFailedRunRetry } from "../failed-run-retry.js";
@@ -45,6 +46,7 @@ type PublicationAuthorizationOptions = {
   fetchImpl: typeof globalThis.fetch;
   githubCurrentOmissionPreparedText: ReturnType<typeof createGitHubPublicationPolicy>["githubCurrentOmissionPreparedText"];
   hasCommittedTaskControlCompletion: ReturnType<typeof createChatPublicationTaskControl>["hasCommittedTaskControlCompletion"];
+  commitTaskControlCompletion: ReturnType<typeof createChatPublicationTaskControl>["commitTaskControlCompletion"];
   lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; userId?: string | null }>;
   nonDirectDestinationAllowed: (endpoint: EndpointRow, resource: typeof chatEndpointResources.$inferSelect | null | undefined) => boolean;
   resolveCredentials: (endpoint: EndpointRow, tx?: DbOrTransaction) => Promise<Record<string, string>>;
@@ -52,7 +54,7 @@ type PublicationAuthorizationOptions = {
   FailedChatRetryPublicationReadError: ReturnType<typeof createChatFailedRunRetry>["FailedChatRetryPublicationReadError"];
 };
 export function createChatPublicationAuthorization(db: Db, options: PublicationAuthorizationOptions) {
-  const { authorizeInboundWakePublication, authorizeRetainedChatSourcePublication, fetchImpl, githubCurrentOmissionPreparedText, hasCommittedTaskControlCompletion, lockCurrentPrincipalAuthorization, nonDirectDestinationAllowed, resolveCredentials, runtimeCallbackEndpoint, FailedChatRetryPublicationReadError } = options;
+  const { authorizeInboundWakePublication, authorizeRetainedChatSourcePublication, fetchImpl, githubCurrentOmissionPreparedText, hasCommittedTaskControlCompletion, commitTaskControlCompletion, lockCurrentPrincipalAuthorization, nonDirectDestinationAllowed, resolveCredentials, runtimeCallbackEndpoint, FailedChatRetryPublicationReadError } = options;
 
 
   async function claimPublicationTransportAuthorization(input: {
@@ -60,7 +62,8 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
     endpoint: EndpointRow;
     publication: typeof chatPublications.$inferSelect;
     runtimeContext: LifecycleRuntimeFence;
-  }): Promise<{
+  }): Promise<{ kind: "internal_control" } | {
+    kind: "transport";
     authorizationActionId: string | null;
     conversation: ConversationRow;
     endpoint: EndpointRow;
@@ -81,9 +84,11 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!currentPublication) return null;
+      const isTaskControl = input.publication.idempotencyKey.startsWith("control:");
+      const internalControl = isTaskControl && await taskForbidsProviderOutput(tx, input.publication);
       try {
         if (
-          !(await authorizeRetainedChatSourcePublication(tx, input.publication))
+          !internalControl && !(await authorizeRetainedChatSourcePublication(tx, input.publication))
         )
           return null;
       } catch (error) {
@@ -165,8 +170,6 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
               .limit(1)
               .then((rows) => rows.length > 0)
           : false;
-      const isTaskControl =
-        input.publication.idempotencyKey.startsWith("control:");
       const providerVisibleCompletion =
         conversation?.state === "completed" &&
         !isExplicitOperatorPublication(input.publication) &&
@@ -211,6 +214,26 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
         !destinationAllowed
       ) {
         return null;
+      }
+      if (internalControl) {
+        if (!authorizationAction?.principalId || conversation.issueId !== input.publication.issueId) return null;
+        const authorization = await lockCurrentPrincipalAuthorization(tx, endpoint, authorizationAction.principalId);
+        if (!authorization.allowed || !authorization.userId) return null;
+        const committedAt = new Date();
+        await tx.update(chatActions).set({
+          status: "processed",
+          result: { code: "task_control_internal_completion", authorizedUserId: authorization.userId },
+          updatedAt: committedAt,
+        }).where(eq(chatActions.id, authorizationAction.id));
+        await notifyChatPublicationWork(tx, input.publication);
+        await tx.update(chatPublications).set({
+          state: "cancelled", nextAttemptAt: null,
+          redactedError: "Provider output is forbidden; task control completed internally",
+          updatedAt: committedAt,
+        }).where(eq(chatPublications.id, input.publication.id));
+        await commitTaskControlCompletion(tx, input.publication, committedAt);
+        await input.credentialLease.assertOwned(tx);
+        return { kind: "internal_control" as const };
       }
       let authorizationActionId: string | null = null;
       if (endpoint.provider === "slack") {
@@ -286,13 +309,16 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
         endpoint,
       );
       if (preparedText === false) return null;
-      if (authorizationAction?.principalId) {
-        const authorization = await lockCurrentPrincipalAuthorization(
-          tx,
-          endpoint,
-          authorizationAction.principalId,
-        );
-        if (!authorization.allowed) return null;
+      const authorization = authorizationAction?.principalId
+        ? await lockCurrentPrincipalAuthorization(tx, endpoint, authorizationAction.principalId)
+        : null;
+      if (authorization && !authorization.allowed) return null;
+      try {
+        if (await taskForbidsProviderOutput(tx, input.publication, { lock: "share" })) return null;
+      } catch {
+        throw new FailedChatRetryPublicationReadError();
+      }
+      if (authorizationAction && authorization) {
         const [claimedAuthorization] = await tx
           .update(chatActions)
           .set({
@@ -333,6 +359,7 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
       // remains held so reconnect and reach mutations linearize after this
       // committed authorization snapshot and transport attempt.
       return {
+        kind: "transport" as const,
         authorizationActionId,
         conversation,
         endpoint,

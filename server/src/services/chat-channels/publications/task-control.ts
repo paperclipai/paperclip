@@ -16,6 +16,7 @@ import {
 import type { Db } from "@paperclipai/db";
 
 import {
+  chatActions,
   chatConversations,
   chatPublications,
   issues,
@@ -75,7 +76,22 @@ export function createChatPublicationTaskControl(db: Db) {
       .where(
         and(
           eq(chatPublications.conversationId, conversationId),
-          eq(chatPublications.state, "published"),
+          or(
+            eq(chatPublications.state, "published"),
+            and(
+              eq(chatPublications.state, "cancelled"),
+              sql`exists (select 1 from ${chatActions} where
+                ${chatActions.companyId} = ${chatPublications.companyId}
+                and ${chatActions.endpointId} = ${chatPublications.endpointId}
+                and ${chatActions.conversationId} = ${chatPublications.conversationId}
+                and ${chatActions.kind} = 'task_control_authorization'
+                and ${chatActions.principalId} is not null
+                and ${chatActions.payload}->>'publicationId' = ${chatPublications.id}::text
+                and ${chatActions.providerActionId} = 'task-control-authorization:' || ${chatPublications.id}::text
+                and ${chatActions.status} = 'processed'
+                and ${chatActions.result}->>'code' = 'task_control_internal_completion')`,
+            ),
+          ),
           or(
             like(chatPublications.idempotencyKey, "control:new:%"),
             like(chatPublications.idempotencyKey, "control:close:%"),
@@ -87,7 +103,7 @@ export function createChatPublicationTaskControl(db: Db) {
   }
 
   async function commitTaskControlCompletion(
-    tx: Db,
+    tx: DbOrTransaction,
     publication: Pick<
       typeof chatPublications.$inferSelect,
       | "companyId"
@@ -112,10 +128,9 @@ export function createChatPublicationTaskControl(db: Db) {
           inArray(chatConversations.state, ["active", "waiting"]),
         ),
       );
-    // The provider-visible completion is the external boundary. Anything
-    // enqueued later for this old generation stays internal even if its run
-    // finishes after /new or /close. A racing insert that commits after this
-    // transaction is rejected by the completed-conversation send guard.
+    // Completion may be a provider receipt or an authorized internal control.
+    // Later output for this generation stays internal in either case. A racing
+    // insert is rejected by the completed-conversation send guard.
     await notifyChatPublicationWork(tx);
     await notifyChatResponseAvailability(tx, publication);
     await tx

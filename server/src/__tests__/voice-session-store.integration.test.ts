@@ -1,3 +1,5 @@
+import { retainTaskProviderOutputPolicy } from "../services/task-provider-output-policy.js";
+import { taskProviderOutputPolicies } from "@paperclipai/db";
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
 import { voiceCallReports } from "../services/voice/voice-call-reports.js";
 import { subscribeDatabaseWork } from "@paperclipai/db";
@@ -62,6 +64,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: callerId, status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Existing agent", role: "operator", status: "idle", adapterType: "paperclip_runner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Existing task", assigneeAgentId: agentId, status: "in_progress" });
+    await retainTaskProviderOutputPolicy(db, { companyId, issueId, disposition: "ordinary" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `chat:speko:${endpointId}`, name: "Speko", type: "chat", status: "active" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Speko", uid: endpointId, connectionPurpose: "channel", transport: "voice", config: { provider: "speko" }, status: "active", enabled: true });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "speko", publicId: randomUUID(), assignedAgentId: agentId, status: "active", setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState });
@@ -2180,6 +2183,301 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const gatewaySession = await gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId, issueId: f.issueId });
     return { ...f, runId, gateway, gatewaySession };
   }
+  describe("live voice output confinement", () => {
+    async function restrict(f: { companyId: string; issueId: string }, policy: "forbidden" | "missing") {
+      if (policy === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issueId));
+      else await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    }
+
+    for (const policy of ["forbidden", "missing"] as const) {
+      it(`denies fresh ${policy} requests without accepting work`, async () => {
+        const f = await fixture();
+        await restrict(f, policy);
+        await expect(f.store.runTool(f.toolInput("submit_request", { text: "Private instructions" }))).rejects.toMatchObject({ status: 403 });
+        expect(f.accept).not.toHaveBeenCalled();
+        expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId))).toEqual([]);
+        expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId))).toEqual([]);
+      });
+
+      it(`denies fresh ${policy} polling without consuming replies or exposing work status`, async () => {
+        const f = await fixture(), publication = await f.publication();
+        await restrict(f, policy);
+        await expect(f.store.runTool(f.toolInput("get_updates", { cursor: 0 }))).rejects.toMatchObject({ status: 403 });
+        expect(await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, publication.id))).toEqual([]);
+        expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId))).toEqual([]);
+      });
+
+      for (const receipt of ["request", "status", "answer"] as const) {
+        it(`denies retained ${receipt} response under ${policy} policy after restart`, async () => {
+          const f = await fixture();
+          if (receipt === "answer") await f.publication();
+          const input = receipt === "request" ? f.toolInput("submit_request", { text: "Ordinary request" }) : f.toolInput("get_updates", { cursor: 0 });
+          const response = await f.store.runTool(input);
+          expect(response.status).toBe(receipt === "request" ? "accepted" : receipt === "answer" ? "updates" : "pending");
+          const saved = await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId));
+          await restrict(f, policy);
+          const restarted = voiceSessionStore(db, { allowLocalBoard: false });
+          await expect(restarted.runTool(input)).rejects.toMatchObject({ status: 403 });
+          expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId))).toEqual(saved);
+        });
+      }
+
+      it(`denies explicit repeat under ${policy} policy without changing delivery evidence`, async () => {
+        const f = await fixture(); await f.publication();
+        expect(await f.store.runTool(f.toolInput("get_updates", { cursor: 0 }))).toMatchObject({ status: "updates" });
+        const replies = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.sessionId));
+        await restrict(f, policy);
+        await expect(f.store.runTool(f.toolInput("get_updates", { cursor: 1, repeat: true }))).rejects.toMatchObject({ status: 403 });
+        expect(await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.sessionId))).toEqual(replies);
+      });
+
+      it(`denies ${policy} notifications without collecting missed replies`, async () => {
+        const f = await fixture(); await f.publication();
+        await restrict(f, policy);
+        await expect(f.store.notification(f.companyId, f.sessionId, f.callerId)).rejects.toMatchObject({ status: 403 });
+        expect(await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.sessionId))).toEqual([]);
+      });
+
+      it(`does not enqueue ${policy} publication output`, async () => {
+        const f = await fixture(), publication = await f.publication();
+        await restrict(f, policy);
+        await f.store.enqueuePublication(f.companyId, publication.id);
+        expect(await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.sessionId))).toEqual([]);
+      });
+
+      it(`denies queued ${policy} phone speech and leaves no retry deadline`, async () => {
+        const f = await pushFixture();
+        await restrict(f, policy);
+        await f.push(); await f.push();
+        expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+        const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.session.id));
+        expect(reply.deliveredAt).toBeNull();
+        expect(await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId))).toEqual([]);
+        const schedule = voiceReplySchedule(db, { store: f.store, push: vi.fn() });
+        const { rows } = await schedule.load({ kind: "session", id: f.session.id });
+        expect(rows).toHaveLength(1);
+        expect(await schedule.check(rows[0])).toBeNull();
+      });
+
+      it(`rechecks ${policy} policy after credentials before phone speech`, async () => {
+        const f = await pushFixture();
+        f.credentials.mockImplementationOnce(async () => {
+          await restrict(f, policy);
+          return { apiKey: "server-only-key", agentId: "agent_test" };
+        });
+        await f.push();
+        expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+        const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+        expect(action).toMatchObject({ status: "failed", result: { errorCode: "voice_authority_unavailable" } });
+        expect(action.result).not.toHaveProperty("retryAt");
+        const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.session.id));
+        expect(reply.deliveredAt).toBeNull();
+        await f.push();
+        expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      });
+    }
+
+    it.each(["forbidden", "missing"] as const)("denies %s question resolution and retained question response replay", async policy => {
+      const f = await questionFixture();
+      expect(await f.store.runTool(f.toolInput("get_updates", { cursor: 0 }))).toMatchObject({ updates: [{ question: { interactionId: f.id } }] });
+      await restrict(f, policy);
+      await expect(f.store.runTool(f.answer)).rejects.toMatchObject({ status: 403 });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.id)))[0]).toMatchObject({ status: "pending" });
+      expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, f.id))).toEqual([]);
+      const ordinary = await questionFixture();
+      await ordinary.store.runTool(ordinary.toolInput("get_updates", { cursor: 0 }));
+      expect(await ordinary.store.runTool(ordinary.answer)).toMatchObject({ status: "answered" });
+      await restrict(ordinary, policy);
+      const restarted = voiceSessionStore(db, { allowLocalBoard: false });
+      await expect(restarted.runTool(ordinary.answer)).rejects.toMatchObject({ status: 403 });
+      expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, ordinary.id))).toHaveLength(1);
+    });
+
+    it.each(["forbidden", "missing"] as const)("rolls back a new response restricted to %s during acceptance", async policy => {
+      const f = await fixture();
+      f.accept.mockImplementationOnce(async (...args) => {
+        const id = await f.store.stageDelivery(...args);
+        await restrict(f, policy);
+        return id;
+      });
+      await expect(f.store.runTool(f.toolInput("submit_request", { text: "Ordinary at admission" }))).rejects.toMatchObject({ status: 403 });
+      expect(f.accept).toHaveBeenCalledOnce();
+      expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId))).toEqual([]);
+      expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId))).toEqual([]);
+    });
+
+    it.each(["forbidden", "missing"] as const)("does not reopen a due phone retry under %s policy after restart", async policy => {
+      const f = await pushFixture();
+      f.transport.sendCallMessage.mockRejectedValueOnce(new SpekoProviderError("rate_limited", false, 429));
+      await f.push(); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(action.status).toBe("retry");
+      await db.update(chatActions).set({ result: { retryAt: 0 } }).where(eq(chatActions.id, action.id));
+      await restrict(f, policy);
+      const service = voiceSessionService(db, { allowLocalBoard: false, credentials: f.credentials, provider: () => f.transport, onQuestionAnswered: vi.fn() });
+      await service.pushReplies(25, f.companyId, f.endpointId);
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0]).toMatchObject({ status: "retry", result: { retryAt: 0 } });
+      const schedule = voiceReplySchedule(db, { store: f.store, push: vi.fn() });
+      const { rows } = await schedule.load({ kind: "session", id: f.session.id });
+      expect(await schedule.check(rows[0])).toBeNull();
+    });
+
+    it("stops an ordered phone answer before its suffix when policy is strengthened after the first accepted part", async () => {
+      const f = await pushFixture();
+      await db.update(chatPublications).set({ payload: { text: "answer ".repeat(5000) } }).where(eq(chatPublications.id, f.publication.id));
+      f.transport.sendCallMessage.mockImplementationOnce(async () => {
+        await restrict(f, "forbidden");
+        return { messageId: "ordinary-prefix" };
+      });
+      await f.push(); await f.push();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(action).toMatchObject({ status: "completed", payload: { partIndex: 0, partCount: 3 }, result: { messageId: "ordinary-prefix" } });
+      const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.session.id));
+      expect(reply.deliveredAt).toBeNull();
+    });
+
+    it("denies a publication rebound during credentials before phone transport", async () => {
+      const f = await pushFixture(), otherIssueId = randomUUID();
+      await db.insert(issues).values({ id: otherIssueId, companyId: f.companyId, title: "Other ordinary task", status: "in_progress", assigneeAgentId: f.agentId });
+      await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: otherIssueId, disposition: "ordinary" });
+      f.credentials.mockImplementationOnce(async () => {
+        await db.update(chatPublications).set({ issueId: otherIssueId }).where(eq(chatPublications.id, f.publication.id));
+        return { apiKey: "server-only-key", agentId: "agent_test" };
+      });
+      await f.push();
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(action.status).toBe("failed");
+      expect((await db.select().from(chatPublications).where(eq(chatPublications.id, f.publication.id)))[0].issueId).toBe(otherIssueId);
+    });
+
+    it.each(["forbidden", "missing"] as const)("confines signed guest call output after %s restriction without repairing provenance", async policy => {
+      const f = await inboundFixture(true), toolId = randomUUID();
+      expect(await f.tool("submit_request", { text: "Public inquiry" }, toolId)).toMatchObject({ status: "accepted", authorization: "guest_intake" });
+      const issueId = f.call.intakeIssueId!;
+      expect((await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, issueId)))[0]).toMatchObject({ companyId: f.companyId, disposition: "ordinary" });
+      await restrict({ companyId: f.companyId, issueId }, policy);
+      await expect(f.tool("submit_request", { text: "Public inquiry" }, toolId)).rejects.toMatchObject({ status: 403 });
+      await expect(f.tool("get_updates", { cursor: 0 })).rejects.toMatchObject({ status: 403 });
+      const [call] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+      const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+      const envelope = { session_id: call.providerSessionId, tool_call_id: randomUUID(), tool: "get_updates" as const, args: { cursor: 0 } };
+      await expect(f.service.inbound.pendingTool(endpoint, { ...envelope, idempotency_key: `${call.providerSessionId}:${envelope.tool_call_id}` }, f.capability)).rejects.toMatchObject({ status: 403 });
+      const policies = await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, issueId));
+      if (policy === "missing") expect(policies).toEqual([]);
+      else expect(policies[0].disposition).toBe("forbidden");
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("voice creation output confinement", () => {
+    async function restrict(f: { companyId: string; issueId: string }, policy: "forbidden" | "missing") {
+      if (policy === "missing") await db.delete(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, f.issueId));
+      else await retainTaskProviderOutputPolicy(db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    }
+
+    it.each(["forbidden", "missing"] as const)("hides and denies %s phone tools without reserving a call", async policy => {
+      const f = await phoneToolFixture();
+      expect(await spekoToolsForSession(db, f.gatewaySession)).toHaveLength(1);
+      await restrict(f, policy);
+      expect(await spekoToolsForSession(db, f.gatewaySession)).toEqual([]);
+      expect((await f.gateway.listToolsForSession(f.gatewaySession.token)).some(t => t.providerType === "paperclip_speko_voice")).toBe(false);
+      await expect(executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, {}, randomUUID())).rejects.toMatchObject({ status: 403 });
+      expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+      expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).toHaveLength(1);
+    });
+
+    it.each(["forbidden", "missing"] as const)("denies direct %s phone execution even with a retained descriptor", async policy => {
+      const f = await phoneToolFixture();
+      const [tool] = await spekoToolsForSession(db, f.gatewaySession);
+      expect(tool.upstreamToolName).toBe("call_my_phone");
+      await restrict(f, policy);
+      await expect(executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, {}, randomUUID())).rejects.toMatchObject({ status: 403, message: expect.stringContaining("provider output") });
+      expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+      expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).toHaveLength(1);
+    });
+
+    it.each(["forbidden", "missing"] as const)("denies uncertain phone receipt replay under %s policy", async policy => {
+      const f = await phoneToolFixture();
+      f.transport.createPhoneSession.mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", true));
+      const invocationId = randomUUID();
+      await expect(executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, {}, invocationId)).rejects.toMatchObject({ status: 409 });
+      await restrict(f, policy);
+      await expect(executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, {}, invocationId)).rejects.toMatchObject({ status: 403 });
+      expect(f.transport.createPhoneSession).toHaveBeenCalledOnce();
+      expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).find(s => s.mode === "outbound_phone")).toMatchObject({ state: "creation_unknown", providerSessionId: null });
+    });
+
+    for (const mode of ["browser", "phone"] as const) {
+      it.each(["ordinary", "forbidden", "missing"] as const)(`checks %s policy before ${mode} session creation`, async policy => {
+        const f = await phoneToolFixture();
+        if (policy !== "ordinary") await restrict(f, policy);
+        const input = { ...f.input, ...(mode === "phone" ? { mode: "outbound_phone" as const, phoneNumber: "+12015551234" } : {}) };
+        if (policy === "ordinary") {
+          expect(await f.service.start(input)).toMatchObject({ session: { state: "connecting" } });
+          expect(mode === "phone" ? f.transport.createPhoneSession : f.transport.createBrowserSession).toHaveBeenCalledOnce();
+        } else {
+          await expect(f.service.start(input)).rejects.toMatchObject({ status: 403 });
+          expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+          expect(f.transport.createBrowserSession).not.toHaveBeenCalled();
+          expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).toHaveLength(1);
+        }
+      });
+
+      it.each(["forbidden", "missing"] as const)(`rechecks %s policy after credentials before ${mode} transport`, async policy => {
+        const f = await phoneToolFixture();
+        f.credentials.mockImplementationOnce(async () => {
+          await restrict(f, policy);
+          return { apiKey: "server-only-key", agentId: "agent_test" };
+        });
+        const input = { ...f.input, ...(mode === "phone" ? { mode: "outbound_phone" as const, phoneNumber: "+12015551234" } : {}) };
+        await expect(f.service.start(input)).rejects.toMatchObject({ status: 409, details: { code: "voice_creation_failed" } });
+        expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+        expect(f.transport.createBrowserSession).not.toHaveBeenCalled();
+        const sessions = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId));
+        expect(sessions).toHaveLength(2);
+        expect(sessions.find(s => s.id !== f.sessionId)).toMatchObject({ state: "failed", providerSessionId: null });
+      });
+
+      it.each(["forbidden", "missing"] as const)(`denies retained ${mode} receipt replay under %s policy after restart`, async policy => {
+        const f = await phoneToolFixture();
+        const input = { ...f.input, ...(mode === "phone" ? { mode: "outbound_phone" as const, phoneNumber: "+12015551234" } : {}) };
+        const first = await f.service.start(input);
+        await restrict(f, policy);
+        f.service.unregisterAgentTools();
+        const service = voiceSessionService(db, { allowLocalBoard: false, credentials: f.credentials, provider: () => f.transport, onQuestionAnswered: vi.fn() });
+        try {
+          await expect(service.start(input)).rejects.toMatchObject({ status: 403 });
+          expect(mode === "phone" ? f.transport.createPhoneSession : f.transport.createBrowserSession).toHaveBeenCalledOnce();
+          expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).toHaveLength(2);
+          expect(await service.end(f.companyId, first.session.id, f.request.caller)).toMatchObject({ state: "ended" });
+          expect(f.transport.endSession).toHaveBeenCalledOnce();
+        } finally { service.unregisterAgentTools(); }
+      });
+    }
+
+    it("retains ordinary output for a genuinely new authenticated voice conversation", async () => {
+      const f = await phoneToolFixture();
+      const first = await f.service.start({ ...f.input, issueId: undefined, newConversation: true });
+      expect(first.session.issueId).not.toBe(f.issueId);
+      expect(await db.select().from(taskProviderOutputPolicies).where(eq(taskProviderOutputPolicies.issueId, first.session.issueId))).toMatchObject([{ companyId: f.companyId, disposition: "ordinary" }]);
+      expect(f.transport.createBrowserSession).toHaveBeenCalledOnce();
+    });
+
+    it("checks the resolved task on a generic voice resume without an issue argument", async () => {
+      const f = await phoneToolFixture();
+      await db.update(issues).set({ originKind: "chat_channel", originId: f.endpointId }).where(eq(issues.id, f.issueId));
+      const first = await f.service.start(f.input);
+      await f.service.end(f.companyId, first.session.id, f.request.caller);
+      await restrict(f, "forbidden");
+      await expect(f.service.start({ ...f.input, issueId: undefined, idempotencyKey: randomUUID() })).rejects.toMatchObject({ status: 403 });
+      expect(f.transport.createBrowserSession).toHaveBeenCalledOnce();
+      expect(await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).toHaveLength(2);
+    });
+  });
+
   it("keeps personal callback preferences separate from authorized agent tool installation", async () => {
     const f = await nativeServiceFixture();
     const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));

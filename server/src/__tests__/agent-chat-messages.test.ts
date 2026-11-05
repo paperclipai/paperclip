@@ -5,6 +5,7 @@ import { activityLog, agentApiKeys, agents, authUsers, chatCompletionDeliveries,
 import type { AgentApiKeyScope } from "@paperclipai/shared";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
+import { retainTaskProviderOutputPolicy, taskForbidsProviderOutput } from "../services/task-provider-output-policy.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
@@ -68,6 +69,66 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     expect(snapshot.comments).toEqual([]);
     expect(snapshot.issues.filter(issue => issue.conversationAgentId)).toEqual([]);
     expect(snapshot.activity).toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+  });
+
+  it.each(["new", "existing"] as const)("retains restricted output provenance on a %s conversation without starting execution", async kind => {
+    const f = await fixture();
+    const previous = kind === "existing" ? (await send(f))! : null;
+    if (previous) await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: previous.conversationId, disposition: "ordinary" });
+    await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    const response = await httpSend(f, { ...input, idempotencyKey: "restricted-message" });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const receipt = await response.json();
+    if (previous) expect(receipt.conversationId).toBe(previous.conversationId);
+    expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: receipt.conversationId })).toBe(true);
+    expect(await issueService(server.db).getById(receipt.conversationId)).toMatchObject({ conversationState: "waiting", executionRunId: null });
+    expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  });
+
+  it.each(["http", "native-recovery", "receipt-only"] as const)("%s receipt replay retains a newly restricted source without another message", async transport => {
+    const f = await fixture(), first = (await send(f))!;
+    await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: first.conversationId, disposition: "ordinary" });
+    await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    if (transport === "http") {
+      const response = await httpSend(f);
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({ commentId: first.commentId, replayed: true });
+    } else if (transport === "native-recovery") {
+      expect(await f.authority.recover({ tool: "send_chat_message", arguments: input, callId: randomUUID() }))
+        .toMatchObject({ result: { commentId: first.commentId, replayed: true } });
+    } else {
+      expect(await sendAgentChatMessage(server.db, f, input, { receiptOnly: true })).toMatchObject({ commentId: first.commentId, replayed: true });
+    }
+    expect((await f.snapshot()).comments).toHaveLength(1);
+    expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: first.conversationId })).toBe(true);
+  });
+
+  it("a caller rollback retains the original proactive receipt without committing its new restriction", async () => {
+    const f = await fixture(), first = (await send(f))!;
+    await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    await expect(server.db.transaction(async tx => {
+      expect(await sendAgentChatMessage(tx as unknown as typeof server.db, f, input, { receiptOnly: true }))
+        .toMatchObject({ commentId: first.commentId, replayed: true });
+      expect(await taskForbidsProviderOutput(tx, { companyId: f.companyId, issueId: first.conversationId })).toBe(true);
+      expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: first.conversationId })).toBe(false);
+      throw new Error("Caller rolls back");
+    })).rejects.toThrow("Caller rolls back");
+    expect((await f.snapshot()).comments).toHaveLength(1);
+    expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: first.conversationId })).toBe(false);
+  });
+
+  it("ordinary proactive messages and their replays retain ordinary output authority", async () => {
+    const f = await fixture(), first = (await send(f))!;
+    expect(await send(f)).toMatchObject({ commentId: first.commentId, replayed: true });
+    expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: first.conversationId })).toBe(false);
+  });
+
+  it("a conflicting proactive replay does not commit a new restriction or message", async () => {
+    const f = await fixture(), first = (await send(f))!;
+    await retainTaskProviderOutputPolicy(server.db, { companyId: f.companyId, issueId: f.issueId, disposition: "forbidden" });
+    expect((await httpSend(f, { ...input, body: "Conflicting body" })).status).toBe(409);
+    expect((await f.snapshot()).comments).toHaveLength(1);
+    expect(await taskForbidsProviderOutput(server.db, { companyId: f.companyId, issueId: first.conversationId })).toBe(false);
   });
 
   it("charges a committed message once across retries, recovery and conflicting content", async () => {
