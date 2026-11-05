@@ -9875,6 +9875,25 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     });
   }
 
+  it("moves aside an unregistered worktree of a long existing branch within the file name limit", async () => {
+    const repoRoot = await createTempRepo();
+    const existingBranch = "b".repeat(240);
+    await execFileAsync("git", ["branch", existingBranch], { cwd: repoRoot });
+    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", existingBranch);
+    await execFileAsync("git", ["worktree", "add", stalePath, existingBranch], { cwd: repoRoot });
+    await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "kept aside\n");
+    await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
+
+    const realized = await realizeExistingBranch(repoRoot, existingBranch);
+
+    expect(realized.branchName).toBe(existingBranch);
+    const quarantineRoot = path.join(await fs.realpath(path.dirname(stalePath)), ".quarantine");
+    const [quarantined, ...others] = await fs.readdir(quarantineRoot);
+    expect(others).toEqual([]);
+    expect(Buffer.byteLength(quarantined!)).toBeLessThanOrEqual(255);
+    await expect(fs.readFile(path.join(quarantineRoot, quarantined!, "uncommitted.txt"), "utf8")).resolves.toBe("kept aside\n");
+  });
+
   function restoreExistingBranch(
     repoRoot: string,
     workspace: RealizedExecutionWorkspace,
