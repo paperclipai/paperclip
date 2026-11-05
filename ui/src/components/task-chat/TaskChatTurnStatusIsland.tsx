@@ -31,7 +31,8 @@ import type {
  * - Forced to a header (`compact`) while a question or approval needs the
  *   viewer, so the decision stays the focus.
  * - Long plans show a window around the current step with "earlier" and
- *   "more" rows; "Show all" expands to a bounded scroll region.
+ *   "more" rows that reveal every step. The list always scrolls within a
+ *   bounded height so it never covers the conversation.
  */
 
 export type TaskChatTurnPlanSegment = {
@@ -359,7 +360,7 @@ export function TaskChatTurnPlan({ plan, workspace = null, defaultCollapsed = fa
         <ol
           id={listId}
           aria-label="Within-turn checklist"
-          className={cn("flex flex-col gap-0.5 p-1.5", showAll && "max-h-(--sz-turn-plan-list-max-h) overflow-y-auto")}
+          className="flex max-h-(--sz-turn-plan-list-max-h) flex-col gap-0.5 overflow-y-auto p-1.5"
         >
           {rows.map((row) => (
             <PlanRow

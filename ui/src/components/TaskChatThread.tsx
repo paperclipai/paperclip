@@ -3444,7 +3444,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         key={tailRunId ?? "turn-status"}
                         model={tailTurnStatus}
                         defaultCollapsed={isMobile}
-                        compact={pendingRuntimeRequest != null}
+                        compact={composerTakeover != null || pendingRuntimeRequest != null}
                       />
                     ) : null}
                     <RunnerGoalWidget control={runnerGoal} />

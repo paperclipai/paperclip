@@ -20,7 +20,7 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { genericPendingRequestConfirmationInteraction, pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
@@ -4683,6 +4683,39 @@ describe("TaskChatThread mobile composer dock", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("collapses the turn plan to its header while a saved interaction opens in the composer", () => {
+    nativeTranscriptState.transcriptByRun.set("run-plan-approval", [{
+      kind: "provider_activity",
+      ts: "2026-08-24T12:00:01.000Z",
+      family: "plan",
+      eventType: "plan.updated",
+      status: "running",
+      title: "Plan",
+      payload: {
+        planId: "turn-1",
+        steps: [
+          { stepId: "one", body: "Inspect", status: "completed" },
+          { stepId: "two", body: "Build", status: "in_progress" },
+        ],
+      },
+    }]);
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      activeRun: {
+        id: "run-plan-approval", status: "running" as const, invocationSource: "issue" as const, triggerDetail: null,
+        startedAt: "2026-08-24T12:00:00.000Z", finishedAt: null, createdAt: "2026-08-24T12:00:00.000Z",
+        agentId: "agent-1", agentName: "Codex", adapterType: "paperclip_runner", runtimeMode: "native" as const,
+      },
+      interactions: [{ ...genericPendingRequestConfirmationInteraction, sourceRunId: "run-plan-approval" }],
+    });
+    const island = container.querySelector('[data-testid="task-chat-turn-status-island"]')!;
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent).toBe("Build");
+    expect(island.querySelector('[aria-label="Within-turn checklist"]')).toBeNull();
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-header"]')?.tagName).toBe("DIV");
+  });
+
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
     nativeTranscriptState.transcriptByRun.set("run-status", [
       {
