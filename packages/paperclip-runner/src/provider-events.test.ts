@@ -529,6 +529,15 @@ describe("provider-neutral events", () => {
     expect(canonicalProviderEventsFromCodex("item/completed", { item: message })).toEqual([]);
   });
 
+  it("keeps a plan whole when it contains a fenced closing-tag example", () => {
+    const body = "# Plan\n\n1. Document the format:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: { id: "msg-9", type: "agentMessage", text: `Ready.\n<proposed_plan>\n${body}\n</proposed_plan>` },
+      })[0]?.payload.markdown,
+    ).toBe(body);
+  });
+
   it("keeps literal proposed_plan tags inside a plan body", () => {
     const body = "# Plan\n\n1. Teach the format: `<proposed_plan>example</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
     expect(claudePlanProposalEvent({ toolCallId: "toolu_1", markdown: body }).payload.markdown).toBe(body);

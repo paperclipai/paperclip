@@ -93,9 +93,15 @@ function isItemIdentityEvent(eventType: string): boolean {
     || eventType === "item.completed";
 }
 
-/** Codex plan mode wraps its document in `<proposed_plan>` tags while streaming. */
+/**
+ * Codex plan mode wraps a streaming plan item in `<proposed_plan>` tags. Only
+ * that outer wrapper is removed; example tags inside the plan stay text.
+ */
 function proposedPlanMarkdown(value: string): string {
-  return value.replace(/<\/?proposed_plan>/gi, "").trim();
+  const trimmed = value.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
 }
 
 /**
@@ -109,8 +115,10 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
   let start = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
     const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
-    if (start < 0 && marker) {
+    if (marker) {
       fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
       continue;
     }
@@ -1116,7 +1124,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (event.eventType === "plan.proposed" && payload.schema === "paperclip.plan.proposed.v1" && text(payload.proposalId)) {
       const proposalId = text(payload.proposalId)!;
       const completed = payload.status === "completed";
-      const markdown = proposedPlanMarkdown(text(payload.markdown) ?? proposalMarkdownById.get(proposalId) ?? "");
+      // A completed proposal is already the unwrapped document; show it as is.
+      const markdown = text(payload.markdown) ?? proposedPlanMarkdown(proposalMarkdownById.get(proposalId) ?? "");
       if (completed) completedProposalIds.add(proposalId);
       proposalMarkdownById.set(proposalId, markdown);
       entries.push(planProposalEntry(ts, event.eventType, proposalId, markdown, completed, payload));

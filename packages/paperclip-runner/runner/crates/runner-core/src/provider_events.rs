@@ -567,15 +567,15 @@ fn proposed_plan_block(value: &str) -> Option<String> {
         let marker = trimmed.chars().next().filter(|first| {
             (*first == '`' || *first == '~') && trimmed.starts_with(&first.to_string().repeat(3))
         });
-        if start.is_none() {
-            if let Some(marker) = marker {
-                fence = match fence {
-                    None => Some(marker),
-                    Some(open) if open == marker => None,
-                    Some(open) => Some(open),
-                };
-                continue;
-            }
+        // Fences are tracked inside the block too, so a fenced example tag in
+        // the plan never opens or closes it.
+        if let Some(marker) = marker {
+            fence = match fence {
+                None => Some(marker),
+                Some(open) if open == marker => None,
+                Some(open) => Some(open),
+            };
+            continue;
         }
         if fence.is_some() {
             continue;
@@ -2778,6 +2778,22 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn keeps_a_plan_whole_when_it_contains_a_fenced_closing_tag_example() {
+        let body =
+            "# Plan\n\n1. Document:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-9", "type": "agentMessage", "phase": "final_answer",
+                "text": format!("Ready.\n<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        let proposal = events
+            .iter()
+            .find(|event| event.event_type == "plan.proposed")
+            .unwrap();
+        assert_eq!(proposal.payload["markdown"].as_str(), Some(body));
     }
 
     #[test]

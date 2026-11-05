@@ -40,8 +40,10 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
   let start = -1;
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
     const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
-    if (start < 0 && marker) {
+    if (marker) {
       fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
       continue;
     }

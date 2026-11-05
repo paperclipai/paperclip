@@ -255,6 +255,14 @@ describe("native proposed-plan presentation", () => {
     expect(fencedTranscript[0]).toMatchObject({ kind: "assistant", text: fenced });
   });
 
+  it("shows a completed proposal's example tags unchanged on its card", () => {
+    const markdown = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`";
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
+      schema: "paperclip.plan.proposed.v1", proposalId: "p-1", status: "completed", markdown, source: "claude_exit_plan_mode",
+    })]);
+    expect(transcript[0]).toMatchObject({ family: "plan_proposal", payload: expect.objectContaining({ markdown }) });
+  });
+
   it("keeps a Claude ExitPlanMode proposal out of the turn checklist", () => {
     const transcript = nativeRunEventsToTranscript([event(1, "plan.proposed", {
       schema: "paperclip.plan.proposed.v1",
