@@ -1259,6 +1259,118 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     return f;
   }
 
+  async function seedCancelledWorkspaceWaitRetry() {
+    const f = await seed(), parentRunId = randomUUID();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ id: parentRunId, companyId: f.companyId, agentId: f.agentId,
+      scopeKind: "issue", issueId: f.issueId,
+      runtimeMode: "legacy", status: "cancelled", executionStage: "settled", errorCode: "workspace_busy",
+      createdAt: new Date("2026-09-11T09:57:00Z"), startedAt: new Date("2026-09-11T09:57:00Z"),
+      finishedAt: new Date("2026-09-11T09:58:00Z"), contextSnapshot: { issueId: f.issueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" }, chatControlRecoveryAdmission: {} },
+      usageJson: { ledgerScope: { issueId: f.issueId, projectId: null, billingCode: null } },
+      resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false } } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, nativeSessionId: null,
+      scopeKind: "issue", issueId: f.issueId, retryOfRunId: parentRunId, scheduledRetryReason: "workspace_busy",
+      status: "cancelled", errorCode: "cancelled", startedAt: null, processPid: null,
+      createdAt: new Date("2026-09-11T09:59:00Z"), runnerProfileJson: null,
+      contextSnapshot: { issueId: f.issueId, source: "issue.comment", retryReason: "workspace_busy", retryOfRunId: parentRunId },
+      resultJson: { stopReason: "cancelled", cancellation: { reason: "Cancelled by control plane", source: "control_plane",
+        expected: true, initiator: { type: "system" }, recordedAt: "2026-09-11T10:00:00Z" },
+        startupCancellation: { errorCode: "cancelled", requestedAt: "2026-09-11T10:00:00Z", beforeNativeSelection: false } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    return { ...f, parentRunId };
+  }
+
+  it("admits a fresh direction after an unclaimed workspace retry was cancelled", async () => {
+    const f = await seedCancelledWorkspaceWaitRetry();
+    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(source).toMatchObject({ status: "cancelled", startedAt: null, processPid: null, runnerProfileJson: null });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(hold.evidence.automaticRecovery).toMatchObject({ replay: "explicit_user_continuation", actionOutcome: "unknown" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
+  });
+
+  it.each(["message", "retry"])("admits an unclaimed workspace retry through the heartbeat %s path", async kind => {
+    const f = await seedCancelledWorkspaceWaitRetry();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const successor = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual",
+      reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
+      ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
+      contextSnapshot: { issueId: f.issueId, ...(kind === "message" ? { wakeCommentId: f.commentId } : {}) },
+    });
+    expect(successor).toMatchObject({ status: "queued", contextSnapshot: { forceFreshSession: true,
+      previousRunId: f.sourceRunId, explicitUserContinuation: { commentId: kind === "message" ? f.commentId : null } } });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
+
+  it("resumes saved input after an unclaimed workspace retry exactly once", async () => {
+    const f = await seedCancelledWorkspaceWaitRetry();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
+      status: "deferred_issue_execution", updatedAt: new Date(0), payload: { issueId: f.issueId, commentId: f.commentId,
+        executionWait: { reason: "execution_recovery" },
+        _paperclipWakeContext: { issueId: f.issueId, wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } },
+    }).returning();
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeExecutionWaitComments(), heartbeat.resumeExecutionWaitComments()]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ forceFreshSession: true, wakeCommentIds: [f.commentId] });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "coalesced", runId: successors[0].id });
+  });
+
+  it.each(["started", "lease", "launch", "foreign_parent", "parent_executed", "parent_reason", "parent_receipt", "profile", "owner", "operator_stop", "output",
+    "parent_lease", "parent_launch", "parent_native", "retry_binding", "parent_output", "parent_profile", "parent_later", "restore"])(
+    "keeps cancelled workspace retries held with contradictory %s evidence", async kind => {
+      const f = await seedCancelledWorkspaceWaitRetry();
+      if (kind === "started") await db.update(heartbeatRuns).set({ startedAt: new Date("2026-09-11T09:59:30Z") }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId,
+        provider: "local", leasePolicy: "ephemeral", status: "released", cleanupStatus: "success", releasedAt: new Date() });
+      if (kind === "launch") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.sourceRunId, seq: 1, eventType: PROCESS_START_REQUESTED, payload: {} });
+      if (kind === "foreign_parent") {
+        const foreign = await seed();
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, retryReason: "workspace_busy",
+          retryOfRunId: foreign.sourceRunId } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      }
+      if (kind === "parent_executed" || kind === "parent_receipt") await db.update(heartbeatRuns).set({ resultJson:
+        kind === "parent_receipt" ? {} : { executionRecovery: { kind: "workspace_wait", providerWorkStarted: true } } })
+        .where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "parent_reason") await db.update(heartbeatRuns).set({ errorCode: "cancelled" }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "profile") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } })
+        .where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "owner") await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "operator_stop") await db.update(heartbeatRuns).set({ resultJson: { stopReason: "cancelled",
+        cancellation: { reason: "Stopped", source: "operator", expected: true, initiator: { type: "user", userId: "board" },
+          recordedAt: "2026-09-11T10:00:00Z" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "parent_lease") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.parentRunId,
+        provider: "local", leasePolicy: "ephemeral", status: "released", cleanupStatus: "success", releasedAt: new Date() });
+      if (kind === "parent_launch") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.parentRunId, seq: 1, eventType: PROCESS_START_REQUESTED, payload: {} });
+      if (kind === "parent_native") await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "retry_binding") await db.update(heartbeatRuns).set({ retryOfRunId: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "parent_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "parent_profile") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+        adapterDispatch: { adapterType: "paperclip_runner" }, remoteWorkspace: {} } }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "parent_later") await db.update(heartbeatRuns).set({ finishedAt: new Date("2026-09-11T10:01:00Z") }).where(eq(heartbeatRuns.id, f.parentRunId));
+      if (kind === "restore") await db.update(heartbeatRuns).set({ resultJson: { stopReason: "cancelled",
+        workspaceRestoreFailure: "restore_unsafe_archive" } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      expect(await admit(f)).toBeNull();
+      if (kind === "lease" || kind === "parent_lease") await db.delete(environmentLeases)
+        .where(eq(environmentLeases.heartbeatRunId, kind === "lease" ? f.sourceRunId : f.parentRunId));
+    },
+  );
+
   it("keeps provider diagnostics out of admission evidence and preserves absent results", async () => {
     const f = await seedCancelledReviewWait();
     const heartbeat = heartbeatService(db);

@@ -3,9 +3,10 @@
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents, filterAgents, filterOrgTree } from "./Agents";
@@ -538,7 +539,7 @@ describe("Agents", () => {
     const row = findAgentRow(container, "Paperclip Engineer With A Much Longer Display Name");
     expect(row).not.toBeNull();
     expect(row?.querySelector(".sm\\:hidden")).toBeNull();
-    expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
+    expect(row?.closest("tr")?.textContent).toContain("idle");
 
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
@@ -909,10 +910,10 @@ describe("Agents", () => {
     const checkbox = container.querySelector<HTMLButtonElement>('[aria-label="Select Alpha"]');
     expect(checkbox).not.toBeNull();
     await act(async () => { checkbox!.click(); });
-    expect(container.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
-    expect(container.textContent).toContain("Edit connection & model");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("Edit connection & model");
     expect(mockRouterState.navigate).not.toHaveBeenCalled();
-    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Harness", "Connection", "Default model"]);
+    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Status", "Harness", "Connection", "Default model"]);
   });
 
   it.each([
@@ -995,7 +996,7 @@ describe("Agents", () => {
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     expect(row?.classList.contains("opacity-50")).toBe(false);
-    expect(row?.querySelector(".sm\\:hidden")?.textContent).toContain("paused");
+    expect(row?.closest("tr")?.textContent).toContain("paused");
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {
@@ -1012,5 +1013,95 @@ describe("Agents", () => {
 
     expect(container.textContent).toContain("Alpha");
     expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
+  });
+
+  describe("disconnect handling", () => {
+    it.each([
+      ["streamlined", Agents],
+      ["production", ProductionAgents],
+    ] as const)("%s: keeps a loaded list on screen when a refetch fails transiently", async (_mode, AgentList) => {
+      root = createRoot(container);
+      await act(async () => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <AgentList />
+            </ToastProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Alpha");
+
+      // A refetch during a deploy fails: the cached roster stays, no error UI.
+      mockAgentsApi.list.mockRejectedValueOnce(
+        new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ refetchType: "active" });
+      });
+      await flushReact();
+
+      expect(container.textContent).toContain("Alpha");
+      expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+      expect(container.textContent).not.toContain("tenant_app_unavailable");
+    });
+
+    it.each([
+      ["streamlined", Agents],
+      ["production", ProductionAgents],
+    ] as const)("%s: shows readable copy with Retry on a real failure before the first load", async (_mode, AgentList) => {
+      mockAgentsApi.list.mockReset();
+      mockAgentsApi.list.mockRejectedValue(new ApiError("boom_stack_trace", 500, { error: "boom_stack_trace" }));
+      root = createRoot(container);
+      await act(async () => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <AgentList />
+            </ToastProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      const alert = container.querySelector('[data-query-view="error"]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toContain("Couldn't load agents");
+      expect(alert?.textContent).not.toContain("boom_stack_trace");
+      expect(alert?.querySelector("button")?.textContent).toContain("Retry");
+    });
+
+    it.each([
+      ["streamlined", Agents],
+      ["production", ProductionAgents],
+    ] as const)("%s: shows the skeleton, not an empty roster, when the first load is paused on an outage", async (_mode, AgentList) => {
+      // Paused queries report isLoading=false, so gating on it alone would
+      // render the empty roster during an outage; the view state must win.
+      mockAgentsApi.list.mockReset();
+      mockAgentsApi.list.mockReturnValue(new Promise(() => {}));
+      onlineManager.setOnline(false);
+      try {
+        root = createRoot(container);
+        await act(async () => {
+          root!.render(
+            <QueryClientProvider client={queryClient}>
+              <ToastProvider>
+                <AgentList />
+              </ToastProvider>
+            </QueryClientProvider>,
+          );
+        });
+        await flushReact();
+
+        expect(container.textContent).not.toContain("Create your first agent");
+        expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+        expect(findAgentRow(container, "Alpha")).toBeNull();
+      } finally {
+        onlineManager.setOnline(true);
+      }
+    });
   });
 });

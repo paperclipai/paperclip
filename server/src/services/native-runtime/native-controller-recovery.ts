@@ -262,17 +262,18 @@ export async function importNativeControllerRecovery(db: Db, input: {
       || input.supervisor !== undefined && nativeSha256(snapshot) !== nativeSha256(redactRunnerApiPayloads(supervisor.snapshot))) {
       return { kind: "missing_evidence" as const, reason: "stale_supervisor_snapshot" };
     }
+    let checkpoint = await loadNativeRunnerCheckpoint(tx, input);
     if (input.supervisor === undefined) {
       try {
         const admitted = parseNativeExecutionInput(profile.nativeExecutionInput);
-        if (!input.offline || admitted.session.lifecyclePolicy.mode !== "per_turn"
+        if (!input.offline || (!checkpoint && admitted.session.lifecyclePolicy.mode !== "per_turn")
+          || admitted.session.normalizedSessionId !== input.normalizedSessionId
           || admitted.binding.runId !== input.runId || admitted.binding.companyId !== input.companyId
           || admitted.binding.agentId !== input.agentId || admitted.binding.issueId !== input.issueId) {
           return { kind: "missing_evidence" as const, reason: "admitted_per_turn_binding" };
         }
       } catch { return { kind: "unsupported" as const, reason: "admitted_input_format" }; }
     }
-    let checkpoint = await loadNativeRunnerCheckpoint(tx, input);
     const importing = !checkpoint && input.offline?.legacyControllerState !== undefined;
     if (importing) {
       if (!run.runnerInstanceId) return { kind: "missing_evidence" as const, reason: "checkpoint_binding" };

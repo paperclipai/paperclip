@@ -1422,6 +1422,28 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(declined.textContent).not.toContain("Approve & run");
   });
 
+  it("makes a GitHub access failure actionable without offering a futile retry", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+        errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("GitHub access needed");
+    expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
+    expect(host.textContent).toContain("Check the connected account");
+    expect(host.textContent).toContain("ask the agent to continue");
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+    const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
+    expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);
+    expect(host.textContent).not.toContain("Retry");
+    expect(host.textContent).not.toContain("Approve & run");
+  });
+
   it("renders the expired state without decision controls", () => {
     const host = renderCard({ interaction: expiredToolActionInteraction });
 

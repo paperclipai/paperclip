@@ -495,6 +495,22 @@ const server = createServer(async (request, response) => {
       }
       setTimeout(async () => {
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("configured-environment-output")) {
+          const output = await new Promise((resolve, reject) => {
+            execFile("/bin/sh", ["-c", 'printf "%s" "$PROBE_SECRET"'], { timeout: 5000 }, (error, stdout) => {
+              if (error) reject(error); else resolve(stdout);
+            });
+          });
+          const messageID = "message-configured-binding-output";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: {
+            id: "part-configured-binding-output", messageID, type: "tool", tool: "bash",
+            state: { status: "completed", output },
+          } } });
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
         if (backlogTool) {
           const messageID = "message-stream-backlog";
@@ -714,6 +730,9 @@ const server = createServer(async (request, response) => {
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
+        const outputLimitAfterTool = String(
+          parsedPrompt.message ?? "",
+        ).includes("output-limit-after-tool");
         const commentaryOnlyBeforeWork = String(
           parsedPrompt.message ?? "",
         ).includes("commentary-only-before-work");
@@ -806,6 +825,53 @@ const server = createServer(async (request, response) => {
             },
           });
           await callTerminalTool(promptPayload);
+        } else if (outputLimitAfterTool) {
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-tool-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant" },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-text",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-text",
+                messageID: "message-limit",
+                type: "text",
+                text: `E2E_${"QUIP_".repeat(400)}`,
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message-finished",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant",
+                finish: "length", time: { completed: 5 } },
+            },
+          });
         } else if (finalAfterToolCommentary) {
           emit({
             type: "message.part.updated",

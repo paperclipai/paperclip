@@ -1,4 +1,5 @@
 import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
+import { supportsManagedNativeWarmSession } from "../../server/src/services/native-runtime/native-warm-capability.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -43,7 +44,8 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
-import { firstTaskTasks } from "./first-task-cases.js";
+import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-cases.js";
+import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -1205,10 +1207,21 @@ const daytonaControllerOutageEnvironment: EnvironmentFixture = {
   },
 };
 
+function managedWarmProfiles(profiles: readonly RunnerProfileFixture[]): RunnerProfileFixture[] {
+  return profiles.filter(profile => {
+    const backend = profile.provider === "codex" ? "codex_app_server" : profile.provider === "opencode" ? "opencode_server" : "acpx_runtime";
+    return supportsManagedNativeWarmSession({ backend, acpxAgent: "acpxAgent" in profile ? profile.acpxAgent : undefined },
+      profile.credential === "COPILOT_GITHUB_TOKEN" ? { provider: "github", method: "api_key" } : undefined);
+  }).map(profile => ({ ...profile, buildAgent(input: AgentFixtureBuildInput) {
+    const agent = profile.buildAgent(input);
+    return { ...agent, adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), lifecycleMode: "warm" } };
+  } }));
+}
+
 const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
     id: REMOTE_WORKSPACE_STORAGE_SUITE, label: "Remote workspace storage and controller replacement", manualOnly: true,
     description: "Keep synthetic files and local Git work in the sandbox, commit saved versions to object storage, and preserve the original active execution through controller replacement.",
-    groups: [], profiles: [(() => {
+    groups: [], profiles: managedWarmProfiles([(() => {
       const profile = productionStoryProfile(repositoryModelProfiles[0]!.native);
       return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
         const agent = profile.buildAgent(input);
@@ -1216,13 +1229,13 @@ const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
         delete adapterConfig.cwd;
         return { ...agent, adapterConfig };
       } };
-    })()], environments: [daytonaControllerOutageEnvironment],
+    })()]), environments: [daytonaControllerOutageEnvironment],
     tasks: everydayTasks.filter(task => task.id === "recover-controller").map(task => ({ ...task,
       label: "Recover sandbox-owned files after controller replacement", expectedRunCount: task.expectedRunCount + 1,
       automaticRetryPolicy: "single_attempt" as const,
       buildPrompt: (nonce: string) => remoteWorkspaceStoragePrompt(task.buildPrompt(nonce)),
     })), expectedMatrixSize: 1,
-    definitionMetadata: { version: 5, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+    definitionMetadata: { version: 6, lifecycleCoverage: "warm-reusable", workspaceFileSource: "saved-exact-snapshot-with-retained-location", scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
       retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", remoteWorkspaceStorage: true,
       upgradeReadiness: "active-remote-workspace-recoverable-before-sigkill",
@@ -1252,17 +1265,19 @@ const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles
       return { ...agent, adapterConfig };
     } };
   });
+const rollingWarmDeploymentProfiles = managedWarmProfiles(rollingDeploymentProfiles);
+
 const rollingDeploymentSuites: RunnerSuiteFixture[] = [
   { id: ROLLING_WEB_DEPLOYMENT_SUITE, environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
   { id: ROLLING_WEB_DEPLOYMENT_WARM_SUITE, environment: daytonaControllerOutageEnvironment },
 ].map(({ id, environment }) => ({
   ...remoteWorkspaceStorageSuite, id, label: `Rolling control-plane web deployment (${environment.configurationKey ? "warm" : "per-turn"})`,
   description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
-  profiles: rollingDeploymentProfiles, environments: [environment],
-  expectedMatrixSize: rollingDeploymentProfiles.length * remoteWorkspaceStorageSuite.tasks.length,
-  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 4, controllerDowntimeMs: 0,
+  profiles: id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles, environments: [environment],
+  expectedMatrixSize: (id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles).length * remoteWorkspaceStorageSuite.tasks.length,
+  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 6, controllerDowntimeMs: 0,
     activeWorkBoundary: "foreground-180-second-cli-reliability-soak-and-live-owner-recheck",
-    workspaceFileSource: environment.configurationKey ? "live" : "saved-exact-snapshot-after-per-turn-retirement",
+    workspaceFileSource: environment.configurationKey ? "saved-exact-snapshot-with-retained-location" : "saved-exact-snapshot-after-per-turn-retirement",
     lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable", providerCoverage: "registered-native-daytona-profiles",
     replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
     upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
@@ -1278,11 +1293,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   ].map(({ id, environment }): RunnerSuiteFixture => ({
     id, label: `Legacy native session migration (${environment.configurationKey ? "warm" : "per-turn"})`, manualOnly: true,
     description: "Resume an existing native session and workspace after the production offline migration and deletion of the original controller home.",
-    groups: [], profiles: rollingDeploymentProfiles, environments: [environment],
+    groups: [], profiles: environment.configurationKey ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles, environments: [environment],
     tasks: [{ ...necessaryQuestionTask, minimumExpectedRunCount: 2, turnTimeoutMs: 6 * 60_000,
       attemptTimeoutMs: { local: 15 * 60_000, daytona: 20 * 60_000 } }],
-    expectedMatrixSize: rollingDeploymentProfiles.length,
-    definitionMetadata: { version: 1, scheduling: "explicit-only", maximumAttemptsPerCell: 1, providerTurns: 2, budgetMonthlyCents: 1000,
+    expectedMatrixSize: (environment.configurationKey ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles).length,
+    definitionMetadata: { version: 2, scheduling: "explicit-only", maximumAttemptsPerCell: 1, providerTurns: 2, budgetMonthlyCents: 1000,
       lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable",
       migration: "packaged-offline-entry-verified-export-delete-entire-source-home", authentication: "api-key", stagingQualification: false,
       grading: "same-native-and-provider-session-logical-and-remote-paths-reference-bytes-question-and-final-document" },
@@ -1300,11 +1315,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,
     description: "Keep the original active native runner, reusable warm sandbox, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
-    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
+    groups: [], profiles: managedWarmProfiles(repositoryModelProfiles.map(({ native }) => productionStoryProfile(native))),
     environments: [daytonaControllerOutageEnvironment],
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
-      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 7, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
+      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: managedWarmProfiles(repositoryModelProfiles.map(({ native }) => productionStoryProfile(native))).length,
+    definitionMetadata: { version: 8, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },
@@ -1770,6 +1785,18 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       vendorBaseEvidence: "required deterministic Codex driver/runnerd/Rust gate; task success is not vendor-base proof",
       paidCalls: "one skill turn, two ordered-comment turns, three chat turns per profile",
     },
+  },
+  {
+    id: APPROVAL_HISTORY_SUITE, label: "Onboarding approval history", manualOnly: true,
+    description: "Interview, partial plan approval, approved hiring, a separate execution confirmation, and the writer’s saved result.",
+    groups: ["onboarding", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: [onboardingApprovalHistoryTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, sourceDigest: approvalHistoryDefinitionDigest(), scheduling: "explicit-only",
+      automaticRetryPolicy: "single_attempt", maximumAttemptsPerCell: 1, expectedWorkRuns: 7,
+      companyTaskBudgetCents: 500, maximumCompanyRuns: 12, attemptTimeoutMs: 900_000,
+      instructions: "production-wizard-and-first-task", approvalSequence: "plan-checkbox-subset/hiring-checkbox/execution-confirmation",
+      oracle: "persisted-human-decisions/current-plan-revision/assigned-child/one-worker-execution/saved-document/reload" },
   },
   {
     id: "first-task", label: "First-task onboarding",

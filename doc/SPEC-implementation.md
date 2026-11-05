@@ -39,6 +39,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Issues remain company-open by default. Opt-in `private` issues use task ACLs; deployment exposure flags remain independent of work-object privacy. |
 | Communication | Tasks + comments only (no separate chat system) |
+| Composer shortcuts | Task replies and new tasks submit with Enter; Shift+Enter adds a new line. The off-by-default `enableLegacyComposerSubmit` preference in Experimental settings restores Command/Ctrl+Enter submission and Enter for a new line. |
 | Experimental voice transport | Speko browser voice can create or resume a task through the existing chat-connection delivery/publication pipeline. The selected Paperclip agent retains execution authority. Phone support remains gated on live continuation qualification. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
@@ -451,6 +452,7 @@ retain their titles and default to no generation request.
   - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
   - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
   - `planning`: plan-only execution. Agents create or revise the plan without implementation work. Accepting a fresh confirmation for the issue's current `plan` revision atomically changes this mode to `standard`, so the continuation may implement the approved plan on the source issue.
+- Harness-proposed plans: a native run's own proposed-plan surface (Codex plan collaboration mode `plan` item or `<proposed_plan>` block, Claude Code ExitPlanMode) emits the canonical `plan.proposed` event. A completed proposal is saved as the issue's `plan` document and gated by a `request_confirmation` bound to that revision, in `planning` and `standard` work mode alike. A `planning` run starts the harness in its native plan mode. Synchronization never changes the issue status mid-run; the run finalizer turns the pending confirmation into the review wait. An agent-initiated proposal on a `standard` issue leaves the work mode unchanged.
 - Work mode is explicit persisted state. Titles, descriptions, and requested deliverables never select or change it. A `standard` task may deliver a requested plan, including a canonical `plan` document, and complete without entering `planning` mode. Existing explicit approval requirements still apply.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null

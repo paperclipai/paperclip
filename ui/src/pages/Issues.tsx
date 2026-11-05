@@ -1,3 +1,4 @@
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorTasks } from "./CoordinatorTasks";
@@ -104,7 +105,12 @@ export function Issues() {
   const [params] = useSearchParams();
   const location = useLocation();
   const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
+  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId", "label"].some(param => params.getAll(param).some(Boolean));
+  if (!designSandbox && coordinatorEnabled && params.getAll("label").some(Boolean) && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
+    const next = new URLSearchParams(params);
+    next.set(TASK_VIEW_PARAM, "all");
+    return <Navigate to={`/issues?${next.toString()}${location.hash}`} replace />;
+  }
   if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
     const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
     const search = next.toString();
@@ -283,14 +289,7 @@ function OrganizationIssues({
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
-  const {
-    data: issuePages,
-    isLoading,
-    isFetchingNextPage,
-    error,
-    hasNextPage,
-    fetchNextPage,
-  } = useInfiniteQuery({
+  const issuesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
@@ -327,6 +326,8 @@ function OrganizationIssues({
     placeholderData: (previousData) => previousData,
   });
 
+  const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
@@ -353,12 +354,13 @@ function OrganizationIssues({
     );
   }
 
+  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
+
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}

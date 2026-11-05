@@ -15,6 +15,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { taskChatRetryCanAwaitRecovery, taskChatRetryExecutionStopped } from "./chat-channels/task-retry-authority.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -95,6 +96,38 @@ describe("durable task Retry admission", () => {
     expect((await requestTaskRetry(second)).requestId).toBe(one.requestId);
     const next = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
     expect(next.requestId).not.toBe(one.requestId);
+  });
+  it.each(["within_limit", "over_limit", "newer_predecessor"] as const)("validates the complete persisted Retry ancestry: %s", async gate => {
+    const input = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+    const [ancestor] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, status: "failed", finishedAt: new Date(), createdAt: new Date(source.createdAt.getTime() +
+        (gate === "newer_predecessor" ? 1000 : -1000)) }).returning();
+    const systemRecovery = createSystemRecovery(ancestor.id);
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: input.companyId, sourceIssueId: input.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: ancestor.id,
+      nextAction: "Existing recovery", evidence: { runId: ancestor.id, systemRecovery } }).returning();
+    let previous = ancestor.id;
+    const length = gate === "over_limit" ? 31 : gate === "within_limit" ? 30 : 0;
+    for (let index = 0; index < length; index++) {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+        agentId: source.agentId, status: "failed", finishedAt: new Date(), createdAt: ancestor.createdAt,
+        retryOfRunId: previous }).returning();
+      previous = run.id;
+    }
+    await db.update(heartbeatRuns).set({ retryOfRunId: previous }).where(eq(heartbeatRuns.id, source.id));
+    const ancestry = await taskRetryRunAncestry({ db, companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, sourceRunId: source.id });
+    const receipt = await requestTaskRetry(input);
+    const state = readSystemRecovery((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0].evidence);
+    if (gate === "within_limit") {
+      expect(ancestry).toHaveLength(32);
+      expect(ancestry).toContain(ancestor.id);
+      expect(state?.intentId).toBe(receipt.requestId);
+    } else {
+      expect(ancestry).toBeNull();
+      expect(state).toEqual(systemRecovery);
+    }
   });
   it("does not resurrect completed tasks or retry an obsolete assignment", async () => {
     const input = await seed();

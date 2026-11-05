@@ -133,6 +133,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(agent.id)).lifecycleOperation).toMatchObject({ verificationFailures: 3, retryRequired: true });
   });
 
+  it("keeps checking an outdated remote Runner past the failure budget and becomes ready once it matches", async () => {
+    const { agent, work, runHost } = await failed("runner_revision_mismatch");
+    for (let check = 0; check < 5; check++) {
+      const waiting = await current(agent.id);
+      expect(waiting).toMatchObject({ lifecycleState: "verifying", status: "paused" });
+      expect(waiting.lifecycleOperation?.retryRequired).toBeUndefined();
+      expect(waiting.lifecycleOperation?.verificationFailures).toBeUndefined();
+      expect(waiting.lifecycleOperation?.retryAt).toEqual(expect.any(String));
+      expect(waiting.lifecycleError).toContain("Runner is being updated");
+      expect(waiting.lifecycleError).not.toContain("Automatic verification is paused");
+      await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
+      await work.process(agent.id);
+    }
+    runHost.mockImplementation(async () => "complete");
+    await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+  });
+
   it("recovers from a generic failed test before the automatic retry budget is exhausted", async () => {
     const { agent, work, runHost } = await failed("harness_probe_timed_out");
     runHost.mockRejectedValueOnce(Object.assign(new Error("temporary test failure"), { code: "harness_test_failed" }));

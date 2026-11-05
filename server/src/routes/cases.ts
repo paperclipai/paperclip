@@ -56,6 +56,8 @@ import type { StorageService } from "../storage/types.js";
 import { authorizationService, issueReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
 import { assertActorCanReadCase, assertActorCanWriteCase, caseReadSqlCondition, filterCasesForActor, retainCaseAccessSource } from "../services/case-access.js";
 import { enrichCaseWork } from "../services/case-work-summary.js";
+import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
+import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { listCaseTaskDocuments } from "../services/case-task-documents.js";
 import { authorizeCaseCreation, authorizeCaseMutation } from "../services/case-mutation-authorization.js";
 import { logger } from "../middleware/logger.js";
@@ -270,6 +272,19 @@ async function resolveAgentNames(db: CaseRouteDb, agentIds: (string | null)[]) {
   return new Map(rows.map((row) => [row.id, row.name]));
 }
 
+type CaseAttributedIssue = { id: string; identifier: string; title: string; status: string; blockerAttention?: IssueBlockerAttention };
+
+/** Glyph-only blocker state so a case activity row draws the same status glyph as the task pane. */
+async function withStatusBlockerAttention(db: CaseRouteDb, companyId: string, map: Map<string, CaseAttributedIssue>) {
+  const attention = await listIssueStatusBlockerAttention(db as Db, companyId, [...map.values()]);
+  if (attention.size === 0) return map;
+  for (const [key, issue] of map) {
+    const item = attention.get(issue.id);
+    if (item) map.set(key, { ...issue, blockerAttention: item });
+  }
+  return map;
+}
+
 /**
  * Batch resolve run → issue attribution. Mirrors resolveIssueForRun's precedence
  * (latest-updated issue whose execution/checkout/origin run matches), but for a
@@ -277,7 +292,7 @@ async function resolveAgentNames(db: CaseRouteDb, agentIds: (string | null)[]) {
  */
 async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: (string | null)[], actor: AuthorizationActor) {
   const valid = [...new Set(runIds.filter((id): id is string => !!id && isUuidLike(id)))];
-  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  const map = new Map<string, CaseAttributedIssue>();
   if (valid.length === 0) return map;
   const rows = await db
     .select({
@@ -314,7 +329,7 @@ async function resolveIssuesForRuns(db: CaseRouteDb, companyId: string, runIds: 
       map.set(runId, { id: match.id, identifier: match.identifier ?? match.id, title: match.title, status: match.status });
     }
   }
-  return map;
+  return withStatusBlockerAttention(db, companyId, map);
 }
 
 function payloadIssueIdForEvent(kind: string, payload: Record<string, unknown> | null | undefined) {
@@ -325,7 +340,7 @@ function payloadIssueIdForEvent(kind: string, payload: Record<string, unknown> |
 
 async function resolveIssuesByIds(db: CaseRouteDb, companyId: string, issueIds: (string | null)[], actor: AuthorizationActor) {
   const valid = [...new Set(issueIds.filter((id): id is string => !!id && isUuidLike(id)))];
-  const map = new Map<string, { id: string; identifier: string; title: string; status: string }>();
+  const map = new Map<string, CaseAttributedIssue>();
   if (valid.length === 0) return map;
   const rows = await db
     .select({
@@ -342,7 +357,7 @@ async function resolveIssuesByIds(db: CaseRouteDb, companyId: string, issueIds: 
   for (const [index, row] of rows.entries()) {
     if (readDecisions[index]?.allowed) map.set(row.id, { id: row.id, identifier: row.identifier ?? row.id, title: row.title, status: row.status });
   }
-  return map;
+  return withStatusBlockerAttention(db, companyId, map);
 }
 
 async function autoLinkRunIssue(db: CaseRouteDb, input: {
@@ -468,18 +483,21 @@ async function loadCaseDetail(db: CaseRouteDb, row: typeof cases.$inferSelect, a
     type: "issue" as const, companyId: row.companyId, issueId: item.issue.id,
   })));
   const [workSummary] = await enrichCaseWork(db, row.companyId, [row], actor);
+  const visibleLinks = linkRows.filter((_, index) => linkDecisions[index]?.allowed);
+  const linkBlockerAttention = await listIssueStatusBlockerAttention(db as Db, row.companyId, visibleLinks.map((item) => item.issue));
   return {
     ...workSummary!,
     ...taskDocumentRollup,
     parent: visibleParent,
     labels: labelRows.map((item) => item.label),
-    issueLinks: linkRows.filter((_, index) => linkDecisions[index]?.allowed).map((item) => ({
+    issueLinks: visibleLinks.map((item) => ({
       ...item.link,
       issue: {
         id: item.issue.id,
         identifier: item.issue.identifier,
         title: item.issue.title,
         status: item.issue.status,
+        ...(linkBlockerAttention.has(item.issue.id) ? { blockerAttention: linkBlockerAttention.get(item.issue.id)! } : {}),
       },
     })),
     documents: documentRows.map((item) => ({

@@ -6,8 +6,8 @@ import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import type { StorageService } from "../../storage/types.js";
 import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, type NativeRunnerCheckpointFenceOwner } from "./native-runner-checkpoint.js";
@@ -16,7 +16,9 @@ import { getStorageService } from "../../storage/index.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
+import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
+import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
 type Binding = { companyId: string; scopeDigest: string; id: string };
@@ -27,7 +29,9 @@ type Reference = Binding & {
 type Row = typeof nativeHarnessBackups.$inferSelect;
 type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: string; runId: string;
   writersStopped: true; terminalFailureOnly?: true };
-const fail = (reason: string): never => { throw new Error(`native_harness_storage_${reason}`); };
+type InactiveSource = { root: string; manifestSha256: string; scopeDigest: string;
+  normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
+function fail(reason: string): never { throw new Error(`native_harness_storage_${reason}`); }
 const aad = (binding: Binding) => Buffer.from(JSON.stringify([SCHEMA, binding.companyId, binding.scopeDigest, binding.id]));
 const scope = (binding: Pick<Binding, "companyId" | "scopeDigest">) => and(
   eq(nativeHarnessBackups.companyId, binding.companyId), eq(nativeHarnessBackups.scopeDigest, binding.scopeDigest));
@@ -88,9 +92,11 @@ export async function nativeHarnessBackupOwner(db: Db, input: { companyId: strin
   if (!row || !row.leaseOwner && (row.phase !== "committed" || !row.resultId)) fail("owner_missing");
   return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointFenceOwner;
 }
-async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner) {
+async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner,
+  inactiveSource?: InactiveSource) {
+  if (inactiveSource && "kind" in owner) fail("prestage_requires_runtime_owner");
   const checkpointOwner = "kind" in owner ? null : await lockNativeRunnerCheckpointOwner(tx, owner);
-  const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+  const [task] = await tx.select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues)
     .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("share");
   const authorityRunId = "kind" in owner ? owner.runId : owner.authorityRunId;
   if (!task) fail("owner_superseded");
@@ -98,17 +104,36 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     if (!owner.writersStopped) fail("offline_writers_required");
     const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
     if (active) fail("offline_writers_required");
-    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, owner.runId), eq(heartbeatRuns.companyId, owner.companyId),
       eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
     const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner,
-      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, phase: nativeRunFinalizations.phase })
+      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, phase: nativeRunFinalizations.phase,
+      resultId: nativeRunFinalizations.resultId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt })
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, owner.runId)).for("share");
     const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
     if (!run?.finishedAt || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
-      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))
-      || owner.terminalFailureOnly && (run.status !== "failed" || coordinator.phase !== "terminal_failure")) {
+      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))) {
       fail("offline_owner_unsettled");
+    }
+    if (owner.terminalFailureOnly) {
+      if (run.status !== "failed") fail("offline_owner_unsettled");
+      if (coordinator.phase !== "terminal_failure") {
+        // Evidence archival does not settle or resume this stale coordinator.
+        // Lease expiry alone is insufficient: every remote writer needs its
+        // exact host-owned stop receipt, recorded after execution began.
+        if (coordinator.phase !== "observed" || coordinator.resultId || coordinator.nextAttemptAt
+          || task.executionRunId === owner.runId) fail("offline_owner_unsettled");
+        const leases = await tx.select().from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, owner.companyId), eq(environmentLeases.heartbeatRunId, owner.runId))).for("share");
+        const stopped = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(tx as unknown as Db, lease)));
+        if (!stopped.length || stopped.some(lease => {
+          const receipt = lease.metadata?.remoteExecutionTermination as { confirmedAt?: unknown } | undefined;
+          const confirmedAt = Date.parse(String(receipt?.confirmedAt));
+          return lease.issueId !== owner.issueId || !hasRemoteTerminationReceipt(lease)
+            || !Number.isFinite(confirmedAt) || confirmedAt < (run.startedAt ?? run.createdAt).getTime() || confirmedAt > new Date(clock.now).getTime();
+        })) fail("offline_owner_unsettled");
+      }
     }
     return;
   }
@@ -118,21 +143,54 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
   if (owner.leaseOwner === null && !committed) fail("owner_missing");
   if (task.executionRunId && task.executionRunId !== authorityRunId && !committed) fail("owner_superseded");
   await validateNativeRunnerCheckpointOwner(tx, owner, owned, false);
+  if (inactiveSource) {
+    if (!committed || task.executionRunId || task.checkoutRunId) fail("prestage_source_active");
+    const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, owner.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
+      or(eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.issueId, owner.issueId),
+        eq(heartbeatRuns.nativeSessionId, inactiveSource.normalizedSessionId)))).limit(1);
+    if (active) fail("prestage_source_active");
+    const [binding] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, owner.authorityRunId), eq(heartbeatRuns.companyId, owner.companyId),
+      eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.nativeSessionId, inactiveSource.normalizedSessionId),
+      eq(heartbeatRuns.runnerInstanceId, inactiveSource.runnerInstanceId), eq(heartbeatRuns.status, "succeeded"),
+      isNotNull(heartbeatRuns.finishedAt)));
+    const [lease] = await tx.select({ stamp: sql<unknown>`${environmentLeases.metadata}->'nativeHarnessBackup'` })
+      .from(environmentLeases).where(and(eq(environmentLeases.companyId, owner.companyId),
+        eq(environmentLeases.issueId, owner.issueId), eq(environmentLeases.providerLeaseId, inactiveSource.providerLeaseId),
+        sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${inactiveSource.manifestSha256}`)).limit(1);
+    const stamp = readNativeHarnessBackupStamp(lease?.stamp, inactiveSource.providerLeaseId);
+    if (!binding || !stamp || stamp.sessionScopeSha256 !== inactiveSource.scopeDigest
+      || stamp.normalizedSessionId !== inactiveSource.normalizedSessionId || stamp.runnerInstanceId !== inactiveSource.runnerInstanceId) {
+      fail("prestage_source_changed");
+    }
+    const source = await readNativeHarnessBackupSource(inactiveSource.root);
+    if (!source) fail("prestage_source_changed");
+    const { manifestBytes: manifest, manifest: identity, state } = source;
+    if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== inactiveSource.manifestSha256
+      || identity.normalizedSessionId !== stamp.normalizedSessionId || identity.runnerInstanceId !== stamp.runnerInstanceId
+      || identity.sourceProviderLeaseId !== stamp.sourceProviderLeaseId || identity.completedAt !== stamp.completedAt
+      || state.runId !== owner.authorityRunId || state.lifecycle !== "suspended") fail("prestage_source_changed");
+  }
 }
 
 export async function persistNativeHarnessBackup(input: {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
-  scopeDigest: string; root: string; signal?: AbortSignal;
+  scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
+  inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
-  const manifestBytes = await readFile(join(input.root, "manifest.json"));
+  const source = input.inactiveSource ? await readNativeHarnessBackupSource(input.root) : undefined;
+  if (source === null) fail("prestage_source_changed");
+  const manifestBytes = source?.manifestBytes ?? await readFile(join(input.root, "manifest.json"));
   const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
+  const inactiveSource = input.inactiveSource ? { ...input.inactiveSource, root: input.root, manifestSha256, scopeDigest: input.scopeDigest } : undefined;
   const binding = { companyId: input.owner.companyId, scopeDigest: input.scopeDigest, id: randomUUID() };
   const scratch = await mkdtemp(join(os.tmpdir(), "pc-harness-upload-"));
   const key = randomBytes(32);
   try {
     const archive = join(scratch, "archive"), encrypted = join(scratch, "encrypted");
-    await captureNativeHarnessArchive(input.root, archive, input.signal);
+    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes);
     const plaintext = await digest(archive, input.signal), iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad(binding));
     await pipeline(createReadStream(archive), cipher, createWriteStream(encrypted, { flags: "wx", mode: 0o600 }), { signal: input.signal });
@@ -143,7 +201,7 @@ export async function persistNativeHarnessBackup(input: {
         key: key.toString("base64"), iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), plaintext })) };
     if (ref.byteSize > MAX_NATIVE_HARNESS_OBJECT_BYTES) fail("size_limit_exceeded");
     await input.db.transaction(async tx => {
-      await fence(tx, input.owner);
+      await fence(tx, input.owner, inactiveSource);
       await tx.insert(nativeHarnessBackups).values({ ...binding, issueId: input.owner.issueId, runId: input.owner.runId,
         manifestSha256, reference: ref });
     });
@@ -152,7 +210,7 @@ export async function persistNativeHarnessBackup(input: {
       byteSize: ref.byteSize, sha256: ref.sha256, signal: input.signal });
     await receive(input.storage, ref, undefined, input.signal);
     await input.db.transaction(async tx => {
-      await fence(tx, input.owner);
+      await fence(tx, input.owner, inactiveSource);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${ref.companyId}:${ref.scopeDigest}`}, 0))`);
       const [pending] = await tx.select({ status: nativeHarnessBackups.status }).from(nativeHarnessBackups)
         .where(eq(nativeHarnessBackups.id, ref.id)).for("update");
@@ -162,7 +220,7 @@ export async function persistNativeHarnessBackup(input: {
           eq(nativeHarnessBackups.status, "current"), sql`${nativeHarnessBackups.runId} <> ${input.owner.runId}::uuid`,
           sql`${heartbeatRuns.createdAt} >= (select created_at from heartbeat_runs where id = ${input.owner.runId}::uuid)`)).limit(1);
       if (successor) fail("owner_superseded");
-      await fence(tx, input.owner);
+      await fence(tx, input.owner, inactiveSource);
       await tx.update(nativeHarnessBackups).set({ status: "superseded", updatedAt: new Date() })
         .where(and(scope(ref), eq(nativeHarnessBackups.status, "current")));
       await tx.update(nativeHarnessBackups).set({ status: "current", updatedAt: new Date() })

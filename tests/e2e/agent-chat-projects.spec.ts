@@ -195,6 +195,19 @@ test("split handoff commits relevant plans before execution and never creates ch
         })
       ).status(),
     ).toBe(422);
+    await expect.poll(async () => {
+      const comments = await json(await request.get(`/api/issues/${chat.id}/comments`));
+      const completed = comments.filter((comment: any) => comment.authorAgentId === f.agent.id &&
+        comment.body.startsWith("Delegated work completed:"));
+      return tasks.every((task: any) => completed.some((comment: any) => comment.body.includes(task.identifier)));
+    }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => await json(await request.get(`/api/companies/${f.company.id}/live-runs`)),
+      { timeout: 30_000 }).toEqual([]);
+    const settledTasks = await json(await request.get(`/api/companies/${f.company.id}/issues`));
+    expect(settledTasks.map((task: any) => ({ id: task.id, status: task.status, parentId: task.parentId }))
+      .sort((a: any, b: any) => a.id.localeCompare(b.id))).toEqual(tasks.map((task: any) => ({
+        id: task.id, status: "done", parentId: null,
+      })).sort((a: any, b: any) => a.id.localeCompare(b.id)));
   } finally {
     await f.restore();
   }

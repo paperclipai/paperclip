@@ -137,6 +137,13 @@ It requires a fresh owned agent with no prior work runs and uses three provider 
 Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
+The explicit [onboarding approval-history journey](../tests/runner-e2e/README.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
+
 The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)

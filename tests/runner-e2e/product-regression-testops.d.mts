@@ -3,8 +3,17 @@ export interface ProductRegressionCase {
   suite: string;
   name: string;
   profile: string;
+  model: string;
   fullName: string;
   executionId: string;
 }
 
 export const productRegressionCases: readonly ProductRegressionCase[];
+export const productReportingModels: readonly string[];
+export const productReportingMatcherKinds: readonly string[];
+export function projectProductResults(campaign: unknown, selection: unknown, sourceSha: string): {
+  summary: { selected: number; passed: number; failed: number; broken: number };
+  records: Array<{ file: string; value: { model?: string | null; declaredModel?: string; reportedModelSha256?: string | null;
+    modelSource?: 'first_task_configuration' | 'execution_profile' | 'not_recorded';
+    checks?: Array<{ name: string; ordinal: number; passed: boolean; pathSha256: string | null }> } }>;
+};

@@ -1001,6 +1001,47 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(f.service.request({ ...f.claims, company_id: randomUUID() }, "composio", { connectionId: f.connection.id })).rejects.toThrow();
   });
 
+  it("lets an agent hired before a GitHub grant request the access the grant left out", async () => {
+    // Mirrors staging BUG-09: GitHub was connected through the CEO's request, so the
+    // responsible user's personal grant was delegated and installed for the CEO only.
+    // A Frontend Engineer hired earlier has neither, and GitHub's catalog exceeds 20 tools.
+    const [company] = await db.insert(companies).values({ name: "GitHub grant fixture", issuePrefix: `H${randomUUID().slice(0, 7)}` }).returning();
+    const [ceo] = await db.insert(agents).values({ companyId: company.id, name: "CEO", role: "ceo", adapterType: "process" }).returning();
+    const [engineer] = await db.insert(agents).values({ companyId: company.id, name: "Frontend Engineer", role: "engineer", adapterType: "process" }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "github-owner", membershipRole: "owner", status: "active" });
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Build storefront prototype (GitHub repo)", status: "in_progress", assigneeAgentId: engineer.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: engineer.id, status: "running", responsibleUserId: "github-owner", contextSnapshot: { issueId: issue.id } }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", metadata: { sourceTemplateKey: "github" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application.id, uid: randomUUID(), name: "GitHub", transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "github" } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user", subjectUserId: "github-owner", status: "active" }).returning();
+    await db.insert(connectionGrantDelegations).values({ companyId: company.id, grantId: grant.id, agentId: ceo.id, createdByUserId: "github-owner" });
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: ceo.id });
+    const readTools = ["get_file_contents", "get_me", "list_commits", ...Array.from({ length: 28 }, (_, index) => `read_tool_${index}`)];
+    const writeTools = ["create_or_update_file", "create_repository", "push_files", ...Array.from({ length: 12 }, (_, index) => `write_tool_${index}`)];
+    await db.insert(toolCatalogEntries).values([
+      ...readTools.map(toolName => ({ toolName, riskLevel: "read" as const })),
+      ...writeTools.map(toolName => ({ toolName, riskLevel: "write" as const })),
+    ].map(tool => ({ ...tool, companyId: company.id, connectionId: connection.id, name: tool.toolName, versionHash: "v1", entryKind: "tool" as const, status: "active" as const })));
+    const service = connectionIntentService(db);
+    const engineerClaims = { ...claims, sub: engineer.id, company_id: company.id, run_id: run.id, responsible_user_id: "github-owner" };
+
+    const search = await service.search(engineerClaims, "GitHub create private repository and push code");
+    expect(search.results.find(result => result.service === "github")).toMatchObject({ state: "needs_user_action", connectionId: null });
+
+    // The engineer follows the tool guidance and asks for GitHub. The refusal must
+    // name the connection and its tools so the agent can make the scoped request.
+    const refusal = await service.request(engineerClaims, "github").then(() => null, (error: Error) => error);
+    expect(refusal).toMatchObject({ status: 422 });
+    expect(refusal?.message).toContain(connection.id);
+    for (const toolName of ["create_repository", "push_files", "write_tool_11", "read_tool_27"]) expect(refusal?.message).toContain(toolName);
+    expect(refusal?.message).toContain("No access was granted");
+
+    const scoped = await service.request(engineerClaims, "github", { connectionId: connection.id, toolNames: ["get_me", "create_repository", "push_files"] });
+    expect(scoped.state).toBe("needs_user_action");
+    await service.complete(scoped.interactionId!, connection.id, "github-owner", { canManageOrganizationGrant: true });
+    expect(await service.request(engineerClaims, "github")).toMatchObject({ state: "ready", connectionId: connection.id });
+  });
+
   it("declines access without changing permissions and expires requests after reassignment", async () => {
     const f = await accessFixture();
     const request = await f.service.request(f.claims, "composio", { connectionId: f.connection.id });

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
+import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
+import { sidecarToolDetail } from "./acpx-tool-detail-redaction.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
-import { acpxProviderFailure, acpxTerminalResult } from "../drivers/acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
@@ -27,7 +30,9 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxToolDetailFromRuntimeEvent, acpxToolInputPath, boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, claudePlanProposalEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
+import { claudeHookCanonicalEvent } from "../governance-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -164,6 +169,8 @@ let host: AcpxRuntimeHost | null = null;
 let activeHostCleanup: Promise<void> | null = null;
 let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
+/** Claude compaction banners seen by this sidecar; pairs start and end notices. */
+let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
@@ -426,6 +433,8 @@ async function dispatch(
     });
     activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
+    // ACPX reports a generic terminal error; the provider's typed reason arrives here first.
+    const sessionFailure: { value?: AcpxTerminalSessionFailure } = {};
     const timed = request.params.performance === true;
     const timingStart = receivedAt;
     let statusMs = 0;
@@ -438,16 +447,24 @@ async function dispatch(
         text: boundedText(request.params.message, "message", 1024 * 1024),
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
+        onPlanProposal: (proposal) => {
+          if (turnId !== currentTurnId || host !== activeHost) return;
+          const event = claudePlanProposalEvent(proposal);
+          validateAcpxRichEvent(event);
+          emit("runtime.rich_event", { ...event }, currentTurnId);
+          planProposalTurns.add(currentTurnId);
+        },
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
           waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
+        onTerminalSessionFailure: (failure) => { sessionFailure.value = failure; },
       });
     } catch (error) {
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     const promptStart = timed ? performance.now() : 0;
@@ -656,6 +673,9 @@ async function dispatch(
   throw new Error("unreachable ACPX sidecar command");
 }
 
+/** Turns whose native plan approval was declined after capturing the proposal. */
+const planProposalTurns = new Set<string>();
+
 async function pumpTurn(
   currentTurnId: string,
   runtimeTurn: AcpxRuntimeTurn,
@@ -664,6 +684,7 @@ async function pumpTurn(
   drainExtensions: () => Promise<void>,
   activity: AcpxActivityAdapter,
   toolEvidence?: AcpxToolEvidence,
+  sessionFailure: { value?: AcpxTerminalSessionFailure } = {},
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -675,15 +696,51 @@ async function pumpTurn(
     const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
     const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+    // Claude subagent lineage reads the bounded `_meta` and `rawInput` before
+    // they are dropped at this boundary. Only display data leaves: a
+    // schema-checked delegation rich event and a child tool's parent id.
+    const trackSubagents = initializedAgent === "claude"
+      ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
+      : null;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
-      emit(
-        "runtime.event",
-        sanitizeRuntimeEvent(
-          normalizeMessage(normalizeToolEvent(boundRuntimeEventForNormalization(event))),
-        ),
-        currentTurnId,
+      // Claude hook lifecycle rides on session_info_update `_meta`; publish it
+      // as schema-validated display activity rather than a raw status event.
+      const hook = claudeHookCanonicalEvent(event);
+      if (hook) {
+        try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
+        continue;
+      }
+      const sanitized = sanitizeRuntimeEvent(
+        normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
       );
+      const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
+        ? trackSubagents({
+            type: "tool_call",
+            toolCallId: sanitized.toolCallId,
+            tag: event.tag,
+            status: event.status,
+            rawInput: event.rawInput,
+            rawOutput: event.rawOutput,
+            _meta: boundedAcpMeta((event as { _meta?: unknown })._meta),
+          })
+        : null;
+      if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
+      emit("runtime.event", sanitized, currentTurnId);
+      if (lineage?.paperclipSubagent) {
+        // Rust names the tool call (and each child's parentItemId) with
+        // acpx_opaque_item_id; the delegation must use the same identity.
+        const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
+        for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
+          const rich = withDelegationIdentity(mapped, delegationId);
+          try {
+            validateAcpxRichEvent(rich);
+            emit("runtime.rich_event", { ...rich }, currentTurnId);
+          } catch {
+            // Display-only lineage must never fail the provider turn.
+          }
+        }
+      }
     }
     const result = await runtimeTurn.result;
     if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
@@ -716,7 +773,7 @@ async function pumpTurn(
       // not replace the provider's authoritative completed/cancelled result.
       diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
     }
-    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env) : boundedSidecarValue(result);
+    terminal = openParams ? acpxTerminalResult(result, openParams.agent, process.env, sessionFailure.value) : boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",
@@ -724,12 +781,17 @@ async function pumpTurn(
         ...(error instanceof AcpxApprovalRequiredError || error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}),
         message: safeMessage(error),
         retryable: false,
-        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env) ?? undefined } : {}),
+        ...(openParams ? { providerFailure: acpxProviderFailure(error, openParams.agent, "turn", process.env, false, sessionFailure.value) ?? undefined } : {}),
       },
     };
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
     if (turnId === currentTurnId) turnId = null;
+  }
+  // Declining Claude's native plan approval interrupts its turn. The captured
+  // proposal is this turn's deliverable, so the turn completes normally.
+  if (planProposalTurns.delete(currentTurnId) && terminal.status === "cancelled") {
+    terminal = { status: "completed", stopReason: "end_turn" };
   }
   // A terminal frame is also runnerd's permission to recycle this provider.
   // Publish it only after no callback can inherit this turn's mutable binding.
@@ -1012,7 +1074,49 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipBoundedTool: true;
   inputUpdated: boolean;
   paperclipOutput: Record<string, unknown>;
+  paperclipFileChanges: ToolFileChange[] | null;
 };
+
+/**
+ * Read tool facts (native name, command, exit, refusal reason) from the raw
+ * update before rawInput is dropped, and attest a file-path argument as a
+ * workspace-relative location when the provider sent no location.
+ */
+function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): AcpRuntimeEvent {
+  if (raw.type !== "tool_call" || bounded.type !== "tool_call") return bounded;
+  const detail = acpxToolDetailFromRuntimeEvent(raw);
+  const inputPath = bounded.locations?.length ? undefined : acpxToolInputPath(raw);
+  const locations = inputPath
+    ? safeAcpxLocations([{ path: inputPath }], openParams?.workingDirectory, bounded.kind, bounded.title)
+    : undefined;
+  return {
+    ...bounded,
+    ...(locations?.length ? { locations } : {}),
+    paperclipToolDetail: detail,
+  } as AcpRuntimeEvent;
+}
+
+/** Re-key a single-child delegation event to the Rust tool identity. */
+function withDelegationIdentity(
+  event: ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number],
+  id: string,
+): ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number] {
+  if (event.payload.schema !== "paperclip.delegation.v1") return event;
+  const children = Array.isArray(event.payload.children)
+    ? event.payload.children.map((child) => ({ ...(child as Record<string, unknown>), childId: id }))
+    : [];
+  return { ...event, itemId: id, payload: { ...event.payload, delegationId: id, children } };
+}
+
+let cachedWorkspaceRoots: { directory: string; roots: string[] } | null = null;
+function sidecarWorkspaceRoots(): string[] {
+  const directory = openParams?.workingDirectory;
+  if (!directory) return [];
+  if (cachedWorkspaceRoots?.directory !== directory) {
+    cachedWorkspaceRoots = { directory, roots: workspaceRootsFor(directory) };
+  }
+  return cachedWorkspaceRoots.roots;
+}
 
 function boundRuntimeEventForNormalization(
   event: AcpRuntimeEvent,
@@ -1041,6 +1145,13 @@ function boundRuntimeEventForNormalization(
     inputUpdated: Object.prototype.hasOwnProperty.call(event, "rawInput") && event.rawInput !== undefined,
     paperclipBoundedTool: true,
     paperclipOutput: safeOutput(event.rawOutput),
+    // ACP `diff` content (Claude Edit/Write) as bounded workspace-relative
+    // patches; runner-core re-validates them before the canonical event.
+    paperclipFileChanges: toolFileChangesFromAcpContent(
+      event.content,
+      event.locations,
+      sidecarWorkspaceRoots(),
+    ),
   } as BoundedRuntimeToolEvent;
 }
 
@@ -1052,6 +1163,8 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
       entries: sanitizeAcpxPlanEntries(record(event).entries),
     };
   }
+  const statusNotice = claudeStatusBannerNotice(event);
+  if (statusNotice) return statusNotice;
   if (event.type === "text_delta") {
     return {
       type: event.stream === "thought" ? "thinking" : "text_delta",
@@ -1076,6 +1189,7 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
       used: safeNonNegativeNumber(event.used),
       size: safeNonNegativeNumber(event.size),
       ...safeUsage(event.cost, event.breakdown),
+      ...safeRateLimit(event),
     });
   }
   if (event.type === "tool_call") {
@@ -1142,6 +1256,10 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
         ...(boundedTool.paperclipBoundedTool === true
           ? boundedTool.paperclipOutput
           : safeOutput(event.rawOutput)),
+        ...sidecarToolDetail(record(event).paperclipToolDetail),
+        ...(boundedTool.paperclipBoundedTool === true && boundedTool.paperclipFileChanges
+          ? { fileChanges: boundedTool.paperclipFileChanges }
+          : {}),
       },
       128 * 1024,
       toolCallIdentity,
@@ -1168,6 +1286,24 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
   };
 }
 
+/** Claude harness lifecycle text becomes a status notice, never part of the answer. */
+function claudeStatusBannerNotice(event: AcpRuntimeEvent): Record<string, unknown> | null {
+  if (initializedAgent !== "claude" || event.type !== "text_delta" || event.stream === "thought") return null;
+  const banner = classifyClaudeStatusBanner(event.text, typeof event.messageId === "string" && event.messageId ? event.messageId : null);
+  if (!banner) return null;
+  if (banner.phase === "running") claudeCompactionCount += 1;
+  return {
+    type: "provider_notice",
+    severity: banner.severity,
+    category: banner.category,
+    summary: banner.summary,
+    ...(banner.category === "context_compaction" ? { noticeKey: `compaction-${claudeCompactionCount}` } : {}),
+    ...(banner.phase || banner.details.length > 0
+      ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+      : {}),
+  };
+}
+
 function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
   const status = record(value);
   const models = record(status.models);
@@ -1186,6 +1322,28 @@ function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
     },
     32 * 1024,
   );
+}
+
+/**
+ * Claude forwards its SDK `rate_limit_event` as
+ * `usage_update._meta["_claude/rateLimit"]`. Pass only the window fields the
+ * rate-limit normalizer reads; billing and overage details stay behind.
+ */
+function safeRateLimit(event: unknown): Record<string, unknown> {
+  const raw = record(event);
+  if (raw.tag !== "usage_update") return {};
+  const info = record(record(raw._meta)["_claude/rateLimit"]);
+  if (Object.keys(info).length === 0) return {};
+  const status = ["allowed", "allowed_warning", "rejected"].includes(String(info.status)) ? info.status : null;
+  const rateLimitType = typeof info.rateLimitType === "string" && /^[a-z0-9_]{1,64}$/.test(info.rateLimitType)
+    ? info.rateLimitType
+    : null;
+  const utilization = typeof info.utilization === "number" && Number.isFinite(info.utilization) && info.utilization >= 0
+    ? Math.min(info.utilization, 10)
+    : null;
+  const resetsAt = safeNonNegativeNumber(info.resetsAt);
+  if (status === null && utilization === null) return {};
+  return { rateLimit: { status, rateLimitType, utilization, resetsAt } };
 }
 
 function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {

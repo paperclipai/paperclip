@@ -40,12 +40,27 @@
 //     and request isolation need it) and turns the breadcrumb off with the
 //     integration's own `breadcrumbs` option.
 //
+// A failed secret-sensitive request (chat setup, provider webhooks, MCP,
+// company observability settings, and similar routes) reports only the
+// generic `Secret-sensitive request failed` error, with its own stack and
+// default grouping. `SecretSensitiveRequestError` adds `secret_route_family`,
+// `http_method`, `http_status` and `error_kind` tags, optional `errno_code`
+// and `db_error_code` tags (a Node errno name or a SQLSTATE), and a
+// `secret_sensitive_request` context. The context holds the matched Express
+// route definition and up to eight complete V8 frames from the original
+// stack. Every value is a closed label, a bounded number, or a code-shaped
+// string; anything else is dropped. The event never carries the request
+// URL, query, body, headers, or the original error name or message.
+//
 // `onUnhandledRejectionIntegration` defaults to `mode: "warn"`, which
 // registers a `process.on("unhandledRejection")` listener. Node cancels its
 // own crash-on-unhandled-rejection behavior when any listener is registered.
 // The server relies on that crash today, so the initializer passes
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
+//
+// `beforeSend` adds run navigation links, then bounded provenance for the
+// dynamic-import-callback error — see `sentry-dynamic-import-provenance.ts`.
 //
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
@@ -59,6 +74,7 @@ import os from "node:os";
 import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
@@ -67,6 +83,7 @@ import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
 import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
+import { addDynamicImportProvenance, type ProvenanceHint } from "./sentry-dynamic-import-provenance.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -135,6 +152,23 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       sentryHandle.captureException(exception, {
         tags: { ...tags, error_code: "cloud_portfolio_failure" },
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (error instanceof SecretSensitiveRequestError) {
+      // The sanitized error keeps its generic message, stack and default
+      // grouping. Only its fixed-shape diagnostics are added.
+      const diagnostics = error.diagnostics;
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          secret_route_family: diagnostics.routeFamily,
+          http_method: diagnostics.method,
+          http_status: String(diagnostics.status),
+          error_kind: diagnostics.errorKind,
+          ...(diagnostics.errnoCode ? { errno_code: diagnostics.errnoCode } : {}),
+          ...(diagnostics.databaseErrorCode ? { db_error_code: diagnostics.databaseErrorCode } : {}),
+        },
+        contexts: { secret_sensitive_request: { ...diagnostics, originFrames: [...diagnostics.originFrames] } },
         fingerprint: ["{{ default }}"],
       });
     } else if (storageFailure) {
@@ -235,6 +269,21 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    // Without a usable root code, unrelated failures that share the error code,
+    // adapter and phase would collapse into one group. Fall back to the root
+    // exception's class name plus its HTTP status or numeric code. These are
+    // bounded values; the message stays out of the fingerprint.
+    const rootFallback: string[] = [];
+    const rootException = diagnostics?.exceptions.at(-1);
+    if (!rootErrorCode && rootException) {
+      if (typeof rootException.name === "string" && /^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(rootException.name)) {
+        rootFallback.push(`exception:${rootException.name}`);
+      }
+      if (rootException.status !== undefined) rootFallback.push(`status:${rootException.status}`);
+      else if (typeof rootException.code === "string" && /^-?[0-9]{1,10}$/.test(rootException.code)) {
+        rootFallback.push(`code:${rootException.code}`);
+      }
+    }
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -309,7 +358,7 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -412,7 +461,14 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-  beforeSend: typeof addSentryRunLinks;
+  beforeSend: typeof enrichServerEvent;
+}
+
+type ServerEvent = Parameters<typeof addSentryRunLinks>[0] & Parameters<typeof addDynamicImportProvenance>[0];
+
+/** The server's `beforeSend`: run navigation links, then dynamic-import provenance. */
+export async function enrichServerEvent<T extends ServerEvent>(event: T, hint?: ProvenanceHint): Promise<T> {
+  return addDynamicImportProvenance(await addSentryRunLinks(event), hint);
 }
 
 /**
@@ -431,7 +487,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    beforeSend: addSentryRunLinks,
+    beforeSend: enrichServerEvent,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(

@@ -141,6 +141,11 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
+Task reply and new-task composers submit with Enter by default; Shift+Enter
+adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
+restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
+submits.
+
 ### Task collection creation filters
 
 The task Filters menu also offers **Routine tasks**. It selects tasks with
@@ -148,6 +153,7 @@ The task Filters menu also offers **Routine tasks**. It selects tasks with
 when other automatic tasks are hidden. The routines list's **View all tasks**
 link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
+Coordinator task labels use repeated `label` URL parameters so selected labels survive reloads and shared task-list links.
 Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
 saved collection sorting, and the routines link opens newest-created tasks first.
 Shared sort links work across Coordinator, Streamlined UI, and Classic UI, including
