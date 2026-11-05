@@ -20,8 +20,55 @@ it.each([
 ])("retains consequential actor and outcome requirements: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
-it("does not carry a section owner through an unrelated paragraph", () => {
-  expect(grade(account.replace("The verification", "\n\nThe verification"))).toBe(false);
+it("does not infer the initial worker over a contrary possessive within the command clause", () => {
+  const reply = account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("The verification command failed", "The verification command failed on Riley's attempt");
+  expect(grade(reply)).toBe(false);
+});
+it("does not credit a different worker's execution as the first failed attempt", () => {
+  const reply = account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed during Riley's execution");
+  expect(grade(reply)).toBe(false);
+});
+it("keeps a contrary worker heading as invalidation across blank lines", () => {
+  const reply = account.replace("First attempt (Morgan)", "Initial attempt (Riley)")
+    .replace("Morgan built the page. ", "Riley built the page.\n\n");
+  expect(grade(reply)).toBe(false);
+});
+it("keeps a legitimate anonymous command description across a blank line", () => {
+  expect(grade(account.replace("The verification", "\n\nThe verification"))).toBe(true);
+});
+
+it("does not turn a project prototype possessive into a worker", () => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed on Launch's prototype"))).toBe(true);
+});
+it("starts fresh worker scope at a consecutive Markdown heading", () => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "## Earlier work (Riley)\nSummary.\n## Initial build (Morgan)\nThe engineer built the page.\n\n"))).toBe(true);
+});
+it.each(["run", "initial attempt", "saved check"])("retains unknown-person %s ownership as a contrary actor", execution => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", `command failed on Avery's ${execution}`))).toBe(false);
+});
+
+it("does not credit a desired reassignment as a completed handoff", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You wanted the task reassigned to Riley. Riley repaired the label and the check passed.")).toBe(false);
+});
+it("binds a known human's possessive ownership independently of the object noun", () => {
+  const reply = account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed on Avery's build");
+  expect(truthfulTimelineAccount({ reply, firstWorker: "Morgan", repairWorker: "Riley", personName: "Avery" })).toBe(false);
+});
+
+it("separates intent about the label from a subsequent completed handoff", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You wanted the label fixed, so you reassigned the task to Riley. Riley repaired the label and the check passed.")).toBe(true);
+});
+it("does not turn a known person's requirements into execution ownership", () => {
+  const reply = "The verification command failed with exit 1 against Avery’s requirements and task paused. You reassigned the task to Riley. Riley repaired the label and the check passed.";
+  expect(truthfulTimelineAccount({ reply, firstWorker: "Morgan", repairWorker: "Riley", personName: "Avery" })).toBe(true);
+});
+it("does not credit a planned reassignment as completed", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You planned to have the task reassigned to Riley. Riley repaired the label and the check passed.")).toBe(false);
 });
 
 it("does not give a heading credit for another actor's command", () => {
@@ -158,4 +205,25 @@ it("rejects an asserted pass whose command exit is nonzero", () => {
 
 it.each(["Friday", "5 PM", "the end of the day"])("does not invent an actor from a by-deadline adjunct: %s", deadline => {
   expect(grade(account.replace("You reassigned the task to Riley.", `You reassigned the task to Riley by ${deadline}.`))).toBe(true);
+});
+
+const explicitRepairContinuity = "Morgan ran verification which failed and work paused.\n\nYou reassigned the task to Riley.\n\n## Repair and verification\nRiley added the label, preserved the heading, then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.";
+it("binds the explicit repair subject to its adjacent command result without a named heading", () => {
+  expect(grade(explicitRepairContinuity)).toBe(true);
+});
+it.each([
+  explicitRepairContinuity.replace("Riley added", "Morgan added"),
+  explicitRepairContinuity.replace("then re-ran", "then Morgan re-ran"),
+  explicitRepairContinuity.replace("It passed", "Avery inspected the page. It passed"),
+  explicitRepairContinuity.replace("It passed", "The unrelated test passed"),
+  explicitRepairContinuity.replace("Riley added the label", "Riley repaired no label"),
+  explicitRepairContinuity.replace("Riley added the label", "Riley planned to add the label"),
+  explicitRepairContinuity.replace("It passed", "It did not pass"),
+  explicitRepairContinuity.replace("You reassigned the task to Riley.", "") + " You reassigned the task to Riley.",
+])("keeps actor, event, negation and chronology boundaries for adjacent repair results: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});
+
+it("stops repair subject continuity when a coordinated clause introduces another worker", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You reassigned the task to Riley. Riley added the label, and Avery inspected the saved bytes and then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.")).toBe(false);
 });
