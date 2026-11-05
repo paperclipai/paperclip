@@ -11,10 +11,11 @@ import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
-import { hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
+import { hasAcknowledgedNativeRunStopRequest } from "../acknowledged-native-stop.js";
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
+import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
@@ -80,7 +81,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       eq(heartbeatRuns.id, selected.id), eq(heartbeatRuns.companyId, selected.companyId),
     )).for("update");
     if (!run || run.runtimeMode !== "native" || (!options.allowPreterminal && run.status !== "failed")) return;
-    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeRunStopReceipt(run)
+    if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeRunStopRequest(run)
       || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > Date.now())) return;
     const currentReference = workspaceRecoveryReference(run.runnerProfileJson);
     if (!currentReference || currentReference.state !== "prepared"
@@ -143,6 +144,7 @@ export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof
       return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
     }
     if (run.status !== "failed") return false;
+    if (await pinFailedObservedWorkspace(db, run.companyId, run.id)) return true;
     const retained = await preserveNativeFailedWorkspace(db, run);
     return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
   } catch (error) {
@@ -193,7 +195,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
   for (const candidate of candidates) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
-    if (run && hasAcknowledgedNativeRunStopReceipt(run)) {
+    if (run && hasAcknowledgedNativeRunStopRequest(run)) {
       try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
@@ -219,7 +221,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
   type Entry = { id: string; companyId: string; dueAt: number };
   type Candidate = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId"
     | "runtimeMode" | "driverKind" | "status" | "resultJson" | "runnerProfileJson">;
-  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeRunStopReceipt(run)
+  const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeRunStopRequest(run)
     && workspaceRecoveryReference(run.runnerProfileJson)?.state === "prepared"
     && !hasRequiredWorkspaceRecovery(run.resultJson) && !nativeRunHasNoWorkspaceAccess(run);
   const scopeCondition = (scope?: CancelledWorkspacePreservationScope) => scope ? and(

@@ -44,6 +44,7 @@ test("a task title survives an outage and saves after server recovery", async ({
       { timeout: 30_000 }).toBe("A title retained through the outage");
     expect((await json(await request.get(`/api/issues/${other.id}`))).title).toBe(other.title);
     await page.reload();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: "A title retained through the outage", exact: true })).toBeVisible();
     expect((await json(await request.get(`/api/issues/${issue.id}`))).status).toBe("backlog");
   } finally {
@@ -88,6 +89,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await expect.poll(async () => (await json(await request.get(`/api/issues/${first.id}`))).title, { timeout: 30_000 }).toBe("First title retained offline");
     await expect.poll(async () => (await json(await request.get(`/api/issues/${second.id}`))).title, { timeout: 30_000 }).toBe("Second title retained offline");
     await page.reload();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: "Second title retained offline", exact: true })).toBeVisible();
   } finally {
     await page.context().setOffline(false).catch(() => {});
@@ -144,6 +146,7 @@ test("a cold task waits for the first session and retains a title saved during a
     await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
       { timeout: 15_000 }).toBe(savedTitle);
     await page.reload();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: savedTitle, exact: true })).toBeVisible();
   } finally {
     releaseSession();
@@ -218,7 +221,10 @@ for (const delayWorkspacePreference of [false, true]) test(delayWorkspacePrefere
     await header.locator("textarea").press("Enter");
     await expect.poll(() => failedAfterSave).toBeGreaterThan(0);
     if (delayWorkspacePreference) {
-      await expect(page.getByText("Couldn't update the task", { exact: true })).toBeVisible();
+      // Identity is still unknown: retain the unowned edit in memory until the
+      // first verified session, then prove it survives the presentation remount.
+      await expect(header.locator("textarea")).toHaveValue("Saved after session recovery");
+      expect((await json(await request.get(`/api/issues/${issue.id}`))).title).toBe(issue.title);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve(null))));
     }
     healthy = true;
@@ -232,6 +238,7 @@ for (const delayWorkspacePreference of [false, true]) test(delayWorkspacePrefere
     await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
       { timeout: 15_000 }).toBe("Saved after session recovery");
     await page.reload();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: "Saved after session recovery", exact: true })).toBeVisible();
   } finally {
     releasePreference();

@@ -225,7 +225,7 @@ type NativeSessionResumeSelection = {
   agentId: string;
   issueId: string;
   normalizedSessionId: string;
-  currentRunId: string;
+  currentRunId?: string;
   beforeCreatedAt: Date;
   /** Recovery discovery must retain an ineligible newest progress barrier. */
   includeProgressBarrier?: boolean;
@@ -306,7 +306,7 @@ async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResu
     .from(heartbeatRuns)
     .where(
       and(
-        ne(heartbeatRuns.id, input.currentRunId),
+        input.currentRunId ? ne(heartbeatRuns.id, input.currentRunId) : undefined,
         eq(heartbeatRuns.companyId, input.companyId),
         eq(heartbeatRuns.agentId, input.agentId),
         eq(heartbeatRuns.nativeIssueId, input.issueId),

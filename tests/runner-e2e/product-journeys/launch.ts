@@ -21,7 +21,9 @@ import { runClarificationJourney } from "./clarification-flow.js";
 import { runChatContinuity } from "./chat-continuity-flow.js";
 import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { taskDependencyResume } from "./task-dependency-resume.js";
 import { runInputFile } from "./input-file-flow.js";
+import { runSavedSkillUse } from "./saved-skill-use-flow.js";
 import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
@@ -117,6 +119,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
   for (const name of [
+    "saved-skill-use-flow.ts",
+    "saved-skill-use-evidence.ts",
     "task-lifecycle.ts",
     "task-lifecycle-evidence.ts",
     "../../../packages/shared/src/validators/issue.ts",
@@ -141,6 +145,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "inbox-triage-fixture.ts",
     "inbox-author-contract.ts",
     "task-properties.ts",
+    "../../../packages/shared/src/constants.ts",
+    "task-dependency-resume.ts",
+    "task-dependency-resume-evidence.ts",
     "task-search-filter.ts",
     "task-search-evidence.ts",
     "basic-flows.ts",
@@ -203,6 +210,13 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.productJourney!.phases.push({ phase: "cleanup", outcome: "failed", code });
       }
     }
+  };
+  // Retain only an identifier-shaped adapter cause, never its message, so a
+  // generic cleanup failure can be traced to the target step that failed.
+  const recordCleanupCause = (error: unknown) => {
+    const cause = (error as { code?: unknown } | null)?.code;
+    if (typeof cause !== "string" || !/^[A-Za-z][A-Za-z0-9_]{1,79}$/.test(cause)) return;
+    failFinalization(`cause.${cause}`);
   };
   const persist = async () => {
     try {
@@ -283,11 +297,15 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
+            if (id === "saved-skill-use") await runSavedSkillUse(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "task-dependency-resume") await taskDependencyResume(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
@@ -393,10 +411,11 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       for (const result of results) { if (result.cleanup !== "failed") result.cleanup = "passed"; result.productJourney!.resourceDisposition = disposition; result.productJourney!.phases.push({ phase: "cleanup", outcome: "passed" }); }
     } catch (error) {
       failFinalization(error instanceof JourneyError && error.code === "target_cleanup_timeout" ? error.code : "target_cleanup_failed");
+      if (!(error instanceof JourneyError && error.code === "target_cleanup_timeout")) recordCleanupCause(error);
       // A timed-out release may still have an in-flight request. Stop-only recovery
       // gets its own bounded signal and cannot delete resources or free the lease.
       try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt - browserCloseReserveMs, Date.now() + stopReserveMs), "target_stop_timeout", input => session?.stop?.(input) ?? Promise.resolve()); }
-      catch { failFinalization("target_stop_failed"); }
+      catch (stopError) { failFinalization("target_stop_failed"); if (!(stopError instanceof JourneyError && stopError.code === "target_stop_timeout")) recordCleanupCause(stopError); }
     }
     try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt, Date.now() + browserCloseReserveMs), "browser_cleanup_timeout", () => browser?.close() ?? Promise.resolve()); }
     catch (error) { failFinalization(error instanceof JourneyError && error.code === "browser_cleanup_timeout" ? error.code : "browser_cleanup_failed"); }

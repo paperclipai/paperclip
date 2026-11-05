@@ -2712,8 +2712,18 @@ export function issueThreadInteractionService(
           lockedCurrent.payload,
           issueContext.id,
         )?.key === "plan";
+      // A response turn can reject its predecessor's proposal before replacing
+      // it. Requeueing here would revoke that responding run's tool ownership.
+      // Both identities are read under the issue/interaction locks above.
+      const activeResponseIsRevisingOlderProposal =
+        args.actor.agentId != null &&
+        args.actor.runId != null &&
+        args.actor.runId === issueContext.executionRunId &&
+        lockedCurrent.sourceRunId != null &&
+        lockedCurrent.sourceRunId !== issueContext.executionRunId;
       const shouldResumeReviewedIssue =
         issueContext.status === "in_review" &&
+        !activeResponseIsRevisingOlderProposal &&
         (lockedCurrent.continuationPolicy === "wake_assignee" ||
           rejectedPlanNeedsRevision);
       if (
