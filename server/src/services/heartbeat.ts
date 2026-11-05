@@ -30,7 +30,6 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
-import { resolveHeartbeatNativeLifecyclePolicy } from "./heartbeat/native-lifecycle.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
@@ -45,7 +44,7 @@ import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js"
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
-import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
+import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
@@ -3320,17 +3319,7 @@ export function heartbeatService(
         const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
           ? adapter.supportsInstructionsBundle === true
           : nativeRuntimeHasInstructionFilesystem(nativeRuntimeResolution.profile.backend);
-        const nativeLifecyclePolicy = nativeRuntimeResolution.kind === "native" ? resolveHeartbeatNativeLifecyclePolicy({
-          adapterType: agent.adapterType, backend: nativeRuntimeResolution.profile.backend,
-          acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
-          agentMode: parseObject(agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(agent.adapterConfig).idleTimeoutMs,
-          environmentPolicy: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerLifecyclePolicy : null,
-          persistedPolicy: persistedNativeExecutionInput?.session.lifecyclePolicy,
-          managedAiSelected: Boolean(managedAiRuntime), managedAiAttribution: managedAiRuntime?.attribution,
-          taskOwned: Boolean(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask),
-        }) : null;
-        runtimeConfig = await timePreparation("instructions", () => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
-        const runtimeSelection = await timePreparation("runtime_selection", () => selectHeartbeatRuntime(db, {
+        const runtimeSelection = await prepareAndSelectHeartbeatRuntime(db, {
           run,
           agent,
           nativeRuntimeResolution,
@@ -3373,7 +3362,6 @@ export function heartbeatService(
             },
           },
           config: {
-            nativeLifecyclePolicy,
             runtimeConfig,
             runtimeSkillEntries,
             runScopedMentionedSkillKeys,
@@ -3399,7 +3387,13 @@ export function heartbeatService(
             nativeOwnershipHeld = true;
           },
           stopControllerLease: () => controllerLease.stop(),
-        }));
+        }, {
+          measure: timePreparation,
+          prepareInstructions: async nativeLifecyclePolicy => {
+            runtimeConfig = await preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy });
+            return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
+          },
+        });
         if (!runtimeSelection.selected) return;
         const { nativeExecution, nativeRunnerInstanceId, getNativeFreshSessionHandoff } = runtimeSelection;
         nativeWorkspaceSync = runtimeSelection.nativeWorkspaceSync;

@@ -258,7 +258,35 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-/** Prepare and persist the selected runtime before the executor dispatches provider work. */
+function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): NativeLifecyclePolicy | null {
+  if (input.nativeRuntimeResolution.kind !== "native") return null;
+  return resolveHeartbeatNativeLifecyclePolicy({
+    adapterType: input.agent.adapterType, backend: input.nativeRuntimeResolution.profile.backend,
+    acpxAgent: parseObject(input.agent.adapterConfig).acpxAgent,
+    agentMode: parseObject(input.agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(input.agent.adapterConfig).idleTimeoutMs,
+    environmentPolicy: input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" ? input.workspace.executionTarget.runnerLifecyclePolicy : null,
+    persistedPolicy: input.session.persistedNativeExecutionInput?.session.lifecyclePolicy,
+    managedAiSelected: Boolean(input.config.managedAiRuntime), managedAiAttribution: input.config.managedAiRuntime?.attribution,
+    taskOwned: Boolean(input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" && input.workspace.executionTarget.runnerTask),
+  });
+}
+
+export async function prepareAndSelectHeartbeatRuntime(
+  db: Db,
+  input: HeartbeatRuntimeSelectionInput,
+  preparation: {
+    prepareInstructions: (policy: NativeLifecyclePolicy | null) => Promise<Pick<HeartbeatRuntimeSelectionInput["config"], "runtimeConfig" | "instructionCopy">>;
+    measure: <T>(phase: "instructions" | "runtime_selection", work: () => Promise<T>) => Promise<T>;
+  },
+): Promise<HeartbeatRuntimeSelectionResult> {
+  const nativeLifecyclePolicy = resolveRuntimeLifecyclePolicy(input);
+  const prepared = await preparation.measure("instructions", () => preparation.prepareInstructions(nativeLifecyclePolicy));
+  return preparation.measure("runtime_selection", () => selectHeartbeatRuntime(db, {
+    ...input,
+    config: { ...input.config, ...prepared, nativeLifecyclePolicy },
+  }));
+}
+
 export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSelectionInput): Promise<HeartbeatRuntimeSelectionResult> {
   const { run, agent, nativeRuntimeResolution, issuesSvc, runtimeEnv, beforeNativeRuntimeSelection, onAdapterEvent,
     onNativeLifecycleSelected, onProviderResourceDisposition, onNativeOwnershipHeld, stopControllerLease } = input;
@@ -501,15 +529,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     let nativeResumeCheckpoint: ReturnType<
       typeof rebindNativeSessionCheckpoint
     > = null;
-    const effectiveLifecyclePolicy = input.config.nativeLifecyclePolicy ?? resolveHeartbeatNativeLifecyclePolicy({
-      adapterType: agent.adapterType, backend: nativeRuntimeResolution.profile.backend,
-      acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
-      agentMode: parseObject(agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(agent.adapterConfig).idleTimeoutMs,
-      environmentPolicy: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerLifecyclePolicy : null,
-      persistedPolicy: persistedNativeExecutionInput?.session.lifecyclePolicy,
-      managedAiSelected: Boolean(managedAiRuntime), managedAiAttribution: managedAiRuntime?.attribution,
-      taskOwned: Boolean(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask),
-    });
+    const effectiveLifecyclePolicy = input.config.nativeLifecyclePolicy ?? resolveRuntimeLifecyclePolicy(input)!;
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&

@@ -16,12 +16,11 @@ import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-s
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
-import { selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import { createHeartbeatInstructionWorkingCopy } from "./instruction-working-copy.js";
-import { resolveHeartbeatNativeLifecyclePolicy } from "./native-lifecycle.js";
 import { environmentService } from "../environments.js";
 
 // Keep the real contract, session, and runtime-selection transactions. Replace only
@@ -88,6 +87,19 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
 
+  it("preserves preparation failure and skips runtime selection", async () => {
+    const { input, run } = await fixture();
+    const initiating = new Error("Synthetic preparation failure");
+    const phases: string[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (phase, work) => { phases.push(phase); return work(); },
+      prepareInstructions: async () => { throw initiating; },
+    })).rejects.toBe(initiating);
+    expect(phases).toEqual(["instructions"]);
+    expect(await coordinators(run.id)).toEqual([]);
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("checkpoints the real instruction copy under the selected agent-default warm policy (changed: %s)", async changed => {
     const { input, issue, agent, run } = await fixture();
     const userId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
@@ -134,16 +146,17 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     const controller = createHeartbeatInstructionWorkingCopy({ db, instructionCopies: copies, readRun: () => input.run, agent: input.agent,
       context: input.task.context, session: { taskSession: null, taskSessionForRun: null, sessionConfigMetadata: {} as never },
       workspace: input.workspace, appendRunEvent: instructionEvents });
-    const nativeLifecyclePolicy = resolveHeartbeatNativeLifecyclePolicy({ adapterType: input.agent.adapterType,
-      backend: input.nativeRuntimeResolution.kind === "native" ? input.nativeRuntimeResolution.profile.backend : "codex_app_server",
-      agentMode: "warm", agentIdleTimeoutMs: 900_000, environmentPolicy: target.runnerLifecyclePolicy,
-      managedAiSelected: false, taskOwned: false });
-    input.config.nativeLifecyclePolicy = nativeLifecyclePolicy;
-    input.config.runtimeConfig = await controller.prepare({ runtimeConfig: {}, nativeRuntimeResolution: input.nativeRuntimeResolution, hasInstructionFilesystem: true, nativeLifecyclePolicy });
-    input.config.instructionCopy = controller.instructionCopy;
+    const phases: string[] = [];
+    const selected = await prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (phase, work) => { phases.push(phase); return work(); },
+      prepareInstructions: async nativeLifecyclePolicy => {
+        const runtimeConfig = await controller.prepare({ runtimeConfig: {}, nativeRuntimeResolution: input.nativeRuntimeResolution, hasInstructionFilesystem: true, nativeLifecyclePolicy });
+        return { runtimeConfig, instructionCopy: controller.instructionCopy };
+      },
+    });
+    expect(phases).toEqual(["instructions", "runtime_selection"]);
     expect(instructionEvents.mock.calls).toEqual([]);
     expect(controller.instructionCopy).not.toBeNull();
-    const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
     expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 900_000 });
     expect((await copies.get(agent.companyId, run.id))?.receipt?.warm).toBe(true);
