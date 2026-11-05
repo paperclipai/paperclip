@@ -197,6 +197,45 @@ describe("native provider failure observation", () => {
     expect(readNativeTurnFailureDiagnostic({ ...expected, signal: "SIGTERM" })).toEqual({ ...expected, signal: "SIGTERM" });
   });
 
+  it("records an OpenCode upstream provider failure's closed fields without its message or code", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn",
+      category: "unknown", message: "Private upstream explanation", providerCode: "private_provider_type",
+      httpStatus: 502, retryability: "unknown" };
+    observed.observe({ ...event, payload: { status: "failed", error: {
+      name: "UnknownError", data: { message: "Private upstream body" }, providerFailure,
+    } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("turn", terminal)).toEqual(providerFailure);
+    const diagnostic = observed.unclassifiedTurnFailure("turn", terminal);
+    expect(diagnostic).toEqual({
+      provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "unknown", providerFailureRetryability: "unknown", httpStatus: 502,
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/private/i);
+    expect(readNativeTurnFailureDiagnostic(diagnostic)).toEqual(diagnostic);
+    // A malformed provider failure adds nothing, and a persisted record keeps only known values.
+    const malformed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    malformed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { ...providerFailure, category: "private" } } } });
+    expect(malformed.unclassifiedTurnFailure("turn", terminal)).toEqual({ provider: "opencode", category: "turn_failed" });
+    expect(readNativeTurnFailureDiagnostic({ provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "private", providerFailureRetryability: "unknown", httpStatus: 502 }))
+      .toEqual({ provider: "opencode", category: "turn_failed" });
+    expect(readNativeTurnFailureDiagnostic({ provider: "opencode", category: "turn_failed",
+      providerFailureCategory: "overloaded", providerFailureRetryability: "private", httpStatus: 42 }))
+      .toEqual({ provider: "opencode", category: "turn_failed", providerFailureCategory: "overloaded" });
+  });
+
+  it("names the OpenCode empty-response failure the driver writes", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode", model });
+    observed.observe({ ...event, payload: { status: "failed", error: {
+      code: "opencode_empty_response", message: "OpenCode ended the turn without a final response.", retryable: false,
+    } } });
+    const diagnostic = observed.unclassifiedTurnFailure("turn", terminal);
+    expect(diagnostic).toEqual({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response" });
+    expect(readNativeTurnFailureDiagnostic(diagnostic)).toEqual(diagnostic);
+  });
+
   it.each([{ kind: "claude", model }, { kind: "codex" }, { kind: "codex", model: "other" }])(
     "does not apply a rejection to another selected provider/model (%j)", (provider) => {
       const observed = createNativeProviderFailureObservation(provider);

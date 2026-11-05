@@ -16,6 +16,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -1409,6 +1410,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
       ...controllerLeaseLossResultJson(signal),
+      ...reviewedChatBindingDenialResultJson(outerErr),
       ...(!providerDispatchStarted
         ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
         : {}),

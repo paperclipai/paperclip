@@ -18,6 +18,7 @@ import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { recoveryService } from "../recovery/service.js";
 import { retryNativeWorkspaceExport } from "./native-workspace-export-retry.js";
 import { releaseCompletedNativeWorkspaceExportRetention } from "./native-workspace-export-resume.js";
+import { requestWorkspaceRecovery } from "../workspace-recovery.js";
 
 describe("board retry of accepted workspace export", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -79,6 +80,34 @@ describe("board retry of accepted workspace export", () => {
     await expect(retryNativeWorkspaceExport(f.request)).resolves.toMatchObject({ status: "queued" });
     expect(resume).toHaveBeenCalledOnce();
     expect(resume).toHaveBeenCalledWith(expect.objectContaining({ lease: expect.objectContaining({ id: f.leaseId, providerLeaseId: lease.providerLeaseId }) }));
+  });
+  it("keeps explicit export repair available after Recover adopts the same accepted source", async () => {
+    const f = await seed();
+    const before = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+    await requestWorkspaceRecovery({ ...f.request, idempotencyKey: randomUUID() });
+    const [adopted] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(adopted.ownerType).toBe("system");
+    expect(await retryNativeWorkspaceExport(f.request)).toMatchObject({
+      status: "queued", runId: f.runId, resultId: f.resultId, leaseId: f.leaseId,
+    });
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual(before);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+    expect((f.request.environmentRuntime as { resumeRunLease: ReturnType<typeof vi.fn> }).resumeRunLease).toHaveBeenCalledOnce();
+  });
+  it.each(["missing_recovery", "wrong_system_source", "wrong_workspace_source", "agent_owner"])("rejects unrelated recovery ownership before provider access: %s", async kind => {
+    const f = await seed();
+    await requestWorkspaceRecovery({ ...f.request, idempotencyKey: randomUUID() });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    const evidence = { ...action.evidence };
+    if (kind === "missing_recovery") delete evidence.systemRecovery;
+    if (kind === "wrong_system_source") evidence.systemRecovery = { ...(evidence.systemRecovery as object), sourceRunId: randomUUID() };
+    if (kind === "wrong_workspace_source") evidence.workspaceRecovery = { ...(evidence.workspaceRecovery as object), runId: randomUUID() };
+    await db.update(issueRecoveryActions).set({ evidence, ...(kind === "agent_owner" ? { ownerType: "agent" } : {}) }).where(eq(issueRecoveryActions.id, f.actionId));
+    await expect(retryNativeWorkspaceExport(f.request)).rejects.toThrow("no longer current");
+    expect(probe).not.toHaveBeenCalled();
+    expect((f.request.environmentRuntime as { resumeRunLease: ReturnType<typeof vi.fn> }).resumeRunLease).not.toHaveBeenCalled();
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toMatchObject({ phase: "terminal_failure", resultId: f.resultId });
   });
   it("retries exhausted transient export of an ephemeral allocation without another provider turn", async () => {
     const f = await seed();
@@ -258,12 +287,14 @@ describe("board retry of accepted workspace export", () => {
     await expect(retryNativeWorkspaceExport(f.request)).rejects.toThrow("no longer current");
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].phase).toBe("terminal_failure");
   });
-  it("does not take ownership from an active exporter", async () => {
+  it.each(["board", "system"])("does not take ownership from an active exporter after %s admission", async owner => {
     const f = await seed();
+    if (owner === "system") await requestWorkspaceRecovery({ ...f.request, idempotencyKey: randomUUID() });
     await withNativeWorkspaceFinalizationOwnership(f, async () => {
       await expect(retryNativeWorkspaceExport(f.request)).rejects.toThrow("still owned");
     });
     expect(probe).not.toHaveBeenCalled();
+    expect((f.request.environmentRuntime as { resumeRunLease: ReturnType<typeof vi.fn> }).resumeRunLease).not.toHaveBeenCalled();
   });
   it.each(["native_workspace_sync_out_retry_exhausted", "native_workspace_sync_out_unsafe_archive"])("does not dispatch another provider turn from a pending accepted export: %s", async cause => {
     const f = await seed(cause);

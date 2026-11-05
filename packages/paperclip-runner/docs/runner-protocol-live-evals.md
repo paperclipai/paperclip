@@ -822,6 +822,15 @@ entry file. Installed dependencies still belong to that trusted checkout. The
 staged copies are removed after verified process cleanup and kept if cleanup is
 incomplete. This path requires the repository's Node 24.11+ runtime.
 
+Each Linux protocol worker snapshots its current Node executable into a fresh
+owner-only directory before credential steps. The copy keeps the same bytes
+and version, with directory mode `0700` and file mode `0500`. The worker verifies
+the copy's hash and actual `process.execPath`, then puts that directory first
+on its job-local `PATH`. `cell-output/provider-node-receipt.json` records the
+original and copied Node modes and hashes plus the actual sidecar mode and
+hash. This handles writable hosted tool caches without changing those caches
+or relaxing Runner's qualified-artifact permission and digest checks.
+
 Campaign reports verify the retained request binding and the digest of every
 request receipt before reducing a cell's allocation. Missing admission, request,
 or receipt evidence preserves known ledger charges and holds the rest of the
@@ -990,6 +999,8 @@ Controlled mode preserves its reviewed policy, immutable lock/source/request
 bindings, tracing, private retention, first-attempt and zero-retry gates.
 Its paid workers use `ubuntu-latest`, matching the required GitHub-hosted
 operating origin even when the legacy AWS fleet selector is enabled.
+Requested parallelism must fit both the configured campaign ceiling and the
+selected runner limit. Without a request, the lower ceiling applies.
 Legacy mode uses direct-provider credentials. A pass in one mode does not prove
 the other's credential or routing path.
 
@@ -998,13 +1009,21 @@ job run, launch, standing plan and exact selected case identities. The full
 41-case roster is filtered to that selection before matrix fan-out. A manual
 reporting run validates the complete standing plan and executes only existing
 case 194 (`get-task-context`) to register the GitHub job with real evidence.
+A manual run captures numeric job-run and launch identities from the supported
+`allurectl job-run env` command inside the watch session; watch does not fill
+an empty `ALLURE_JOB_RUN_ID` input. The captured launch must match the
+authoritative job-run response. Service-triggered runs keep their supplied ID.
 A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
 The report job creates a closed projection of case identities, checks, numeric
-usage and statuses. For controlled mode this happens inside the existing
-private-history boundary; raw attempts, controller evidence and chat reports
-remain there. Only the closed Allure results and receipt cross into the final
+usage and statuses. For controlled mode, `runner-protocol-testops.mjs export-runs`
+reads sanitized structured score/artifact records inside the existing
+private-history boundary. It binds the original grade, complete checks,
+attempt, model, provider and driver before it can emit a pass. Raw attempts,
+controller evidence and canonical chat reports remain private. Controlled
+reporting never invokes the public viewer; legacy publication keeps that path.
+Only the closed Allure results and receipt cross into the final
 protected reporting job. It checks source and attempt identity, uploads one result
 per selected case, and verifies the saved case and status bindings. Missing
 execution/report evidence becomes a broken result. A passing campaign row

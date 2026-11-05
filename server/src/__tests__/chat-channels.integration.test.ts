@@ -1,4 +1,6 @@
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
+import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../vendor/paperclip-runner/index.js";
+import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { resolveCommittedNativeRecoveryNotices, pendingNativeRecoveryNotices } from "../services/native-runtime/native-recovery-notices.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -29,6 +31,7 @@ import { deleteCompany } from "../services/company-deletion.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { chatRunSourceMessageId } from "../services/chat-channels/run-origin.js";
 import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
+import * as adapterModule from "../adapters/index.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
 import { budgetPolicies } from "@paperclipai/db";
@@ -3081,7 +3084,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
       expect(review.assessment?.summary).toBe(assessment.summary);
     });
-    it("preserves the published GitHub assessment during passive-response maintenance", async () => {
+    it.each(["external_chat_response_waiting", "preserved_result_status_unproven"] as const)(
+      "preserves the published GitHub assessment during passive-response maintenance: %s", async reason => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
@@ -3099,13 +3103,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
         status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
           endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
-        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: reason,
           nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
             continuation: { kind: "response_wake", idempotencyKey: "passive-author-reply" } },
           presentationDecision: { schema: "paperclip.run_presentation_decision.v1", resolverVersion: "2",
             activityDisposition: "collapse", chosenSource: "none", commentAction: "none", commentId: null,
             reasonCodes: ["yielded_control_plane_wait"] } } }).returning();
-      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, f.conversation.issueId!));
+      const expectedStatus = reason === "preserved_result_status_unproven" ? "blocked" : "in_review";
+      await db.update(issues).set({ status: expectedStatus }).where(eq(issues.id, f.conversation.issueId!));
       await responses.processPending();
       expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
       expect(f.responseWrites).toHaveLength(writesBefore);
@@ -3113,6 +3118,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await responses.processPending();
       await responses.processPending();
       expect(f.responseComments.get(originalId)!.body).toBe(originalBody);
+      expect(f.responseWrites).toHaveLength(writesBefore);
+      expect((await db.select({ status: issues.status }).from(issues).where(eq(issues.id, f.conversation.issueId!)))[0].status)
+        .toBe(expectedStatus);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual(reviewBefore);
       expect([...f.responseComments.keys()]).toEqual([originalId]);
       expect(await githubRunReplyState(db, { ...f.session, runId: next.id, endpointId: f.endpoint.id })).toBe("none");
@@ -3131,8 +3139,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         body: "This turn ended without publishing a final response." })).rejects.toMatchObject({ status: 403 });
       expect(f.responseWrites).toHaveLength(writes);
     });
-    it.each(["completed", "failed", "missing_decision", "comment_requested", "missing_semantic", "legacy", "uncommitted_native", "pending_publication", "missing_decision_then_missing", "uncommitted_then_failed", "malformed_null", "malformed_scalar", "malformed_schema", "malformed_action"] as const)(
-      "keeps GitHub response maintenance truthful for a new request: %s", async scenario => {
+    it.each((["completed", "failed", "missing_decision", "comment_requested", "missing_semantic", "legacy", "uncommitted_native", "pending_publication", "missing_decision_then_missing", "uncommitted_then_failed", "malformed_null", "malformed_scalar", "malformed_schema", "malformed_action"] as const)
+      .flatMap(scenario => ["external_chat_response_waiting", "preserved_result_status_unproven"].map(reason => ({ scenario, reason }))))(
+      "keeps GitHub response maintenance truthful for a new request: $scenario ($reason)", async ({ scenario, reason }) => {
       const pendingPresentation = scenario.startsWith("missing_decision") || scenario.startsWith("uncommitted") || scenario.startsWith("malformed");
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "review-before-new-request");
@@ -3146,7 +3155,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         status: scenario === "failed" ? "failed" : "succeeded", runtimeMode: scenario === "legacy" ? "legacy" : "native",
         nativePhase: scenario.startsWith("uncommitted") ? "observed" : "committed", contextSnapshot: await chatWakeContext({
           endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
-        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: "external_chat_response_waiting",
+        }), resultJson: { finalizationPhase: "committed", finalizationReasonCode: reason,
           ...(scenario === "missing_semantic" ? {} : { nativeResult: { schema: "paperclip.run_result.v1",
             reportedWorkDisposition: scenario === "completed" ? "completed" : "yielded",
             continuation: { kind: "response_wake", idempotencyKey: "new-request-wait" } } }),
@@ -69808,6 +69817,275 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it.each(["issue", "identity", "late_identity", "late_success", "stop", "pause", "revoked", "late_stop", "late_pause", "late_revoked", "late_new_owner"] as const)("retries failed chat execution authorization after actual %s lock contention", async lockKind => {
+    const f = await currentGitHubTaskRetryFixture();
+    const companyId = f.fixture.companyId;
+    const late = lockKind.startsWith("late_");
+    const transition = lockKind.replace(/^late_/, "");
+    const success = lockKind === "late_success";
+    const answer = "The saved request completed once after authorization became available.";
+    const settings = instanceSettingsService(db);
+    const previousSettings = await settings.getExperimental();
+    let providerTurns = 0;
+    const backend = vi.fn((execution: NativeExecutionInput): NativeSessionBackend => {
+      if (!success) throw new Error("The authorization probe must not create a provider backend");
+      const turnId = randomUUID();
+      const identity = { companyId, agentId: execution.binding.agentId, issueId: f.issue.id,
+        runId: execution.binding.runId, sessionId: execution.session.normalizedSessionId! };
+      const evidenceId = randomUUID(), evidenceRef = `work_product:${evidenceId}`;
+      const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+      result.summary = answer;
+      result.completionClaim.contractRevision = execution.completionContract.contract.revision;
+      result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({
+        criterionId: criterion.id, status: "satisfied", evidenceRefs: [evidenceRef],
+      }));
+      result.evidence = [{ kind: "work_product", ref: evidenceRef }];
+      result.verification[0]!.artifactRef = evidenceRef;
+      let started = () => {};
+      const turnStarted = new Promise<void>(resolve => { started = resolve; });
+      const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() { return capabilities; },
+        async *events() {
+          await turnStarted;
+          const [run] = await readHeartbeatRunsById(identity.runId);
+          yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:terminal`, sourceSeq: 1,
+            sourceInstanceId: run.runnerInstanceId!, sourceKind: "runner", runId: identity.runId,
+            normalizedSessionId: identity.sessionId, turnId, eventType: "turn.completed", schemaVersion: 1,
+            priority: 0, emittedAt: new Date().toISOString(), payload: {} } satisfies PrpEvent;
+        },
+        async startTurn() { providerTurns += 1; started(); return { turnId }; },
+        async result() { await turnStarted; return { result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId }; },
+        async snapshot() { return { backendKind: "mock", sessionId: "chat-contention-fixture", identity,
+          providerSessionId: `provider-${identity.runId}`, activeTurnId: null, pendingRuntimeRequests: [], lineage: [], cursor: "1" }; },
+        async close() {},
+      };
+      return {
+        async descriptor() { return { kind: "mock", name: "chat-execution-contention", version: "1", capabilities,
+          runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+        async openSession() {
+          await db.insert(issueWorkProducts).values({ id: evidenceId, companyId, issueId: f.issue.id,
+            type: "artifact", provider: "paperclip", title: "Saved request result", status: "ready_for_review", reviewState: "approved" });
+          return session;
+        },
+        async recoverSession() { throw new Error("The fresh authorized run must not recover another provider session"); },
+      };
+    });
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: backend });
+    const workingDirectory = late ? mkdtempSync(path.join(os.tmpdir(), "chat-execution-authorization-")) : null;
+    let release = () => {};
+    let holding: Promise<unknown> | undefined;
+    let authorization: { mockRestore(): void } | undefined;
+    let identity: { mockRestore(): void } | undefined;
+    try {
+      if (late) {
+        await settings.updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+        await db.update(agents).set({ adapterConfig: { provider: "opencode",
+          model: "openrouter/deepseek/deepseek-v4.1-flash-1017", cwd: workingDirectory,
+          workspaceStrategy: { type: "project_primary" } } }).where(eq(agents.id, f.fixture.assignedAgentId));
+      }
+      const requestInput = { db, companyId, issueId: f.issue.id,
+        actorId: "owner-user", actorSource: "cloud_tenant" as const, observedRunId: f.runId,
+        idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+      const receipt = success ? await (async () => {
+        const { issueRoutes } = await import("../routes/issues.js");
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+        app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+        app.use(errorHandler);
+        const response = await request(app).post(`/api/issues/${f.issue.id}/retry`)
+          .send({ observedRunId: f.runId, idempotencyKey: requestInput.idempotencyKey });
+        expect(response.status).toBe(202);
+        return response.body as Awaited<ReturnType<typeof requestTaskRetry>>;
+      })() : await requestTaskRetry(requestInput);
+      await f.service.processFailedChatRunRetry(receipt.chatActionId!);
+      const [wake] = await readAgentWakeupRequestsById(receipt.chatActionId!);
+      expect(wake).toMatchObject({ status: "queued", runId: expect.any(String) });
+      const runId = wake.runId!;
+      const realAuthorize = durableChatWakeup.authorizeFailedChatRunRetryWake;
+      const realInitialize = runIdentityModule.initializeRunIdentity;
+      let attempts = 0;
+      let contention: unknown;
+      let changed: Promise<unknown> | undefined;
+      const denied = ["stop", "pause", "revoked", "new_owner"].includes(transition);
+      let newOwnerId: string | undefined;
+      let frozenInput: unknown;
+      const initialized: string[] = [];
+      let lateAuthorizationCompleted = false;
+      authorization = vi.spyOn(durableChatWakeup, "authorizeFailedChatRunRetryWake").mockImplementation(async (...args) => {
+        const input = args[2];
+        if (input.phase !== "execution" || input.runId !== runId) return realAuthorize(...args);
+        attempts += 1;
+        if (attempts > 1) await changed;
+        if (attempts === (late ? 2 : 1)) {
+          if (late) {
+            const [prepared] = await readHeartbeatRunsById(runId);
+            expect(prepared).toMatchObject({ runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: {
+              provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017" },
+              binding: { runId },
+            } } });
+            frozenInput = structuredClone(prepared.runnerProfileJson!.nativeExecutionInput);
+          }
+          let acquired = () => {};
+          const locked = new Promise<void>(resolve => { acquired = resolve; });
+          const held = new Promise<void>(resolve => { release = resolve; });
+          holding = db.transaction(async tx => {
+            if (lockKind === "issue") await tx.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.companyId, companyId), eq(issues.id, f.issue.id))).for("update");
+            else await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${companyId}:${f.action.principalId}`}, 0))`);
+            acquired();
+            await held;
+          });
+          await locked;
+        }
+        try {
+          const authorized = await realAuthorize(...args);
+          if (late && attempts > 2 && !denied) {
+            lateAuthorizationCompleted = true;
+            expect((await readHeartbeatRunsById(runId))[0].runnerProfileJson!.nativeExecutionInput).toEqual(frozenInput);
+            if (!success) throw new Error("execution_authorization_probe_complete");
+          }
+          return authorized;
+        }
+        catch (error) {
+          if (!contention) {
+            contention = error;
+            changed = holding!.then(async () => {
+              if (transition === "stop") return heartbeat.cancelRun(runId, "Stopped by board during authorization");
+              if (transition === "pause") return db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.fixture.assignedAgentId));
+              if (transition === "revoked") return db.update(companyMemberships).set({ status: "suspended" }).where(and(
+                eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "owner-user")));
+              if (transition === "new_owner") {
+                const [owner] = await db.insert(heartbeatRuns).values({ companyId, agentId: f.fixture.assignedAgentId,
+                  status: "running", contextSnapshot: { issueId: f.issue.id } }).returning();
+                newOwnerId = owner.id;
+                return db.update(issues).set({ executionRunId: owner.id }).where(eq(issues.id, f.issue.id));
+              }
+            });
+          }
+          release();
+          throw error;
+        }
+      });
+      identity = vi.spyOn(runIdentityModule, "initializeRunIdentity").mockImplementation(async (database, input) => {
+        const value = await realInitialize(database, input);
+        if (input.runId === runId && !late && !denied) {
+          initialized.push(input.runId);
+          throw new Error("execution_authorization_probe_complete");
+        }
+        return value;
+      });
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+        eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"), isNull(heartbeatRuns.wakeupRequestId)));
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.fixture.assignedAgentId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      await holding;
+      await changed;
+      expect(contention).toBeTruthy();
+      expect(late ? lateAuthorizationCompleted : initialized).toEqual(late ? !denied : denied ? [] : [runId]);
+      if (denied) expect(attempts).toBeLessThanOrEqual(late ? 3 : 2);
+      else expect(attempts).toBe(late ? 3 : 2);
+      expect(backend).toHaveBeenCalledTimes(success ? 1 : 0);
+      expect(providerTurns).toBe(success ? 1 : 0);
+      const [run] = await readHeartbeatRunsById(runId);
+      expect(run.retryOfRunId).toBe(f.runId);
+      if (!denied && !success) expect(run.error).toBe("execution_authorization_probe_complete");
+      if (late) expect(run.runnerProfileJson!.nativeExecutionInput).toEqual(frozenInput);
+      if (newOwnerId) expect((await readIssuesById(f.issue.id))[0].executionRunId).toBe(newOwnerId);
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(value => value.retryOfRunId === f.runId)).toHaveLength(1);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "failed" });
+      expect(await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toHaveLength(success ? 1 : 0);
+      if (success) {
+        expect(run.status).toBe("succeeded");
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("committed");
+        await f.service.processPendingPublications();
+        await f.service.processPendingPublications();
+        const replies = (await readChatPublicationsByEndpointId(f.endpoint.id)).filter(publication =>
+          typeof publication.payload.text === "string" && publication.payload.text.includes(answer));
+        expect(replies).toHaveLength(1);
+        expect(replies[0]).toMatchObject({ state: "published", providerMessageId: expect.any(String) });
+        await f.service.processFailedChatRunRetry(receipt.chatActionId!);
+        await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+        await heartbeat.drainActiveRunExecutions();
+        expect(providerTurns).toBe(1);
+      }
+    } finally {
+      release();
+      await holding;
+      authorization?.mockRestore();
+      identity?.mockRestore();
+      await heartbeat.drainActiveRunExecutions();
+      await f.service.shutdown();
+      if (late) await settings.updateExperimental(previousSettings);
+      if (workingDirectory) rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ordinary legacy task Retry success without replaying its canonical request", async () => {
+    const fixture = await seedCompany();
+    const companyId = fixture.companyId, agentId = fixture.assignedAgentId;
+    const directory = mkdtempSync(path.join(os.tmpdir(), "legacy-task-retry-control-"));
+    const answer = "The ordinary legacy continuation completed once.";
+    const execute = vi.fn(async (input: Parameters<ReturnType<typeof adapterModule.getServerAdapter>["execute"]>[0]) => {
+      await issueService(db).update(String(input.context.issueId), { status: "done",
+        actorAgentId: agentId, actorRunId: input.runId, companyGuard: companyId });
+      return { exitCode: 0, signal: null, timedOut: false, summary: answer,
+        resultJson: { summary: answer }, provider: "test", model: "openrouter/synthetic" };
+    });
+    const originalAdapter = adapterModule.getServerAdapter;
+    const adapter = vi.spyOn(adapterModule, "getServerAdapter").mockImplementation(type =>
+      type === "opencode_local" ? { ...originalAdapter(type), execute } : originalAdapter(type));
+    const heartbeat = heartbeatService(db);
+    try {
+      await db.update(agents).set({ adapterType: "opencode_local", adapterConfig: { cwd: directory,
+        model: "openrouter/synthetic", workspaceStrategy: { type: "project_primary" } },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, agentId));
+      const [issue] = await db.insert(issues).values({ companyId, title: "Continue a legacy conversation",
+        status: "todo", assigneeAgentId: agentId, workMode: "quick" }).returning();
+      const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+        status: "failed", errorCode: "adapter_failed", finishedAt: new Date(), responsibleUserId: "owner-user",
+        runnerProfileJson: { adapterDispatch: { adapterType: "opencode_local" } },
+        contextSnapshot: { issueId: issue.id, taskId: issue.id, taskKey: issue.id },
+        resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
+      const { issueRoutes } = await import("../routes/issues.js");
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+      app.use("/api", issueRoutes(db, createStorageService().storage));
+      app.use(errorHandler);
+      const response = await request(app).post(`/api/issues/${issue.id}/retry`)
+        .send({ observedRunId: source.id, idempotencyKey: randomUUID() });
+      expect(response.status).toBe(202);
+      await heartbeat.resumeTaskRetry(companyId, response.body.requestId);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const [receipt] = await readAgentWakeupRequestsById(response.body.requestId);
+      const [run] = await readHeartbeatRunsById(receipt.runId!);
+      expect(receipt.payload).toMatchObject({ issueId: issue.id, taskRetry: { sourceRunId: source.id } });
+      expect(run).toMatchObject({ runtimeMode: "legacy", status: "succeeded",
+        contextSnapshot: { issueId: issue.id, taskRetryRequestId: response.body.requestId }, resultJson: { summary: answer } });
+      expect(execute, JSON.stringify((await readHeartbeatRunsByCompanyId(companyId)).map(value => ({
+        id: value.id, status: value.status, source: value.contextSnapshot?.source,
+        requestId: value.contextSnapshot?.taskRetryRequestId, retryOfRunId: value.retryOfRunId,
+      })))).toHaveBeenCalledOnce();
+      await heartbeat.resumeTaskRetry(companyId, response.body.requestId);
+      await heartbeat.drainActiveRunExecutions();
+      expect(execute).toHaveBeenCalledOnce();
+      expect((await readHeartbeatRunsById(source.id))[0]).toEqual(source);
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(value =>
+        value.contextSnapshot?.taskRetryRequestId === response.body.requestId)).toHaveLength(1);
+      expect((await readIssuesById(issue.id))[0].executionRunId).toBeNull();
+      expect((await readIssuesById(issue.id))[0].status).toBe("done");
+    } finally {
+      adapter.mockRestore();
+      await heartbeat.drainActiveRunExecutions();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it("rehydrates exact chat retry authority and verifies its persisted projection after service restart", async () => {
     const context = await failedChatRetryFixture("telegram");
