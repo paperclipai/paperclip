@@ -665,7 +665,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
-  it("records an actionable GitHub access error after one approved call and keeps the connection usable", async () => {
+  it.each(["config", "transport", "application", "legacy_application"])("records an actionable GitHub access error from %s metadata after one approved call and keeps the connection usable", async source => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -679,8 +679,13 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     try {
       const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
         url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
-        connectionConfig: { sourceTemplateKey: "github" },
+        connectionConfig: source === "config" ? { sourceTemplateKey: "github" } : {},
       });
+      if (source === "transport") await db.update(toolConnections).set({ transportConfig: { sourceTemplateKey: "github" } })
+        .where(eq(toolConnections.id, connection.id));
+      if (source === "application" || source === "legacy_application") await db.update(toolApplications)
+        .set({ metadata: source === "application" ? { sourceTemplateKey: "github" } : { source: "github" } })
+        .where(eq(toolApplications.id, application.id));
       await db.update(toolCatalogEntries).set({ inputSchema: {
         type: "object", properties: { name: { type: "string" }, private: { type: "boolean" } },
         required: ["name"], additionalProperties: false,

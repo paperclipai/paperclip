@@ -1,7 +1,8 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { toolConnections, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import type { IssueThreadInteraction, RequestConfirmationInteraction } from "@paperclipai/shared";
 import { projectGitHubActionResult } from "./github-access-errors.js";
+import { toolSourceTemplateKeySql } from "./source-template-key.js";
 
 /** Read-only enrichment of historical errors. Resolve provider identity in one
  * company-scoped batch without reading credentials or relying on mutable names. */
@@ -20,13 +21,13 @@ export async function projectGitHubInteractionErrors(
     id: toolConnections.id,
     companyId: toolConnections.companyId,
     applicationId: toolConnections.applicationId,
-  }).from(toolConnections).where(and(
+    sourceTemplateKey: toolSourceTemplateKeySql,
+  }).from(toolConnections).innerJoin(toolApplications, and(
+    eq(toolApplications.id, toolConnections.applicationId),
+    eq(toolApplications.companyId, toolConnections.companyId),
+  )).where(and(
     inArray(toolConnections.id, [...new Set(candidates.map(item => item.payload.toolAction!.connectionId!))]),
     inArray(toolConnections.companyId, [...new Set(candidates.map(item => item.companyId))]),
-    or(
-      eq(sql<string>`${toolConnections.config}->>'sourceTemplateKey'`, "github"),
-      eq(sql<string>`${toolConnections.transportConfig}->>'sourceTemplateKey'`, "github"),
-    ),
   ));
   const byCompanyAndId = new Map(connections.map(connection => [`${connection.companyId}:${connection.id}`, connection]));
   const projected = new Map(candidates.flatMap(interaction => {
@@ -34,7 +35,7 @@ export async function projectGitHubInteractionErrors(
     const connection = byCompanyAndId.get(`${interaction.companyId}:${action.connectionId}`);
     if (!connection || (action.applicationId && action.applicationId !== connection.applicationId)) return [];
     return [[interaction.id, {
-      ...interaction, result: projectGitHubActionResult("github", interaction.result),
+      ...interaction, result: projectGitHubActionResult(connection.sourceTemplateKey, interaction.result),
     }] as const];
   }));
   return interactions.map(interaction => projected.get(interaction.id) ?? interaction);

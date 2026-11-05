@@ -20,10 +20,14 @@ describe("cancellation provenance", () => {
     expect(requestedRunCancellation({ queuedCommentInterruptQueueId: "queue", interruptedByActorType: "user", interruptedByActorId: "board" }, "Send messages"))
       .toMatchObject({ source: "queued_message", initiator: { type: "user", id: "board" } });
   });
-  it("records an unstarted dependency cancellation as expected without authorizing a continuation", () => {
-    const queued = { ...run, startedAt: null };
+  it.each([
+    { runtimeMode: "legacy", source: "dependency_gate" },
+    { runtimeMode: "legacy", source: "stale_queued_run_gate" },
+    { runtimeMode: "native", source: "stale_queued_run_gate" },
+  ] as const)("records an unstarted $runtimeMode $source dependency cancellation without authorizing a continuation", ({ runtimeMode, source }) => {
+    const queued = { ...run, runtimeMode, startedAt: null };
     const resultJson = cancellationResultJson(queued, "cancelled", {
-      stopReason: "issue_dependencies_blocked", timeoutSource: "dependency_gate",
+      stopReason: "issue_dependencies_blocked", timeoutSource: source,
     }, "issue_dependencies_blocked");
     expect(resultJson?.cancellation).toMatchObject({ source: "control_plane", expected: true });
     expect(canContinueCancelledRun({ ...queued, resultJson })).toBe(false);

@@ -159,14 +159,19 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }
 
   it.each([
-    ["tool_error", "GitHub"], ["tool_execution_failed", "GitHub"],
-    ["tool_error", "GitHub (2)"], ["tool_execution_failed", "Prototype code"],
-  ])("projects a saved GitHub %s permission error for %s without rewriting its diagnostic record", async (errorCode, appName) => {
+    ["tool_error", "GitHub", "config"], ["tool_execution_failed", "GitHub", "config"],
+    ["tool_error", "GitHub (2)", "config"], ["tool_execution_failed", "Prototype code", "config"],
+    ["tool_error", "Transport GitHub", "transport"],
+    ["tool_error", "Imported GitHub", "application"], ["tool_execution_failed", "Legacy GitHub", "legacy_application"],
+  ])("projects a saved GitHub %s permission error for %s without rewriting its diagnostic record", async (errorCode, appName, source) => {
     const { companyId, issueId } = await seedConfirmationIssue("GitHub access repair");
     const [application] = await db.insert(toolApplications).values({ companyId, applicationKey: `github-${randomUUID()}`,
-      name: appName, type: "mcp_http" }).returning();
+      name: appName, type: "mcp_http", metadata: source === "application" ? { sourceTemplateKey: "github" }
+        : source === "legacy_application" ? { source: "github" } : {} }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id,
-      name: appName, uid: `github-${randomUUID()}`, transport: "mcp_remote", config: { sourceTemplateKey: "github" } }).returning();
+      name: appName, uid: `github-${randomUUID()}`, transport: "mcp_remote",
+      config: source === "config" ? { sourceTemplateKey: "github" } : {},
+      transportConfig: source === "transport" ? { sourceTemplateKey: "github" } : {} }).returning();
     const errorMessage = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
     const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
       kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Create repository?",
@@ -189,7 +194,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const connectionCompanyId = variant === "other_company" ? randomUUID() : companyId;
     if (connectionCompanyId !== companyId) await db.insert(companies).values(interactionCompanyRow(connectionCompanyId));
     const [application] = await db.insert(toolApplications).values({ companyId: connectionCompanyId,
-      applicationKey: `provider-${randomUUID()}`, name: "GitHub", type: "mcp_http" }).returning();
+      applicationKey: `provider-${randomUUID()}`, name: "GitHub", type: "mcp_http",
+      metadata: { sourceTemplateKey: "github" } }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId: connectionCompanyId, applicationId: application!.id,
       name: "GitHub", uid: `provider-${randomUUID()}`, transport: "mcp_remote",
       config: { sourceTemplateKey: variant === "other_provider" ? "notion" : "github" } }).returning();

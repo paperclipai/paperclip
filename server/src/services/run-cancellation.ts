@@ -88,9 +88,12 @@ export function readControllerLeaseLoss(value: unknown): LegacyControllerLeaseLo
 /** A queue admission wait has no provider attempt to retry. Historical rows can
  * carry unknown cancellation provenance, so use the queue's original receipt. */
 export function isQueuedDependencyWait(run: Pick<Run, "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "runtimeMode" | "startedAt">>): boolean {
-  return run.status === "cancelled" && run.runtimeMode === "legacy" && run.startedAt === null &&
+  const source = run.resultJson?.timeoutSource;
+  const queueReceipt = (source === "dependency_gate" && run.runtimeMode === "legacy") ||
+    (source === "stale_queued_run_gate" && (run.runtimeMode === "legacy" || run.runtimeMode === "native"));
+  return run.status === "cancelled" && queueReceipt && run.startedAt === null &&
     run.errorCode === "issue_dependencies_blocked" && run.resultJson?.stopReason === run.errorCode &&
-    run.resultJson?.timeoutSource === "dependency_gate";
+    run.resultJson?.timeoutFired !== true;
 }
 
 /** Preserve recorded stop intent when adapter completion replaces resultJson. */

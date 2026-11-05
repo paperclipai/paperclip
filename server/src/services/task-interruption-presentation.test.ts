@@ -21,9 +21,18 @@ describe("queued dependency wait presentation", () => {
     }
   });
 
+  it.each(["legacy", "native"])("keeps an unstarted %s dispatcher dependency wait neutral", runtimeMode => {
+    const dispatchedWait = { ...waitingRun, runtimeMode,
+      resultJson: { ...waitingRun.resultJson, timeoutSource: "stale_queued_run_gate" } };
+    expect(projectTaskInterruption(issue, { run: dispatchedWait, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(issue, { run: { ...dispatchedWait, startedAt: new Date() }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+
   it("keeps genuine failures and current user gates visible", () => {
     for (const changed of [{ status: "failed" }, { runtimeMode: "native" }, { startedAt: new Date() },
-      { errorCode: "setup_failed" }, { resultJson: {} }]) {
+      { errorCode: "setup_failed" }, { resultJson: {} }, { resultJson: { ...waitingRun.resultJson, timeoutFired: true } }]) {
       expect(projectTaskInterruption(issue, { run: { ...waitingRun, ...changed }, agent, paused: false, approval: false }))
         .toMatchObject({ state: "failed", canRetry: true });
     }
