@@ -1545,8 +1545,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         } else if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
           // An accepted interaction keeps its own continuation retry, which
           // carries the interaction and escalates on exhaustion.
-          const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
-            || livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE)
+          const interactionOwnsRetry = livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE

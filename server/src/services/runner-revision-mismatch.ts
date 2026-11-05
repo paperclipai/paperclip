@@ -1,9 +1,10 @@
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { readEnvironmentTaskErrorCode } from "@paperclipai/plugin-sdk";
+import { RUNNER_REVISION_WAIT_RETRY_REASON } from "../modules/run-dispatch/domain/wake-context.js";
 
 export const RUNNER_REVISION_MISMATCH_CODE = "runner_revision_mismatch";
 
-export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
+export { RUNNER_REVISION_WAIT_RETRY_REASON };
 
 export const RUNNER_REVISION_MISMATCH_RETRY = {
   retryReason: RUNNER_REVISION_WAIT_RETRY_REASON, wakeReason: "runner_revision_retry", maxAttempts: 10, delayMs: 60_000,
