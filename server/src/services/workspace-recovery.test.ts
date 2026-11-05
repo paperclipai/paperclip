@@ -1032,6 +1032,57 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
   }, 30_000);
 
+  it.each(["space_available", "later_cache", "denied_open"])("recovers read-only provider assets without directory creation times: %s", async scenario => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    const assets = path.join(f.pack, "provider-assets"), executable = path.join(assets, "cursor-executable");
+    const metadata = path.join(assets, "cursor-metadata.json"), writable = path.join(assets, "installed-agent");
+    await writeFile(executable, "immutable executable\n"); await chmod(executable, 0o500);
+    await writeFile(metadata, "immutable metadata\n"); await chmod(metadata, 0o400);
+    await writeFile(writable, Buffer.alloc(1024 * 1024, 7));
+    const dependency = path.join(f.pack, "node_modules", "installed-tool");
+    if (scenario === "later_cache") await chmod(dependency, 0o500);
+    let inspected = false;
+    target.runner!.execute = async input => {
+      if (input.command !== "node" || input.args?.[0] !== "-e") return execute(input);
+      if (input.args[2] === "reclaim") {
+        const [prepared] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+          eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+        const staged = path.join(f.pack, `provider-assets.paperclip-reclaim-${prepared.id}`);
+        expect(await readFile(path.join(staged, "cursor-executable"), "utf8")).toBe("immutable executable\n");
+        expect((await lstat(path.join(staged, "cursor-executable"))).mode & 0o777).toBe(0o500);
+        expect(await readFile(path.join(staged, "cursor-metadata.json"), "utf8")).toBe("immutable metadata\n");
+        expect((await lstat(path.join(staged, "cursor-metadata.json"))).mode & 0o777).toBe(0o400);
+        if (scenario === "space_available") expect(await readFile(path.join(staged, "installed-agent"))).toEqual(Buffer.alloc(1024 * 1024, 7));
+        inspected = true;
+      }
+      const fault = `(()=>{const fs=require('node:fs/promises'),sync=require('node:fs'),stat=fs.lstat,open=fs.open,statfs=fs.statfs;
+        const full=()=>${JSON.stringify(scenario)}!=='space_available'&&(()=>{try{return sync.statSync(${JSON.stringify(writable)}).size>0;}catch{return false;}})();
+        fs.statfs=async(...args)=>{const value=await statfs(...args);return full()?{...value,bavail:0}:value;};
+        fs.lstat=async(...args)=>{const value=await stat(...args);if(args[1]?.bigint)value.birthtimeNs=0n;return value;};
+        fs.open=async(...args)=>{if(typeof args[1]==='number'&&(args[1]&sync.constants.O_RDWR)){
+          const value=sync.lstatSync(args[0]);if(!(value.mode&0o222)||(${JSON.stringify(scenario)}==='denied_open'&&args[0].endsWith('/node_modules/installed-tool')))
+            throw Object.assign(new Error('Permission denied'),{code:'EACCES'});
+          if(${JSON.stringify(scenario)}==='space_available')throw Error('unnecessary_cache_write');
+        }
+          const creates=typeof args[1]==='number'?!!(args[1]&(sync.constants.O_CREAT|sync.constants.O_TRUNC)):/[wa]/.test(args[1]);
+          if(full()&&creates)throw Object.assign(new Error('No space left on device'),{code:'ENOSPC'});
+          const handle=await open(...args),stat=handle.stat.bind(handle);
+          handle.stat=async(...args)=>{const value=await stat(...args);if(args[0]?.bigint)value.birthtimeNs=0n;return value;};return handle;};})();`;
+      return execute({ ...input, args: ["-e", fault + input.args[1], ...input.args.slice(2)] });
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(inspected).toBe(true);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId, snapshotId: authority.snapshotId! });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  }, 30_000);
+
   it.each(["acknowledgement", "journal", "marker_write"])("resumes cache staging after its %s is interrupted", async failure => {
     const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
     await writeFile(path.join(f.pack, "node_modules", "installed-tool"), Buffer.alloc(1024 * 1024, 7));

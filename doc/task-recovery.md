@@ -181,6 +181,8 @@ when archive-helper writes fail for lack of space.
 On filesystems without creation times, deleting children changes the directory's
 fallback timestamp. Recovery first releases blocks by truncating only regular
 installation files with no additional hard links through verified file handles. It
+skips files without write permission and stops scanning as soon as marker space
+is available, including when an earlier eligible cache supplied that space. It
 then moves the cache to an operation-specific path and pins a small identity
 marker in the existing Core journal before recursive deletion. An interrupted
 cleanup can resume against that marker without accepting a new installation,
@@ -191,8 +193,9 @@ Neither task files nor sessions enter this staging path. Changed identities or
 symlinks keep the original export failure.
 
 Inspection, optional staging and deletion each have a bounded remote call. The
-block-release scan visits at most 8,192 entries and stops after releasing 256 KiB
-of installation data, before allocating the marker. Journal creation and
+block-release scan visits at most 8,192 entries across the eligible caches and
+stops once 256 KiB is available for the markers. If capacity cannot be read, it
+uses a bounded 256 KiB estimate of released blocks. Journal creation and
 cleanup record separate terminal operations; neither is a file-save receipt or
 a new background obligation. An uncertain acknowledgement never proves that
 files were saved. This adds no provider turn, recovery generation or retry budget,

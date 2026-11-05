@@ -81,16 +81,20 @@ const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('n
   const bytes=await fs.readFile(p),text=bytes.toString();
   if(text!==markerText(item)&&!(partial&&markerText(item).startsWith(text)))throw Error('marker_changed');
   return {identity:identity(x),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};};
- const releaseBlocks=async root=>{let freed=0n,visited=0;
+ let freed=0n,visited=0;
+ const markerSpaceAvailable=async()=>{const bytes=await available();return bytes===null?freed>=262144n:bytes>=262144;};
+ const releaseBlocks=async root=>{
   const visit=async dir=>{await directory(dir);for await(const entry of await fs.opendir(dir)){
-   if(freed>=262144n||++visited>8192)return;
+   if(++visited>8192||await markerSpaceAvailable())return;
    if(entry.name===markerName)continue;
    const p=path.join(dir,entry.name),x=await stat(p);if(!x||x.isSymbolicLink())continue;
    if(x.isDirectory()){await visit(p);continue;}
-   if(!x.isFile()||x.nlink!==1n||x.size===0n)continue;
-   const handle=await fs.open(p,constants.O_RDWR|constants.O_NOFOLLOW);
-   try{const opened=await handle.stat({bigint:true});if(!same(identity(x),identity(opened))||opened.nlink!==1n)throw Error('cache_changed');
-    await handle.truncate(0);freed+=opened.blocks*512n;}finally{await handle.close();}
+   if(!x.isFile()||x.nlink!==1n||x.size===0n||!(x.mode&0o222n))continue;
+   let handle;
+   try{handle=await fs.open(p,constants.O_RDWR|constants.O_NOFOLLOW);
+    const opened=await handle.stat({bigint:true});if(!same(identity(x),identity(opened))||opened.nlink!==1n)throw Error('cache_changed');
+    await handle.truncate(0);freed+=opened.blocks*512n;
+   }catch(error){if(!['EACCES','EPERM','EROFS'].includes(error.code))throw error;}finally{await handle?.close();}
   }};await visit(root);};
  const fallback=plan.targets.filter(item=>item.generation.startsWith('c:'));
  for(const item of plan.targets){
@@ -98,7 +102,8 @@ const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('n
   const p=path.join(pack,item.name),current=await stat(p);
   if(item.generation.startsWith('c:')){
    const staged=await stat(stagedPath(item));if(current&&staged)throw Error('cache_changed');
-   if(staged){await directory(stagedPath(item));if(!same(item,identity(staged),false))throw Error('cache_changed');}
+   if(staged){await directory(stagedPath(item));if(!same(item,identity(staged),false))throw Error('cache_changed');
+    await markerState(path.join(stagedPath(item),markerName),item);}
    else if(current){await directory(p);const marker=await stat(path.join(p,markerName));
     if(!same(item,identity(current),!marker))throw Error('cache_changed');
     if(marker)await markerState(path.join(p,markerName),item,true);}
@@ -106,10 +111,14 @@ const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('n
  }
  if(mode==='stage'){
   const staged=[];
+  for(const item of plan.targets){if(await markerSpaceAvailable())break;
+   const p=path.join(pack,item.name);
+   if(await stat(p))await releaseBlocks(p);
+   else if(item.generation.startsWith('c:')&&await stat(stagedPath(item)))await releaseBlocks(stagedPath(item));
+  }
   for(const item of fallback){const p=path.join(pack,item.name),dest=stagedPath(item),current=await stat(p);
    if(current){const marker=path.join(p,markerName),existing=await stat(marker);
     if(!existing||((await fs.readFile(marker)).toString()!==markerText(item))){
-     await releaseBlocks(p);
      const handle=await fs.open(marker,constants.O_WRONLY|constants.O_NOFOLLOW|(existing?0:constants.O_CREAT|constants.O_EXCL),0o600);
      try{if(existing&&!same(identity(existing),identity(await handle.stat({bigint:true}))))throw Error('marker_changed');
       await handle.writeFile(markerText(item));await handle.sync();}finally{await handle.close();}
