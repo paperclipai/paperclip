@@ -114,3 +114,9 @@ it("normalizes cannot in a warning without masking a later positive request", ()
   expect(solicitsChatCredential(warning)).toBe(false);
   expect(solicitsChatCredential(`${warning} But send it here in chat.`)).toBe(true);
 });
+
+it("separates a directly negated chat destination from secure entry", () => {
+  expect(solicitsChatCredential("Enter and save the key there — not here in chat.")).toBe(false);
+  expect(solicitsChatCredential("Enter the key in Settings — then paste it here in chat.")).toBe(true);
+  expect(solicitsChatCredential("Enter your key here in chat — not in the secure form.")).toBe(true);
+});

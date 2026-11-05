@@ -25,7 +25,8 @@ export function solicitsChatCredential(text: string): boolean {
     .replace(/\b((?:do|should|must|can|could|will|would)\s+not)\s+ever\b/gi, "$1")
     .replace(/,\s*and\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, ", ")
     .replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
-    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:(?:you\s+)?(?:(?:do|should|must|can|could|will|would)\s+not|don.t|never|not)\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ");
+    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:(?:you\s+)?(?:(?:do|should|must|can|could|will|would)\s+not|don.t|never|not)\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ")
+    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:here|chat|message|conversation)\b)/gi, " but ");
   const hasKeyContext = /key|credential|token/i.test(text);
   if (requestText.split(/[.!?;\n]+/).some(sentence => {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);
