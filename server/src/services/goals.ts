@@ -15,7 +15,7 @@ async function assertParentCompany(
 ) {
   if (!parentId) return;
   const [parent] = await db.select({ id: goals.id }).from(goals)
-    .where(and(eq(goals.id, parentId), eq(goals.companyId, companyId)));
+    .where(and(eq(goals.id, parentId), eq(goals.companyId, companyId))).for("key share");
   if (!parent) throw unprocessable("Parent goal not found in this company");
 }
 
@@ -70,14 +70,15 @@ export function goalService(db: Db) {
 
     getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
 
-    create: async (companyId: string, data: Omit<typeof goals.$inferInsert, "companyId">) => {
-      await assertParentCompany(db, companyId, data.parentId);
-      return db
-        .insert(goals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]);
-    },
+    create: (companyId: string, data: Omit<typeof goals.$inferInsert, "companyId">) =>
+      db.transaction(async (tx) => {
+        await assertParentCompany(tx, companyId, data.parentId);
+        return tx
+          .insert(goals)
+          .values({ ...data, companyId })
+          .returning()
+          .then((rows) => rows[0]);
+      }),
 
     update: (id: string, data: GoalUpdate) =>
       db.transaction(async (tx) => {

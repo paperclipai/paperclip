@@ -7,6 +7,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { HttpError } from "../errors.js";
 import { goalService } from "../services/goals.js";
+import { buildHostServices } from "../services/plugin-host-services.js";
+import { createPluginEventBus } from "../services/plugin-event-bus.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -121,6 +123,90 @@ describeDatabase("goal parent company validation", () => {
     const patch = { id: unwantedId, companyId, title: "Allowed" };
     expect(await service.update(goal.id, patch as any)).toMatchObject({ id: goal.id, companyId, title: "Allowed" });
     expect(await service.getById(unwantedId)).toBeNull();
+  });
+
+  it("enforces the company boundary through the actual plugin host raw-patch producer", async () => {
+    const home = await company();
+    const foreign = await company();
+    const service = goalService(db);
+    const parent = await service.create(home, { title: "Home parent" });
+    const child = await service.create(home, { title: "Original", parentId: parent.id });
+    const host = buildHostServices(db, "goal-test-plugin", "goal-test", createPluginEventBus());
+    try {
+      const failure = await host.goals.update({ companyId: home, goalId: child.id,
+        patch: { companyId: foreign, parentId: parent.id, title: "Must not change" },
+      }).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(HttpError);
+      expect((failure as HttpError).status).toBe(422);
+      expect(await service.getById(child.id)).toMatchObject({ companyId: home, title: "Original", parentId: parent.id });
+      expect(await host.goals.update({ companyId: home, goalId: child.id, patch: { title: "Allowed" } }))
+        .toMatchObject({ companyId: home, title: "Allowed", parentId: parent.id });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("keeps the checked parent alive through a concurrent child creation", async () => {
+    const companyId = await company();
+    const service = goalService(db);
+    const parent = await service.create(companyId, { title: "Parent" });
+    await db.execute(sql`create function goal_parent_insert_gate() returns trigger language plpgsql as $$
+      begin
+        perform pg_advisory_xact_lock_shared(hashtextextended(current_database() || 'goal-parent-insert', 0));
+        return new;
+      end $$`);
+    await db.execute(sql`create trigger goal_parent_insert_gate before insert on goals
+      for each row execute function goal_parent_insert_gate()`);
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const gateReady = new Promise<number>((resolve) => { ready = resolve; });
+    const gate = db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(current_database() || 'goal-parent-insert', 0))`);
+      const [owner] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      ready(owner.pid);
+      await released;
+    });
+    const gatePid = await gateReady;
+    const creation = service.create(companyId, { title: "Child", parentId: parent.id });
+    // The insert's advisory wait proves its parent check has completed.
+    await expect.poll(async () => {
+      const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_locks
+        where locktype = 'advisory' and not granted and ${gatePid} = any(pg_blocking_pids(pid))`);
+      return waiting.count;
+    }, { timeout: 5_000 }).toBe(1);
+    let deletionPid!: number;
+    let deletionReady!: () => void;
+    let deletionSettled = false;
+    const deletionStarted = new Promise<void>((resolve) => { deletionReady = resolve; });
+    const deletion = db.transaction(async (tx) => {
+      const [owner] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      deletionPid = owner.pid;
+      deletionReady();
+      await tx.delete(goals).where(eq(goals.id, parent.id));
+    }).finally(() => { deletionSettled = true; });
+    const results = Promise.allSettled([creation, deletion]);
+    try {
+      await deletionStarted;
+      await expect.poll(async () => {
+        const [state] = await db.execute<{ blocked: boolean }>(sql`select cardinality(pg_blocking_pids(${deletionPid})) > 0 as blocked`);
+        return deletionSettled || state.blocked;
+      }, { timeout: 5_000 }).toBe(true);
+      const deleteWasBlocked = !deletionSettled;
+      release();
+      await gate;
+      const [created, deleted] = await results;
+      const code = (result: PromiseSettledResult<unknown>) => result.status === "rejected"
+        ? result.reason?.cause?.code ?? result.reason?.code ?? String(result.reason) : null;
+      expect({ deleteWasBlocked, createError: code(created), deleteError: code(deleted) })
+        .toEqual({ deleteWasBlocked: true, createError: null, deleteError: "23503" });
+    } finally {
+      release();
+      await gate;
+      await results;
+      await db.execute(sql`drop trigger goal_parent_insert_gate on goals`);
+      await db.execute(sql`drop function goal_parent_insert_gate()`);
+    }
   });
 
   it("allows concurrent parent edits without conflicting with foreign-key checks", async () => {
