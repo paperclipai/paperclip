@@ -172,13 +172,19 @@ installations remain held for operator repair.
 
 Only the reserved provider-pack `node_modules` and `provider-assets` directories
 are eligible. The installation manifest, task files, Git history, sessions,
-checkpoints and action receipts stay intact. A source-bound journal records the
-manifest and directory identities before removal, allowing an interrupted move
-to resume without reclaiming a replacement installation. Changed identities or
-symlinks keep the original export failure. Cleanup has a bounded remote call and
-records its outcome independently; an uncertain acknowledgement never proves
-that files were saved. This adds no provider turn, recovery generation or retry
-budget, and the normal save and stop receipts still govern continuation.
+checkpoints and action receipts stay intact. A read-only inspection supplies
+manifest and directory identities for a source-bound journal in Core's database.
+That journal commits before deletion starts. The sandbox commands create no
+files or directories, so cleanup can start even when archive-helper writes fail
+for lack of space. The prepared inventory allows an interrupted deletion to
+resume while refusing a replacement installation. Changed identities or symlinks
+keep the original export failure.
+
+Inspection and deletion each have a bounded remote call. Journal creation and
+cleanup record separate terminal operations; neither is a file-save receipt or
+a new background obligation. An uncertain acknowledgement never proves that
+files were saved. This adds no provider turn, recovery generation or retry budget,
+and the normal save and stop receipts still govern continuation.
 
 Known publication receipts and exact API mutation receipts carry forward.
 Uncertain API mutations and upstream tool mutations remain fenced across run

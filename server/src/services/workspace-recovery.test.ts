@@ -82,6 +82,7 @@ import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
+import { withDedicatedDbConnection } from "@paperclipai/db";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
@@ -665,7 +666,7 @@ describe("automatic retained workspace recovery", () => {
     return { ...f, ...(sourceLayout === "published" ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
   }
 
-  async function pressuredToolCache() {
+  async function pressuredToolCache(pressure: "transfer" | "sandbox-write" = "transfer") {
     const f = await acceptedRemoteExport();
     const runner = path.join(f.remote, ".paperclip-runtime", "paperclip-runner");
     const pack = path.join(runner, "provider-pack"), sessions = path.join(runner, "sessions", "retained");
@@ -687,14 +688,73 @@ describe("automatic retained workspace recovery", () => {
         authority: "core_verified_selection", runId: f.runId, companyId: f.companyId, agentId: before.agentId,
         providerPackDigest: digest },
     } }).where(eq(heartbeatRuns.id, f.runId));
-    const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
-    let transfers = 0;
+    const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!, execute = target.runner!.execute;
+    let transfers = 0, sandboxWriteFailures = 0;
+    if (pressure === "sandbox-write") target.runner!.execute = async input => {
+      const fault = `(()=>{const fs=require('node:fs/promises'),sync=require('node:fs');
+        const full=()=>${JSON.stringify([path.join(pack, "node_modules"), path.join(pack, "provider-assets")])}.some(p=>sync.existsSync(p));
+        const statfs=fs.statfs;fs.statfs=async(...args)=>{const value=await statfs(...args);
+          return full()?{...value,bavail:typeof value.bavail==='bigint'?0n:0}:value;};
+        for(const name of ['mkdir','writeFile','appendFile','mkdtemp','copyFile','rename','open']){
+          const original=fs[name];fs[name]=async(...args)=>{
+            const writes=name!=='open'||typeof args[1]!=='string'||/[wa+]/.test(args[1]);
+            if(full()&&writes&&!(name==='mkdir'&&sync.existsSync(args[0])))throw Object.assign(new Error('No space left on device'),{code:'ENOSPC'});
+            return original(...args);};}})();`;
+      const args = input.command === "node" && input.args?.[0] === "-e"
+        ? ["-e", fault + input.args[1], ...input.args.slice(2)] : input.args;
+      const response = await execute({ ...input, args });
+      if (response.stderr === REMOTE_WORKSPACE_SANDBOX_DISK_FULL) sandboxWriteFailures++;
+      return response;
+    };
     target.runner!.syncOut = async operations => {
-      if (++transfers === 1) throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
+      transfers++;
+      if (pressure === "transfer" && (await Promise.all(["node_modules", "provider-assets"].map(name =>
+        lstat(path.join(pack, name)).then(() => true, () => false)))).some(Boolean))
+        throw new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL);
       return syncOut(operations);
     };
-    return { ...f, runner, pack, sessions, digest, transfers: () => transfers };
+    return { ...f, runner, pack, sessions, digest, transfers: () => transfers,
+      sandboxWriteFailures: () => sandboxWriteFailures };
   }
+
+  it("recovers when sandbox writes fail before any archive can be created", async () => {
+    const f = await pressuredToolCache("sandbox-write");
+    const target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    const staging = path.join(f.remote, ".paperclip-runtime", "workspace-snapshots");
+    const before = await readdir(staging).catch(() => []);
+    let committedPreparation = false;
+    target.runner!.execute = async input => {
+      if (input.args?.[2] === "reclaim") {
+        const records = await withDedicatedDbConnection(db, observer => observer.select().from(workspaceOperations).where(and(
+          eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
+          eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare"))));
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({ status: "succeeded", metadata: { intentOnly: true,
+          inventory: { availableBytesBefore: 0 } } });
+        expect(await readdir(staging).catch(() => [])).toEqual(before);
+        committedPreparation = true;
+      }
+      return execute(input);
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(committedPreparation).toBe(true);
+    expect(f.sandboxWriteFailures()).toBe(1);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    expect(f.transfers()).toBe(1);
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: authority.snapshotId! });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+    const [prepared] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.preservationOperationIds).not.toContain(prepared.id);
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  }, 30_000);
 
   it("reclaims only a verified inactive tool installation before retrying the same workspace save", async () => {
     const f = await pressuredToolCache();
@@ -726,7 +786,7 @@ describe("automatic retained workspace recovery", () => {
     let lost = false;
     target.runner!.execute = async input => {
       const result = await execute(input);
-      if (!lost && input.args?.at(-1) === f.digest) {
+      if (!lost && input.args?.[2] === "reclaim") {
         lost = true;
         return { ...result, exitCode: null, timedOut: true, stdout: "", stderr: "" };
       }
@@ -748,37 +808,97 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   }, 30_000);
 
-  it.each(["unchanged", "replaced"])("rechecks a prepared cache move with an %s installation", async installation => {
-    const f = await pressuredToolCache(), sessions = await lstat(path.dirname(f.sessions), { bigint: true });
-    const work = path.join(f.runner, "cache-reclaims", f.runId);
-    await mkdir(work, { recursive: true });
-    const targets = [];
-    for (const name of ["node_modules", "provider-assets"]) {
-      const entry = await lstat(path.join(f.pack, name), { bigint: true });
-      targets.push({ name, dev: String(entry.dev), ino: String(entry.ino) });
+  it("does not delete caches when Core cannot commit the prepared journal", async () => {
+    const f = await pressuredToolCache("sandbox-write"), trigger = `cache_prepare_${randomUUID().replaceAll("-", "")}`;
+    await db.execute(sql.raw(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      RAISE EXCEPTION 'test cache preparation write failed'; END $$`));
+    try {
+      await db.execute(sql.raw(`CREATE TRIGGER ${trigger} BEFORE INSERT ON workspace_operations FOR EACH ROW
+        WHEN (NEW.company_id = '${f.companyId}'::uuid AND NEW.phase = 'native_provider_cache_reclaim_prepare')
+        EXECUTE FUNCTION ${trigger}()`));
+      await recoverRetainedWorkspace(f.input);
+      expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+      expect(f.sandboxWriteFailures()).toBe(1);
+      expect(f.transfers()).toBe(0);
+      expect(await readFile(path.join(f.pack, "node_modules", "installed-tool"), "utf8")).toBe("rebuildable dependency\n");
+      expect(await readFile(path.join(f.pack, "provider-assets", "installed-agent"), "utf8")).toBe("rebuildable provider\n");
+      expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+      const records = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+        eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+      expect(records).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON workspace_operations`));
+      await db.execute(sql.raw(`DROP FUNCTION ${trigger}()`));
     }
-    await rename(path.join(f.pack, "node_modules"), path.join(work, "node_modules"));
-    await writeFile(path.join(work, "provider-pack-manifest.json"), await readFile(path.join(f.pack, "provider-pack.json")));
-    await writeFile(path.join(work, "receipt.json"), JSON.stringify({ schema: "paperclip.native-provider-cache-reclaim.v1",
-      sourceRunId: f.runId, manifestDigest: f.digest, sessionsDev: String(sessions.dev), sessionsIno: String(sessions.ino),
-      targets, availableBytesBefore: 0, status: "prepared" }));
+  }, 30_000);
+
+  it("does not reclaim a replacement after an acknowledged cleanup and a later save failure", async () => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
+    let transfers = 0;
+    target.runner!.syncOut = async operations => {
+      if (++transfers === 2) throw new Error("controlled later transfer failure");
+      return syncOut(operations);
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    const [completed] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim"), eq(workspaceOperations.status, "succeeded")));
+    expect(completed.metadata).toMatchObject({ outcome: "evicted", changed: true });
+    await mkdir(path.join(f.pack, "node_modules"));
+    await writeFile(path.join(f.pack, "node_modules", "replacement-tool"), "replacement installation\n");
+    let repeatedDeletion = false;
+    const execute = target.runner!.execute;
+    target.runner!.execute = async input => {
+      if (input.args?.[2] === "reclaim") repeatedDeletion = true;
+      return execute(input);
+    };
+    await makeRetryDue(f.actionId);
+    await recoverRetainedWorkspace(f.input);
+    expect(repeatedDeletion).toBe(false);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    expect(await readFile(path.join(f.pack, "node_modules", "replacement-tool"), "utf8")).toBe("replacement installation\n");
+    expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 30_000);
+
+  it.each(["unchanged", "replaced"])("resumes a Core-prepared deletion only for an %s installation", async installation => {
+    const f = await pressuredToolCache(), target = targets.get(f.lease.id)!, execute = target.runner!.execute;
+    const interruptedTarget = await realpath(path.join(f.pack, "node_modules"));
+    let interrupted = false;
+    target.runner!.execute = async input => {
+      if (!interrupted && input.args?.[2] === "reclaim") {
+        interrupted = true;
+        const fault = `(()=>{const fs=require('node:fs/promises'),remove=fs.rm;
+          fs.rm=async(p,options)=>{const result=await remove(p,options);
+            if(p===${JSON.stringify(interruptedTarget)})process.exit(77);return result;};})();`;
+        return execute({ ...input, args: ["-e", fault + input.args[1], ...input.args.slice(2)] });
+      }
+      return execute(input);
+    };
+    await recoverRetainedWorkspace(f.input);
+    expect(interrupted).toBe(true);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
+    await expect(lstat(path.join(f.pack, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(f.pack, "provider-assets", "installed-agent"), "utf8")).toBe("rebuildable provider\n");
     if (installation === "replaced") {
       await mkdir(path.join(f.pack, "node_modules"));
       await writeFile(path.join(f.pack, "node_modules", "replacement-tool"), "replacement installation\n");
     }
+    await makeRetryDue(f.actionId);
     await recoverRetainedWorkspace(f.input);
     if (installation === "unchanged") {
       expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
-      expect(f.transfers()).toBe(2);
-      await expect(lstat(path.join(work, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.transfers()).toBe(3);
       await expect(lstat(path.join(f.pack, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
     } else {
       expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).not.toBe("recovered");
-      expect(f.transfers()).toBe(1);
-      expect(await readFile(path.join(work, "node_modules", "installed-tool"), "utf8")).toBe("rebuildable dependency\n");
+      expect(f.transfers()).toBe(2);
       expect(await readFile(path.join(f.pack, "node_modules", "replacement-tool"), "utf8")).toBe("replacement installation\n");
       expect(await readFile(path.join(f.pack, "provider-assets", "installed-agent"), "utf8")).toBe("rebuildable provider\n");
     }
+    const preparations = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim_prepare")));
+    expect(preparations).toHaveLength(1);
     expect(await readFile(path.join(f.sessions, "pending-receipt.json"), "utf8")).toBe("uncertain action history\n");
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
   }, 30_000);
