@@ -369,7 +369,7 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
     ).rejects.toMatchObject({ status: 404, reasonCode: "tool_not_found" });
   });
 
-  it("reports every protocol failure with its failure kind and its declared health outcome", async () => {
+  it("reports every protocol failure with its failure kind and keeps the connection healthy", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpFixture(db, company.id);
 
@@ -377,27 +377,23 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
       {
         name: "HTTP error status",
         reasonCode: "mcp_remote_status",
-        condemnsConnection: true,
         respond: () => new Response("Internal Server Error", { status: 500 }),
       },
       {
         name: "body that is not JSON",
         reasonCode: "mcp_remote_invalid_json",
-        condemnsConnection: false,
         respond: () =>
           new Response("This is not JSON", { status: 200, headers: { "content-type": "application/json" } }),
       },
       {
         name: "JSON-RPC error",
         reasonCode: "remote_mcp_error",
-        condemnsConnection: true,
         respond: (init: RequestInit | undefined) =>
           jsonRpcResponse(init, { error: { code: -32603, message: "Internal JSON-RPC failure" } }),
       },
       {
         name: "answer to a different request",
         reasonCode: "remote_mcp_malformed_response",
-        condemnsConnection: false,
         respond: () =>
           new Response(
             JSON.stringify({ jsonrpc: "2.0", id: "some-other-call", result: { content: [] } }),
@@ -407,7 +403,6 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
       {
         name: "oversized body",
         reasonCode: "mcp_remote_response_too_large",
-        condemnsConnection: false,
         respond: (init: RequestInit | undefined) =>
           jsonRpcResponse(init, { result: { content: [{ type: "text", text: "x".repeat(1_100_000) }] } }),
       },
@@ -444,13 +439,9 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
       expect(error.details.failureKind, testCase.name).toBe("protocol_failure");
       expect(error.details.execution, testCase.name).toMatchObject({ failureKind: "protocol_failure" });
 
-      expect((await connectionRow(connection.id)).healthStatus, testCase.name).toBe(
-        testCase.condemnsConnection ? "error" : "ok",
-      );
+      expect((await connectionRow(connection.id)).healthStatus, testCase.name).toBe("ok");
       const remaining = await gateway.listToolsForSession(session.token);
-      expect(remaining.some((tool) => tool.name === targetTool.name), testCase.name).toBe(
-        !testCase.condemnsConnection,
-      );
+      expect(remaining.some((tool) => tool.name === targetTool.name), testCase.name).toBe(true);
     }
   });
 
