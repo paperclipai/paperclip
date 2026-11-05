@@ -9881,7 +9881,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       continuationPolicy: "wake_assignee",
       createdByAgentId: agentId,
       resolvedByUserId: "local-board",
-      resolvedAt: new Date(),
+      // Older than the accepted-interaction grace window: the answer-time
+      // wake has had time to appear, so a missing run is a lost continuation.
+      resolvedAt: new Date(Date.now() - 3 * 60_000),
       payload: {
         version: 1,
         questions: [
@@ -11228,12 +11230,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }
 
   it("does not race a just-accepted plan approval before its accept-time wake is visible", async () => {
-    const { agentId } = await seedJustAcceptedPlanApproval("Plan approved moments ago");
+    const { agentId, interactionId, resolvedAt } = await seedJustAcceptedPlanApproval("Plan approved moments ago");
+    const deadlines: number[] = [];
 
-    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues({
+      onDeferredDeadline: (at) => deadlines.push(at),
+    });
 
     expect(result.continuationRequeued).toBe(0);
     expect(await interactionRecoveryRuns(agentId)).toEqual([]);
+    // The skip registers a re-check, so a lost accept-time wake still recovers.
+    expect(deadlines).toContain(resolvedAt.getTime() + 2 * 60_000);
+
+    // After the grace window, with no other write, the next sweep requeues it.
+    const expiredAt = new Date(Date.now() - 2 * 60_000 - 1_000);
+    await db.update(issueThreadInteractions)
+      .set({ resolvedAt: expiredAt, updatedAt: expiredAt })
+      .where(eq(issueThreadInteractions.id, interactionId));
+    const later = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(later.continuationRequeued).toBe(1);
+    expect(await interactionRecoveryRuns(agentId)).toHaveLength(1);
   });
 
   it("does not requeue an accepted plan approval whose accept-time wake is deferred behind another run", async () => {

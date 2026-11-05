@@ -5006,6 +5006,11 @@ export function recoveryService(
             recoveryNow.getTime() - acceptedInteractionResolvedAt.getTime() <
             INTERACTION_CONTINUATION_RECOVERY_GRACE_MS
           ) {
+            // Re-check at the deadline so a lost accept-time wake still recovers.
+            opts?.onDeferredDeadline?.(
+              acceptedInteractionResolvedAt.getTime() +
+                INTERACTION_CONTINUATION_RECOVERY_GRACE_MS,
+            );
             result.skipped += 1;
             continue;
           }
