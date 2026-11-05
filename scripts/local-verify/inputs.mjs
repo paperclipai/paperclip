@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, realpathSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, readlinkSync } from "node:fs";
 import path from "node:path";
 import { sourceFiles } from "../ci/execution-plan.mjs";
 import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
+import { installedInputs } from "./installed-inputs.mjs";
 
 export const protocolVersion = 1;
 
@@ -57,9 +58,9 @@ export function snapshot(root, env = localEnvironment()) {
       if (stat.isSymbolicLink()) {
         const target = realpathSync(absolute);
         if (!target.startsWith(`${root}${path.sep}`)) cacheable = false;
-        const regular = lstatSync(target).isFile();
-        if (!regular) cacheable = false;
-        append(["link", file, stat.mode, readlinkSync(absolute), target, regular ? digest(target) : null]);
+        const targetStat = lstatSync(target), regular = targetStat.isFile();
+        if (!regular && !targetStat.isDirectory()) cacheable = false;
+        append(["link", file, stat.mode, readlinkSync(absolute), target, regular ? digest(target) : "directory"]);
       } else if (stat.isFile()) append(["file", file, stat.mode, digest(absolute)]);
       else { cacheable = false; append(["special", file, stat.mode]); }
     } catch (error) {
@@ -71,27 +72,8 @@ export function snapshot(root, env = localEnvironment()) {
   const directories = new Set(["", ...files.filter(file => path.basename(file) === "package.json").map(path.dirname)]);
   for (const directory of [...directories].sort()) {
     for (const name of [".env", ".env.local", ".env.test", ".env.test.local"]) addFile(path.join(directory, name));
-    const installed = path.join(directory, "node_modules");
-    const bindings = relative => {
-      let entries;
-      try { entries = readdirSync(path.join(root, relative), { withFileTypes: true }); }
-      catch (error) { if (error.code === "ENOENT") return; throw error; }
-      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-        if (entry.name.startsWith(".") && entry.name !== ".bin") continue;
-        const name = path.join(relative, entry.name), absolute = path.join(root, name);
-        append(["binding", name, entry.isSymbolicLink() ? "link" : entry.isFile() ? "file" : "directory"]);
-        if (entry.name.startsWith("@") || entry.name === ".bin") bindings(name);
-        else if (entry.isSymbolicLink()) append(["target", name, readlinkSync(absolute)]);
-        else if (entry.isFile()) append(["contents", name, digest(absolute)]);
-        try { append(["package", name, digest(path.join(absolute, "package.json"))]); }
-        catch (error) {
-          if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error;
-          append(["package-missing", name]);
-        }
-      }
-    };
-    bindings(installed);
   }
+  installedInputs(root, [...directories].sort(), append);
   for (const file of ["node_modules/.modules.yaml", "node_modules/.pnpm/lock.yaml"]) addFile(file);
   const environment = Object.fromEntries(Object.keys(env).sort().map(name => [name, env[name]]));
   if (Object.entries(env).some(([name, value]) => value?.trim() && (

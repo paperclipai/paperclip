@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { comparison, localEnvironment, snapshot } from "../local-verify/inputs.mjs";
 import { planVerification } from "../local-verify/plan.mjs";
 
@@ -59,7 +60,7 @@ function fixture(t) {
       cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
     });
     assert.equal(result.error, undefined);
-    return { ...result, text: result.stdout + result.stderr };
+    return { ...result, text: stripVTControlCharacters(result.stdout + result.stderr) };
   };
   return { root, write, git, base, env, run };
 }
@@ -163,6 +164,59 @@ test("dependency installation, ignored dotenv and child environment enter the ca
   assert.notEqual(snapshot(f.root, f.env).hash, before);
   assert.notEqual(snapshot(f.root, { ...f.env, NEW_TEST_FLAG: "1" }).hash, before);
   assert.equal(snapshot(f.root, { ...f.env, PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgres://external.invalid/test" }).cacheable, false);
+});
+
+test("installed dependency code changes invalidate a real passing result", { timeout: 120_000 }, t => {
+  const f = fixture(t);
+  const installed = "node_modules/.pnpm/clsx@1.0.0/node_modules/clsx";
+  f.write(`${installed}/package.json`, '{"name":"clsx","version":"1.0.0","type":"module","exports":"./index.mjs"}');
+  f.write(`${installed}/index.mjs`, "export default () => 2;\n");
+  symlinkSync(path.join(f.root, installed), path.join(f.root, "node_modules/clsx"), "dir");
+  f.write("ui/src/consumer.test.ts", 'import {test,expect} from "vitest"; import clsx from "clsx"; import {value} from "./leaf"; test("installed dependency",()=>expect(clsx()).toBe(value));');
+  const first = f.run();
+  assert.equal(first.status, 0, first.text);
+  const reused = f.run();
+  assert.equal(reused.status, 0, reused.text);
+  assert.match(reused.text, /reusing a passing local result/);
+  const moduleFile = path.join(f.root, installed, "index.mjs"), original = lstatSync(moduleFile);
+  f.write(`${installed}/index.mjs`, "export default () => 0;\n");
+  utimesSync(moduleFile, original.atime, original.mtime);
+  const changed = f.run();
+  assert.equal(changed.status, 1, changed.text);
+  assert.match(changed.text, /installed dependency/);
+  assert.doesNotMatch(changed.text, /reusing a passing local result/);
+});
+
+test("repository skill directory links preserve reuse while target edits invalidate it", t => {
+  const f = fixture(t);
+  mkdirSync(path.join(f.root, ".claude/skills"), { recursive: true });
+  symlinkSync("../../ui", path.join(f.root, ".claude/skills/local"), "dir");
+  f.git("add", ".claude/skills/local");
+  const before = snapshot(f.root, f.env);
+  assert.equal(before.cacheable, true);
+  f.write("ui/src/leaf.ts", "export const value = 3;\n");
+  assert.notEqual(snapshot(f.root, f.env).hash, before.hash);
+});
+
+test("local chat selection schedules exactly six single-worker partitions", { timeout: 120_000 }, async t => {
+  const f = fixture(t);
+  f.write("ui/src/leaf.ts", "export const value = 1;\n");
+  f.write("vitest.config.mjs", 'export default {test:{projects:["server"]}};');
+  f.write("server/vitest.config.mjs", 'export default {test:{name:"@paperclipai/server",include:["src/**/*.test.ts"]}};');
+  f.write("server/src/leaf.ts", "export const value = 1;\n");
+  f.write("server/src/__tests__/chat-channels.integration.test.ts", 'import {test,expect} from "vitest"; import {value} from "../leaf"; test("chat selection",()=>expect(value).toBeGreaterThan(0));');
+  f.write(".github/ci-task-matrix.json", JSON.stringify({ general_tests: [
+    { task: "ci:server", group: "general-server-without-chat" }, { task: "ci:chat", group: "general-chat" },
+  ] }));
+  f.git("add", "."); f.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "chat baseline");
+  const base = f.git("rev-parse", "HEAD");
+  f.write("server/src/leaf.ts", "export const value = 2;\n");
+  const plan = await planVerification({ root: f.root, env: f.env, diff: comparison(f.root, base) });
+  assert.equal(plan.kind, "selected", plan.reason);
+  const shards = plan.jobs.flatMap(job => JSON.parse(execFileSync(process.execPath,
+    [path.join(f.root, "scripts/run-vitest-stable.mjs"), ...job.args, "--dry-run"],
+    { cwd: f.root, env: f.env, encoding: "utf8" })).chatVitestShards);
+  assert.deepEqual(shards, Array.from({ length: 6 }, (_, index) => ({ index, count: 6 })));
 });
 
 test("fingerprints preserve file boundaries when content resembles another input record", t => {

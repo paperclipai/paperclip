@@ -267,6 +267,7 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let serialChat = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -312,6 +313,11 @@ function parseCliOptions(argv) {
       continue;
     }
 
+    if (arg === "--serial-chat") {
+      serialChat = true;
+      continue;
+    }
+
     if (arg === "--group") {
       group = readOptionValue(argv, index, arg);
       index += 1;
@@ -352,6 +358,10 @@ function parseCliOptions(argv) {
     fail(`Unknown group "${group}". Expected one of: ${allowedGeneralGroupNames.join(", ")}.`);
   }
 
+  if (serialChat && (mode !== generalModeName || group !== generalChatGroupName)) {
+    fail("--serial-chat is only valid with --mode general --group general-chat.");
+  }
+
   if (shardIndex !== null) {
     if (shardIndex >= shardCount) {
       fail(`--shard-index must be less than --shard-count. Received ${shardIndex} of ${shardCount}.`);
@@ -374,6 +384,7 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    serialChat,
   };
 }
 
@@ -493,7 +504,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
 }
 
 function chatShardWorkers(index, count) {
-  const workers = count > 1 && !hasSharedTestDatabase ? 2 : 1;
+  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 2 : 1;
   return Array.from({ length: workers }, (_, offset) => ({
     index: (index ?? 0) * workers + offset,
     count: (count ?? 1) * workers,

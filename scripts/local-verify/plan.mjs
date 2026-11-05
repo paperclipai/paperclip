@@ -42,7 +42,7 @@ export async function planVerification({ root, env, diff, full = false }) {
         if (byProject.get("@paperclipai/server")?.selected.includes(chatSuite)) {
           selectedFiles.add(chatSuite);
           for (let index = 0; index < 6; index++) jobs.push({ id: `chat-${index + 1}`, cacheable: false, args: ["--mode", "general", "--group", group,
-            "--shard-index", String(index), "--shard-count", "6"] });
+            "--shard-index", String(index), "--shard-count", "6", "--serial-chat"] });
         }
         continue;
       }

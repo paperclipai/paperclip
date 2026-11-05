@@ -1082,12 +1082,16 @@ verification. The command prints the local test scope and remaining CI lanes.
 
 An unchanged repeat can reuse both graph discovery and passing checks. Keys include
 actual tracked and non-ignored file contents (including dirty and untracked files),
-the shared audited-prose exclusions, dotenv files, lockfile, installation metadata
-and dependency bindings, the complete effective child environment, Node/pnpm/Rust toolchains,
+the shared audited-prose exclusions, dotenv files, lockfile, installation metadata,
+dependency bindings and installed package contents, the complete effective child environment, Node/pnpm/Rust toolchains,
 platform, checkout path, comparison, and selection. Values from the environment
 are hashed, not written to results. External database/live-test settings and
 out-of-checkout source symlinks disable reuse. Cache state lives under the ignored
 `.turbo/local-verify/` directory and is not shared across worktrees or machines.
+Installed package content digests are memoized against file identity, size, mode,
+and nanosecond modification/change times; every check rescans the installation.
+Generated Vite/cache directories are excluded. The first run after installation
+reads package contents; unchanged repeats avoid reading those bytes again.
 `last-run.json` retains the latest completed execution's status and scope. Failed/interrupted
 attempts do not publish passes. Inputs changed during a run invalidate its result.
 
