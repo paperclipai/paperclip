@@ -452,3 +452,21 @@ it.each(["recovered", "missing"] as const)("does not let later collision history
     expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
   }
 });
+
+
+it.each(["recovered", "missing"] as const)("checks a coordinated current assertion after history when state is %s", state => {
+  for (const phase of [0, 1]) {
+    const o = state === "recovered" ? recovered().o : valid();
+    const body = state === "recovered"
+      ? "Launch Checklist was not installed earlier, and it is still missing now."
+      : "Launch Checklist was unavailable earlier, and it is installed now.";
+    o.phaseReplies[phase]!.body = "The existing CTO was preserved and the imported role is CTO 2. "
+      + (state === "missing" ? "Launch Checklist's slug is occupied. " : "") + body;
+    expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
+  }
+});
+it("preserves a fronted historical adverb on the named skill assertion", () => {
+  const { o } = recovered();
+  o.phaseReplies[0]!.body = "The existing CTO was preserved and the imported role is CTO 2. Earlier, Launch Checklist was not installed.";
+  expect(gradeTeamConditions(o, "initial").passed).toBe(true);
+});

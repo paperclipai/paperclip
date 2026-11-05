@@ -181,13 +181,13 @@ function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" |
   const bound: string[] = [];
   for (const paragraph of reply.split(/\n\s*\n/)) {
     let previousNamesTarget = false;
-    for (const rawClause of paragraph.split(/[.!?;\n]+|(?=\bbut\b)|(?=\band\s+(?:is|are|remains?|has been)\b)/i).map(text => text.trim()).filter(Boolean)) {
+    for (const rawClause of paragraph.split(/[.!?;\n]+|(?=\bbut\b)|(?=\band\s+(?:(?:it|(?:this|that) skill)\s+)?(?:is|are|was|were|remains?|has|have|could|can)\b)/i).map(text => text.trim()).filter(Boolean)) {
       const coordinated = /^(?:but|and)\b/i.test(rawClause);
       const clause = rawClause.replace(/^(?:but|and)\s+/i, "");
       const named = names.some(name => clause.toLowerCase().includes(name));
       const reference = /^(?:it|(?:this|that) skill|(?:the )?(?:collision|conflict|caveat))\b/i;
       const pronoun: boolean = previousNamesTarget && reference.test(clause);
-      const elidedSubject: boolean = coordinated && previousNamesTarget && /^(?:is|are|remains?|has been)\b/i.test(clause);
+      const elidedSubject: boolean = coordinated && previousNamesTarget && /^(?:is|are|was|were|remains?|has|have|could|can)\b/i.test(clause);
       if (named || pronoun || elidedSubject) bound.push(pronoun ? clause.replace(reference, skill.name) : elidedSubject ? skill.name + " " + clause : clause);
       previousNamesTarget = named || continuePronouns && (pronoun || elidedSubject);
     }
