@@ -229,6 +229,21 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    // Without a usable root code, unrelated failures that share the error code,
+    // adapter and phase would collapse into one group. Fall back to the root
+    // exception's class name plus its HTTP status or numeric code. These are
+    // bounded values; the message stays out of the fingerprint.
+    const rootFallback: string[] = [];
+    const rootException = diagnostics?.exceptions.at(-1);
+    if (!rootErrorCode && rootException) {
+      if (typeof rootException.name === "string" && /^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(rootException.name)) {
+        rootFallback.push(`exception:${rootException.name}`);
+      }
+      if (rootException.status !== undefined) rootFallback.push(`status:${rootException.status}`);
+      else if (typeof rootException.code === "string" && /^-?[0-9]{1,10}$/.test(rootException.code)) {
+        rootFallback.push(`code:${rootException.code}`);
+      }
+    }
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -303,7 +318,7 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
     });
   } catch (err) {
     // eslint-disable-next-line no-console
