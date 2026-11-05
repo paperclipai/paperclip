@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-if (process.argv.slice(2).some(arg => arg !== '--instance-transition-only')) throw new Error('Unknown Slack fixture selector');
+if (process.argv.slice(2).length > 1 || process.argv.slice(2).some(arg => !['--instance-transition-only', '--normal-owner-only'].includes(arg))) throw new Error('Unknown Slack fixture selector');
 const transitionOnly = process.argv.includes('--instance-transition-only');
+const normalOwnerOnly = process.argv.includes('--normal-owner-only');
 const server = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
 const guard = path.join(server, 'src/services/chat-channels/slack/cloud-test-prewire.cjs');
@@ -35,8 +36,8 @@ const env = {
   SLACK_GATE_PROCESS_LOG: process.env.SLACK_GATE_PROCESS_LOG,
 };
 const child = spawn(process.execPath, ['--require', guard, vitest, 'run',
-  ...(transitionOnly ? ['src/services/chat-channels/slack/cloud-instance-transition.postgres.test.ts'] :
-    ['src/services/chat-channels/slack/cloud-enrollment.postgres.test.ts', 'src/services/chat-channels/slack/cloud-instance-transition.postgres.test.ts']), '--maxWorkers=1', '--no-file-parallelism', `--execArgv=--require=${guard}`],
+  ...(transitionOnly ? ['src/services/chat-channels/slack/cloud-instance-transition.postgres.test.ts'] : normalOwnerOnly
+    ? ['src/services/chat-channels/slack/cloud-enrollment.postgres.test.ts'] : ['src/services/chat-channels/slack/cloud-enrollment.postgres.test.ts', 'src/services/chat-channels/slack/cloud-instance-transition.postgres.test.ts']), '--maxWorkers=1', '--no-file-parallelism', `--execArgv=--require=${guard}`],
 { cwd: server, env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
 child.on('error', error => { console.error(error); process.exitCode = 1; });
