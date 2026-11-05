@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -15,6 +15,7 @@ import { chatChannelService } from "../../chat-channels.js";
 import { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { githubConnectionEventService } from "../../github-connection-events.js";
 import { registerGitHubConnectionEventWork } from "../../github-connection-work.js";
+import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../../paperclip-cloud-connector.js";
 import { secretService } from "../../secrets.js";
 import type { InternalSetupState } from "../runtime-types.js";
 import { guardSlackFixtureNetwork } from "./cloud-test-transport.js";
@@ -45,10 +46,14 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
   const actor = `owner-${id}`, instanceA = `a-${id}`, instanceB = `b-${id}`, publicId = "h".repeat(43);
   const stackIds = [instanceA, instanceB], signingSecret = "0123456789abcdef0123456789abcdef";
   const keys = stackIds.map(() => ({ sign: generateKeyPairSync("ed25519"), seal: generateKeyPairSync("x25519") }));
-  let broker: InstanceType<typeof ConnectorBroker>, base = "";
+  let broker: InstanceType<typeof ConnectorBroker>, base = "", loseEnrollmentResponse = false;
   const requests: { path: string; issuer?: string }[] = [];
   const server = createServer((req, res) => {
     requests.push({ path: req.url! });
+    if (loseEnrollmentResponse && req.url === "/v1/connector/slack-events") {
+      loseEnrollmentResponse = false;
+      res.end = (() => { res.destroy(); return res; }) as typeof res.end;
+    }
     void broker.handle(req, res, new URL(req.url!, base)).catch((error: unknown) => {
       if (!res.headersSent) res.writeHead(500); res.end(String(error));
     });
@@ -130,6 +135,12 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
     expect(await broker.slackEvents.current(instanceA, publicId)).toBeUndefined();
     expect((await store.listWebhookBindings(instanceA)).every((binding: { receivesEvents: boolean }) => !binding.receivesEvents)).toBe(true);
     const retired = await setup(); configureIdentity(1);
+    const foreign = createPaperclipCloudConnector({ config: paperclipCloudConnectorConfigFromEnv()! });
+    await expect(foreign.slackEventEnrollment({ subject: `foreign-${actor}`, companyId, enrollment: {
+      active: true, companyId, endpointId, publicId, connectionId, runtimeGeneration: 3, teamId: "TTEST", appId: "ATEST", signingSecret,
+    } })).rejects.toMatchObject({ status: 403 });
+    expect(await broker.slackEvents.current(instanceB, publicId)).toBeUndefined();
+    expect((await setup()).slackCloudIntent).toBeUndefined();
     expect((await setup()).slackCloudInstanceId).toBe(instanceA);
     expect((await setup()).slackCloudSubject).toBe(actor);
     await service.configure(endpointId, { action: "resume" }, actor);
@@ -142,6 +153,28 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("normal notifications enroll the f
     expect((await setup()).slackCloudRetiredGeneration).toBeUndefined();
     expect((await broker.slackEvents.current(instanceB, publicId)).runtimeGeneration).toBe(3);
     expect(await broker.slackEvents.current(instanceA, publicId)).toBeUndefined();
+    await service.configure(endpointId, { action: "pause" }, actor);
+    await vi.waitFor(async () => expect((await setup()).slackCloudRetiredGeneration).toBe(4), { timeout: 10_000 });
+    loseEnrollmentResponse = true;
+    await service.configure(endpointId, { action: "resume" }, actor);
+    await vi.waitFor(async () => expect((await setup()).slackCloudIntent).toMatchObject({ instanceId: instanceB,
+      runtimeGeneration: 5, failureCode: "broker_unavailable" }), { timeout: 10_000 });
+    expect((await broker.slackEvents.current(instanceB, publicId)).runtimeGeneration).toBe(5);
+    expect((await setup()).slackCloudEvents?.runtimeGeneration).toBe(3);
+    const rawBody = Buffer.from(JSON.stringify({ type: "event_callback", event_id: `EvLostReplacement-${id}`, team_id: "TTEST", api_app_id: "ATEST",
+      event: { type: "app_mention", text: "removed before admission", user: "UOPERATOR", channel: "CTEST", ts: "1788.600" } }));
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    await broker.slackEvents.receive(await broker.slackEvents.current(instanceB, publicId), { rawBody, timestamp,
+      signature: `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(rawBody).digest("hex")}` });
+    await service.configure(endpointId, { action: "remove" }, actor);
+    expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId)))[0]!.credentialSecretRefs).toEqual([]);
+    await vi.waitFor(async () => expect((await setup()).slackCloudRetiredGeneration).toBe(6), { timeout: 10_000 });
+    expect((await setup()).slackCloudIntent).toBeUndefined();
+    expect((await setup()).slackCloudInstanceId).toBe(instanceB);
+    expect(await broker.slackEvents.current(instanceB, publicId)).toBeUndefined();
+    expect((await pool.query("SELECT delivery_id FROM cloud_harness.connector_webhook_delivery_targets WHERE connector_instance_id=$1", [instanceB])).rows).toEqual([]);
+    await expect(broker.slackEvents.enroll(await store.getInstance(instanceB), actor, { companyId, endpointId, publicId, connectionId,
+      runtimeGeneration: 5, teamId: "TTEST", appId: "ATEST", signingSecret })).rejects.toThrow("GENERATION_CHANGED");
     expect(errors).toEqual([]);
   } catch (error) { console.error("Slack instance transition body failure", error); throw error; }
   finally {

@@ -297,6 +297,15 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     expect(marker).toMatchObject({ runId: completedRuns[0]!.id, marker: markerText });
     expect(marker.pid).not.toBe(process.pid);
     expect(((await endpoint()).setup as InternalSetupState).slackCallbackSurfaces).toEqual(callbackEvidence);
+    const signingRef = refs.find(ref => ref.configPath === "credentials.signingSecret")!;
+    await vault.update(signingRef.secretId, { status: "disabled" });
+    try {
+      await expect(dispatchSlackCloudEvent(db, captured[1]!)).rejects.toMatchObject({
+        code: "signing_credential_unavailable", disposition: "attention",
+      });
+      expect(sdkCallbacks).toHaveLength(2);
+    } finally { await vault.update(signingRef.secretId, { status: "active" }); }
+
     expect(await connector.leaseEvents({ subject: actorId, companyId, eventWakeVersion: 1 })).toBeNull();
     for (const transport of transports) await transport.assertNoErrors();
     await normalService.shutdown(); normalService = undefined;
