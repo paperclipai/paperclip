@@ -383,14 +383,18 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         app.use("/api", projectRoutes(db)); app.use(errorHandler); return app;
       }
       const url = `/api/projects/${f.project.id}/workspaces/${f.workspace.id}/claude-project-trust`;
-      expect((await request(app(true)).put(url).send({ agentIds: [f.input.agentId] })).status).toBe(403);
-      expect((await request(app(false)).put(url).send({ agentIds: [randomUUID()] })).status).toBe(422);
-      expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId] })).status).toBe(200);
+      const expectedUpdatedAt = f.workspace.updatedAt.toISOString();
+      const { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef } = f.workspace;
+      const expectedSource = { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef };
+      expect((await request(app(true)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(403);
+      expect((await request(app(false)).put(url).send({ agentIds: [randomUUID()], expectedUpdatedAt, expectedSource })).status).toBe(422);
+      expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(200);
       expect((await request(app(false)).get(url)).body.agentIds).toEqual([f.input.agentId]);
       const change = await request(app(false)).patch(`/api/projects/${f.project.id}/workspaces/${f.workspace.id}`)
         .send({ repoUrl: "https://github.com/fixture/other.git" });
       expect(change.status).toBe(200);
       expect((await request(app(false)).get(url)).body.agentIds).toEqual([]);
+      expect((await request(app(false)).put(url).send({ agentIds: [f.input.agentId], expectedUpdatedAt, expectedSource })).status).toBe(409);
     });
 
 });

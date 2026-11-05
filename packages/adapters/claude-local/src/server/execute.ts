@@ -797,7 +797,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
-  const claudeProjectSettingsAllowed = config.managedAiConnection === true &&
+  const claudeProjectSettingsAllowed = Boolean(config.managedAiConnection) &&
     parseObject(context.paperclipWorkspace).claudeProjectSettingsAllowed === true;
   const matchingProjectTrust = (runtimeSessionParams.claudeProjectSettingsAllowed === true) === claudeProjectSettingsAllowed;
   const hasMatchingPromptBundle =

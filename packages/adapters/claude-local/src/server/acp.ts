@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type {
   AdapterBillingType,
@@ -407,6 +408,19 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
+    const workspace = parseObject(ctx.context.paperclipWorkspace);
+    if (ctx.config.managedAiConnection && target?.kind !== "remote" && workspace.claudeProjectSettingsAllowed !== true) {
+      if (firstNonEmptyString(ctx.config.agentCommand, ctx.config.acpAgentCommand)) {
+        throw new Error("Managed Claude ACP requires the bundled provider for an untrusted workspace");
+      }
+      const localBin = path.join(packageRootDir, "node_modules", ".bin", "claude-agent-acp");
+      const selectedBin = await findAncestorBin(packageRootDir, "claude-agent-acp");
+      const providerFile = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/acp-agent.js");
+      const providerSource = await fs.readFile(providerFile, "utf8");
+      if (selectedBin !== localBin || !providerSource.includes("PAPERCLIP_LEGACY_CLAUDE_USER_ONLY")) {
+        throw new Error("Managed Claude ACP cannot verify the bundled project-settings isolation");
+      }
+    }
     const result = await currentExecutor({
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),

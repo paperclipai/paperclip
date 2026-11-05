@@ -56,6 +56,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { matchesClaudeProjectTrustGrant, type ClaudeProjectTrustIdentity } from "../services/claude-project-trust.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -653,18 +654,29 @@ export function projectRoutes(db: Db) {
     assertBoard(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
     if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
-    const [workspace] = await db.select({ trust: projectWorkspaces.claudeProjectTrust }).from(projectWorkspaces).where(and(
+    const [workspace] = await db.select().from(projectWorkspaces).where(and(
       eq(projectWorkspaces.id, req.params.workspaceId as string), eq(projectWorkspaces.projectId, project.id),
       eq(projectWorkspaces.companyId, project.companyId),
     ));
     if (!workspace) { res.status(404).json({ error: "Project workspace not found" }); return; }
-    const grants = Array.isArray(workspace.trust?.grants) ? workspace.trust.grants : [];
-    res.json({ agentIds: grants.flatMap((grant) => grant && typeof grant === "object" && typeof (grant as Record<string, unknown>).agentId === "string"
-      ? [(grant as Record<string, string>).agentId] : []) });
+    const grants = Array.isArray(workspace.claudeProjectTrust?.grants) ? workspace.claudeProjectTrust.grants : [];
+    const agentIds = grants.flatMap((grant) => {
+      if (!grant || typeof grant !== "object" || typeof (grant as Record<string, unknown>).agentId !== "string") return [];
+      const agentId = (grant as Record<string, string>).agentId;
+      const identity: ClaudeProjectTrustIdentity = { companyId: workspace.companyId, projectId: workspace.projectId,
+        workspaceId: workspace.id, agentId, sourceType: workspace.sourceType, cwd: workspace.cwd, repoUrl: workspace.repoUrl,
+        repoRef: workspace.repoRef, defaultRef: workspace.defaultRef, remoteProvider: workspace.remoteProvider,
+        remoteWorkspaceRef: workspace.remoteWorkspaceRef };
+      return matchesClaudeProjectTrustGrant(grant as ClaudeProjectTrustIdentity, identity) ? [agentId] : [];
+    });
+    res.json({ agentIds });
   });
 
   router.put("/projects/:id/workspaces/:workspaceId/claude-project-trust",
-    validate(z.object({ agentIds: z.array(z.string().uuid()).max(100) }).strict()), async (req, res) => {
+    validate(z.object({ agentIds: z.array(z.string().uuid()).max(100), expectedUpdatedAt: z.string().datetime(),
+      expectedSource: z.object({ sourceType: z.string(), cwd: z.string().nullable(), repoUrl: z.string().nullable(),
+        repoRef: z.string().nullable(), defaultRef: z.string().nullable(), remoteProvider: z.string().nullable(),
+        remoteWorkspaceRef: z.string().nullable() }).strict() }).strict()), async (req, res) => {
       assertBoard(req);
       const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
       if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
@@ -675,6 +687,11 @@ export function projectRoutes(db: Db) {
           eq(projectWorkspaces.projectId, project.id), eq(projectWorkspaces.companyId, project.companyId),
         )).for("update");
         if (!workspace) return null;
+        const sourceKeys = ["sourceType", "cwd", "repoUrl", "repoRef", "defaultRef", "remoteProvider", "remoteWorkspaceRef"] as const;
+        if (workspace.updatedAt.toISOString() !== req.body.expectedUpdatedAt ||
+          sourceKeys.some((key) => workspace[key] !== req.body.expectedSource[key])) {
+          throw conflict("The workspace changed; refresh it before updating Claude trust");
+        }
         if (agentIds.length) {
           const matching = await tx.select({ id: agents.id }).from(agents).where(and(
             eq(agents.companyId, project.companyId), inArray(agents.id, agentIds),
@@ -687,7 +704,7 @@ export function projectRoutes(db: Db) {
           repoRef: workspace.repoRef, defaultRef: workspace.defaultRef,
           remoteProvider: workspace.remoteProvider, remoteWorkspaceRef: workspace.remoteWorkspaceRef,
         }));
-        await tx.update(projectWorkspaces).set({ claudeProjectTrust: grants.length ? { grants } : null })
+        await tx.update(projectWorkspaces).set({ claudeProjectTrust: grants.length ? { grants } : null, updatedAt: new Date() })
           .where(and(eq(projectWorkspaces.id, workspace.id), eq(projectWorkspaces.companyId, project.companyId)));
         return { agentIds };
       });

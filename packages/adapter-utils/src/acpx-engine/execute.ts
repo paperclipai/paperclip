@@ -1658,6 +1658,7 @@ async function writePaperclipClaudeSettings(input: {
   stateDir: string;
   agentHome: string;
   companyId: string;
+  isolateProjectSettings?: boolean;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1674,6 +1675,16 @@ async function writePaperclipClaudeSettings(input: {
     `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
     `Bash(${input.cwd}/scripts/paperclip:*)`,
   ]);
+
+  if (input.isolateProjectSettings) {
+    return {
+      filePath,
+      allow: paperclipAllow,
+      additionalDirectories: paperclipAdditionalDirectories,
+      defaultMode: "inherit",
+      overrodeDontAsk: false,
+    };
+  }
 
   let existing: Record<string, unknown> = {};
   const existingRaw = await fs.readFile(filePath, "utf8").catch(() => null);
@@ -2149,6 +2160,8 @@ async function buildRuntime(input: {
   let claudeSkillsBundleDir: string | null = null;
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
+    const managedLocalClaude = Boolean(config.managedAiConnection) && !executionTargetIsRemote;
+    const isolateProjectSettings = managedLocalClaude && workspaceContext.claudeProjectSettingsAllowed !== true;
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
       config,
@@ -2168,9 +2181,22 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      isolateProjectSettings,
     });
+    if (managedLocalClaude) {
+      env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = isolateProjectSettings ? "1" : "0";
+      resolvedAdapterEnv.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY = env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY;
+      if (isolateProjectSettings) {
+        env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS = JSON.stringify({ permissions: {
+          allow: paperclipClaudeSettings.allow,
+          additionalDirectories: paperclipClaudeSettings.additionalDirectories,
+        } });
+      } else {
+        delete env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS;
+      }
+    }
     skillCommandNotes.push(
-      `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
+      `${isolateProjectSettings ? "Prepared isolated" : "Wrote"} Paperclip-managed Claude settings ${isolateProjectSettings ? "for the provider" : `to ${paperclipClaudeSettings.filePath}`} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );

@@ -354,6 +354,7 @@ export function ProjectWorkspaceDetail() {
       projectsApi.updateWorkspace(project!.id, routeWorkspaceId, patch, lookupCompanyId),
     onSuccess: () => {
       invalidateProject();
+      queryClient.invalidateQueries({ queryKey: ["claude-project-trust", project!.companyId, project!.id, routeWorkspaceId] });
       setErrorMessage(null);
     },
     onError: (error) => {
@@ -494,7 +495,7 @@ export function ProjectWorkspaceDetail() {
       {activeTab === "configuration" ? (
       <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
-          <ClaudeProjectTrust companyId={project.companyId} projectId={project.id} workspaceId={workspace.id} />
+          <ClaudeProjectTrust companyId={project.companyId} projectId={project.id} workspace={workspace} disabled={isDirty || updateWorkspace.isPending} onSaved={invalidateProject} />
           <Card className="block p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace

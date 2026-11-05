@@ -177,7 +177,7 @@ describe("claude_local ACP startup fallback", () => {
     try {
       const configDir = path.join(root, "provider");
       await mkdir(configDir);
-      const ctx = buildContext({ engine: "cli", managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+      const ctx = buildContext({ engine: "cli", managedAiConnection: { provider: "anthropic" }, env: { CLAUDE_CONFIG_DIR: configDir },
         paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } });
       ctx.context = { paperclipWorkspace: { claudeProjectSettingsAllowed: true } };
       await execute(ctx as never);

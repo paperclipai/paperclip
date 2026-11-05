@@ -268,6 +268,24 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("claude_local ACP lane", () => {
+  it("rejects an unverified custom provider for an untrusted managed workspace", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-untrusted-");
+    const execute = createClaudeAcpExecutor({ createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never });
+    await expect(execute(buildContext(root, { config: {
+      engine: "acp", cwd: root, managedAiConnection: { provider: "anthropic" }, agentCommand: "unverified-command",
+    } }))).rejects.toThrow("requires the bundled provider");
+  });
+
+  it("accepts the bundled provider for an untrusted managed workspace", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-managed-");
+    const execute = createClaudeAcpExecutor({ createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never });
+    const result = await execute(buildContext(root, { config: {
+      engine: "acp", cwd: root, stateDir: path.join(root, "state"), managedAiConnection: { provider: "anthropic" },
+      paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] },
+    } }));
+    expect(result.exitCode).toBe(0);
+  });
+
   it("uses the same default model in ACP startup and session identity", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-default-");
     const meta: AdapterInvocationMeta[] = [];

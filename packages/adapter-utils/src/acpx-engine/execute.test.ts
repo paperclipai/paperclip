@@ -2974,6 +2974,36 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(note).toBeTruthy();
   });
 
+  it("isolates managed Claude ACP from untrusted project settings without changing workspace files", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "workspace");
+    const stateDir = path.join(root, "state");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    const file = path.join(cwd, ".claude", "settings.local.json");
+    const original = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "untrusted" }] }] } });
+    await fs.writeFile(file, original);
+    const result = await runExecutor({ agent: "claude", stateDir, cwd,
+      managedAiConnection: { provider: "anthropic" }, paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] },
+    }, { context: { paperclipWorkspace: { cwd, claudeProjectSettingsAllowed: false } } });
+    expect(await fs.readFile(file, "utf8")).toBe(original);
+    expect(JSON.stringify(result.meta)).toContain("Prepared isolated Paperclip-managed Claude settings");
+    expect((result.meta[0]?.env as Record<string, unknown>)?.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY).toBe("1");
+  });
+
+  it("changes the ACP session identity when project trust changes", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "workspace");
+    const stateDir = path.join(root, "state");
+    await fs.mkdir(cwd, { recursive: true });
+    const config = { agent: "claude", stateDir, cwd, managedAiConnection: { provider: "anthropic" },
+      paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+    const isolated = await runExecutor(config, { context: { paperclipWorkspace: { cwd, claudeProjectSettingsAllowed: false } } });
+    const trusted = await runExecutor(config, { context: { paperclipWorkspace: { cwd, claudeProjectSettingsAllowed: true } } });
+    expect((isolated.meta[0]?.env as Record<string, unknown>)?.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY).toBe("1");
+    expect((trusted.meta[0]?.env as Record<string, unknown>)?.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY).toBe("0");
+    expect(isolated.sessionInputs[0]?.sessionKey).not.toBe(trusted.sessionInputs[0]?.sessionKey);
+  });
+
   it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
