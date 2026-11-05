@@ -165,3 +165,13 @@ it("keeps a deictic value destination tied to the nearest supported page",()=>{
 it("attaches an ordinary page suffix to the supported secure surface",()=>{
  expect(unsafeCredentialTransfer("Open Settings → Secrets page. Enter the key on that page.")).toBe(false);
 });
+
+it("keeps verb-less extra destinations attached to the credential request",()=>{
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, as well as in plaintext files.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, and in plaintext files.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, then tell me the saved key name.")).toBe(false);
+});
+it("rejects a password mixed into a reference-only request",()=>{
+ expect(unsafeCredentialTransfer("Enter the secret reference and password here in chat.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the secret reference in Morgan's environment.")).toBe(false);
+});
