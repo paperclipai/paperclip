@@ -4298,7 +4298,7 @@ describe("automatic retained workspace recovery", () => {
     expect(lease.metadata).not.toHaveProperty("sandboxStopAndRetain");
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted", attempts,
       failure: failure === "disk_full" ? { code: "source_unavailable", retryClass: "use_alternative_strategy" }
-        : { code: "provider_unavailable", retryClass: "retry_transient" } });
+        : { code: "provider_unavailable", retryClass: "retry_transient", cause: { label: "provider_error", code: null, status: null } } });
     expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(attempts);
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
   }, 60_000);

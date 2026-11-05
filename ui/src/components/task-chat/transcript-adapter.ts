@@ -406,7 +406,8 @@ function providerActivityItem(
             const status: TaskChatProtocolStep["status"] =
               rawStatus === "in_progress" ||
               rawStatus === "completed" ||
-              rawStatus === "blocked"
+              rawStatus === "blocked" ||
+              rawStatus === "failed"
                 ? rawStatus
                 : "pending";
             return {
