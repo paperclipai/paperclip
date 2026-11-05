@@ -3824,6 +3824,15 @@ A successor claims its existing native coordinator and starts renewal before
 retiring a superseded warm session. An unclaimed preparation cannot authorize
 the predecessor's checkpoint writes. Shared attachment staging follows verified
 retirement; a failed claim or Stop cannot close that predecessor or stage files.
+
+A completed native turn keeps its exact coordinator claim and the existing
+execution lease renewal until its required warm checkpoint, session close and
+instruction collection have joined. It then stops and joins renewal and releases
+only that claim. A checkpoint or collection failure keeps its initiating error
+while the same fenced release runs; a changed controller or owner is never
+cleared. Restart detachment retains its existing recovery owner. Renewal exists
+only for this active obligation and stops on normal completion or unwinding; it
+does not create an idle worker or another recovery budget.
 Recovery also preserves the implicit isolated-home default when binding admitted
 configuration, so an unchanged home does not invalidate the retained session.
 Explicit home-mode changes retain their normal configuration-change checks.
