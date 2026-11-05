@@ -1,3 +1,4 @@
+import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -226,6 +227,50 @@ async function readSavedSessionCwd(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const target = ctx.executionTarget;
+  if (!ctx.signal || !ctx.stopRemoteStartup || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+    return executeTurn(ctx);
+  }
+
+  await ctx.onCancellationReady?.();
+  const cancelled = (result?: AdapterExecutionResult): AdapterExecutionResult => ({
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    ...result,
+    errorCode: "cancelled",
+    errorMessage: "Pi execution was cancelled",
+    resultJson: {
+      ...result?.resultJson,
+      executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+    },
+  });
+  if (ctx.signal.aborted) {
+    await ctx.stopRemoteStartup();
+    return { ...cancelled(), executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+  }
+  const cancellation = cancellableSandboxStartup(ctx);
+  let result: AdapterExecutionResult | undefined;
+  let failure: unknown;
+  let failed = false;
+  try {
+    result = await executeTurn(cancellation.context);
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  try {
+    await cancellation.finish();
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  if (cancellation.stopAcknowledged()) return cancelled(result);
+  if (failed) throw failure;
+  return result!;
+}
+
+async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
