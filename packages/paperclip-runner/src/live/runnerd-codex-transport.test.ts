@@ -2054,6 +2054,11 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
         join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
       )).toEqual({ root: server, manifest: join(server, "package.json") });
     }
+    for (const agent of ["claude", "codex", "grok"] as const) {
+      expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
+      )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
+    }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

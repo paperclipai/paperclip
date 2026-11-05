@@ -17,6 +17,7 @@ import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx
 import { configuredEnvironment } from "../configured-environment.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
+import { NATIVE_ASSET_PROVIDERS } from "../drivers/acpx/provider-assets-root.js";
 import { preconfiguredHomeEnvironment, preconfiguredCodexHome, usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
@@ -3071,9 +3072,7 @@ function resolveBuildOwnedCliArtifact(
 // resolveRunnerProviderAssetsRoot. That guard requires the bound manifest to be
 // the package.json directly inside the bound root, so these providers must never
 // receive the workspace dependency root used by JS-package providers.
-const NATIVE_ASSET_ACPX_AGENTS: ReadonlySet<QualifiedAcpxAgent> = new Set([
-  "cursor", "copilot", "pi", "kimi", "antigravity",
-]);
+const NATIVE_ASSET_ACPX_AGENTS: ReadonlySet<QualifiedAcpxAgent> = new Set(NATIVE_ASSET_PROVIDERS);
 
 function acpxProviderPackageAuthority(
   sidecarScript: string,
