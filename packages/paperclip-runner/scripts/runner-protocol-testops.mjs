@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { failureProjection, testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
@@ -12,6 +14,35 @@ const sha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 const workflowUrl = "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml";
 const runUrl = runId => `https://github.com/paperclipai/paperclip/actions/runs/${runId}`;
+const officialExec = promisify(execFile);
+
+export function parseOfficialJobRunContext(stdout) {
+  if (typeof stdout !== "string" || Buffer.byteLength(stdout) > 16_384) fail("bootstrap_context");
+  const values = new Map();
+  for (const line of stdout.split(/\r?\n/)) {
+    for (const name of ["ALLURE_JOB_RUN_ID", "ALLURE_LAUNCH_ID"]) {
+      if (!line.startsWith(`${name}=`)) continue;
+      const value = line.slice(name.length + 1);
+      if (values.has(name) || !/^[1-9][0-9]{0,15}$/.test(value) || !positive(Number(value))) fail("bootstrap_context");
+      values.set(name, value);
+    }
+  }
+  if (values.size !== 2) fail("bootstrap_context");
+  return { jobRunId: values.get("ALLURE_JOB_RUN_ID"), launchId: Number(values.get("ALLURE_LAUNCH_ID")) };
+}
+
+export async function captureManualJobRunContext(env, exec = officialExec) {
+  if (env.RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID !== "" || env.ALLURE_ENDPOINT !== "https://paperclip.testops.cloud"
+    || env.ALLURE_PROJECT_ID !== String(contract.projectId)) fail("bootstrap_context");
+  let stdout;
+  try {
+    ({ stdout } = await exec("allurectl", ["job-run", "env"], { env, shell: false,
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16_384, windowsHide: true }));
+  } catch { fail("bootstrap_context"); }
+  const captured = parseOfficialJobRunContext(stdout);
+  if (env.ALLURE_JOB_RUN_ID && env.ALLURE_JOB_RUN_ID !== captured.jobRunId) fail("bootstrap_context");
+  return { ...env, ALLURE_JOB_RUN_ID: captured.jobRunId, RUNNER_TESTOPS_EXPECTED_LAUNCH_ID: String(captured.launchId) };
+}
 
 export function standingPlanCases(plan) {
   if (plan?.version !== "1.0" || !Array.isArray(plan.tests)) fail("standing_plan");
@@ -56,6 +87,7 @@ export async function inspectSelection(api, env, manualPlan) {
   const acceptedUrls = [workflowUrl, `https://github.com/paperclipai/paperclip/actions/workflows/${contract.workflowId}`, "https://github.com/paperclipai/paperclip/blob/master/.github/workflows/runner-protocol-live-evals.yml"];
   if (run.id !== jobRunId || !positive(run.job?.id) || run.job.type !== undefined && run.job.type !== "github"
     || run.job.url !== undefined && !acceptedUrls.includes(run.job.url) || run.url !== runUrl(env.GITHUB_RUN_ID)
+    || manualPlan && Number(env.RUNNER_TESTOPS_EXPECTED_LAUNCH_ID) !== run.launchId
     || !["scheduled", "in_progress"].includes(run.stage)) fail("jobrun_binding");
   const [job, launch, plan, planned] = await Promise.all([
     api(`/api/job/${run.job.id}`),
@@ -200,8 +232,9 @@ export function protocolTestOpsFailure(error) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "selection") {
-    const selection = await inspectSelection(await testopsClient(process.env.ALLURE_TOKEN), process.env,
-      args[1] === undefined ? undefined : await readJson(args[1]));
+    const manualPlan = args[1] === undefined ? undefined : await readJson(args[1]);
+    const env = manualPlan ? await captureManualJobRunContext(process.env) : process.env;
+    const selection = await inspectSelection(await testopsClient(env.ALLURE_TOKEN), env, manualPlan);
     await writeFile(args[0], json(selection), { mode: 0o600 });
     await githubOutputs({ allure_job_run_id: selection.allureJobRunId, full_plan: String(selection.fullPlan) });
     console.log(json({ selected: selection.cases.length, fullPlan: selection.fullPlan, launchId: selection.launchId }));

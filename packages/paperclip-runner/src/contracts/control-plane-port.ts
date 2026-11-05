@@ -28,6 +28,13 @@ export interface AppendControlPlaneEventOptions {
    * without committing before it rejects.
    */
   signal: AbortSignal;
+  /**
+   * For an authoritative governed-cancellation terminal only, a port may
+   * return its committed receipt before postcommit observers finish. Such a
+   * port owns that observer debt and must join it before checkpoint or result
+   * acceptance. Ports that do not support deferral keep their usual behavior.
+   */
+  deferPostCommitObservers?: true;
 }
 
 export interface CheckpointControlPlaneSessionOptions {

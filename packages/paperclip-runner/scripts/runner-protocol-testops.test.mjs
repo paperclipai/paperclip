@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure } from "./runner-protocol-testops.mjs";
+import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure,
+  captureManualJobRunContext, parseOfficialJobRunContext } from "./runner-protocol-testops.mjs";
 import { testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
 
 const context = { runId: "123", workflowSha: "a".repeat(40), sourceSha: "a".repeat(40), evalsSha: "b".repeat(40),
@@ -66,10 +67,14 @@ test("binds the selected TestOps job to this exact workflow run and standing pla
   delete run.job.url;
   assert.equal((await inspectSelection(api, env)).cases.length, 1);
   const manual = { version: "1.0", tests: planned.map(row => ({ ...row, id: String(row.id) })) };
-  const admittedManual = await inspectSelection(api, { ...env, RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "" }, manual);
+  const manualEnv = await captureManualJobRunContext({ ...env, ALLURE_JOB_RUN_ID: "", RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "",
+    ALLURE_ENDPOINT: "https://paperclip.testops.cloud", ALLURE_PROJECT_ID: "1" },
+  async () => ({ stdout: "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\n" }));
+  const admittedManual = await inspectSelection(api, manualEnv, manual);
   assert.equal(admittedManual.fullPlan, false);
   assert.equal(admittedManual.cases.length, 1);
   assert.equal(admittedManual.cases[0].testCaseId, 194);
+  await assert.rejects(inspectSelection(api, { ...manualEnv, RUNNER_TESTOPS_EXPECTED_LAUNCH_ID: "12" }, manual), /jobrun_binding/);
   const controlled = await inspectSelection(api, { ...env, PAPERCLIP_PROTOCOL_ACCOUNTING_MODE: "controlled" });
   assert.equal(controlled.accountingMode, "controlled");
   assert.equal(projectResults({ selection: controlled })[0].evidence.accountingMode, "controlled");
@@ -80,6 +85,32 @@ test("binds the selected TestOps job to this exact workflow run and standing pla
   assert.throws(() => standingPlanCases({ ...manual, version: "other" }), /standing_plan/);
   run.url = "https://github.com/paperclipai/paperclip/actions/runs/122";
   await assert.rejects(inspectSelection(api, env), /jobrun_binding/);
+});
+
+test("captures only official numeric manual job context without evaluating or exposing its environment", async () => {
+  const env = { RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "", ALLURE_JOB_RUN_ID: "",
+    ALLURE_ENDPOINT: "https://paperclip.testops.cloud", ALLURE_PROJECT_ID: "1" };
+  const captured = await captureManualJobRunContext(env, async (command, args, options) => {
+    assert.equal(command, "allurectl");
+    assert.deepEqual(args, ["job-run", "env"]);
+    assert.equal(options.shell, false);
+    assert.equal(options.timeout, 30_000);
+    assert.equal(options.maxBuffer, 16_384);
+    return { stdout: "ALLURE_TOKEN=PRIVATE-SECRET\nALLURE_JOB_RUN_ID=2550\r\nALLURE_LAUNCH_ID=2588\n" };
+  });
+  assert.equal(captured.ALLURE_JOB_RUN_ID, "2550");
+  assert.equal(captured.RUNNER_TESTOPS_EXPECTED_LAUNCH_ID, "2588");
+  assert.ok(!JSON.stringify(captured).includes("PRIVATE-SECRET"));
+  for (const text of ["", "ALLURE_JOB_RUN_ID=7\n", "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=0\n",
+    "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\nALLURE_JOB_RUN_ID=7\n",
+    "ALLURE_JOB_RUN_ID=$(private)\nALLURE_LAUNCH_ID=11\n", "x".repeat(16_385)]) {
+    assert.throws(() => parseOfficialJobRunContext(text), /bootstrap_context/);
+  }
+  await assert.rejects(captureManualJobRunContext({ ...env, ALLURE_JOB_RUN_ID: "9" },
+    async () => ({ stdout: "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\n" })), /bootstrap_context/);
+  await assert.rejects(captureManualJobRunContext({ ...env, RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "7" },
+    async () => { throw new Error("must not execute"); }), /bootstrap_context/);
+  await assert.rejects(captureManualJobRunContext(env, async () => { throw new Error("PRIVATE-SECRET"); }), /bootstrap_context/);
 });
 
 test("reports every unexecuted selected case as broken when the report is unavailable", () => {

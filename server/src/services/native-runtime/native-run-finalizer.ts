@@ -26,6 +26,7 @@ import { hasPendingNativeChildCompletion } from "./native-child-completion-deliv
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -260,6 +261,23 @@ async function claimCoordinator(input: {
   return claimed;
 }
 
+function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted") {
+    // This code also covers local-directory and plugin workspaces, so the
+    // message stays general and defers to the recovery action's next step.
+    return "Saving the workspace failed after 3 attempts. The agent's result is kept; follow the run's recovery action to repair the workspace.";
+  }
+  if (failureCode === "native_workspace_sync_out_unrecoverable") {
+    return "The sandbox holding unexported workspace changes is unavailable, so its files could not be saved.";
+  }
+  if (failureCode === "native_finalization_retry_exhausted") {
+    return "Native run finalization failed after 3 attempts.";
+  }
+  return failureScope === "workspace"
+    ? `Native workspace finalization failed (${failureCode}).`
+    : `Native run finalization failed (${failureCode}).`;
+}
+
 async function recordRetryableFailure(input: {
   db: Db;
   run: typeof heartbeatRuns.$inferSelect;
@@ -439,6 +457,7 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
+    const terminalRunStatus = input.failureScope === "workspace" ? "failed" : exhaustedRunStatus;
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -448,9 +467,17 @@ async function recordRetryableFailure(input: {
               // Stop can win after the failure's admission snapshot. The
               // UPDATE locks and evaluates the current row, not that snapshot.
               status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
-                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
+                else ${terminalRunStatus} end`,
               finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
                 else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
+              // A failed run names its cause. Keep an earlier root cause, and
+              // leave a run that Stop already cancelled without a failure.
+              ...(terminalRunStatus === "failed"
+                ? explainFailedRun({
+                    errorCode: failureCode,
+                    error: terminalFinalizationFailureMessage(failureCode, input.failureScope),
+                  })
+                : {}),
             }
           : {}),
         nativePhase: phase,
@@ -1659,12 +1686,20 @@ export async function finalizeNativeRun(input: {
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
-      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.error} end`;
-      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode} end`;
+      const nextError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.error}`;
+      const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
+      // A run projected to failed always records why, even when the provider
+      // reported a failed terminal without a classified failure.
+      const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
+      const explained = projectsFailedStatus
+        ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        : null;
+      const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+        else ${nextError} end`;
+      const projectedErrorCode = explained?.errorCode ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+        else ${nextErrorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
@@ -1689,7 +1724,7 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(clearExecutionFailure || providerFailure || projectsFailedStatus ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })

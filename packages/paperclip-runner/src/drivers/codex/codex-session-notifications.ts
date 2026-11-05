@@ -589,6 +589,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.
       if (state.activeTurnId === null || turnId !== state.activeTurnId) return;
+      if (state.codexUsageBaseline) state.codexUsageBaseline.accounted = { ...state.codexUsageBaseline.latest };
       state.emit(
         "item.completed",
         { kind: "usage", usage: state.usageSnapshot },

@@ -218,10 +218,37 @@ export async function prepareClaudeConfigSeed(
   return targetDir;
 }
 
+export const CLAUDE_TOOL_SHELL_PREFIX_SCRIPT = [
+  "#!/bin/sh",
+  "echo 1000 > /proc/self/oom_score_adj 2>/dev/null || :",
+  "shell=",
+  'case "${CLAUDE_CODE_SHELL:-}" in *bash*|*zsh*) [ -x "$CLAUDE_CODE_SHELL" ] && shell=$CLAUDE_CODE_SHELL ;; esac',
+  'if [ -z "$shell" ]; then',
+  '  case "${SHELL:-}" in *bash*|*zsh*) [ -x "$SHELL" ] && shell=$SHELL ;; esac',
+  "fi",
+  'if [ -z "$shell" ]; then',
+  '  case "${SHELL:-}" in *bash*) order="bash zsh" ;; *) order="zsh bash" ;; esac',
+  "  for name in $order; do",
+  '    candidate=$(command -v "$name" 2>/dev/null) && [ -x "$candidate" ] && { shell=$candidate; break; }',
+  "  done",
+  "fi",
+  'exec "${shell:-/bin/sh}" -c "$1"',
+  "",
+].join("\n");
+
+const CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER = "[paperclip] Installed the Claude tool shell prefix.";
+
 export function buildRemoteClaudeConfigMaterializationCommand(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteToolShellPrefixPath?: string | null;
 }): string {
+  const prefixPath = input.remoteToolShellPrefixPath;
+  const installToolShellPrefix = prefixPath
+    ? `; { umask 077 && printf '%s' ${shellQuote(CLAUDE_TOOL_SHELL_PREFIX_SCRIPT)} > ${shellQuote(`${prefixPath}.partial`)} && ` +
+      `chmod 700 ${shellQuote(`${prefixPath}.partial`)} && mv -f ${shellQuote(`${prefixPath}.partial`)} ${shellQuote(prefixPath)} && ` +
+      `echo ${shellQuote(CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER)}; }`
+    : "";
   return `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)} && ` +
     `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
     `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
@@ -230,7 +257,16 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
     `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
     `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
     `fi; ` +
-    `done`;
+    `done` +
+    installToolShellPrefix;
+}
+
+export function resolveRemoteClaudeToolShellPrefixPath(
+  env: Record<string, string>,
+  remoteClaudeRuntimeRoot: string,
+): string | null {
+  if (isNonEmptyString(env.CLAUDE_CODE_SHELL_PREFIX)) return null;
+  return path.posix.join(remoteClaudeRuntimeRoot, "tool-shell-prefix.sh");
 }
 
 export async function materializeRemoteClaudeConfig(input: {
@@ -238,17 +274,25 @@ export async function materializeRemoteClaudeConfig(input: {
   target: AdapterExecutionTarget | null | undefined;
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
+  remoteToolShellPrefixPath?: string | null;
   options: AdapterExecutionTargetShellOptions;
-}): Promise<void> {
-  await runAdapterExecutionTargetShellCommand(
+}): Promise<{ toolShellPrefixInstalled: boolean }> {
+  const result = await runAdapterExecutionTargetShellCommand(
     input.runId,
     input.target,
     buildRemoteClaudeConfigMaterializationCommand({
       remoteClaudeConfigDir: input.remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir: input.remoteClaudeConfigSeedDir,
+      remoteToolShellPrefixPath: input.remoteToolShellPrefixPath,
     }),
     input.options,
   );
+  return {
+    toolShellPrefixInstalled: Boolean(input.remoteToolShellPrefixPath) &&
+      result.exitCode === 0 &&
+      !result.timedOut &&
+      result.stdout.includes(CLAUDE_TOOL_SHELL_PREFIX_INSTALLED_MARKER),
+  };
 }
 
 function isNonEmptyString(value: unknown): value is string {

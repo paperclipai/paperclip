@@ -404,6 +404,51 @@ describe("Codex app-server Codex driver", () => {
     expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
   });
 
+  it("keeps usage reported between runs in the next run's delta so totals stay exact", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-between-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    // The first run's charge is final at 100; this report arrives after it.
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    await session.attachRun!({ runId: "run-second" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const second = await session.startTurn({ message: { role: "user", text: "Second." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: second.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: second.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
+  it("carries uncharged usage across a run that reports no usage", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-first", normalizedSessionId: "normalized-three-runs", workingDirectory: WORKSPACE,
+    });
+    const first = await session.startTurn({ message: { role: "user", text: "First." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: first.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: first.turnId, status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: first.turnId, tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    // The second run attaches and ends without any usage report of its own.
+    await session.attachRun!({ runId: "run-second" });
+    await session.attachRun!({ runId: "run-third" });
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    const third = await session.startTurn({ message: { role: "user", text: "Third." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: third.turnId, status: "inProgress" } });
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: third.turnId, tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of session.events()) if (event.payload.kind === "usage") break;
+    expect(await session.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+  });
+
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

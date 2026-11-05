@@ -238,20 +238,19 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
 }
 
 /**
- * A committed Codex `serverOverloaded` terminal chose the bounded capacity
- * retry, and the same status transaction created that retry run. The retry
- * owns recovery; a later failure reports itself. Held and exhausted capacity
- * failures have no automatic retry and stay reportable. The retry carries the
- * task in its context, so the company/context-issue index bounds the read to
- * that task's runs created since this one.
+ * A Codex `serverOverloaded` terminal chose the bounded capacity retry. Only
+ * that committed status decision creates a successor with this retry reason,
+ * so the successor row is the proof. The run's own finalization fields are
+ * not: a late terminal write can replace them with an earlier `resultJson`.
+ * The retry owns recovery; a later failure reports itself. Held and exhausted
+ * capacity failures have no automatic retry and stay reportable. The retry
+ * carries the task in its context, so the company/context-issue index bounds
+ * the read to that task's runs created since this one.
  */
 async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
-  const result = asRecord(run.resultJson);
-  const diagnostic = asRecord(result?.nativeProviderFailure);
+  const diagnostic = asRecord(asRecord(run.resultJson)?.nativeProviderFailure);
   if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      run.nativeIssueId == null ||
-      options.phase === "setup" || run.signal != null || result?.finalizationPhase !== "committed" ||
-      result.finalizationReasonCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
+      run.nativeIssueId == null || options.phase === "setup" || run.signal != null ||
       diagnostic?.provider !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.provider ||
       diagnostic.category !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.category) return false;
   const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(

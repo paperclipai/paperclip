@@ -1,6 +1,7 @@
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -1143,6 +1144,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         : false;
     if (nativeResumeScheduled) {
       input.effects.onNativeSessionResumeScheduled();
+      const failedAttachment = describeFailedAttachment(adapterErr instanceof Error ? adapterErr.message : null);
+      if (failedAttachment) await Promise.resolve(onLog("stderr", `[paperclip] ${failedAttachment}\n`)).catch(() => undefined);
       throw new NativeSessionResumeScheduledError(adapterErr);
     }
     // Adapter (or its restore finally) threw — or the finalize record
