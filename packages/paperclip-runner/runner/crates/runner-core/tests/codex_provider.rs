@@ -147,6 +147,9 @@ fn ordinary_recovery_restores_a_completed_idle_session() {
     );
     assert_eq!(call_count(&directory, "process-start"), 2);
     assert_eq!(call_count(&directory, "turn/start"), 1);
+    // Warm attachment readiness does not prove this new provider generation
+    // completed its own authoritative turn.
+    assert!(!executor.host_park_ready().unwrap());
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
@@ -523,6 +526,323 @@ fn call_count(directory: &Path, method: &str) -> usize {
         .lines()
         .filter(|line| *line == method)
         .count()
+}
+
+#[test]
+fn hosted_park_proof_requires_the_surviving_settled_native_codex_process() {
+    let directory = temporary_directory("hosted-park-proof");
+    let config = provider_config(&directory, &["--record-process-start"]);
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete the admitted native turn."}),
+        ))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    wait_for_executor_event(&mut executor, "turn.completed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor
+        .execute(&command(
+            "goal",
+            4,
+            "session.goal.set",
+            json!({"objective":"Continue autonomous work.","status":"active"}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert!(!executor.host_park_ready().unwrap());
+    executor.shutdown().unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn hosted_park_rejects_a_quiet_helper_after_parent_completion() {
+    let directory = temporary_directory("hosted-park-helper");
+    let config = provider_config(&directory, &["--quiet-helper-turn"]);
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete the parent while its helper keeps working."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    while !poll_and_ack(&mut executor).unwrap().is_empty() {}
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["completedTurnAuthoritative"], true);
+    assert!(state["descendantThreadIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == "descendant-0"));
+    assert!(!executor.host_park_ready().unwrap());
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn hosted_park_rejects_reconciled_finish_without_a_live_completion() {
+    let directory = temporary_directory("hosted-park-reconciled-finish");
+    let result_schema: Value = serde_json::from_slice(
+        &fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../protocol/schemas/result.schema.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let input = json!({"schema":"paperclip.run_result.v1", "reportedWorkDisposition":"done", "summary":"Completed once",
+        "completionClaim":{"contractRevision":"contract-1", "objectiveSatisfied":true,
+            "criteria":[{"criterionId":"output", "status":"satisfied", "evidenceRefs":[]}], "remainingWork":[]},
+        "evidence":[], "verification":[], "attentionRequests":[], "artifacts":[]});
+    let input_path = directory.join("finish-input.json");
+    fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+    let config = provider_config(
+        &directory,
+        &[
+            "--record-process-start",
+            "--durable-turn-ids",
+            "--terminal-result-file",
+            input_path.to_str().unwrap(),
+        ],
+    );
+    let operation = AuthorizedTool {
+        operation_id: "paperclip_finish".to_owned(),
+        version: 1,
+        description: "Report completed work.".to_owned(),
+        input_schema: result_schema,
+        response_schema: json!({"type":"object"}),
+    };
+    let tools = AuthorizedToolSet {
+        schema: TOOL_SET_SCHEMA.to_owned(),
+        schema_version: 1,
+        catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation)).unwrap(),
+        operations: vec![operation],
+    };
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config, "authorizedTools":tools,
+        "completionContract":{"revision":"contract-1", "criterionIds":["output"]}}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Finish before the completion is journaled."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut first, "semantic_tool.input");
+    first
+        .execute(&command(
+            "accept",
+            4,
+            "semantic_tool.result",
+            json!({"callId":"terminal-result-call",
+        "operationId":"paperclip_finish", "result":{"accepted":true}, "isError":false}),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let ended = fs::read(directory.join("fake-state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|live| live.get("activeTurnId") == Some(&Value::Null));
+        if ended {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    assert!(state["activeProviderResultFingerprint"].is_string());
+    assert_eq!(state["completedTurnAuthoritative"], false);
+    drop(first);
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    recovered
+        .execute(&command("restore", 5, "session.snapshot", json!({})))
+        .unwrap();
+    let mut events = Vec::new();
+    loop {
+        let next = poll_and_ack(&mut recovered).unwrap();
+        if next.is_empty() {
+            break;
+        }
+        events.extend(next);
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "run.terminal")
+            .count(),
+        1
+    );
+    let snapshot = recovered
+        .execute(&command("snapshot", 6, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(snapshot.result["warmAttachReady"], true);
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    assert!(!recovered.host_park_ready().unwrap());
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn hosted_park_preserves_goal_activation_during_tail_drain() {
+    verify_late_goal_retention(false);
+}
+
+#[test]
+fn hosted_park_preserves_goal_clear_during_tail_drain() {
+    verify_late_goal_retention(true);
+}
+
+fn verify_late_goal_retention(clear_goal: bool) {
+    let directory = temporary_directory("hosted-park-late-goal");
+    let gate = directory.join("release-goal");
+    let gate_arg = gate.to_string_lossy().into_owned();
+    let config = provider_config(
+        &directory,
+        &[
+            "--record-process-start",
+            "--durable-turn-ids",
+            "--late-accounting-tail-gate",
+            &gate_arg,
+            if clear_goal {
+                "--late-goal-cleared"
+            } else {
+                "--late-active-goal"
+            },
+        ],
+    );
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete one turn."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    if clear_goal {
+        executor
+            .execute(&command(
+                "paused-goal",
+                4,
+                "session.goal.set",
+                json!({"objective":"Wait for work", "status":"paused"}),
+            ))
+            .unwrap();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    fs::write(&gate, "release").unwrap();
+    while !gate.with_extension("sent").is_file() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // Do not poll the executor: the goal must first be observed by the park
+    // probe's tail drain, after its initial saved-state eligibility check.
+    assert!(!executor.host_park_ready().unwrap());
+    assert!(!executor.host_park_ready().unwrap());
+    let saved: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    let expected_status = if clear_goal {
+        Value::Null
+    } else {
+        json!("active")
+    };
+    let expected_event = if clear_goal {
+        "session.goal.cleared"
+    } else {
+        "session.goal.updated"
+    };
+    assert_eq!(saved["goal"]["status"], expected_status);
+    let events = poll_and_ack(&mut executor).unwrap();
+    assert!(events.iter().any(|event| event.event_type == expected_event
+        && event.payload["goal"]["status"] == expected_status));
+    assert_eq!(
+        executor.host_park_ready().unwrap(),
+        clear_goal,
+        "only the cleared goal becomes parkable after event delivery"
+    );
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

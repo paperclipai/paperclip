@@ -42,6 +42,7 @@ export function completedActivitySummary(items: Activity[]) {
     completed: boolean;
     order: number;
   }> = [];
+  const quietGovernance: Array<{ label: string; single: string; icon: ToolIcon; order: number }> = [];
   const notices: Array<{
     summary: string | undefined;
     severity: "info" | "warning" | "error";
@@ -78,6 +79,13 @@ export function completedActivitySummary(items: Activity[]) {
           const summary = item.summary?.trim()
             || item.details.find((entry) => entry.label === "Summary")?.value.trim();
           notices.push({ summary, severity: providerNoticeSeverity(item), icon: p.icon, order });
+          continue;
+        }
+        if (item.surface === "provider_activity" && (item.family === "hook" || item.family === "safety")) {
+          // A hook or reviewer that stopped an action is the headline of the
+          // group; routine passes only describe a group with nothing else.
+          if (p.tone === "blocked" || p.tone === "failed") add(p.completedLabel, p.icon, -1);
+          else quietGovernance.push({ label: item.family === "hook" ? "Ran hooks" : "Auto-reviewed actions", single: p.completedLabel, icon: p.icon, order });
           continue;
         }
         if (item.surface === "provider_activity" && item.family === "verification") {
@@ -146,6 +154,11 @@ export function completedActivitySummary(items: Activity[]) {
           ? "Worked on files"
           : labels[tool.family];
     add(label, tool.icon, tool.order);
+  }
+  if (!categories.size) {
+    // One quiet hook or review names itself; several share a category label.
+    if (quietGovernance.length === 1) add(quietGovernance[0]!.single, quietGovernance[0]!.icon, quietGovernance[0]!.order);
+    else for (const quiet of quietGovernance) add(quiet.label, quiet.icon, quiet.order);
   }
   if (!categories.size) {
     if (items.some((item) => item.kind === "thinking"))

@@ -8,7 +8,7 @@ import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environ
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
 import { createRequest, parseMessage, serializeMessage, isJsonRpcResponse, isJsonRpcSuccessResponse } from "../../../packages/plugins/sdk/src/protocol.js";
-import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -191,11 +191,11 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
     expect(target).toMatchObject({ kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: acquired.lease.id });
     if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw new Error("Missing plugin target");
     expect(target.runner).toBeUndefined();
-    await expect(target.runnerTask({ kind: "describe" }))
-      .resolves.toMatchObject({ kind: "description", runner: { version: "fixture" } });
+    const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
+    expect(description).toMatchObject({ kind: "description", runner: { version: "fixture" } });
     const onDispatched = vi.fn(), checkpoint = vi.fn(async () => {}), close = vi.fn(async () => {});
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
-    const owner = createPluginRunnerTaskOwner({ task: target.runnerTask, projectAuthCheckVersion: 1,
+    const owner = createPluginRunnerTaskOwner({ taskId: description.taskId, task: target.runnerTask, projectAuthCheckVersion: 1,
       credentialIdentity: "revision", accountIdentity: "account", credential: { type: "codex-auth-json", authJson: '{"OPENAI_API_KEY":"synthetic-account-key"}' }, projectIds: target.runnerTaskProjectIds ?? [], harness: "codex",
       onSessionRetained: checkpoint, onDispatched, pollMs: 1 });
     const identity = { runnerInstanceId: randomUUID(), environmentLeaseId: acquired.lease.id, runId,
@@ -244,7 +244,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
         reattachRemoteLease: { kind: "plugin_task", leaseId: saved.id },
       });
       expect(recovered.lease.id).toBe(saved.id);
-      const adopted = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+      const adopted = createPluginRunnerTaskOwner({ taskId: description.taskId, task: target.runnerTask, projectIds: [projectId], harness: "codex",
         projectAuthCheckVersion: 1, adoptIdentity: identity });
       await adopted.driver.authorizeRunnerAdoption!(prepared.configurationId, identity);
       const adoptedRegistration = await adopted.registration({} as never, runId);
@@ -254,7 +254,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       expect(calls.slice(callsBefore).some(op => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
       expect(executionStopped).toBe(false);
       projectAuthAllowed = false;
-      const revoked = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+      const revoked = createPluginRunnerTaskOwner({ taskId: description.taskId, task: target.runnerTask, projectIds: [projectId], harness: "codex",
         projectAuthCheckVersion: 1, adoptIdentity: identity });
       const connectionsBeforeRevocation = calls.filter(op => op.kind === "connection").length;
       await expect(revoked.driver.authorizeRunnerAdoption!(prepared.configurationId, identity)).rejects.toThrow("project authentication conflicts");

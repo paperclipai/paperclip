@@ -15,7 +15,7 @@ import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adap
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
-import { NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC } from "./native-runtime/native-provider-failure.js";
+import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -240,19 +240,17 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
 /**
  * A Codex `serverOverloaded` terminal chose the bounded capacity retry. Only
  * that committed status decision creates a successor with this retry reason,
- * so the successor row is the proof. The run's own finalization fields are
- * not: a late terminal write can replace them with an earlier `resultJson`.
+ * so the successor row is the proof. The run's own `resultJson` is not: the
+ * live heartbeat's failed-status write replaces it with the adapter's copy,
+ * which lacks the finalizer's diagnostic and finalization fields.
  * The retry owns recovery; a later failure reports itself. Held and exhausted
  * capacity failures have no automatic retry and stay reportable. The retry
  * carries the task in its context, so the company/context-issue index bounds
  * the read to that task's runs created since this one.
  */
 async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
-  const diagnostic = asRecord(asRecord(run.resultJson)?.nativeProviderFailure);
   if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      run.nativeIssueId == null || options.phase === "setup" || run.signal != null ||
-      diagnostic?.provider !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.provider ||
-      diagnostic.category !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.category) return false;
+      run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return false;
   const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId),
     sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),

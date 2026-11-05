@@ -377,6 +377,20 @@ This is why `in_progress` can be strict for agents without forcing the same runt
 
 ## 5. Checkout and Active Execution
 
+Native `list_workspaces` discovery returns a page with `workspaces`, `limit`,
+`returnedCount`, `hasMore` and `nextCursor`. The default page holds 50 summaries;
+the maximum is 100. Serialized pages also fit within 128 KiB. A page can contain
+fewer rows when summaries are large. An individually oversized summary returns
+1,024-character string previews and names the affected fields in `truncatedFields`;
+its full record remains available through the authorized workspace detail API.
+Callers follow `nextCursor` until null to enumerate an
+inventory. Pages use ascending workspace IDs, and apply current company,
+visibility and task-selection conditions before the database limit. Concurrent
+changes require a fresh scan. The summary API accepts opt-in `limit` and `cursor`
+parameters; existing unpaged collection callers keep their array response and
+recent-use order. Pagination prevents a large inventory from exceeding the Runner
+command journal limit and leaving an unsettled tool result at session cleanup.
+
 Checkout is the bridge from issue ownership to active agent execution.
 
 - checkout is required to move an issue into agent-owned `in_progress`
@@ -2008,6 +2022,16 @@ not grant retry authority or change the budget. When the budget is exhausted,
 the task is blocked and its recovery action states that provider startup failed
 before any provider work began.
 
+A failed bootstrap retry cannot take back an issue lock that moved off its run.
+When a newer run exists for the task, restart recovery settles the old retry at
+once. When the lock was released and no newer run exists, recovery uses the
+bounded admission backoff and then settles the retry. In both cases the
+coordinator reaches `terminal_failure`, the board receives a reconciliation
+action, and the orphaned-lease sweep can preserve the workspace and release the
+sandbox lease. Before this rule, the retry re-checked the lock without a
+deadline and never settled, so its sandbox lease stayed active and every later
+run for the task was cancelled as `workspace_busy`.
+
 The same limit evidence also holds new work for the agent. Before any workspace
 or provider work, a queued run for an agent with an active provider limit is
 cancelled as `provider_limit_wait`, records the expected reset and the run that
@@ -2451,6 +2475,20 @@ when Stop found no live controller. The worker retains the exact prepared source
 and obtains independent provider-stop evidence through normal recovery. It does
 not convert the no-op acknowledgement into a dispatched interrupt receipt or
 permission to continue the cancelled turn.
+Terminal release of a warm (`keep_running`) run that is not successful stops and
+retains its reusable sandbox. This release can finish before the preservation
+worker sees a terminal coordinator. A released reusable lease with a confirmed
+stop-and-retain receipt for the same run, lease and allocation therefore
+remains a preservation source. The worker records it as file recovery work and
+keeps its release status, policy and receipts. It dispatches no second stop and
+grants no execute right on the reusable sandbox. A released reusable lease
+stays ineligible without that valid receipt and the exact remote-workspace binding.
+Native-sync descriptors have no such binding proof, so they also stay ineligible.
+Ineligible sources cause no run writes or notifications. Recovery still rejects
+the source while a task writer is live or a later lease shares the allocation.
+Until this recovery saves the files, the
+task's remote workspace keeps the ended writer's hold. Successor runs wait for that
+recovery instead of overwriting unsaved files.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
