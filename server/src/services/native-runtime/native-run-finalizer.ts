@@ -65,6 +65,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { preservedResultHasStop, readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
@@ -337,6 +338,8 @@ async function recordRetryableFailure(input: {
     const issue = await tx
       .select({
         lastStatusDecisionId: issues.lastStatusDecisionId,
+        status: issues.status, statusVersion: issues.statusVersion,
+        assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
       })
       .from(issues)
       .where(
@@ -493,6 +496,7 @@ async function recordRetryableFailure(input: {
       .returning();
     if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
+    let workspaceFinalizationBlock: Record<string, unknown> | undefined;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(
         tx as unknown as Db,
@@ -513,7 +517,7 @@ async function recordRetryableFailure(input: {
         tx,
       );
     } else if (exhausted) {
-      await issueService(tx as unknown as Db).update(
+      const blocked = await issueService(tx as unknown as Db).update(
         input.coordinator.issueId,
         {
           status:
@@ -523,6 +527,25 @@ async function recordRetryableFailure(input: {
         },
         tx,
       );
+      if (input.failureScope === "workspace" && issue && blocked?.status === "blocked"
+        && !["blocked", "done", "cancelled"].includes(issue.status)
+        && issue.assigneeAgentId === input.run.agentId && !issue.assigneeUserId
+        && input.run.status !== "cancelled" && !preservedResultHasStop(input.run.resultJson)
+        && input.coordinator.resultId && input.run.completionContractId && input.run.completionContractSha256) {
+        const [accepted] = await tx.select({ id: nativeRunResults.id, sha256: nativeRunResults.canonicalSha256 })
+          .from(nativeRunResults).where(and(eq(nativeRunResults.companyId, input.run.companyId),
+            eq(nativeRunResults.issueId, input.coordinator.issueId), eq(nativeRunResults.runId, input.run.id),
+            eq(nativeRunResults.id, input.coordinator.resultId), eq(nativeRunResults.schemaStatus, "accepted"),
+            eq(nativeRunResults.completionContractId, input.run.completionContractId))).limit(1);
+        if (accepted) workspaceFinalizationBlock = {
+          schema: "paperclip.native-workspace-finalization-block.v1",
+          companyId: input.run.companyId, issueId: input.coordinator.issueId,
+          runId: input.run.id, agentId: input.run.agentId, resultId: accepted.id, resultSha256: accepted.sha256,
+          contractId: input.run.completionContractId, contractSha256: input.run.completionContractSha256,
+          identityContextId: input.run.activeIdentityContextId, responsibleUserId: input.run.responsibleUserId,
+          statusVersion: Number(blocked.statusVersion), priorDecisionId: issue.lastStatusDecisionId,
+        };
+      }
     }
     if (!supersededByNewerRun) {
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
@@ -536,6 +559,7 @@ async function recordRetryableFailure(input: {
         fingerprint: nativeSha256({ runId: input.run.id, failureCode }),
         evidence: {
           runId: input.run.id,
+          ...(workspaceFinalizationBlock ? { workspaceFinalizationBlock } : {}),
           coordinatorAttempt: input.coordinator.attempt,
           ...(workspaceFinalizeAttempt === null
             ? {}
@@ -1325,6 +1349,10 @@ export async function finalizeNativeRun(input: {
       .then((rows) => rows[0] ?? null);
     if (!authoritativeIssue)
       throw new Error("native_finalization_issue_missing");
+    const preservedResultFinalization = run.status !== "running"
+      ? await readPreservedNativeResultFinalization(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }) : null;
     const publishedReviewContinuation = assessment.reportedDisposition === "yielded" &&
       isPublishedGitHubReviewCompletionContinuation(assessment.continuation)
       ? await readPublishedGitHubReviewCompletionContinuation({ db: input.db,
@@ -1465,6 +1493,7 @@ export async function finalizeNativeRun(input: {
         dependencyReadiness.unresolvedBlockerCount > 0,
       governanceResolvedForRun: resolvedInteraction !== null,
       externalChatResponseWaitAuthorization,
+      hasUnprovenPreservedResultStatus: preservedResultFinalization?.statusRestoration === "unproven",
       publishedExternalReview: assessment.reportedDisposition === "yielded" &&
         (externalChatResponseWaitAuthorization === "authorized" || monitorWaitAt !== null)
         ? await hasPublishedGitHubReview(input.db, {
@@ -1548,6 +1577,7 @@ export async function finalizeNativeRun(input: {
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
+        requirePreservedResultFinalization: preservedResultFinalization ?? undefined,
         supersededExternalReviewRequests: supersededReviews.length && !governanceGate &&
           ["completion_claim_policy_accepted", "completion_contract_satisfied", "external_chat_response_waiting", "scheduled_monitor_waiting"].includes(decision.reasonCode ?? "")
           ? { agentId: run.agentId, resultId: resultRow.id, interactionIds: supersededReviews.map(({ interaction }) => interaction.id) } : undefined,
@@ -1578,7 +1608,7 @@ export async function finalizeNativeRun(input: {
             ? (boardResponseWaitOrigin ?? undefined)
             : undefined,
         requireExternalChatResponseWaitAuthorization:
-          decision.reasonCode === "external_chat_response_waiting"
+          ["external_chat_response_waiting", "preserved_result_status_unproven"].includes(decision.reasonCode ?? "")
             ? { agentId: run.agentId, ...(publishedReviewContinuation ? { completionContinuationKey: publishedReviewContinuation.idempotencyKey } : {}) }
             : undefined,
         reviewResponsePresentation:
