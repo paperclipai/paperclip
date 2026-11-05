@@ -145,6 +145,12 @@ it.each(["popup", "fallback"])("continues after manager authorization returns th
     expect(popup.close).not.toHaveBeenCalled();
     popup.location.href = `${window.location.origin}/UIP/apps/chat/connect?provider=slack&resume=endpoint`;
   }
+  if (mode === "fallback") {
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    expect(container.querySelector('a[target="_blank"]')?.textContent).toBe("Open sign-in in a new tab");
+    expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+  }
   api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "grant", workspaceName: "Paperclip" }] });
   await act(async () => { window.dispatchEvent(new Event("focus")); });
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });

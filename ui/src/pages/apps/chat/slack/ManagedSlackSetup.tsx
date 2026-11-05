@@ -38,7 +38,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     let disposed = false;
     let refreshing = false;
     const account = bindAccount(client);
-    const refresh = async () => {
+    const refresh = async (returnedFromProvider = false) => {
       if (refreshing || !account.isCurrentScope()) return;
       refreshing = true;
       try {
@@ -46,6 +46,11 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
         if (disposed || !account.isCurrentScope()) return;
         if (options.isError) throw options.error;
         onSaved(saved);
+        const hasAuthorizedWorkspace = Boolean(options.data?.workspaces.length)
+          && !saved.setup?.slackManagerError
+          && saved.setup?.slackRegistration?.errorCode !== "slack_manager_reauthorize";
+        // A focus event alone does not mean a blocked sign-in was completed.
+        if (!returnedFromProvider && !hasAuthorizedWorkspace) return;
         setAuthorizationRequested(false);
         setError(null);
         authorizationWindow.cancel();
@@ -60,7 +65,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
       try {
         const url = new URL(popup.location.href);
         if (url.origin === window.location.origin && url.pathname.endsWith("/apps/chat/connect")
-          && url.searchParams.get("resume") === endpoint.id) void refresh();
+          && url.searchParams.get("resume") === endpoint.id) void refresh(true);
       } catch { /* The sign-in window is still at the provider. */ }
     };
     // Focus also covers the native fallback link, which has no window handle.
