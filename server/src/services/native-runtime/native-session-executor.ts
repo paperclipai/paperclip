@@ -352,6 +352,10 @@ type NativeSessionStartup = {
   executionLeaseRenewal?: NativeExecutionLeaseRenewal;
   /** A fresh claim whose preparation failed before any provider turn. */
   unstartedClaim?: { leaseOwner: string; attempt: number };
+  /** A provider session handle was published; a turn may have followed it. */
+  sessionPublished?: boolean;
+  /** Restart recovery reattaches a provider that may already have worked. */
+  providerWorkMayPrecede?: boolean;
   executionContext?: NativeExecutionContext;
   settled: Promise<void>;
   settle: () => void;
@@ -7744,6 +7748,8 @@ export function cancelNativeSession(
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
     cancellationRequestId?: string;
+    /** Internal: the startup owner fenced this Stop before any provider turn. */
+    beforeProviderTurn?: boolean;
   },
 ): Promise<{
   dispatched: boolean;
@@ -7759,6 +7765,8 @@ export async function cancelNativeSession(
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
     cancellationRequestId?: string;
+    /** Internal: the startup owner fenced this Stop before any provider turn. */
+    beforeProviderTurn?: boolean;
   },
 ): Promise<
   | boolean
@@ -7784,7 +7792,8 @@ export async function cancelNativeSession(
 async function performNativeCancellation(
   runId: string,
   reason: string,
-  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean; cancellationRequestId?: string },
+  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean; cancellationRequestId?: string;
+    beforeProviderTurn?: boolean },
 ) {
   const runStop = (options?.scope ?? "run") === "run";
   let decision: NativeStatusDecision | null = null;
@@ -8103,6 +8112,11 @@ async function performNativeCancellation(
   const startup = runStop && !activeNativeSessions.has(runId) ? nativeSessionStartups.get(runId) : undefined;
   let settleStartupCancellation: (() => void) | undefined;
   let settleActiveCancellation: (() => void) | undefined;
+  // Proof for the acknowledgement: this Stop reached startup before it
+  // published a provider handle. Publication then fences that handle, so no
+  // provider turn can follow. A reattached provider may already have worked.
+  const beforeProviderTurn = runStop && (options?.beforeProviderTurn === true || Boolean(startup
+    && startup.sessionPublished !== true && startup.providerWorkMayPrecede !== true));
   if (startup) {
     startup.stopRequested = true;
     startup.executionContext?.abort(new Error("native_session_cancelled"));
@@ -8303,6 +8317,7 @@ async function performNativeCancellation(
                 decisionId,
                 acknowledgementAuditId,
                 acknowledgedAt: new Date().toISOString(),
+                ...(beforeProviderTurn ? { beforeProviderTurn: true } : {}),
               },
             },
             updatedAt: new Date(),
@@ -8484,6 +8499,7 @@ export async function executePaperclipNativeSession(input: {
   let settle!: () => void;
   const startup: NativeSessionStartup = {
     priorRestartDetach: nativeRunsDetachingForRestart.get(runId),
+    providerWorkMayPrecede: Boolean(input.restartRecovery),
     settled: new Promise<void>(resolve => { settle = resolve; }),
     settle: () => settle(),
     promise: new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; }),
@@ -10345,6 +10361,9 @@ async function executePaperclipNativeSessionWithinScope(
                 const active: ActiveNativeSession = { session, cancelRequested: false };
                 activeNativeSessions.set(input.execution.binding.runId, active);
                 const startup = nativeSessionStartups.get(input.execution.binding.runId);
+                const stopBeforeProviderTurn = startup?.stopRequested === true && startup.sessionPublished !== true
+                  && startup.providerWorkMayPrecede !== true;
+                if (startup) startup.sessionPublished = true;
                 startup?.resolve(active);
                 if (startup?.stopRequested) {
                   // Publication wakes the Stop caller; wait for its durable ACK
@@ -10363,7 +10382,8 @@ async function executePaperclipNativeSessionWithinScope(
                     )).limit(1);
                     const pendingStop = record(record(stopRun?.resultJson).nativeCancellation);
                     if (pendingStop.scope === "run" && pendingStop.dispatchState === "pending") {
-                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup", { db: input.db, scope: "run" });
+                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup",
+                        { db: input.db, scope: "run", beforeProviderTurn: stopBeforeProviderTurn });
                     }
                   } catch (error) {
                     // Best effort: the in-memory Stop below still fences this
