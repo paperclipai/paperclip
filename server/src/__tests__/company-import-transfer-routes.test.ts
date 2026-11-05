@@ -762,6 +762,25 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect((await companyTransferRunService.getRun(db, transferId))!.manifest).toEqual(body);
   });
 
+  it("uses the declaration for receipts when the saved manifest is malformed", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    expect(created.status).toBe(200);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+
+    await db.update(companyTransferRuns).set({ manifest: { parts: "invalid" } })
+      .where(eq(companyTransferRuns.id, transferId));
+
+    const redeclared = await request(app).post("/api/companies/import/transfers").send(body);
+    expect(redeclared.status).toBe(200);
+    expect(redeclared.body.transferId).toBe(transferId);
+    expect(redeclared.body.totalParts).toBe(body.parts.length);
+    expect(redeclared.body.missingParts).toEqual([1]);
+    expect(redeclared.body.alreadyCompleted).toBe(false);
+  });
+
   it("reports an already-applied transfer on re-declaration", async () => {
     const zip = buildFixtureZip();
     const { body, slices } = declareTransfer(zip, zip.length);
