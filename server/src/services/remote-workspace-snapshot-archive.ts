@@ -459,8 +459,34 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   return null;
 }
 
+/**
+ * A bounded cause for an unclassified sandbox failure. It runs in the sandbox,
+ * so it is self-contained. Each field has a fixed key and a value of at most 64
+ * `[A-Za-z0-9_]` characters taken from structured error properties; it never
+ * includes error text, command lines, or paths.
+ */
+export function remoteWorkspaceFailureDetail(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const failure = error as { code?: unknown; signal?: unknown; syscall?: unknown; killed?: unknown; cmd?: unknown; name?: unknown; message?: unknown };
+  const fields: string[] = [];
+  if (typeof failure.code === "string" && /^(E[A-Z0-9]{1,20}|ERR_[A-Z0-9_]{1,56})$/.test(failure.code)) fields.push(`code=${failure.code}`);
+  if (typeof failure.code === "number" && Number.isSafeInteger(failure.code) && failure.code >= 0 && failure.code <= 255) fields.push(`exit=${failure.code}`);
+  if (typeof failure.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(failure.signal)) fields.push(`signal=${failure.signal}`);
+  if (typeof failure.syscall === "string" && /^[a-z_]{1,24}$/.test(failure.syscall)) fields.push(`syscall=${failure.syscall}`);
+  if (failure.killed === true) fields.push("killed=true");
+  if (typeof failure.cmd === "string" && failure.cmd.startsWith("git ")) fields.push("program=git");
+  if (typeof failure.name === "string" && ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "AbortError"].includes(failure.name)) {
+    fields.push(`name=${failure.name}`);
+  }
+  const reason = typeof failure.message === "string" ? /^(?:remote_workspace_archive_)?([a-z_]{1,48})$/.exec(failure.message)?.[1] : undefined;
+  if (reason && (failure.message !== reason || ["unsafe", "unsafe_capture", "invalid_capture", "capture_missing"].includes(reason))) {
+    fields.push(`reason=${reason}`);
+  }
+  return fields.join(" ");
+}
+
 export function remoteWorkspaceArchiveScript(): string {
   // tsx's function-name preservation helper may appear in Function#toString.
   const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
-  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(kind === 'capture' ? captureFailure(error) ?? 'remote_workspace_archive_failed' : error.message);process.exitCode=1;});\n`;
+  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst failureDetail = ${remoteWorkspaceFailureDetail.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const detail = failureDetail(error);process.stderr.write(kind === 'capture' ? captureFailure(error) ?? ('remote_workspace_archive_failed' + (detail ? ': ' + detail : '')) : error.message);process.exitCode=1;});\n`;
 }

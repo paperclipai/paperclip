@@ -1,5 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
-import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
+import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -134,10 +134,7 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        // Keep the accounted total until a run reports usage, so a run with no
-        // report cannot absorb usage that was carried forward for the next one.
-        const { accounted, latest } = this.codexUsageBaseline;
-        this.codexUsageBaseline = { baseline: { ...(accounted ?? latest) }, latest: { ...latest }, ...(accounted ? { accounted: { ...accounted } } : {}) };
+        this.codexUsageBaseline = codexUsageBaselineForNextRun(this.codexUsageBaseline);
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;

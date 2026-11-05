@@ -69,6 +69,16 @@ retain their original definition and do not qualify the added Plan cell.
 
 ## Suites and matrices
 
+`onboarding-approval-history` uses the existing first-task fixture registry path
+with the production wizard and native Codex/ACPX Claude profiles. Its explicit
+`interview-hire-execute` case has seven expected work turns, one attempt, a $5
+company task budget, twelve total run records, and a fifteen-minute deadline.
+The model creates its plan, approval cards, writer, child task, and saved output
+through production tools; the harness answers the interview and clicks normal
+approval controls. Fixture code does not insert approval rows or hire the writer.
+The ordinary first-task cleanup owns the complete disposable company, including
+the new writer. See [the journey contract](README.md#first-task-onboarding).
+
 A `RunnerSuiteFixture` declares one durable testing purpose: stable ID, label,
 description, profiles, environments, cases, expected size, and definition or
 ranking metadata. Its execution IDs are globally prefixed as

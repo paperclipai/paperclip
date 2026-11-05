@@ -22,6 +22,7 @@ import {
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
+import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -59,6 +60,11 @@ import {
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+  WORKSPACE_BUSY_WAIT_KEY,
+  readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
+  type WorkspaceBusyWait,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../../modules/run-dispatch/index.js";
@@ -128,7 +134,7 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
 export function isTransientWorkspacePreparationCode(code: string | null | undefined): boolean {
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated
-    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
+    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
@@ -152,8 +158,9 @@ export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 
 // Preserve the one-hour shared-workspace holder cutoff independently of the
 // informational output-silence warnings. Warning sooner must not let another
-// run overtake a quiet holder and mutate its shared workspace.
-export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
+// run overtake a quiet holder and mutate its shared workspace. Run dispatch
+// owns the value because its parked-wait check applies the same cutoff.
+export { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS };
 
 // Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
 // issue's runs out of the shared project workspace, and therefore out of
@@ -1496,6 +1503,39 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
   }
 
+  // The wait applies only while the task keeps the workspace binding it had
+  // when it deferred; run dispatch compares the same binding before parking.
+  async function readWorkspaceBusyWaitForRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    runContext: Record<string, unknown>,
+    deferral: WorkspaceBusyDeferral,
+    now: Date,
+  ): Promise<WorkspaceBusyWait | null> {
+    const key = workspaceBusyWaitKey(deferral);
+    const issueId = readNonEmptyString(runContext.issueId);
+    if (!key || !issueId) return null;
+    const [issue] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+    if (!issue) return null;
+    // The run is already cancelled, so the task may have moved in between.
+    // Keep the wait only if the binding still names the deferral's workspace
+    // (a remote reservation can defer before it binds the execution workspace).
+    const stillBound = deferral.executionWorkspaceId
+      ? issue.executionWorkspaceId === null || issue.executionWorkspaceId === deferral.executionWorkspaceId
+      : issue.projectWorkspaceId === deferral.projectWorkspaceId;
+    if (!stillBound) return null;
+    const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
+    return {
+      key,
+      holderRunId: deferral.holder.runId,
+      waitingSince: priorWait?.key === key ? priorWait.waitingSince : now.toISOString(),
+      issueExecutionWorkspaceId: issue.executionWorkspaceId ?? null,
+      issueProjectWorkspaceId: issue.projectWorkspaceId ?? null,
+    };
+  }
+
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
   // gate: cancel the run (contention is not a failure), schedule a
   // workspace_busy retry, and leave the agent idle. The issue execution lock
@@ -1511,6 +1551,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     deferral: WorkspaceBusyDeferral,
   ) {
     const now = new Date();
+    const runContext = parseObject(run.contextSnapshot);
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message,
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
@@ -1539,7 +1580,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       // so the retry promotion gate can tell a non-assignee wake — where an
       // assignee mismatch is the expected state — from a reassignment race.
       contextSnapshot: {
-        ...parseObject(run.contextSnapshot),
+        ...runContext,
         workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
       },
     });
@@ -1560,8 +1601,17 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const agentRow = await getAgent(run.agentId).catch(() => null);
     let scheduleOutcome: string | null = null;
     if (cancelledRun && agentRow) {
+      // Record what the retry waits behind, so run dispatch can keep it parked
+      // in place until the holder ends instead of re-dispatching it on a timer.
+      const workspaceBusyWait = await readWorkspaceBusyWaitForRetry(run, runContext, deferral, now)
+        .catch((waitErr) => {
+          logger.warn({ err: waitErr, runId: run.id }, "failed to record the workspace wait; the retry re-checks on its timer");
+          return null;
+        });
       const scheduleResult = await scheduleBoundedRetryForRun(
-        cancelledRun,
+        workspaceBusyWait
+          ? { ...cancelledRun, contextSnapshot: { ...parseObject(cancelledRun.contextSnapshot), [WORKSPACE_BUSY_WAIT_KEY]: workspaceBusyWait } }
+          : cancelledRun,
         agentRow,
         {
           now,

@@ -12,9 +12,10 @@ import { nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNat
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { buildNativeHarnessBackupManifest } from "./native-session-executor.js";
 import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
-import { hasLocalNativeHarnessObligations, migrateNativeHarnessBackups } from "./native-harness-backup-migration.js";
+import { hasLocalNativeHarnessObligations, migrateNativeHarnessBackups, prestageNativeHarnessBackups } from "./native-harness-backup-migration.js";
 import { nativeHarnessBackupExpirationService } from "./native-harness-backup-expiration.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import * as backupArchive from "./native-harness-backup-archive.js";
 
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
@@ -67,7 +68,7 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     await f.db.update(heartbeatRuns).set({ nativeSessionId: f.identity.normalizedSessionId, runnerInstanceId }).where(eq(heartbeatRuns.id, f.runId));
     await f.db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
       providerLeaseId, status: "expired", metadata: { nativeHarnessBackup: stamp } });
-    return { ...f, home, root };
+    return { ...f, home, root, runnerInstanceId, providerLeaseId };
   }
   async function offlineFixtures(count: number) {
     const base = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(base); await mkdir(base);
@@ -179,6 +180,164 @@ describeEmbeddedPostgres("durable native provider backups", () => {
       leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     return result;
   }
+  async function inactiveFixture() {
+    const [f] = await offlineFixtures(1);
+    await commitWarmRun(f);
+    await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    return { ...f, owner, inactiveSource: { normalizedSessionId: f.identity.normalizedSessionId,
+      runnerInstanceId: f.runnerInstanceId, providerLeaseId: f.providerLeaseId } };
+  }
+  it("pre-copies released history and restores its bytes while an unrelated execution stays active", async () => {
+    const f = await inactiveFixture(), active = await environment.seedRun(randomUUID());
+    const input = { storage: f.storage, signal: AbortSignal.timeout(15_000) };
+    expect(await prestageNativeHarnessBackups(f.db, input)).toEqual({ inspected: 1, published: 1, current: 0, deferred: {} });
+    expect(await prestageNativeHarnessBackups(f.db, input)).toEqual({ inspected: 1, published: 0, current: 1, deferred: {} });
+    await expect(migrateNativeHarnessBackups(f.db, { ...input, writersStopped: true })).rejects.toThrow("requires_offline_writers");
+    expect((await active.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active.runId)))[0].status).toBe("running");
+    await removeNativeHarnessBackup(f.home);
+    const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(JSON.parse(await readFile(join(replacement, "current", "codex-home", "sessions", "history.json"), "utf8"))).toEqual(f.identity);
+  });
+  it.each(["queued", "running"] as const)("defers pre-copy when the same task has a %s execution", async status => {
+    const f = await inactiveFixture(), put = vi.spyOn(f.storage, "putFile");
+    await f.db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.identity.normalizedSessionId, status, runtimeMode: "native" });
+    expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
+      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_active: 1 } });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("native_harness_storage_prestage_source_active");
+    expect(put).not.toHaveBeenCalled();
+    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+  });
+  it("defers failed history without treating pre-copy as offline authority", async () => {
+    const [f] = await offlineFixtures(1);
+    expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
+      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_not_successful: 1 } });
+    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+  });
+  it("defers a source being replaced online while offline migration still refuses it", async () => {
+    const f = await inactiveFixture();
+    await writeFile(join(f.root, "runner", "runner-state.json"), JSON.stringify({ runId: f.runId, lifecycle: "running" }));
+    expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
+      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_unavailable: 1 } });
+    await expect(migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) }))
+      .rejects.toThrow("native_harness_migration_source_unsettled");
+  });
+  async function releasedFixtures() {
+    const fixtures = await offlineFixtures(2);
+    for (const f of fixtures) {
+      await commitWarmRun(f);
+      await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    }
+    return fixtures;
+  }
+  async function damageSource(f: Awaited<ReturnType<typeof offlineFixture>>, kind: string) {
+    if (kind === "unsafe") {
+      await rename(f.root, f.root + "-retained");
+      await symlink(f.root + "-retained", f.root);
+    } else await writeFile(join(f.root, kind === "manifest" ? "manifest.json" : "runner/runner-state.json"), "{");
+  }
+  it.each(["source", "output"])("distinguishes %s ENOENT during archive capture after source preparation", async kind => {
+    const [bad, good] = await releasedFixtures(), capture = backupArchive.captureNativeHarnessArchive;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const archive = vi.spyOn(backupArchive, "captureNativeHarnessArchive").mockImplementation(async (root, target, signal, limit) => {
+      if (root === bad.root) {
+        if (kind === "source") await rename(root, root + "-retained");
+        else target = join(target, "missing-parent", "archive");
+      }
+      return capture(root, target, signal, limit);
+    });
+    try {
+      const preparation = prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) });
+      if (kind === "source") {
+        expect(await preparation).toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_changed: 1 } });
+        expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+          reason: "native_harness_migration_source_unavailable" });
+        expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+      } else {
+        await expect(preparation).rejects.toMatchObject({ code: "ENOENT" });
+        expect(warning).not.toHaveBeenCalled();
+        expect(await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest))).toHaveLength(0);
+      }
+      expect(await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).toHaveLength(0);
+    } finally { archive.mockRestore(); warning.mockRestore(); }
+  });
+  it.each(["manifest", "runner", "unsafe"])("defers a damaged %s source and still copies the next eligible backup", async kind => {
+    const [bad, good] = await releasedFixtures(), warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await damageSource(bad, kind);
+      expect(await prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) }))
+        .toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_unavailable: 1 } });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining(bad.scopeDigest));
+      expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+        reason: kind === "unsafe" ? "native_harness_migration_unsafe_source" : "native_harness_migration_source_invalid_json" });
+      expect(await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).toHaveLength(0);
+      expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+      await expect(migrateNativeHarnessBackups(bad.db, { storage: bad.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) }))
+        .rejects.toThrow(kind === "unsafe" ? "native_harness_migration_unsafe_source" : /JSON|json/);
+    } finally { warning.mockRestore(); }
+  });
+  it.each(["manifest", "runner", "unsafe"])("defers %s damage at the publication fence and copies the next backup", async kind => {
+    const [bad, good] = await releasedFixtures(), put = bad.storage.putFile.bind(bad.storage);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const upload = vi.spyOn(bad.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (input.objectKey?.includes(bad.scopeDigest)) await damageSource(bad, kind);
+      return result;
+    });
+    try {
+      expect(await prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) }))
+        .toEqual({ inspected: 2, published: 1, current: 0, deferred: { source_changed: 1 } });
+      expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({ scopeDigest: bad.scopeDigest,
+        reason: kind === "unsafe" ? "native_harness_migration_unsafe_source" : "native_harness_migration_source_invalid_json" });
+      expect((await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).some(row => row.status === "current")).toBe(false);
+      expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
+    } finally { upload.mockRestore(); warning.mockRestore(); }
+  });
+  it("keeps a database SyntaxError fatal instead of deferring it as source damage", async () => {
+    const fixtures = await releasedFixtures(), f = fixtures[0], failure = new SyntaxError("database result decoding failed");
+    const transaction = vi.spyOn(f.db, "transaction").mockRejectedValueOnce(failure);
+    try {
+      await expect(prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) })).rejects.toBe(failure);
+      for (const source of fixtures) expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, source.scopeDigest))).toHaveLength(0);
+    } finally { transaction.mockRestore(); }
+  });
+  it("keeps cancellation fatal when a source also changes during upload", async () => {
+    const [f] = await releasedFixtures(), cancellation = new AbortController(), failure = new Error("operator stopped");
+    const put = f.storage.putFile.bind(f.storage);
+    const upload = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input); await damageSource(f, "manifest"); cancellation.abort(failure); return result;
+    });
+    try {
+      await expect(prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: cancellation.signal })).rejects.toBe(failure);
+      expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).some(row => row.status === "current")).toBe(false);
+    } finally { upload.mockRestore(); }
+  });
+  it.each(["source_advanced", "queued_turn", "lease_revoked", "owner_changed", "run_failed"])("keeps the published source when %s happens during pre-copy upload", async change => {
+    const f = await inactiveFixture(); await persistNativeHarnessBackup(f);
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    const put = f.storage.putFile.bind(f.storage);
+    vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (change === "source_advanced") await writeFile(join(f.root, "manifest.json"), (await readFile(join(f.root, "manifest.json"), "utf8")) + "\n");
+      if (change === "queued_turn") await f.db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId,
+        agentId: environment.current.agentId, issueId: f.issueId, status: "queued" });
+      if (change === "lease_revoked") await f.db.update(environmentLeases).set({ metadata: {} })
+        .where(eq(environmentLeases.providerLeaseId, f.providerLeaseId));
+      if (change === "owner_changed") await f.db.update(nativeRunFinalizations).set({ controllerGeneration: 2 })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      if (change === "run_failed") await f.db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+      return result;
+    });
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow(change === "owner_changed" ? "native_runner_checkpoint_owner_lost"
+      : change === "queued_turn" ? "native_harness_storage_prestage_source_active" : "native_harness_storage_prestage_source_changed");
+    const rows = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    expect(rows.filter(row => row.status === "current").map(row => row.id)).toEqual([before.id]);
+    expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
+    expect(await readFile(join(f.root, "manifest.json"), "utf8")).toContain("paperclip.native-harness-backup.v1");
+  });
   it.each(["idle", "preparing", "native"])("preserves a released committed warm session with a %s successor", async state => {
     const f = await fixture();
     const result = await commitWarmRun(f);
