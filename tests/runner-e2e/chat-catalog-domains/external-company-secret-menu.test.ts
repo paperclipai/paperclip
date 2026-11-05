@@ -10,6 +10,7 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses actua
  const scenarios=[
   {name:"ordinary menu",settings,secrets,accepted:true},
   {name:"company switcher menu",settings,secrets,accepted:true,menu:true},
+  {name:"no route example",settings,secrets,accepted:true,body:"Open Settings then Secrets, New secret. Enter the deployment key in the secure form. After saving, I will bind its secret reference to Morgan's environment.",markup:"Settings then Secrets, New secret"},
   {name:"plain directions",settings,secrets,accepted:true,markup:"Company settings → Secrets (company-prefixed /company/settings/secrets) via New secret"},
   {name:"missing Settings",settings:"",secrets},
   {name:"hidden Settings",settings,secrets,hidden:true},
@@ -31,8 +32,8 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses actua
     await route.fulfill({contentType:"text/html; charset=utf-8",body:content});
    });
    await page.goto(chat);
-   if(scenario.throws)await expect(companySecretSetupURL(page,{body,commentId:"native"},origin,"RUN",1500),scenario.name).rejects.toThrow();
-   else expect(await companySecretSetupURL(page,{body,commentId:"native"},origin,"RUN",1500),scenario.name).toBe(scenario.accepted?origin+secrets:undefined);
+   if(scenario.throws)await expect(companySecretSetupURL(page,{body:scenario.body??body,commentId:"native"},origin,"RUN",1500),scenario.name).rejects.toThrow();
+   else expect(await companySecretSetupURL(page,{body:scenario.body??body,commentId:"native"},origin,"RUN",1500),scenario.name).toBe(scenario.accepted?origin+secrets:undefined);
    expect(page.url(),scenario.name).toBe(chat);
    if(scenario.accepted)expect(clicked).toEqual([settings,secrets]);
    else expect(clicked.some(path=>path.startsWith("/OTHER/")),scenario.name).toBe(false);

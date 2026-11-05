@@ -1,6 +1,6 @@
 import type {Locator,Page} from "@playwright/test";
 export function companySecretMenuDirections(body:string){
- return /\bCompany settings\s*(?:→|>)\s*Secrets\b/i.test(body)&&/\bNew secret\b/i.test(body)&&/\bcompany-prefixed\s+[`"']?\/company\/settings\/secrets\b/i.test(body);
+ return /\b(?:Company\s+)?Settings\s*(?:→|>|then)\s*Secrets\b/i.test(body)&&/\bNew secret\b/i.test(body);
 }
 export async function companySecretMenuURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,timeout:number){
  if(!reply.commentId||!companySecretMenuDirections(reply.body))return;
@@ -14,12 +14,14 @@ export async function companySecretMenuURL(page:Page,reply:{body:string;commentI
  const supported=(href:string|null,suffix:string)=>{try{const url=new URL(href??"",origin);return url.origin===origin&&url.pathname===`/${prefix}/company/settings${suffix}`&&!url.search&&!url.hash&&!url.username&&!url.password?url.href:undefined;}catch{return;}};
  await comment.waitFor({state:"visible",timeout:remaining()});
  const fragment=comment.getByText("/company/settings/secrets",{exact:false}).last();
- if(!await visible(comment.getByText(/Company settings\s*(?:→|>)\s*Secrets/i).last())||!await visible(comment.getByText("New secret",{exact:false}).last())||!await visible(fragment)||await fragment.evaluate(node=>!!node.closest("a[href]")))return;
+ if(!await visible(comment.getByText(/(?:Company\s+)?Settings\s*(?:→|>|then)\s*Secrets/i).last())||!await visible(comment.getByText("New secret",{exact:false}).last()))return;
+ const tokens:string[]=reply.body.match(/https?:\/\/[^\s`<>"')]+|(?<![\w/:])\/[^\s`<>"')]+/g)??[];
+ if(tokens.includes("/company/settings/secrets")&&(!await visible(fragment)||await fragment.evaluate(node=>!!node.closest("a[href]"))))return;
  for(const anchor of await comment.locator("a[href]").all()){
   const href=await anchor.getAttribute("href"),label=await anchor.innerText();
   if(/settings|secrets?/i.test(`${href} ${label}`)&&!supported(href,"")&&!supported(href,"/secrets"))return;
  }
- for(const token of reply.body.match(/https?:\/\/[^\s`<>"')]+|(?<![\w/:])\/[^\s`<>"')]+/g)??[]){
+ for(const token of tokens){
   if(token!=="/company/settings/secrets"&&/settings|secrets?/i.test(token)&&!supported(token,"")&&!supported(token,"/secrets"))return;
  }
  const originalURL=page.url();let navigated=false,openedMenu=false;
