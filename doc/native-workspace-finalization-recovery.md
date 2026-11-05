@@ -407,6 +407,10 @@ and startup cancellation. Before dispatch, the controller stores a separate
 and original plugin. The initial cleanup and restart sweep both require that
 plugin to advertise `environmentStopLease`. Missing capability or failed stop
 leaves pending cleanup; ordinary release and destroy are never fallback methods.
+A typed terminal stop failure (`PluginEnvironmentStopError` with reason
+`resource_unrecoverable` or `recovery_failed`) escalates the lease for operator
+attention on its first attempt and uses the long retry interval. The lease stays
+in pending cleanup.
 
 A matching stopped receipt clears the pending intent, leaves the lease released
 and resumable, and saves `sandboxStopAndRetainReceipt`. Its request identity,
