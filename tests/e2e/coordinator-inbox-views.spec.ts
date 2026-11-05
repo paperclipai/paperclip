@@ -82,13 +82,16 @@ for (const mobile of [false, true]) test(`Mine retains Inbox behavior inside Tas
       await page.keyboard.press("U");
       await expect(unreadRow).toHaveAttribute("data-unread", "true");
       const archiveSaved = page.waitForResponse(response => response.url().endsWith(`/api/issues/${unread.id}/inbox-archive`) && response.request().method() === "POST");
+      const archiveRefreshed = page.waitForResponse(response => response.url().includes(`/api/companies/${company.id}/inbox/mine`) && response.request().method() === "GET");
       await page.keyboard.press("a");
       expect((await archiveSaved).ok()).toBe(true);
+      await archiveRefreshed;
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       await expect(unreadRow).toHaveCount(0);
       await page.keyboard.press("u");
       await expect(unreadRow).toBeVisible();
       await page.getByRole("link", { name: "Inbox", exact: true }).click();
-      await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Inbox", exact: true }).getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
     }
   } finally {
     await request.put(preferencePath, { data: { coordinatorWorkspaceEnabled: preferences.coordinatorWorkspaceEnabled } });
