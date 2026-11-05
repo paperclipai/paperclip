@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fixtureReplyStoredOnce, validateAgentTaskState } from "./agent-flows.js";
+import { agentTaskSettled, fixtureReplyStoredOnce, startedTaskRuns, validateAgentTaskState } from "./agent-flows.js";
 import { SLUGIFY_REVISION } from "../everyday-cases.js";
 import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { parseTargetConfig } from "./catalog.js";
@@ -100,6 +100,22 @@ describe("deployed agent journey evidence", () => {
       run => { run.issueId = "other"; },
     ];
     for (const change of variants) { const v = state(); change(retired(v)); expect(() => validateAgentTaskState(context, "owned-task", v, 3)).toThrow(); }
+  });
+  it("settles a completed task without counting a wake retired before provider start", () => {
+    const run = (id: string, extra: Record<string, any> = {}): Record<string, any> => ({ id, status: "succeeded", startedAt: "2026-11-05T19:15:17Z", ...extra });
+    const retired = run("retired", { status: "cancelled", startedAt: null, resultJson: {
+      executionRecovery: { kind: "accounting_wait", providerWorkStarted: false },
+      cancellation: { source: "control_plane", expected: true, initiator: { type: "system" } } } });
+    const task = (taskRuns: Array<Record<string, any>>, status = "done") => ({ currentIssue: { id: "owned-task", status },
+      taskRuns, comments: [], interactions: [], attachments: [] }) as unknown as Parameters<typeof agentTaskSettled>[0];
+    expect(agentTaskSettled(task([run("first"), run("second"), retired]), 2)).toBe(true);
+    expect(startedTaskRuns(task([run("first"), run("second"), retired]))).toHaveLength(2);
+    // Negative controls: a started or unexpected extra run, missing work, open work or an unfinished task.
+    expect(agentTaskSettled(task([run("first"), run("second"), { ...retired, startedAt: "2026-11-05T19:17:19Z" }]), 2)).toBe(false);
+    expect(agentTaskSettled(task([run("first"), run("second"), { ...retired, resultJson: { ...retired.resultJson, cancellation: { ...retired.resultJson.cancellation, expected: false } } }]), 2)).toBe(false);
+    expect(agentTaskSettled(task([run("first"), retired]), 2)).toBe(false);
+    expect(agentTaskSettled(task([run("first"), run("second", { status: "running" })]), 2)).toBe(false);
+    expect(agentTaskSettled(task([run("first"), run("second"), retired], "in_progress"), 2)).toBe(false);
   });
   it("requires explicit paid run limits for a mixed deployment campaign", () => {
     const config = { version: 1, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs",

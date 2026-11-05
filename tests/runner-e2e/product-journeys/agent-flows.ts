@@ -54,6 +54,17 @@ export function retiredBeforeProviderStart(run: Row) {
     && result.executionRecovery?.providerWorkStarted === false;
 }
 
+/** Runs that count toward a journey's expected work; retired wakes stay in the raw state and run limit. */
+export function startedTaskRuns(state: Pick<TaskState, "taskRuns">) {
+  return state.taskRuns.filter(run => !retiredBeforeProviderStart(run));
+}
+
+/** The task is done after exactly `count` started runs, with nothing active or pending. */
+export function agentTaskSettled(state: TaskState, count: number) {
+  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(run => !active(run))
+    && state.interactions.every(row => row.status !== "pending");
+}
+
 /** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
 export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = []) {
   const agent = context.agent!;
@@ -117,8 +128,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     return state;
   };
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
-    state.currentIssue.status === "done" && state.taskRuns.length === count && state.taskRuns.every(run => !active(run))
-    && state.interactions.every(row => row.status !== "pending"), "agent_task_not_completed");
+    agentTaskSettled(state, count), "agent_task_not_completed");
   const finalReply = async (issue: Row, state: TaskState, marker?: string) => {
     const runs = state.taskRuns.filter(run => run.status === "succeeded");
     if (!runs.length || runs.some(run => !Number.isFinite(Date.parse(run.finishedAt)))) throw new JourneyError("failed", "final_run_time_missing");
@@ -209,7 +219,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
       const fixture = everydayTasks.find(task => task.id === `service-${phase}`)!;
       const issue = await create(`-${phase}`, `${fixture.buildPrompt(nonce)}\nUse only the connected service named "${service.name}". Do not use any other service.`);
       const pending = await waitFor(options.deadlineAt, () => read(issue), state =>
-        state.taskRuns.length === 1 && !state.taskRuns.some(active) && state.interactions.some(row => row.status === "pending"), "protected_action_not_requested");
+        startedTaskRuns(state).length === 1 && !state.taskRuns.some(active) && state.interactions.some(row => row.status === "pending"), "protected_action_not_requested");
       check(`${phase}-waited-for-decision`, pending.currentIssue.status !== "done" && service.invocationCount() === callsBefore);
       await open(issue); await context.page.reload();
       const decision = await decideProtectedActionThroughUi({ page: context.page, rows: pending.interactions as any,
