@@ -11203,6 +11203,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
+  // BUG-03 (onboarding staging, ONB-1): the sweep read the plan approval
+  // ~500ms after it resolved, before its accept-time run existed, and queued
+  // a second continuation for the same approval. That redundant wake waited
+  // behind later runs for ~37 minutes and showed as an immutable
+  // "Accepted: <plan>" item in the composer queue.
+  async function seedJustAcceptedPlanApproval(title: string) {
+    const fixture = await seedResolvedInteractionRecoveryFixture({ title });
+    const resolvedAt = new Date(Date.now() - 500);
+    await db.update(issueThreadInteractions)
+      .set({ continuationPolicy: "wake_assignee", resolvedAt, updatedAt: resolvedAt })
+      .where(eq(issueThreadInteractions.id, fixture.interactionId));
+    return { ...fixture, resolvedAt };
+  }
+
+  async function interactionRecoveryRuns(agentId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' = 'issue.interaction_continuation_recovery'`,
+      ));
+  }
+
+  it("does not race a just-accepted plan approval before its accept-time wake is visible", async () => {
+    const { agentId } = await seedJustAcceptedPlanApproval("Plan approved moments ago");
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(await interactionRecoveryRuns(agentId)).toEqual([]);
+  });
+
+  it("does not requeue an accepted plan approval whose accept-time wake is deferred behind another run", async () => {
+    const { companyId, agentId, issueId, interactionId } =
+      await seedResolvedInteractionRecoveryFixture({ title: "Plan approval waiting for the active run" });
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, mutation: "interaction", interactionId, interactionStatus: "accepted" },
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(await interactionRecoveryRuns(agentId)).toEqual([]);
+    const wakes = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.companyId, companyId)));
+    expect(wakes).toEqual([{ status: "deferred_issue_execution" }]);
+  });
+
   it("requeues accepted interaction continuations even when a later successful run is unrelated", async () => {
     const { companyId, agentId, issueId, interactionId, resolvedAt } =
       await seedResolvedInteractionRecoveryFixture({ title: "Accepted plan masked by unrelated run" });
