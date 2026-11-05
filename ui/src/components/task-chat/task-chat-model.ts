@@ -12,6 +12,7 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { TaskChatMcpStartupFailure } from "./TaskChatRunHealthBanner";
 import type {
   Issue,
   TaskBrowser,
@@ -610,6 +611,8 @@ export interface TaskChatTurnItem {
   continuedAfterSteering?: boolean;
   /** Durable response shown after the ordered Paperclip Runner timeline. */
   finalResponse?: TaskChatMessageItem;
+  /** MCP servers the harness could not start for this run (run-health banner). */
+  mcpStartupFailures?: TaskChatMcpStartupFailure[];
   summary: {
     /** e.g. "38s" — omitted when unknown. */
     durationLabel?: string;

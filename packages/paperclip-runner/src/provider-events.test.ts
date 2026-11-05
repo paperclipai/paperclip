@@ -94,6 +94,48 @@ describe("provider-neutral events", () => {
     }
   });
 
+  it("maps a failed Codex MCP server start to a user-facing notice", () => {
+    const [event] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      threadId: null,
+      name: "paperclip",
+      status: "failed",
+      error: "MCP client for `paperclip` failed to start: program not found: paperclip-mcp",
+      failureReason: null,
+    });
+    expect(event).toMatchObject({
+      eventType: "provider.notice.recorded",
+      itemId: "mcp-startup:paperclip",
+      payload: {
+        severity: "warning",
+        category: "mcp_server_startup_failed",
+        scope: "session",
+        userActionable: true,
+        summary: "paperclip MCP server failed to start: program not found: paperclip-mcp",
+        details: [
+          { name: "server", value: "paperclip" },
+          { name: "reason", value: "program not found: paperclip-mcp" },
+        ],
+      },
+    });
+    expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+
+    const [reauth] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "linear", status: "failed", error: null, failureReason: "reauthenticationRequired",
+    });
+    expect(reauth.payload.summary).toBe("linear MCP server failed to start: needs re-authentication");
+    // Codex 0.160's own wording, observed on a live run.
+    const [live] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "github", status: "failed",
+      error: "MCP client for `github` failed to start: MCP startup failed: No such file or directory (os error 2)",
+    });
+    expect(live.payload.summary).toBe("github MCP server failed to start: No such file or directory (os error 2)");
+    expect(validatePrpEvent(envelope(reauth)).ok).toBe(true);
+
+    for (const status of ["starting", "ready", "cancelled"]) {
+      expect(canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", { name: "paperclip", status })).toEqual([]);
+    }
+  });
+
   it("classifies the complete qualified 18-variant Codex ThreadItem inventory", () => {
     expect(Object.keys(CODEX_THREAD_ITEM_CLASSIFICATION)).toEqual([
       "userMessage",

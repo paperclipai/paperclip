@@ -13,6 +13,7 @@ import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
+import { TaskChatRunHealthBanner, partitionRunHealthItems } from "./TaskChatRunHealthBanner";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatShimmerScope, useTaskChatShimmer } from "./TaskChatShimmer";
@@ -187,9 +188,10 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  const { failures: mcpStartupFailures, rest: turnItems } = partitionRunHealthItems(items);
   const terminal = isTerminalRunStatus(status);
   const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs });
-  const yielded = items.some(
+  const yielded = turnItems.some(
     (item) =>
       item.kind === "protocol" &&
       item.surface === "run_result" &&
@@ -197,12 +199,12 @@ export function TaskChatRunnerTurn({
   );
   const observedFinal = suppressFinal
     ? undefined
-    : paperclipRunnerFinalResponse(items, {
+    : paperclipRunnerFinalResponse(turnItems, {
         allowFallback: terminal && allowSummaryFallback,
       });
   const observedProviderText = Boolean(
     observedFinal &&
-    items.some(
+    turnItems.some(
       (item) =>
         item.kind === "message" &&
         item.id === observedFinal.id &&
@@ -234,7 +236,7 @@ export function TaskChatRunnerTurn({
     finalRef.current.providerText = observedProviderText;
   }
   const final = finalRef.current.item;
-  const timelineItems = paperclipRunnerTimelineItems(items);
+  const timelineItems = paperclipRunnerTimelineItems(turnItems);
   const currentActivityItems = currentActivityStatusItems(timelineItems);
   const timelineRows = buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
@@ -250,6 +252,7 @@ export function TaskChatRunnerTurn({
       {showHeader ? <TaskChatRunnerHeader runId={runId} agentName={agentName} agentIcon={agentIcon} agent={agent}
         status={status} execution={execution} preparationLabel={preparationLabel} startedAtMs={startedAtMs}
         finishedAtMs={finishedAtMs} continuedAfterSteering={continuedAfterSteering} /> : null}
+      <TaskChatRunHealthBanner failures={mcpStartupFailures} />
       {activityUnavailable ? (
         <div
           className="px-1 py-1 text-xs text-muted-foreground"
