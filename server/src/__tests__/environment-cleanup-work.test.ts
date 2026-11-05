@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
+import * as environmentCleanupState from "../services/environment-cleanup-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +30,7 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerEnvironmentCleanupWork> | undefined;
   let releases: ReturnType<typeof vi.fn>, reads: ReturnType<typeof vi.spyOn>;
+  let pendingSweeps: ReturnType<typeof vi.fn<(backoffMs: number) => Promise<unknown>>>;
   let inspections: ReturnType<typeof vi.fn<(row: { providerLeaseId: string | null }) => Promise<{ providerLeaseId: string | null; state: string }>>>;
   const errors: unknown[] = [], disposers: Array<() => void> = [];
   beforeAll(async () => {
@@ -63,8 +65,9 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
       onError: error => errors.push(error) });
     const history = historical && historicalCleanupVerificationService(db, { inspectLease: inspections, inspectSetup: inspections });
     let historySettled = !history;
+    pendingSweeps = vi.fn(sweepOverride ?? (backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs })));
     worker = registerEnvironmentCleanupWork(db, coordinator, {
-      sweepPending: sweepOverride ?? (backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs })),
+      sweepPending: pendingSweeps,
       historical: history ? { hasPending: () => history.hasPending(),
         sweep: async () => { const result = await history.sweep(); historySettled = true; return result; } } : undefined,
       canRun: () => !draining,
@@ -145,6 +148,99 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
       .toEqual({ version: 1, backgroundWork: "present" });
     await quiet();
+  });
+  it("discharges an empty pending cleanup metadata notification during provider spacing", async () => {
+    const lease = await pending();
+    await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    const startedAt = Date.now();
+    await start();
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(coordinator!.nextWakeAt()).toBeNull();
+    expect(pendingSweeps).toHaveBeenCalledTimes(1);
+    expect(Date.now() - startedAt).toBeLessThan(30_000);
+    await environmentService(db).updateLeaseMetadata(lease.id, { driver: "sandbox", presentation: "changed" });
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    await vi.waitFor(() => {
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()).toBeNull();
+    });
+    expect(Date.now() - startedAt).toBeLessThan(30_000);
+    expect(pendingSweeps).toHaveBeenCalledTimes(1);
+    expect(releases).not.toHaveBeenCalled();
+    const executions = vi.spyOn(db, "execute");
+    const count = reads.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect(reads).toHaveBeenCalledTimes(count);
+    expect(executions).not.toHaveBeenCalled();
+    expect(pendingSweeps).toHaveBeenCalledTimes(1);
+    expect(releases).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("preserves pending cleanup debt arriving during an empty fast-path read (unresolved transaction=%s)", async unresolved => {
+    const passive = await pending();
+    await environmentService(db).releaseLease(passive.id, "released", { cleanupStatus: "success" });
+    await start();
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    let readStarted = false, releaseRead!: () => void, writeReady!: () => void, releaseWrite!: () => void;
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+    const written = new Promise<void>(resolve => { writeReady = resolve; });
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const original = environmentCleanupState.nextEnvironmentCleanupAt;
+    const check = vi.spyOn(environmentCleanupState, "nextEnvironmentCleanupAt").mockImplementationOnce(async (...args) => {
+      const at = await original(...args); expect(at).toBeNull(); readStarted = true; await readGate; return at;
+    });
+    let writing: Promise<unknown> | undefined, debtId: string | undefined;
+    try {
+      await environmentService(db).updateLeaseMetadata(passive.id, { presentation: "changed" });
+      await vi.waitFor(() => expect(readStarted).toBe(true));
+      writing = db.transaction(async tx => {
+        debtId = (await pending(tx as unknown as Db)).id;
+        writeReady(); if (unresolved) await writeGate;
+      });
+      await written;
+      if (!unresolved) await writing;
+      releaseRead();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      expect(pendingSweeps).toHaveBeenCalledTimes(1);
+      expect(releases).not.toHaveBeenCalled();
+      releaseWrite(); await writing;
+      await vi.waitFor(async () => expect(await original(db)).not.toBeNull());
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      const ownerId = randomUUID();
+      const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000),
+        expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
+      expect((await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none")).backgroundWork).toBe("present");
+      await settle(300_000);
+      await vi.waitFor(() => { expect(releases).toHaveBeenCalledTimes(1); expect(idleWorkSnapshot().active).toBe(0); });
+      expect((await environmentService(db).getLeaseById(debtId!))?.status).toBe("expired");
+      expect(await original(db)).toBeNull(); await quiet();
+    } finally { releaseRead(); releaseWrite(); await writing; check.mockRestore(); }
+  });
+  it("retains a failed pending cleanup fast-path read through drain and clears it after resume", async () => {
+    const lease = await pending();
+    await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    await start();
+    expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+    const original = environmentCleanupState.nextEnvironmentCleanupAt;
+    vi.spyOn(environmentCleanupState, "nextEnvironmentCleanupAt").mockImplementationOnce(async (...args) => {
+      expect(await original(...args)).toBeNull();
+      throw new Error("pending cleanup deadline read unavailable");
+    });
+    await environmentService(db).updateLeaseMetadata(lease.id, { presentation: "changed" });
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(idleWorkSnapshot().active).toBeGreaterThan(0); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    expect(pendingSweeps).toHaveBeenCalledTimes(1); expect(releases).not.toHaveBeenCalled();
+    errors.length = 0; draining = true;
+    const count = reads.mock.calls.length;
+    await settle(60_000, false);
+    expect(reads).toHaveBeenCalledTimes(count); expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+    expect(pendingSweeps).toHaveBeenCalledTimes(1);
+    draining = false; await settle();
+    await vi.waitFor(() => { expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull(); });
+    expect(releases).not.toHaveBeenCalled(); await quiet();
+    worker!.stop(); await coordinator!.stop();
+    expect(idleWorkSnapshot().active).toBe(0);
   });
   it("discharges an empty historical metadata notification during provider spacing", async () => {
     const lease = await pending();
