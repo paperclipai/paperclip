@@ -309,7 +309,7 @@ describe("TaskChatRunnerTurn", () => {
     const commentary = container.querySelector('[data-testid="task-chat-phase-interstitial"]');
     const activity = container.querySelector('[data-testid="task-chat-activity-viewport"]');
     expect(commentary?.textContent).toContain("Running the exact command now.");
-    expect(activity?.textContent).toContain("Running a command");
+    expect(activity?.textContent).toContain("Running$ ");
     expect(activity?.textContent).toContain("STREAM-$i");
     expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
     expect(commentary?.compareDocumentPosition(activity!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);

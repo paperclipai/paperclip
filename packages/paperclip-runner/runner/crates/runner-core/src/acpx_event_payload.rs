@@ -532,6 +532,9 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     bounded_optional_text(location, "path", 4_000, "runtime tool path")?;
                 }
             }
+            if let Some(detail) = payload.get("toolDetail").filter(|value| !value.is_null()) {
+                validate_tool_detail(detail)?;
+            }
             tool_operation = Some(match payload.get("toolOperation") {
                 Some(Value::String(operation)) => {
                     bounded_optional_text(payload, "kind", 4_000, "runtime tool kind")?;
@@ -802,6 +805,46 @@ fn optional_object(
         )));
     }
     Ok(Some(field.clone()))
+}
+
+/// Sidecar-derived tool facts. Every field is optional display data with the
+/// same bounds as the canonical tool-execution schema.
+fn validate_tool_detail(detail: &Value) -> Result<(), LocalRunnerError> {
+    let Some(object) = detail.as_object() else {
+        return Err(LocalRunnerError::invalid(
+            "ACPX runtime tool detail must be an object",
+        ));
+    };
+    for (key, value) in object {
+        match key.as_str() {
+            "toolName" => {
+                bounded_optional_text(detail, "toolName", 240, "runtime tool name")?;
+            }
+            "subject" | "description" | "blockedReason" => {
+                bounded_optional_text(detail, key, 4_000, "runtime tool detail")?;
+            }
+            "exitCode" => {
+                if !value.is_i64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool exit code must be an integer",
+                    ));
+                }
+            }
+            "durationMs" => {
+                if !value.is_u64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool duration must be a non-negative integer",
+                    ));
+                }
+            }
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX runtime tool detail has an unknown field",
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn optional_array<'a>(

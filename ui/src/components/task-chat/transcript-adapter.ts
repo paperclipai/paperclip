@@ -665,6 +665,24 @@ export function reconcileSegmentRuntimeRequests(
  * assistant deltas and threading tool_result/diff onto their tool_call. Mirrors
  * buildAssistantPartsFromTranscript's grouping, emitting our presentation model.
  */
+/**
+ * Apply canonical tool facts from the runner. The subject (command, pattern,
+ * URL) or the workspace-relative path becomes the row target; the generic
+ * "operation: …" input summary is never shown when canonical data exists.
+ */
+function applyToolDetail(tool: TaskChatToolItem, detail: NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>) {
+  if (detail.operation) tool.operation = detail.operation;
+  const subject = detail.operation === "read" || detail.operation === "list" || detail.operation === "edit"
+    ? detail.target ?? detail.subject
+    : detail.subject ?? detail.target;
+  // Older runs carry no subject; keep the input summary they already had.
+  if (subject) tool.target = clip(subject, 400);
+  if (detail.description) tool.description = detail.description;
+  if (detail.exitCode !== undefined) tool.exitCode = detail.exitCode;
+  if (detail.durationMs !== undefined) tool.durationMs = detail.durationMs;
+  if (detail.blockedReason) tool.blockedReason = detail.blockedReason;
+}
+
 export function transcriptToTaskChatItems(
   entries: readonly TranscriptEntry[],
   { runId, agentName, running }: TranscriptAdapterOptions,
@@ -815,7 +833,11 @@ export function transcriptToTaskChatItems(
           // generic name must never displace the initial call's real one. ACP
           // also retitles a call to its invocation once known ("Terminal" →
           // "ls -la"); that is detail for the target slot, not a new identity.
-          if (!isGenericToolName(entry.name)) {
+          if (entry.detail && !isGenericToolName(entry.name)) {
+            // Canonical runner data: the latest native name is authoritative.
+            existing.name = toolDisplayName(entry.name);
+            existing.rawName = entry.name ?? undefined;
+          } else if (!isGenericToolName(entry.name)) {
             if (isGenericToolName(existing.rawName)) {
               existing.name = toolDisplayName(entry.name);
               existing.rawName = entry.name ?? undefined;
@@ -823,9 +845,10 @@ export function transcriptToTaskChatItems(
               existing.target = clip(entry.name!, TARGET_MAX);
             }
           }
+          if (entry.detail) applyToolDetail(existing, entry.detail);
           lastToolIndex = existingIndex!;
         } else {
-          items.push({
+          const tool: TaskChatToolItem = {
             id: `${runId}:tool:${toolCallId}`,
             kind: "tool",
             name: toolDisplayName(entry.name),
@@ -833,7 +856,9 @@ export function transcriptToTaskChatItems(
             target: summarizeToolInput(entry.input),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
-          });
+          };
+          if (entry.detail) applyToolDetail(tool, entry.detail);
+          items.push(tool);
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
         }

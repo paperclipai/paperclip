@@ -3,6 +3,7 @@ import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banner
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
+import { sidecarToolDetail } from "./acpx-tool-detail-redaction.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
@@ -29,7 +30,7 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, claudePlanProposalEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxToolDetailFromRuntimeEvent, acpxToolInputPath, boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, claudePlanProposalEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
@@ -703,7 +704,7 @@ async function pumpTurn(
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
       const sanitized = sanitizeRuntimeEvent(
-        normalizeMessage(normalizeToolEvent(boundRuntimeEventForNormalization(event))),
+        normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
       );
       const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
         ? trackSubagents({
@@ -1068,6 +1069,25 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipFileChanges: ToolFileChange[] | null;
 };
 
+/**
+ * Read tool facts (native name, command, exit, refusal reason) from the raw
+ * update before rawInput is dropped, and attest a file-path argument as a
+ * workspace-relative location when the provider sent no location.
+ */
+function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): AcpRuntimeEvent {
+  if (raw.type !== "tool_call" || bounded.type !== "tool_call") return bounded;
+  const detail = acpxToolDetailFromRuntimeEvent(raw);
+  const inputPath = bounded.locations?.length ? undefined : acpxToolInputPath(raw);
+  const locations = inputPath
+    ? safeAcpxLocations([{ path: inputPath }], openParams?.workingDirectory, bounded.kind, bounded.title)
+    : undefined;
+  return {
+    ...bounded,
+    ...(locations?.length ? { locations } : {}),
+    paperclipToolDetail: detail,
+  } as AcpRuntimeEvent;
+}
+
 /** Re-key a single-child delegation event to the Rust tool identity. */
 function withDelegationIdentity(
   event: ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number],
@@ -1227,6 +1247,7 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
         ...(boundedTool.paperclipBoundedTool === true
           ? boundedTool.paperclipOutput
           : safeOutput(event.rawOutput)),
+        ...sidecarToolDetail(record(event).paperclipToolDetail),
         ...(boundedTool.paperclipBoundedTool === true && boundedTool.paperclipFileChanges
           ? { fileChanges: boundedTool.paperclipFileChanges }
           : {}),

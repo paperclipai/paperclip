@@ -2104,6 +2104,15 @@ export const providerEventSchema = {
         "progress": {
           "$ref": "#/$defs/nullableShortText"
         },
+        "subject": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "description": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "blockedReason": {
+          "$ref": "#/$defs/nullableShortText"
+        },
         "output": {
           "type": [
             "string",

@@ -696,11 +696,28 @@ export interface PaperclipQuestionResponse {
   answers: Record<string, { selectedOptionIds?: string[]; text?: string; customText?: string }>;
 }
 
+/**
+ * Canonical facts about one tool execution (from `paperclip.tool.execution.v1`).
+ * When present on a `tool_call`, it is authoritative and replaces earlier
+ * values for the same `toolUseId`; a later lifecycle event may refine it.
+ */
+export interface TranscriptToolDetail {
+  operation?: string;
+  /** Command line, search pattern, URL or query. */
+  subject?: string;
+  /** Workspace-relative file path. */
+  target?: string;
+  description?: string;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  blockedReason?: string;
+}
+
 export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown"; itemId?: string }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown"; itemId?: string }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string; /** Delegation (subagent) execution that made this call. */ parentToolUseId?: string }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string; /** Delegation (subagent) execution that made this call. */ parentToolUseId?: string; detail?: TranscriptToolDetail }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean; delta?: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }

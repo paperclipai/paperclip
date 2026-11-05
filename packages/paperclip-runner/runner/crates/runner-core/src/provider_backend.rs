@@ -761,6 +761,35 @@ fn terminal_completion_rejected(state: &CodexProviderState) -> bool {
     state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none()
 }
 
+fn retain_goal_notification(
+    state: &mut CodexProviderState,
+    method: &str,
+    params: &Value,
+    working_now: bool,
+) -> Result<(), DurableRunnerError> {
+    let event_type = match method {
+        "thread/goal/updated" => {
+            state.goal = normalize_codex_goal(params, working_now);
+            "session.goal.updated"
+        }
+        "thread/goal/cleared" => {
+            state.goal = None;
+            "session.goal.cleared"
+        }
+        _ => return Ok(()),
+    };
+    state.goal_revision = state.goal_revision.saturating_add(1);
+    state.push_event(NormalizedProviderEvent {
+        event_type: event_type.to_owned(),
+        priority: EventPriority::P0,
+        payload: goal_event_payload(
+            state.goal.as_ref(),
+            state.goal_capability.as_ref(),
+            state.goal_revision,
+        ),
+    })
+}
+
 fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
     goal_active && !terminal_completion_rejected(state)
 }
@@ -2966,6 +2995,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid("Codex provider has not been prepared")
             })?;
             for (method, params) in tail {
+                retain_goal_notification(state, &method, &params, false)?;
                 let events = normalize_provider_notification(state, &method, &params)?;
                 state.extend_events(events)?;
             }
@@ -5035,31 +5065,7 @@ impl CodexCommandExecutor {
                             });
                         }
                     }
-                    if method == "thread/goal/updated" {
-                        state.goal = normalize_codex_goal(&params, working_now);
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.updated".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                state.goal.as_ref(),
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    } else if method == "thread/goal/cleared" {
-                        state.goal = None;
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.cleared".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                None,
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    }
+                    retain_goal_notification(state, &method, &params, working_now)?;
                     if let Some(reconciliation) = goal_reconciliation {
                         match reconciliation {
                             Ok(snapshot) => {
@@ -5272,6 +5278,61 @@ impl CodexCommandExecutor {
 }
 
 impl CommandExecutor for CodexCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        if state.config.provider != "codex"
+            || state.config.driver != "codex_app_server"
+            || self.provider.is_none()
+            || !state.completed_turn_authoritative
+            || state.completed_turn_process_generation != Some(state.provider_process_generation)
+            || state.completed_provider_turn_id.is_none()
+            || state.active_provider_turn_id.is_some()
+            || state.ambiguous_turn_start_pending
+            || state.startup_attempt.is_some()
+            || state.receipt_limit_interrupt_pending
+            || state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active" || goal.working_now)
+            || state.tool_bridge.pending_calls().next().is_some()
+            || !state.descendant_thread_ids.is_empty()
+            || !state.pending_events.is_empty()
+            || !state.queued_events.is_empty()
+            || state.lifecycle == "reconciliation_required"
+        {
+            return Ok(false);
+        }
+        self.retain_completed_accounting_tail()?;
+        let state = self
+            .state
+            .as_ref()
+            .expect("surviving native provider state");
+        if !state.pending_events.is_empty() || !state.queued_events.is_empty() {
+            return Ok(false);
+        }
+        let provider = self
+            .provider
+            .as_mut()
+            .expect("checked surviving native provider");
+        // Tail draining can consume a late goal update before the executor
+        // journal sees it. Check the live provider after that drain.
+        if provider.has_active_goal()
+            || provider.has_known_descendants()
+            || provider.observed_completed_turn_authority() != provider.completed_turn_authority()
+            || provider.completed_turn_authority()
+                != state
+                    .completed_turn_process_generation
+                    .zip(state.completed_provider_turn_id.as_deref())
+        {
+            return Ok(false);
+        }
+        Ok(provider
+            .warm_run_attachment_blockers()
+            .map_err(|_| DurableRunnerError::invalid("native Codex parking proof failed"))?
+            .is_empty())
+    }
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         // ProviderToolBridge persists the exact call/result and rejects changed
         // receipts. Delivery cannot execute a server-side semantic operation.
