@@ -8,6 +8,7 @@
 import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
+import { formatContextTokens } from "@/lib/context-tokens";
 import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
   TaskChatDiff,
@@ -134,13 +135,6 @@ export function flattenSelfTalk(text: string): string {
     .trim();
 }
 
-function compactTokenCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  return String(Math.round(value));
-}
-
 /** "Context compacted · 230k → 38k tokens" divider for a provider compaction. */
 export function contextCompactedMarker(
   entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
@@ -151,9 +145,9 @@ export function contextCompactedMarker(
   const pre = count(entry.payload.preTokens);
   const post = count(entry.payload.postTokens);
   const detail = pre !== null && post !== null
-    ? `${compactTokenCount(pre)} → ${compactTokenCount(post)} tokens`
+    ? `${formatContextTokens(pre)} → ${formatContextTokens(post)} tokens`
     : pre !== null
-      ? `from ${compactTokenCount(pre)} tokens`
+      ? `from ${formatContextTokens(pre)} tokens`
       : undefined;
   return {
     id,

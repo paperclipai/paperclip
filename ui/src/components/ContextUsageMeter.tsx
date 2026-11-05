@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
+import { formatContextTokens } from "@/lib/context-tokens";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
+export { formatContextTokens };
 
 /**
  * Latest context-window snapshot for the agent's live session. Built from
@@ -40,16 +43,6 @@ export function contextUsageLevel(usage: ContextUsage): ContextUsageLevel {
     ? usage.autoCompactTokens / usage.contextWindow
     : 0.9;
   return fraction >= threshold - 0.1 ? "near" : "normal";
-}
-
-export function formatContextTokens(value: number): string {
-  if (value >= 1_000_000) return `${trimDecimal(value / 1_000_000)}M`;
-  if (value >= 1_000) return value >= 10_000 ? `${Math.round(value / 1_000)}k` : `${trimDecimal(value / 1_000)}k`;
-  return String(Math.round(value));
-}
-
-function trimDecimal(value: number): string {
-  return value.toFixed(1).replace(/\.0$/, "");
 }
 
 const LEVEL_TEXT: Record<ContextUsageLevel, string> = {
