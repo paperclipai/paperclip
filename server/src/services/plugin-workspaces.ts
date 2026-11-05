@@ -28,6 +28,7 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
+import { workspaceProviderCallFailure } from "./workspace-provider-failure.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -147,10 +148,10 @@ export async function callWorkspaceProvider(
       params,
       operation.kind === "finalize" ? 40_000 : 310_000,
     );
-  } catch {
-    throw conflict(
-      "Workspace storage operation is incomplete; retry the same workspace",
-    );
+  } catch (error) {
+    // A worker that never received the call, a lost reply and a provider-reported
+    // failure need different recovery; only a closed provider reason crosses over.
+    throw workspaceProviderCallFailure(error);
   }
   // Recheck enablement and ownership after an external effect, including an ambiguous retry.
   await provider(db, workers, workspace.companyId, pluginId);
