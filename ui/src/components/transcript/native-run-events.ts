@@ -849,7 +849,14 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         ts,
         family: "plan",
         eventType: event.eventType,
-        status: payload.complete === true ? "completed" : "running",
+        status: payload.complete === true
+          ? "completed"
+          : Array.isArray(payload.steps) && payload.steps.some((step) => {
+            const status = record(step)?.status;
+            return status === "blocked" || status === "failed";
+          })
+            ? "failed"
+            : "running",
         title: "Plan",
         summary: text(payload.explanation)?.trim() || "Plan",
         payload,

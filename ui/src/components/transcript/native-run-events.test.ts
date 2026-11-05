@@ -146,6 +146,27 @@ describe("native plan presentation", () => {
       { label: "Step 2", status: "completed" },
     ] });
   });
+
+  it("keeps a blocked plan blocked in settled history instead of marking it interrupted", () => {
+    const transcript = nativeRunEventsToTranscript([event(1, "plan.updated", {
+      schema: "paperclip.plan.updated.v1",
+      planId: "turn-1",
+      revision: 1,
+      explanation: null,
+      steps: [
+        { stepId: "step-1", body: "Inspect", status: "completed" },
+        { stepId: "step-2", body: "Run tests", status: "blocked" },
+      ],
+      complete: false,
+      syncStatus: "not_applicable",
+      documentRevision: null,
+    })]);
+    expect(transcript[0]).toMatchObject({ kind: "provider_activity", family: "plan", status: "failed" });
+    const settled = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    const plan = settled.find((item) => item.kind === "protocol" && item.surface === "provider_activity" && item.family === "plan");
+    expect(plan).toMatchObject({ status: "failed" });
+    expect(JSON.stringify(plan)).not.toContain("Interrupted before completion");
+  });
 });
 
 describe("nativeRunEventsToTranscript", () => {

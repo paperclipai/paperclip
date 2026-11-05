@@ -126,9 +126,11 @@ describe("TaskChatTurnStatusIsland", () => {
       { id: "one", label: "Inspect", status: "completed" },
       { id: "two", label: "Build", status: "in_progress" },
     ])])!);
+    expect(document.getElementById(header().getAttribute("aria-controls")!)).toBe(checklist());
     act(() => header().click());
     expect(checklist()).toBeNull();
     expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(header().hasAttribute("aria-controls")).toBe(false);
     act(() => header().click());
     expect(checklist()).not.toBeNull();
   });

@@ -322,7 +322,7 @@ export function TaskChatTurnPlan({ plan, workspace = null, defaultCollapsed = fa
           type="button"
           className="flex min-h-10 w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:transition-none"
           aria-expanded={expanded}
-          aria-controls={listId}
+          aria-controls={expanded ? listId : undefined}
           onClick={() => setExpandedOverride(!expanded)}
           data-testid="task-chat-turn-plan-header"
         >
