@@ -1022,6 +1022,18 @@ replacement. The run records the refusal by closed labels only (cause label, HTT
 status, errno-style code), never by provider text. On exhaustion, the task gets a
 specific recovery notice, and generic recovery does not grant another budget.
 
+The provider's own idle auto-stop must not coincide with the warm runner idle
+window. The host forwards the run's effective warm idle window (environment
+`runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider
+worker as `warmRunnerIdleTimeoutMs`, on acquisition and on recovery resume. It is
+not part of lease identity or metadata. Daytona derives its effective
+`autoStopInterval` for a warm reusable sandbox as at least the warm window plus
+5 minutes, applies it at creation, and raises an older sandbox's shorter interval
+on resume (a bounded, best-effort update). Its cached-handle freshness keeps using
+the configured interval until the provider confirms the new one. An explicit `0`
+(auto-stop disabled), a longer configured interval, per-turn, and non-reusable
+sandboxes are unchanged, and idle sandboxes still auto-stop.
+
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
 Earlier unpublished directories and their receipts stay intact. Repeating the
