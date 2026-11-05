@@ -42,6 +42,11 @@ function readRecovery(value: unknown): PluginTaskSourceRecovery | null {
     ? v as unknown as PluginTaskSourceRecovery : null;
 }
 
+function pinnedSource(recovery: PluginTaskSourceRecovery) {
+  const { controllerBootId: _boot, controllerGeneration: _generation, contextId: _context, ...source } = recovery;
+  return source;
+}
+
 async function inspect(tx: Transaction, input: {
   companyId: string; leaseId: string; context: NativeExecutionContext; identity: Identity; resumeFrom: string; accountIdentity: string;
 }, expected?: PluginTaskSourceRecovery) {
@@ -118,6 +123,10 @@ export async function claimPluginTaskSourceRecovery(db: Db, input: {
     const inspected = await inspect(tx, input);
     if (!input.matchesExecution(inspected.sourceExecution)) return deny();
     const { recovery, sourceLease, lease } = inspected;
+    if (Object.hasOwn(lease.metadata ?? {}, "runnerTaskSourceRecovery")) {
+      const saved = readRecovery(lease.metadata?.runnerTaskSourceRecovery);
+      if (!saved || fingerprint(pinnedSource(saved)) !== fingerprint(pinnedSource(recovery))) return deny();
+    }
     const consumer = { leaseId: lease.id, runId: recovery.consumerRunId, resumeFrom: recovery.resumeFrom,
       identity: recovery.identity, accountIdentity: recovery.accountIdentity };
     const existing = sourceLease.metadata?.runnerTaskSourceConsumer;

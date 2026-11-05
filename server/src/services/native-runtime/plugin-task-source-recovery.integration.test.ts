@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunResults, nativeRunnerCheckpoints, plugins } from "@paperclipai/db";
-import { DurablePrpControlPlane, type DurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
+import { DurablePrpControlPlane, type DurablePrpCheckpoint, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
@@ -210,6 +210,56 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       .where(eq(environmentLeases.id, f.sourceLeaseId));
     await expect(resolvePluginTaskResume(db, { ...f, priorIdentity: f.identity })).resolves.toBe(f.resumeFrom);
     await expect(resolvePluginTaskResume(db, { ...f, leaseId: competingLease, priorIdentity: f.identity })).rejects.toThrow("not authorized");
+  });
+
+  it("keeps the first source claim after dispatch, even when another source is eligible", async () => {
+    const f = await fixture();
+    const first = await claimPluginTaskSourceRecovery(db, f);
+    await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"runnerTaskDispatched":true,"runnerTaskResumeFrom":"source-task"}'::jsonb` })
+      .where(eq(environmentLeases.id, f.leaseId));
+    const alternateRunId = randomUUID(), alternateLeaseId = randomUUID(), alternateTaskId = "alternate-task";
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const original = source.runnerProfileJson!.nativeExecutionInput as NativeExecutionInput;
+    const execution = { ...original, binding: { ...original.binding, runId: alternateRunId } };
+    await db.insert(heartbeatRuns).values({ ...source, id: alternateRunId, runnerProfileJson: { ...source.runnerProfileJson, nativeExecutionInput: execution } });
+    const [result] = await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: alternateRunId,
+      completionContractId: source.completionContractId!, serverFingerprint: "accepted-alternate", schemaStatus: "accepted",
+      resultJson: { summary: "Accepted alternate" }, canonicalSha256: "accepted-alternate" }).returning();
+    const [priorOwner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.insert(nativeRunFinalizations).values({ ...priorOwner, runId: alternateRunId, resultId: null,
+      phase: "observed", leaseOwner: f.oldOwner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const identity = { ...f.identity, runId: alternateRunId, turnId: `turn-${alternateRunId}`, itemId: `item-${alternateRunId}` };
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, alternateRunId), identity,
+      expectedRunnerVersion: "source-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, { companyId: f.companyId, issueId: f.issueId,
+      runId: alternateRunId, authorityRunId: alternateRunId, ...f.oldOwner }));
+    try { await core.flushCheckpoint(); } finally { await core.stop(); }
+    await db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, alternateRunId));
+    const [sourceLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));
+    const alternateLease = { ...sourceLease, id: alternateLeaseId, heartbeatRunId: alternateRunId, providerLeaseId: alternateTaskId };
+    await db.insert(environmentLeases).values({ ...alternateLease, metadata: { ...sourceLease.metadata,
+      runnerTaskSourceConsumer: undefined, runnerTaskIdentity: { runnerId: identity.runnerInstanceId, leaseId: identity.environmentLeaseId,
+        runId: identity.runId, sessionId: identity.normalizedSessionId, turnId: identity.turnId, itemId: identity.itemId },
+      remoteExecutionTermination: remoteTerminationReceipt(alternateLease, { providerLeaseId: alternateTaskId, state: "stopped" }) } });
+    expect(await resolvePluginTaskResume(db, { ...f, priorIdentity: identity, inspectCheckpoint: true })).toBe(alternateTaskId);
+    await expect(claimPluginTaskSourceRecovery(db, { ...f, identity, resumeFrom: alternateTaskId })).rejects.toThrow("ownership_unverified");
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(lease.metadata?.runnerTaskSourceRecovery).toEqual(first);
+    const [unconsumed] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, alternateLeaseId));
+    expect(unconsumed.metadata?.runnerTaskSourceConsumer).toBeUndefined();
+    await expect(claimPluginTaskSourceRecovery(db, f)).resolves.toEqual(first);
+  });
+
+  it("refreshes only the same source under a newly acquired coordinator epoch", async () => {
+    const f = await fixture(); await claimPluginTaskSourceRecovery(db, f);
+    const owner = { ...f.owner, generation: f.owner.generation + 1, leaseOwner: randomUUID() };
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: owner.generation, leaseOwner: owner.leaseOwner })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const context = new NativeExecutionContext(f.execution, 60_000); context.bindNativeLease(owner); contexts.push(context);
+    const refreshed = await claimPluginTaskSourceRecovery(db, { ...f, context });
+    expect(refreshed).toMatchObject({ identity: f.identity, resumeFrom: f.resumeFrom, controllerGeneration: owner.generation, contextId: context.id });
+    await expect(f.task()).rejects.toThrow("context_owner_changed");
   });
 
   it("allows the last A write before consumption and rejects stale A writes afterward", async () => {
