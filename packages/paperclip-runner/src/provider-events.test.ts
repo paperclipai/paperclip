@@ -6,6 +6,7 @@ import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
   canonicalProviderEventsFromCodex,
   canonicalProviderEventsFromOpenCodePart,
+  acpxToolDetailFromRuntimeEvent,
   boundedAcpMeta,
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
@@ -77,6 +78,47 @@ describe("provider-neutral events", () => {
     })[0].eventType).toBe("provider.notice.recorded");
   });
 
+  it("maps Codex TurnError text, retries and error info into the notice", () => {
+    const [retry] = canonicalProviderEventsFromCodex("error", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      willRetry: true,
+      error: {
+        message: "Reconnecting... 2/5",
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } },
+        additionalDetails: "stream closed before response.completed",
+      },
+    });
+    expect(retry.payload).toMatchObject({
+      severity: "warning",
+      category: "provider_retry",
+      recoverable: true,
+      summary: "stream closed before response.completed",
+      details: [
+        { name: "Attempt", value: "2" },
+        { name: "Max attempts", value: "5" },
+        { name: "Reason", value: "responseStreamDisconnected" },
+        { name: "HTTP status", value: "502" },
+      ],
+    });
+    expect(validatePrpEvent(envelope(retry)).ok).toBe(true);
+
+    const [fatal] = canonicalProviderEventsFromCodex("error", {
+      turnId: "turn-1",
+      willRetry: false,
+      error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null },
+    });
+    expect(fatal.payload).toMatchObject({
+      severity: "error",
+      category: "error",
+      recoverable: false,
+      summary: "You've hit your usage limit.",
+      details: [{ name: "Reason", value: "usageLimitExceeded" }],
+    });
+    expect(fatal.payload.noticeId).not.toBe(retry.payload.noticeId);
+    expect(validatePrpEvent(envelope(fatal)).ok).toBe(true);
+  });
+
   it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
     for (const method of ["configWarning", "deprecationNotice", "warning"]) {
       for (const [params, expected] of [
@@ -91,6 +133,48 @@ describe("provider-neutral events", () => {
         expect(event.payload.userActionable).toBe(false);
         expect(validatePrpEvent(envelope(event)).ok).toBe(true);
       }
+    }
+  });
+
+  it("maps a failed Codex MCP server start to a user-facing notice", () => {
+    const [event] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      threadId: null,
+      name: "paperclip",
+      status: "failed",
+      error: "MCP client for `paperclip` failed to start: program not found: paperclip-mcp",
+      failureReason: null,
+    });
+    expect(event).toMatchObject({
+      eventType: "provider.notice.recorded",
+      itemId: "mcp-startup:paperclip",
+      payload: {
+        severity: "warning",
+        category: "mcp_server_startup_failed",
+        scope: "session",
+        userActionable: true,
+        summary: "paperclip MCP server failed to start: program not found: paperclip-mcp",
+        details: [
+          { name: "server", value: "paperclip" },
+          { name: "reason", value: "program not found: paperclip-mcp" },
+        ],
+      },
+    });
+    expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+
+    const [reauth] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "linear", status: "failed", error: null, failureReason: "reauthenticationRequired",
+    });
+    expect(reauth.payload.summary).toBe("linear MCP server failed to start: needs re-authentication");
+    // Codex 0.160's own wording, observed on a live run.
+    const [live] = canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", {
+      name: "github", status: "failed",
+      error: "MCP client for `github` failed to start: MCP startup failed: No such file or directory (os error 2)",
+    });
+    expect(live.payload.summary).toBe("github MCP server failed to start: No such file or directory (os error 2)");
+    expect(validatePrpEvent(envelope(reauth)).ok).toBe(true);
+
+    for (const status of ["starting", "ready", "cancelled"]) {
+      expect(canonicalProviderEventsFromCodex("mcpServer/startupStatus/updated", { name: "paperclip", status })).toEqual([]);
     }
   });
 
@@ -586,6 +670,50 @@ describe("provider-neutral events", () => {
     expect(
       normalize({ type: "status", text: "x", _meta: "not an object" } as never),
     ).not.toHaveProperty("_meta");
+  });
+
+  it("reads Claude tool facts and keeps the refined title with a measured duration", () => {
+    let clock = 1_000;
+    const normalize = createAcpxToolEventNormalizer({ now: () => clock });
+    normalize({
+      type: "tool_call", tag: "tool_call", toolCallId: "toolu_bash", title: "Terminal", kind: "execute", status: "pending",
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never);
+    const refined = normalize({
+      type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_bash", title: "node --test", kind: "execute",
+      rawInput: { command: "node --test", description: "Run the unit tests" },
+      _meta: { claudeCode: { toolName: "Bash", title: "Run the unit tests" } },
+    } as never);
+    expect(refined.title).toBe("node --test");
+    clock = 2_840;
+    const failed = normalize({
+      type: "tool_call", tag: "tool_call_update", toolCallId: "toolu_bash", title: "tool call", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "```console\nExit code 2\nnot ok 2\n```" } }],
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never);
+    expect(failed).toMatchObject({
+      title: "node --test",
+      paperclipToolDetail: { toolName: "Bash", subject: "node --test", description: "Run the unit tests", exitCode: 2, durationMs: 1_840 },
+    });
+    const [mapped] = canonicalProviderEventsFromAcpxRuntimeEvent(failed as never, "fallback", "turn-1");
+    expect(mapped.payload).toMatchObject({ name: "Bash", operation: "execute", subject: "node --test", exitCode: 2, durationMs: 1_840 });
+    expect(validatePrpEvent(envelope(mapped as never)).ok).toBe(true);
+  });
+
+  it("marks Claude permission denials as blocked instead of failed commands", () => {
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "toolu_rm", status: "failed",
+      content: [{ type: "content", content: { type: "text", text: "Permission denied: Bash(rm:*) is denied by settings" } }],
+      _meta: { claudeCode: { toolName: "Bash", toolResponse: { decisionReasonType: "rule", decisionReason: "Bash(rm:*) is denied by settings" } } },
+    } as never)).toEqual({ toolName: "Bash", blockedReason: "Bash(rm:*) is denied by settings" });
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "toolu_ok", status: "completed", rawInput: { command: "ls" },
+      _meta: { claudeCode: { toolName: "Bash" } },
+    } as never)).toEqual({ toolName: "Bash", subject: "ls", exitCode: 0 });
+    // Another ACP agent's completed command makes no exit-code claim.
+    expect(acpxToolDetailFromRuntimeEvent({
+      type: "tool_call", toolCallId: "cursor_ok", status: "completed", kind: "execute", rawInput: { command: "ls" },
+    } as never)).toEqual({ subject: "ls" });
   });
 
   it("bounds ACP _meta depth, breadth, string size and total size", () => {

@@ -1,4 +1,5 @@
 import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { classifyClaudeStatusBanner } from "./claude-status-banners.js";
 import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
@@ -55,6 +56,7 @@ import {
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
 } from "../../provider-events.js";
+import { createClaudeSubagentLineageTracker } from "../../claude-subagent-lineage.js";
 import {
   canonicalRunnerToolName,
   type RunnerToolCall,
@@ -782,6 +784,8 @@ class CodexAcpxSession implements HarnessSession {
   } | null = null;
   #usage: Record<string, unknown> | null = null;
   #assistantText = "";
+  /** Claude compaction banners in this session; pairs start and end notices. */
+  #compactionCount = 0;
   #assistantMessageId: string | null = null;
   #workspaceRoots: string[] | null = null;
   #closed = false;
@@ -1487,11 +1491,14 @@ class CodexAcpxSession implements HarnessSession {
       const kimiMessages = this.#agent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
       const normalizeMessage = piMessages ? piMessages.normalize : kimiMessages ? kimiMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+      const trackSubagents = this.#agent === "claude"
+        ? createClaudeSubagentLineageTracker<AcpRuntimeEvent>(activity.toolExecutionId ?? ((id) => id))
+        : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
-        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
+        this.#mapRuntimeEvent(normalizeMessage(trackSubagents(normalizeToolEvent(projected))), turnId, ++index);
       }
       const result = await turn.result;
       if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
@@ -1695,6 +1702,34 @@ class CodexAcpxSession implements HarnessSession {
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
       const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+      const banner = this.#agent === "claude" && !isReasoning
+        ? classifyClaudeStatusBanner(output, messageId)
+        : null;
+      if (banner) {
+        // Harness lifecycle text is a status notice, never part of the answer.
+        if (banner.phase === "running") this.#compactionCount += 1;
+        const noticeId = banner.category === "context_compaction"
+          ? `${turnId}:compaction:${this.#compactionCount}`
+          : `${turnId}:status:${index}`;
+        this.#emit(
+          "provider.notice.recorded",
+          {
+            schema: "paperclip.provider.notice.v1",
+            noticeId,
+            severity: banner.severity,
+            category: banner.category,
+            scope: banner.category === "model_fallback" ? "session" : "turn",
+            recoverable: true,
+            userActionable: false,
+            summary: banner.summary,
+            ...(banner.phase || banner.details.length > 0
+              ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+              : {}),
+          },
+          { turnId, itemId: noticeId },
+        );
+        return;
+      }
       let kimiCommentary: { text: string; itemId: string } | undefined;
       // The pinned Copilot mapper supplies actual native identity, including
       // empty starts. Unidentified session info/warnings remain activity only.

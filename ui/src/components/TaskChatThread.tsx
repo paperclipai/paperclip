@@ -44,6 +44,7 @@ import {
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
   TaskChatTurnStatusIsland,
   taskChatTurnStatusModel,
@@ -2058,6 +2059,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         return {
           segment,
           parsed,
+          // Historical turns drop provider notices, but a failed MCP start
+          // still explains that run's answer, so take it before the filter.
+          mcpStartupFailures: partitionRunHealthItems(parsed).failures,
           timelineItems: sourceIsPaperclipRunner
             ? paperclipRunnerTimelineItems(visibleActivity)
             : visibleActivity,
@@ -2112,9 +2116,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   allowFallback: sourceAllowSummaryFallback,
                 })
             : undefined;
-        const children = settledRunChildren(
-          timelineItemsBySegment[segmentIndex] ?? [],
-        );
+        const runHealth = {
+          failures: projectedSegments[segmentIndex]?.mcpStartupFailures ?? [],
+          rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
+        };
+        const children = settledRunChildren(runHealth.rest);
         if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
           continue;
         settledRunIds.add(source.id);
@@ -2155,6 +2161,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             continuedAfterSteering: sourceIsPaperclipRunner && segmentIndex > 0,
             animateFold: liveSeenRef.current.has(source.id),
             items: children,
+            ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
             finalResponse,
             summary: buildTurnSummary(segment.entries, {
               durationMs: segmentDurationMs,
@@ -2209,12 +2216,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             liveRun.id === planDocumentSourceRunId && planTurnItem
               ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
               : parsedTranscript;
-          const children = settledRunChildren(
+          const runHealth = partitionRunHealthItems(
             isNativePaperclipRunnerRun(liveRun)
               ? paperclipRunnerTimelineItems(parsed)
               : parsed,
           );
-          if (children.length === 0) continue;
+          const children = settledRunChildren(runHealth.rest);
+          if (children.length === 0 && runHealth.failures.length === 0) continue;
           const turnId = `${liveRun.id}:turn:${segmentIndex}`;
           const segmentDurationMs =
             Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs)
@@ -2250,6 +2258,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               continuedAfterSteering:
                 isNativePaperclipRunnerRun(liveRun) && segmentIndex > 0,
               items: children,
+              ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
               summary: buildTurnSummary(segment.entries, {
                 durationMs: segmentDurationMs,
               }),

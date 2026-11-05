@@ -2065,6 +2065,15 @@ export const providerEventSchema = {
         "progress": {
           "$ref": "#/$defs/nullableShortText"
         },
+        "subject": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "description": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "blockedReason": {
+          "$ref": "#/$defs/nullableShortText"
+        },
         "output": {
           "type": [
             "string",
@@ -2085,6 +2094,16 @@ export const providerEventSchema = {
             "null"
           ],
           "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parentItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "fileChanges": {
           "description": "Files changed by this one edit call, each with a bounded patch. Paths are workspace-relative.",
@@ -2296,6 +2315,12 @@ export const providerEventSchema = {
                 "$ref": "#/$defs/nullableShortText"
               },
               "activitySummary": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "prompt": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "result": {
                 "$ref": "#/$defs/nullableShortText"
               }
             },

@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-boundary.js";
+import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -609,6 +610,35 @@ describe("qualified ACPX runtime sidecar", () => {
     projection.settle();
   });
 
+  it("turns Claude status banners into paired provider notices before text projection", () => {
+    const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+    const sanitizer = source.slice(source.indexOf("function sanitizeRuntimeEvent"), source.indexOf("function claudeStatusBannerNotice"));
+    // The banner check runs before the text_delta projection.
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeGreaterThan(0);
+    expect(sanitizer.indexOf("claudeStatusBannerNotice(event)")).toBeLessThan(sanitizer.indexOf('if (event.type === "text_delta")'));
+    const start = source.indexOf("function claudeStatusBannerNotice");
+    const end = source.indexOf("\nfunction sanitizeRuntimeStatus", start);
+    expect(start).toBeGreaterThan(0);
+    const fn = stripTypeScriptTypes(source.slice(start, end));
+    const make = (agent: string) => new Function("classifyClaudeStatusBanner",
+      `let initializedAgent = ${JSON.stringify(agent)}; let claudeCompactionCount = 0; ${fn} return claudeStatusBannerNotice;`,
+    )(classifyClaudeStatusBanner) as (event: Record<string, unknown>) => Record<string, unknown> | null;
+    const notice = make("claude");
+    const chunk = (text: string, messageId?: string) => ({ type: "text_delta", stream: "output", text, ...(messageId ? { messageId } : {}) });
+    const started = notice(chunk("Compacting..."));
+    const completed = notice(chunk("\n\nCompacting completed."));
+    const next = notice(chunk("Compacting..."));
+    expect(started).toMatchObject({ type: "provider_notice", category: "context_compaction", noticeKey: "compaction-1",
+      details: [{ name: "Phase", value: "running" }] });
+    expect(completed).toMatchObject({ noticeKey: "compaction-1", details: [{ name: "Phase", value: "completed" }] });
+    expect(next).toMatchObject({ noticeKey: "compaction-2" });
+    expect(notice(chunk("**Warning:** Stop hook blocked continuation"))).toMatchObject({
+      type: "provider_notice", category: "provider_informational", severity: "warning", summary: "Stop hook blocked continuation",
+    });
+    expect(notice(chunk("Compacting...", "msg_01"))).toBeNull();
+    expect(notice({ ...chunk("Compacting..."), stream: "thought" })).toBeNull();
+    expect(make("codex")(chunk("Compacting..."))).toBeNull();
+  });
   it("passes only validated Pi native boundaries and history through the real text sanitizer", () => {
     const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
     const start = source.indexOf('  if (event.type === "text_delta") {', source.indexOf("function sanitizeRuntimeEvent"));

@@ -19,18 +19,7 @@ import { pinFailedObservedWorkspace } from "./native-observed-workspace-preserva
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
 import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
 
-/** Leases that can still hold a cancelled run's prepared files. Terminal
- * release can stop and retain a reusable sandbox before preservation runs.
- * Its confirmed stop receipt keeps those files as a recovery source. This SQL
- * is a prefilter only: `cancelledWorkspaceSource` applies the exact proof. */
-function cancelledWorkspaceSourceLease() {
-  return or(eq(environmentLeases.status, "active"), and(
-    inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral"),
-  ), and(eq(environmentLeases.status, "released"),
-    inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "reuse_by_execution_workspace"]),
-    sql`${environmentLeases.metadata}->'remoteExecutionTermination'->>'state' = 'stopped'`,
-    sql`${environmentLeases.metadata} ? 'sandboxStopAndRetainReceipt'`));
-}
+const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
 /** The exact source the restore recorder can retain. A released reusable lease
  * qualifies only with a confirmed stop-and-retain receipt and the remote
@@ -123,6 +112,10 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).limit(1);
     if (!source || source.issueId !== issueId || source.metadata?.remoteCwd !== currentReference.remoteCwd
       || (source.executionWorkspaceId && source.executionWorkspaceId !== currentReference.workspaceId)) return;
+    // A stopped reusable sandbox is retained only with its exact stop receipt
+    // while the workspace is still bound to this writer. Otherwise record nothing.
+    if (source.status !== "active" && reusableLeasePolicies.includes(source.leasePolicy) && (!hasConfirmedSandboxStopAndRetain(source)
+      || !await preparedRemoteWorkspaceSource(tx as unknown as Db, source))) return;
     // Ownership settlement still applies to workspace-less external sessions.
     // Their Runner descriptor is not evidence that user files need exporting.
     const retainFiles = !nativeRunHasNoWorkspaceAccess(run);
@@ -198,6 +191,20 @@ function retentionContentionCode(error: unknown): string | null {
 }
 
 const cancelledWorkspaceCursors = new WeakMap<Db, string>();
+
+/** Leases that may still hold a cancelled writer's prepared files. A reusable
+ * (warm) lease that ends without success is stopped and kept `released` under
+ * its reusable policy; a reassignment Stop leaves the writer's unsaved files
+ * there. Admission only finds candidates: retention still requires the exact
+ * stop-and-retain receipt and the workspace still bound to this writer. */
+function cancelledWorkspaceSourceLease() {
+  return or(eq(environmentLeases.status, "active"),
+    and(inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral")),
+    and(eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
+      inArray(environmentLeases.leasePolicy, reusableLeasePolicies),
+      sql`${environmentLeases.metadata}->'remoteExecutionTermination'->>'state' = 'stopped'`,
+      sql`${environmentLeases.metadata} ? 'sandboxStopAndRetainReceipt'`));
+}
 
 /** Older controllers could acknowledge Stop without pinning prepared files.
  * Record only the file obligation; the existing stop-only cleanup worker owns

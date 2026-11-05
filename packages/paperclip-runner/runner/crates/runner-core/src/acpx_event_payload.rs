@@ -508,6 +508,13 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
             )?;
             let title = bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
             bounded_optional_text(payload, "status", 100, "runtime tool status")?;
+            // Display lineage only: the delegation (subagent) call that made this one.
+            bounded_optional_text(
+                payload,
+                "parentToolCallId",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+                "runtime tool parent",
+            )?;
             if let Some(locations) = optional_array(payload, "locations", "runtime tool locations")?
             {
                 if locations.len() > 2_000 {
@@ -523,6 +530,9 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
                     }
                     bounded_optional_text(location, "path", 4_000, "runtime tool path")?;
                 }
+            }
+            if let Some(detail) = payload.get("toolDetail").filter(|value| !value.is_null()) {
+                validate_tool_detail(detail)?;
             }
             tool_operation = Some(match payload.get("toolOperation") {
                 Some(Value::String(operation)) => {
@@ -562,6 +572,19 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         "provider_notice" => {
             bounded_nonempty_text(payload, "category", 160, "provider notice category")?;
             bounded_nonempty_text(payload, "summary", 4_000, "provider notice summary")?;
+            bounded_optional_text(payload, "severity", 16, "provider notice severity")?;
+            bounded_optional_text(payload, "noticeKey", 160, "provider notice key")?;
+            if let Some(details) = optional_array(payload, "details", "provider notice details")? {
+                if details.len() > 64 {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX provider notice details exceed their bound",
+                    ));
+                }
+                for detail in details {
+                    bounded_nonempty_text(detail, "name", 160, "provider notice detail name")?;
+                    bounded_optional_text(detail, "value", 4_000, "provider notice detail value")?;
+                }
+            }
             AcpxRuntimeEventKind::ProviderNotice
         }
         "error" => {
@@ -781,6 +804,46 @@ fn optional_object(
         )));
     }
     Ok(Some(field.clone()))
+}
+
+/// Sidecar-derived tool facts. Every field is optional display data with the
+/// same bounds as the canonical tool-execution schema.
+fn validate_tool_detail(detail: &Value) -> Result<(), LocalRunnerError> {
+    let Some(object) = detail.as_object() else {
+        return Err(LocalRunnerError::invalid(
+            "ACPX runtime tool detail must be an object",
+        ));
+    };
+    for (key, value) in object {
+        match key.as_str() {
+            "toolName" => {
+                bounded_optional_text(detail, "toolName", 240, "runtime tool name")?;
+            }
+            "subject" | "description" | "blockedReason" => {
+                bounded_optional_text(detail, key, 4_000, "runtime tool detail")?;
+            }
+            "exitCode" => {
+                if !value.is_i64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool exit code must be an integer",
+                    ));
+                }
+            }
+            "durationMs" => {
+                if !value.is_u64() {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool duration must be a non-negative integer",
+                    ));
+                }
+            }
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX runtime tool detail has an unknown field",
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn optional_array<'a>(

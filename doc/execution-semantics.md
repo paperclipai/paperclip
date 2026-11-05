@@ -377,6 +377,20 @@ This is why `in_progress` can be strict for agents without forcing the same runt
 
 ## 5. Checkout and Active Execution
 
+Native `list_workspaces` discovery returns a page with `workspaces`, `limit`,
+`returnedCount`, `hasMore` and `nextCursor`. The default page holds 50 summaries;
+the maximum is 100. Serialized pages also fit within 128 KiB. A page can contain
+fewer rows when summaries are large. An individually oversized summary returns
+1,024-character string previews and names the affected fields in `truncatedFields`;
+its full record remains available through the authorized workspace detail API.
+Callers follow `nextCursor` until null to enumerate an
+inventory. Pages use ascending workspace IDs, and apply current company,
+visibility and task-selection conditions before the database limit. Concurrent
+changes require a fresh scan. The summary API accepts opt-in `limit` and `cursor`
+parameters; existing unpaged collection callers keep their array response and
+recent-use order. Pagination prevents a large inventory from exceeding the Runner
+command journal limit and leaving an unsettled tool result at session cleanup.
+
 Checkout is the bridge from issue ownership to active agent execution.
 
 - checkout is required to move an issue into agent-owned `in_progress`
@@ -501,6 +515,19 @@ fails with the unfinished-writer error and leaves the held files unchanged.
 This wait is also one parked retry, for example after a reassignment stops the
 writer. It is re-checked every minute while the ended writer's hold settles, is
 admitted once the hold releases, and stops parking at the same cutoff.
+
+A writer stopped mid-run, for example by reassignment, keeps its unsaved files
+in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
+leaves that lease `released` under its reusable policy with a stop-and-retain
+receipt. Cancelled-workspace preservation admits that stopped source, as it does
+an active or ephemeral one. It records the save obligation for the exact writer
+run while the workspace is still bound to that writer. Paperclip's workspace
+recovery then saves those files, which releases the hold. It never replays the
+stopped run. While that save is in progress, its last progress counts as the
+ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
+failing setup. The save's retry budget bounds that wait. A save that exhausts
+its retries is handed to the board as a named recovery action. After that hand-off,
+the cutoff no longer advances.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
@@ -917,6 +944,12 @@ paths in the exclusion manifest. Capture leaves the source endpoints in place;
 restore does not recreate runtime IPC. Named pipes and device entries remain
 unsupported, while regular files, directories and confined symlinks retain their
 existing validation.
+
+Portable archives also preserve a standalone `REBASE_HEAD` bookmark and its commit
+when no Git operation state or unmerged index remains. Capture does not remove or
+change the source bookmark. The archive checks its identity throughout capture
+and retains its objects even when no branch references them. An unfinished
+rebase, merge, revert, cherry-pick, sequencer or bisect still blocks export.
 
 Disk-backed native sandbox workspace snapshots run in at most two worker threads per
 controller process. Each capture retains the same file hashes, modes, symlinks,
@@ -1989,6 +2022,16 @@ not grant retry authority or change the budget. When the budget is exhausted,
 the task is blocked and its recovery action states that provider startup failed
 before any provider work began.
 
+A failed bootstrap retry cannot take back an issue lock that moved off its run.
+When a newer run exists for the task, restart recovery settles the old retry at
+once. When the lock was released and no newer run exists, recovery uses the
+bounded admission backoff and then settles the retry. In both cases the
+coordinator reaches `terminal_failure`, the board receives a reconciliation
+action, and the orphaned-lease sweep can preserve the workspace and release the
+sandbox lease. Before this rule, the retry re-checked the lock without a
+deadline and never settled, so its sandbox lease stayed active and every later
+run for the task was cancelled as `workspace_busy`.
+
 The same limit evidence also holds new work for the agent. Before any workspace
 or provider work, a queued run for an agent with an active provider limit is
 cancelled as `provider_limit_wait`, records the expected reset and the run that
@@ -2074,7 +2117,10 @@ backup. Paperclip restores that backup into the new sandbox only when all of
 these are true: the backup's source lease is expired or failed with a provider
 `destroyed` termination receipt, the source lease's backup stamp names this
 exact backup manifest, and no provider event for the session was recorded after
-the backup completed. Any other state is ambiguous. The run then fails closed
+the backup completed. Normal warm handoffs can leave multiple lease records
+for that allocation. Restore requires one final owner and the existing matching
+predecessor/successor receipts for every earlier owner. Unrelated, live, or
+incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
 
 A per-turn sandbox turn can finish through recovery without a Runner
