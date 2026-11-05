@@ -12,6 +12,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
@@ -1466,7 +1467,7 @@ export async function finalizeNativeRun(input: {
       ? await readNativeMonitorDelivery(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id })
       : null;
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
-    let proposedDecision = resolveNativeFinalizerStatus({
+    const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
@@ -1509,7 +1510,8 @@ export async function finalizeNativeRun(input: {
         null,
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
-    });
+    };
+    let proposedDecision = resolveNativeFinalizerStatus(statusInput);
     // Already accepted results still require the server-owned first-task decision.
     // Keep the task open without inventing an interaction or rerunning the work.
     if (proposedDecision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(input.db, {
@@ -1517,6 +1519,22 @@ export async function finalizeNativeRun(input: {
     })) {
       proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
         reasonCode: "onboarding_first_task_decision_required", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    }
+    if (proposedDecision.statusAction === "done") {
+      const continuation = record(run.contextSnapshot?.executionContinuation);
+      const objective = typeof continuation.objective === "string" ? continuation.objective
+        : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
+      try {
+        await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+      } catch (error) {
+        if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
+        const incomplete = resolveNativeFinalizerStatus({ ...statusInput,
+          assessment: { ...assessment, hasBlockingRemainingWork: true, continuation: null } });
+        proposedDecision = { ...incomplete, effects: incomplete.effects.map(effect =>
+          effect.kind === "enqueue_continuation" ? { ...effect, summary: error.message }
+            : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
+      }
     }
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
