@@ -59,6 +59,29 @@ describe("producer-owned native usage", () => {
     return { input, source, report, done };
   };
 
+  it("settles a finished run's outbox when it has no receipts yet", async () => {
+    const input = await seed();
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    await createNativeUsageDelivery(db, input);
+    const { billing, ...source } = input;
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify(billing)}::jsonb` }).where(eq(heartbeatRuns.id, input.runId));
+    const continuation = await createNativeUsageContinuationDelivery(db, source);
+    await continuation.capture(event(input, 1, "usage.reported"));
+    await continuation.capture(event(input, 2, "turn.completed"));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))
+      .toEqual([expect.objectContaining({ biller: billing.biller, billingType: billing.billingType, outputTokens: 10 })]);
+  });
+
+  it("refuses to continue a run with no receipts and no recorded classification", async () => {
+    const input = await seed();
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    await createNativeUsageDelivery(db, input);
+    const { billing: _billing, ...source } = input;
+    await expect(createNativeUsageContinuationDelivery(db, source)).rejects.toThrow("native_usage_continuation_receipts_missing");
+  });
+
   it("continues exact finalized source receipts without acquiring ownership or resetting accounting", async () => {
     const { input, source, report, done } = await finalizedSource();
     const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));

@@ -51,12 +51,15 @@ export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<
   if (source?.runnerInstanceId !== input.runnerInstanceId || source.usage?.accountingReceiptOwner !== "native_producer"
     || source.usage.accountingReceiptSourceId !== sourceId) throw new Error("native_usage_continuation_source_mismatch");
   const saved = await loadNativeUsageReceipts(db, input, sourceId);
-  if (!saved.length) throw new Error("native_usage_continuation_receipts_missing");
-  const classification = (receipt: AdapterUsageCheckpoint) => ({
+  const classification = (receipt: Pick<AdapterUsageCheckpoint, "provider" | "biller" | "billingType">) => ({
     provider: receipt.provider, biller: receipt.biller, billingType: receipt.billingType,
   });
   const receipts = saved.map(row => (row.receipt as UsageReceiptEnvelope).receipt as AdapterUsageCheckpoint);
-  const billing = classification(receipts[0]);
+  // A finished run can have no receipts yet: its reports may still be in the
+  // Runner's outbox. Its recorded classification lets them settle now.
+  const recorded = source.usage as Partial<AdapterUsageCheckpoint>;
+  if (!receipts.length && !recorded.biller) throw new Error("native_usage_continuation_receipts_missing");
+  const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
   if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
     || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
   return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true);

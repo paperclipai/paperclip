@@ -1708,6 +1708,10 @@ session has no durable path for this, so its late usage stays with the run that 
 active when it arrives, or the next run. The total stays exact, but the attribution
 can be off by those tokens.
 
+Every remote Runner transport, including one on a plugin-owned VM, delivers usage to
+Core as events commit. Reports still in the Runner's outbox when a run finishes
+settle on that run when the next run drains them, even if it has no receipts yet.
+
 ### Session settlement after a run
 
 Attaching a later run to a session asks whether anything is live or waiting: an
