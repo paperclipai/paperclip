@@ -1798,7 +1798,7 @@ export function buildTurnTimelineRows(
       // after it is shown by that divider alone.
       if (statusNoticeCategory(item) === "context_compaction" &&
         item.details.find((detail) => detail.label === "Phase")?.value === "completed" &&
-        later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && next.family === "context")) continue;
+        later.some(isCompactionDivider)) continue;
       current = null;
       rows.push(retry && later.some(statusNoticeResolvesRetry) ? { ...item, resolved: true } : item);
     } else if (
@@ -1820,6 +1820,16 @@ export function buildTurnTimelineRows(
   }
   if (running && current && meaningful.includes(current)) current.active = true;
   return meaningful;
+}
+
+/**
+ * A canonical context.compacted item: a context provider activity, or the
+ * context-meter divider marker (variant compared as text so this works
+ * before and after that variant joins the marker union).
+ */
+function isCompactionDivider(item: TaskChatItem): boolean {
+  if (item.kind === "protocol") return item.surface === "provider_activity" && item.family === "context";
+  return item.kind === "marker" && (item.variant as string) === "context_compacted";
 }
 
 /** Real provider progress after a retry notice shows the retry succeeded. */

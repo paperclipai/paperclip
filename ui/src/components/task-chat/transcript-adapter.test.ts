@@ -2916,5 +2916,10 @@ describe("harness status notices", () => {
       .filter((row) => row.kind === "protocol" && row.surface === "provider_activity" && row.family === "provider_notice");
     expect(rows([read, compacted])).toHaveLength(1);
     expect(rows([read, compacted, divider])).toHaveLength(0);
+    const marker = { id: "m", kind: "marker", variant: "context_compacted", label: "Context compacted" } as unknown as TaskChatItem;
+    const parsed = paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, compacted], { runId: "r", running: true }));
+    const withMarker = buildTurnTimelineRows([...parsed, marker], true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(withMarker).toHaveLength(0);
   });
 });
