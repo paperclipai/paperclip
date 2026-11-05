@@ -1,0 +1,275 @@
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { agents, companies, createDb, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { issueService, planIssueParentChange, resolveNewTaskParent } from "../services/issues.ts";
+import { resolveIssueCreationSource } from "../services/issue-creation-source.ts";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("agent task hierarchy depth", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-task-depth-");
+    db = createDb(tempDb.connectionString);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  async function seedIssue(
+    companyId: string,
+    values: Partial<typeof issues.$inferInsert> = {},
+  ) {
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: `Task ${id.slice(0, 6)}`,
+      status: "todo",
+      priority: "medium",
+      ...values,
+    });
+    return id;
+  }
+
+  async function seedTree(companyId: string) {
+    const suffix = randomUUID().slice(0, 8);
+    const rootIdentifier = `ROOT-${suffix}`;
+    const childIdentifier = `CHILD-${suffix}`;
+    const rootId = await seedIssue(companyId, { identifier: rootIdentifier });
+    const childId = await seedIssue(companyId, { parentId: rootId, identifier: childIdentifier });
+    return { rootId, childId, rootIdentifier, childIdentifier };
+  }
+
+  it("places an agent's child-of-a-child beside the requester and keeps it as the origin", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId, childId, rootIdentifier, childIdentifier } = await seedTree(companyId);
+
+    const created = await issueService(db).create(companyId, {
+      title: "Follow-up from the child",
+      parentId: childId,
+    });
+
+    expect(created.parentId).toBe(rootId);
+    expect(created.originIssueId).toBe(childId);
+    expect(created.privacyParentIssueId).toBe(childId);
+    expect(created.parentAdjusted).toEqual({
+      reason: "max_agent_depth",
+      applied: true,
+      requestedParent: { id: childId, identifier: childIdentifier },
+      effectiveParent: { id: rootId, identifier: rootIdentifier },
+    });
+  });
+
+  it("lets board users create grandchildren", async () => {
+    const { companyId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+
+    const created = await issueService(db).create(companyId, {
+      title: "Board grandchild",
+      parentId: childId,
+      parentDepthPolicy: "allow_nested",
+    });
+
+    expect(created.parentId).toBe(childId);
+    expect(created.originIssueId).toBe(childId);
+    expect(created.parentAdjusted).toBeUndefined();
+  });
+
+  it("creates direct children of a top-level task unchanged", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId } = await seedTree(companyId);
+
+    const created = await issueService(db).create(companyId, { title: "Second child", parentId: rootId });
+
+    expect(created.parentId).toBe(rootId);
+    expect(created.originIssueId).toBe(rootId);
+    expect(created.parentAdjusted).toBeUndefined();
+  });
+
+  it("records the creating run's task as the origin of a top-level task", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const sourceId = await seedIssue(companyId);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", issueId: sourceId });
+
+    const created = await issueService(db).create(companyId, {
+      title: "Standalone follow-up",
+      parentId: null,
+      createdByAgentId: agentId,
+      actorRunId: runId,
+    });
+
+    expect(created.parentId).toBeNull();
+    expect(created.originIssueId).toBe(sourceId);
+    expect(created.originRunId).toBe(runId);
+  });
+
+  it("flattens legacy deep trees to their root", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId, childId } = await seedTree(companyId);
+    const grandchildId = await seedIssue(companyId, { parentId: childId });
+
+    const created = await issueService(db).create(companyId, { title: "Under legacy grandchild", parentId: grandchildId });
+
+    expect(created.parentId).toBe(rootId);
+    expect(created.originIssueId).toBe(grandchildId);
+    expect(created.parentAdjusted?.requestedParent?.id).toBe(grandchildId);
+  });
+
+  it("blocks the requester, not the root, when a flattened child should block its parent", async () => {
+    const { companyId } = await seedCompany();
+    const { rootId, childId } = await seedTree(companyId);
+
+    const { issue, parentBlockerAdded } = await issueService(db).createChild(childId, {
+      title: "Blocking follow-up",
+      blockParentUntilDone: true,
+    });
+
+    expect(issue.parentId).toBe(rootId);
+    expect(issue.originIssueId).toBe(childId);
+    expect(issue.parentAdjusted?.reason).toBe("max_agent_depth");
+    expect(parentBlockerAdded).toBe(true);
+    const blockers = await db
+      .select({ relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.issueId, issue.id), eq(issueRelations.type, "blocks")));
+    expect(blockers.map((row) => row.relatedIssueId)).toEqual([childId]);
+  });
+
+  it("reuses a flattened child for the same idempotency key", async () => {
+    const { companyId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+    const idempotencyKey = `flatten-${randomUUID()}`;
+
+    const first = await issueService(db).createChild(childId, { title: "Once", idempotencyKey });
+    const second = await issueService(db).createChild(childId, { title: "Once", idempotencyKey });
+
+    expect(second.issue.id).toBe(first.issue.id);
+  });
+
+  it("does not move a task above a low-trust boundary root", async () => {
+    const { companyId } = await seedCompany();
+    const rootId = await seedIssue(companyId);
+    const boundaryId = randomUUID();
+    await seedIssue(companyId, {
+      id: boundaryId,
+      parentId: rootId,
+      executionPolicy: {
+        authorizationPolicy: {
+          trustBoundary: { mode: "low_trust_review", companyId, rootIssueId: boundaryId },
+        },
+      },
+    });
+
+    const placement = await resolveNewTaskParent(db, companyId, boundaryId, "flatten");
+
+    expect(placement).toEqual({ effectiveParentId: boundaryId, adjustment: null });
+  });
+
+  it("falls back to top level when a legacy tree is rooted at a conversation", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const conversationId = await seedIssue(companyId, { conversationAgentId: agentId, conversationUserId: "user-1", conversationState: "active", assigneeAgentId: agentId,
+    });
+    const legacyChildId = await seedIssue(companyId, { parentId: conversationId });
+
+    const created = await issueService(db).create(companyId, { title: "From legacy chat child", parentId: legacyChildId });
+
+    expect(created.parentId).toBeNull();
+    expect(created.originIssueId).toBe(legacyChildId);
+    expect(created.parentAdjusted).toMatchObject({ reason: "max_agent_depth", effectiveParent: null });
+  });
+
+  describe("moves", () => {
+    it("places an agent move into a child beside it", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId, childId } = await seedTree(companyId);
+      const movingId = await seedIssue(companyId);
+
+      const updated = await issueService(db).update(movingId, { parentId: childId });
+
+      expect(updated?.parentId).toBe(rootId);
+      expect(updated?.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: true });
+    });
+
+    it("skips only the parent change when the moved task has children", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId } = await seedTree(companyId);
+      const movingId = await seedIssue(companyId);
+      await seedIssue(companyId, { parentId: movingId });
+
+      const updated = await issueService(db).update(movingId, { parentId: rootId, title: "Renamed" });
+
+      expect(updated?.parentId).toBeNull();
+      expect(updated?.title).toBe("Renamed");
+      expect(updated?.parentAdjusted).toMatchObject({
+        reason: "has_children",
+        applied: false,
+        requestedParent: { id: rootId },
+        effectiveParent: null,
+      });
+    });
+
+    it("lets board users move to any depth", async () => {
+      const { companyId } = await seedCompany();
+      const { childId } = await seedTree(companyId);
+      const movingId = await seedIssue(companyId);
+      await seedIssue(companyId, { parentId: movingId });
+
+      const plan = await planIssueParentChange(
+        db,
+        { id: movingId, companyId, parentId: null },
+        childId,
+        "allow_nested",
+      );
+      expect(plan).toEqual({ parentId: childId, adjustment: null });
+
+      const updated = await issueService(db).update(movingId, { parentId: childId, parentDepthPolicy: "allow_nested" });
+      expect(updated?.parentId).toBe(childId);
+      expect(updated?.parentAdjusted).toBeUndefined();
+    });
+  });
+
+  it("resolves creation provenance from the recorded origin task", async () => {
+    const { companyId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+    const created = await issueService(db).create(companyId, { title: "Flattened", parentId: childId });
+
+    const source = await resolveIssueCreationSource(db, created);
+
+    expect(source?.sourceIssue.id).toBe(childId);
+    expect(source?.run).toBeNull();
+  });
+});

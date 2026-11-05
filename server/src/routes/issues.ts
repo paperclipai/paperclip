@@ -147,6 +147,7 @@ import {
   isMarkdownAttachmentContent,
   isUuidLike,
   type IssueCreationSource,
+  type IssueParentAdjustment,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
   type CompanySearchExtractQuery,
@@ -323,6 +324,9 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  planIssueParentChange,
+  resolveNewTaskParent,
+  type IssueParentDepthPolicy,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import {
@@ -3869,13 +3873,26 @@ export function issueRoutes(
     // parent in scope. A protected parent (or project it supplies) denies
     // child creation without a grant; that must fall back to standalone work
     // rather than fail a request that succeeded before the default existed.
+    // Under the agent depth limit a run on a child task delegates beside it.
+    // The placed parent must also accept the edge, or the default falls back
+    // to standalone work.
+    const { effectiveParentId: placedParentId } = await resolveNewTaskParent(
+      db, companyId, source.id, "flatten",
+    );
+    if (!placedParentId) return null;
+    if (placedParentId !== source.id) {
+      const placedParent = await svc.getById(placedParentId);
+      if (!placedParent || isConversation(placedParent)) return null;
+      const placedDecision = await decideIssueAccess(req, placedParent, "issue:mutate");
+      if (!placedDecision.allowed) return null;
+    }
     const assignmentScope: TaskAssignmentAuthorizationScope = {
       projectId: await resolveCreateAssignmentProjectId({
         ...rawCreateBody,
         companyId,
         parentId: source.id,
       }),
-      parentIssueId: source.id,
+      parentIssueId: placedParentId,
       assigneeAgentId,
       assigneeUserId:
         typeof rawCreateBody.assigneeUserId === "string"
@@ -3890,7 +3907,7 @@ export function issueRoutes(
         companyId,
         issueId: null,
         projectId: assignmentScope.projectId ?? null,
-        parentIssueId: source.id,
+        parentIssueId: placedParentId,
         assigneeAgentId,
         assigneeUserId: assignmentScope.assigneeUserId ?? null,
       },
@@ -3907,20 +3924,22 @@ export function issueRoutes(
    */
   async function resolveVisibleIssueCreationSource(
     req: Request,
-    issue: { id: string; companyId: string; originRunId: string | null },
+    issue: { id: string; companyId: string; originRunId: string | null; originIssueId?: string | null },
   ): Promise<IssueCreationSource | null> {
     const source = await resolveIssueCreationSource(db, issue);
     if (!source) return null;
     const { run, sourceIssue } = source;
     const readable = await decideIssueAccess(req, sourceIssue, "issue:read");
     if (!readable.allowed) return null;
-    const runVisible = await canActorReadHeartbeatRun(db, access, req.actor, {
+    // A recorded origin task stands on its own; the run is shown only when visible.
+    const runVisible = run ? await canActorReadHeartbeatRun(db, access, req.actor, {
       companyId: run.companyId,
       scopeKind: run.scopeKind,
       issueId: run.issueId ?? run.nativeIssueId ?? sourceIssue.id,
-    });
-    if (!runVisible) return null;
-    const agent = await loadCreationSourceAgent(db, issue.companyId, run.agentId);
+    }) : false;
+    if (!runVisible && !issue.originIssueId) return null;
+    const visibleRun = run && runVisible ? run : null;
+    const agent = visibleRun ? await loadCreationSourceAgent(db, issue.companyId, visibleRun.agentId) : null;
     return {
       issue: {
         id: sourceIssue.id,
@@ -3928,7 +3947,7 @@ export function issueRoutes(
         title: sourceIssue.title,
         status: sourceIssue.status,
       },
-      run: { id: run.id, agentId: run.agentId },
+      run: visibleRun ? { id: visibleRun.id, agentId: visibleRun.agentId } : null,
       agent,
     };
   }
@@ -12641,6 +12660,18 @@ export function issueRoutes(
       const effectiveParentId = watchdogProductBugFollowUp
         ? null
         : (runDelegationParentId ?? rawCreateBody.parentId);
+      // Board users nest freely. Agents build at most parent → child trees: a
+      // deeper request is placed beside the requester, never rejected. The
+      // service applies the same placement; authorization below checks both the
+      // requested parent and the parent that is actually written.
+      const parentDepthPolicy: IssueParentDepthPolicy =
+        req.actor.type === "board" ? "allow_nested" : "flatten";
+      const parentPlacement = await resolveNewTaskParent(
+        db,
+        companyId,
+        effectiveParentId ?? null,
+        parentDepthPolicy,
+      );
       let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
       if (req.actor.type === "agent" && effectiveParentId) {
         createParent = await svc.getById(effectiveParentId);
@@ -12653,6 +12684,18 @@ export function issueRoutes(
           !(await assertIssueWriteInfluenceAllowed(req, res, createParent))
         )
           return;
+        const placedParentId = parentPlacement.effectiveParentId;
+        if (placedParentId && placedParentId !== createParent.id) {
+          const placedParent = await svc.getById(placedParentId);
+          if (
+            !placedParent ||
+            (!isTaskBridgeKeyActor(req) &&
+              !(await assertIssueWriteInfluenceAllowed(req, res, placedParent)))
+          ) {
+            if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
+            return;
+          }
+        }
       }
       if (
         !watchdogProductBugFollowUp &&
@@ -12699,6 +12742,7 @@ export function issueRoutes(
       const createBody = {
         ...rawCreateBody,
         parentId: effectiveParentId,
+        parentDepthPolicy,
         ...(normalizedAssigneeAgentId !== undefined
           ? { assigneeAgentId: normalizedAssigneeAgentId }
           : {}),
@@ -12780,7 +12824,7 @@ export function issueRoutes(
     }
       const createAssignmentScope = {
         projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId }),
-        parentIssueId: createBody.parentId ?? null,
+        parentIssueId: parentPlacement.effectiveParentId ?? null,
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: rawCreateBody.assigneeUserId ?? null,
       };
@@ -12916,6 +12960,13 @@ export function issueRoutes(
           identifier: issue.identifier,
           ...(runDelegationParentId && issue.parentId === runDelegationParentId
             ? { parentId: issue.parentId, parentDefaultedFromRunIssue: true }
+            : {}),
+          ...(issue.parentAdjusted
+            ? {
+                parentId: issue.parentId,
+                parentAdjusted: issue.parentAdjusted,
+                ...(runDelegationParentId ? { parentDefaultedFromRunIssue: true } : {}),
+              }
             : {}),
           ...(watchdogProductBugFollowUp
             ? {
@@ -13139,9 +13190,34 @@ export function issueRoutes(
           ? { assigneeAgentId: normalizedAssigneeAgentId }
           : {}),
       };
+      // Board users nest freely, and watchdog follow-ups are located by parent.
+      // Other agents build at most parent → child trees: a child of a child is
+      // placed beside it instead (never rejected).
+      const childSerializationContext =
+        await resolveWatchdogFollowUpSerializationContext(req, parent);
+      const childParentDepthPolicy: IssueParentDepthPolicy =
+        req.actor.type === "board" || childSerializationContext ? "allow_nested" : "flatten";
+      const childPlacement = await resolveNewTaskParent(
+        db, parent.companyId, parent.id, childParentDepthPolicy,
+      );
+      if (
+        req.actor.type === "agent" &&
+        childPlacement.effectiveParentId &&
+        childPlacement.effectiveParentId !== parent.id
+      ) {
+        const placedParent = await svc.getById(childPlacement.effectiveParentId);
+        if (
+          !placedParent ||
+          (!isTaskBridgeKeyActor(req) &&
+            !(await assertIssueWriteInfluenceAllowed(req, res, placedParent)))
+        ) {
+          if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
+          return;
+        }
+      }
       const childAssignmentScope = {
         projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId: parent.companyId, parentId: parent.id }),
-        parentIssueId: parent.id,
+        parentIssueId: childPlacement.effectiveParentId,
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: createBody.assigneeUserId ?? null,
       };
@@ -13163,8 +13239,7 @@ export function issueRoutes(
       );
 
       const actor = getActorInfo(req);
-      const serializationContext =
-        await resolveWatchdogFollowUpSerializationContext(req, parent);
+      const serializationContext = childSerializationContext;
       const currentSerializedChild = serializationContext
         ? await findCurrentSerializedWatchdogChild(parent)
         : null;
@@ -13196,6 +13271,7 @@ export function issueRoutes(
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
+        parentDepthPolicy: childParentDepthPolicy,
         workspaceSelectionActor: req.actor,
         projectId: childAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
@@ -13234,7 +13310,10 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          parentId: parent.id,
+          parentId: issue.parentId,
+          ...(issue.parentAdjusted
+            ? { requestedParentId: parent.id, parentAdjusted: issue.parentAdjusted }
+            : {}),
           createdByRequest: childCreatedByRequest(issueId, issue.id),
           identifier: issue.identifier,
           title: issue.title,
@@ -14142,6 +14221,31 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      // Board users move tasks to any depth. An agent move into a child is
+      // placed beside it, and an agent move of a task with children is skipped,
+      // both with a notice instead of an error.
+      let parentAdjusted: IssueParentAdjustment | null = null;
+      if (typeof updateFields.parentId === "string" && updateFields.parentId !== existing.parentId) {
+        const parentPlan = await planIssueParentChange(
+          db,
+          existing,
+          updateFields.parentId,
+          req.actor.type === "board" ? "allow_nested" : "flatten",
+        );
+        parentAdjusted = parentPlan.adjustment;
+        if (parentPlan.parentId === undefined || parentPlan.parentId === existing.parentId) {
+          delete updateFields.parentId;
+        } else {
+          if (req.actor.type === "agent" && parentPlan.parentId && parentPlan.parentId !== updateFields.parentId) {
+            const placedParent = await svc.getById(parentPlan.parentId);
+            if (!placedParent || !(await assertIssueWriteInfluenceAllowed(req, res, placedParent))) {
+              if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
+              return;
+            }
+          }
+          updateFields.parentId = parentPlan.parentId;
+        }
+      }
     if (req.body.visibility === "private" && !existing.projectId && updateFields.projectId === undefined) {
       const responsibleUserId = existing.responsibleUserId ?? (req.actor.type === "board"
         ? req.actor.userId ?? null
@@ -14897,6 +15001,8 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
+        // Placement was resolved above for this actor.
+        parentDepthPolicy: "allow_nested" as const,
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
@@ -16344,10 +16450,11 @@ export function issueRoutes(
           updatedAt: issueResponse.updatedAt,
           changes,
           comment,
+          ...(parentAdjusted ? { parentAdjusted } : {}),
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment });
+      res.json({ ...issueResponse, changes, comment, ...(parentAdjusted ? { parentAdjusted } : {}) });
     },
   );
 

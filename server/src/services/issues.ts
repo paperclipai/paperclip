@@ -54,6 +54,7 @@ import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
+import { MAX_AGENT_TASK_HIERARCHY_DEPTH, type IssueParentAdjustment } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -2043,6 +2044,137 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+/**
+ * `flatten` (the default) applies the agent hierarchy limit: a new parent edge
+ * may not make the task deeper than MAX_AGENT_TASK_HIERARCHY_DEPTH. Board users
+ * pass `allow_nested` and may build trees of any depth.
+ */
+export type IssueParentDepthPolicy = "flatten" | "allow_nested";
+
+type ParentChainRow = {
+  id: string;
+  identifier: string | null;
+  parentId: string | null;
+  conversationAgentId: string | null;
+  executionPolicy: unknown;
+};
+
+/** Root of a low-trust authorization boundary recorded on an issue's execution policy. */
+function lowTrustBoundaryRootIssueId(executionPolicy: unknown): string | null {
+  const policy = executionPolicy as { authorizationPolicy?: { trustBoundary?: { rootIssueId?: unknown } | null } | null } | null;
+  const root = policy?.authorizationPolicy?.trustBoundary?.rootIssueId;
+  return typeof root === "string" && root.length > 0 ? root : null;
+}
+
+/**
+ * Resolves the parent a new edge should use. Under `flatten`, a requested parent
+ * that is already at the maximum depth is replaced by its ancestor one level up
+ * the allowed depth, which makes the task a sibling of the requester instead of
+ * its child. Never throws for depth; unknown parents pass through unchanged so
+ * the caller's own existence and authorization checks still apply.
+ */
+export async function resolveNewTaskParent(
+  db: Pick<Db, "select">,
+  companyId: string,
+  requestedParentId: string | null | undefined,
+  policy: IssueParentDepthPolicy = "flatten",
+): Promise<{ effectiveParentId: string | null; adjustment: IssueParentAdjustment | null }> {
+  if (!requestedParentId || policy === "allow_nested") {
+    return { effectiveParentId: requestedParentId ?? null, adjustment: null };
+  }
+  const load = (id: string) => db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      parentId: issues.parentId,
+      conversationAgentId: issues.conversationAgentId,
+      executionPolicy: issues.executionPolicy,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, id)))
+    .then((rows): ParentChainRow | null => rows[0] ?? null);
+  const requested = await load(requestedParentId);
+  if (!requested) return { effectiveParentId: requestedParentId, adjustment: null };
+  // chain[0] is the requested parent; the last entry is the tree root.
+  const chain: ParentChainRow[] = [requested];
+  const visited = new Set([requested.id]);
+  while (chain[chain.length - 1].parentId) {
+    const next = await load(chain[chain.length - 1].parentId!);
+    if (!next || visited.has(next.id)) break;
+    visited.add(next.id);
+    chain.push(next);
+  }
+  // A parent at depth d (root = 1) gives the new task depth d + 1.
+  const maxParentDepth = MAX_AGENT_TASK_HIERARCHY_DEPTH - 1;
+  if (chain.length <= maxParentDepth) return { effectiveParentId: requested.id, adjustment: null };
+  const targetIndex = chain.length - maxParentDepth;
+  // Low-trust boundaries are subtrees. Never move a task above the root of a
+  // boundary that contains the requester; keep the requested parent instead.
+  const boundaryRoots = new Set(chain.flatMap((row) => lowTrustBoundaryRootIssueId(row.executionPolicy) ?? []));
+  if (chain.slice(0, Math.max(targetIndex, 0)).some((row) => boundaryRoots.has(row.id))) {
+    return { effectiveParentId: requested.id, adjustment: null };
+  }
+  const target = maxParentDepth > 0 ? chain[targetIndex] : null;
+  // Conversations never take new children; legacy trees under one fall back to top level.
+  const effective = target && !target.conversationAgentId ? target : null;
+  return {
+    effectiveParentId: effective?.id ?? null,
+    adjustment: {
+      reason: "max_agent_depth",
+      applied: true,
+      requestedParent: { id: requested.id, identifier: requested.identifier },
+      effectiveParent: effective ? { id: effective.id, identifier: effective.identifier } : null,
+    },
+  };
+}
+
+/**
+ * Plans a parent change for an existing issue. Under `flatten`, a move into a
+ * child is placed beside it, and a move of an issue that has its own children
+ * is skipped (`parentId: undefined`), since either would create grandchildren.
+ * Never throws for depth.
+ */
+export async function planIssueParentChange(
+  db: Pick<Db, "select">,
+  existing: { id: string; companyId: string; parentId: string | null },
+  requestedParentId: string,
+  policy: IssueParentDepthPolicy = "flatten",
+): Promise<{ parentId: string | null | undefined; adjustment: IssueParentAdjustment | null }> {
+  if (policy === "allow_nested" || requestedParentId === existing.parentId) {
+    return { parentId: requestedParentId, adjustment: null };
+  }
+  const [requested] = await db
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, existing.companyId), eq(issues.id, requestedParentId)));
+  if (!requested) return { parentId: requestedParentId, adjustment: null };
+  const [existingChild] = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.companyId, existing.companyId), eq(issues.parentId, existing.id)))
+    .limit(1);
+  if (existingChild) {
+    const [currentParent] = existing.parentId ? await db
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(and(eq(issues.companyId, existing.companyId), eq(issues.id, existing.parentId))) : [];
+    return {
+      parentId: undefined,
+      adjustment: { reason: "has_children", applied: false, requestedParent: requested, effectiveParent: currentParent ?? null },
+    };
+  }
+  const resolution = await resolveNewTaskParent(db, existing.companyId, requestedParentId, "flatten");
+  return { parentId: resolution.effectiveParentId, adjustment: resolution.adjustment };
+}
+
+/** Adds `parentAdjusted` to a create/update result only when the parent was adjusted. */
+function withParentAdjustment<T extends object>(
+  issue: T,
+  adjustment: IssueParentAdjustment | null,
+): T & { parentAdjusted?: IssueParentAdjustment } {
+  return adjustment ? { ...issue, parentAdjusted: adjustment } : issue;
+}
+
 /** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
 async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
   if (!parentId) return;
@@ -2053,6 +2185,8 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration" | "workspaceSelection"> & {
+  /** Defaults to `flatten` (agent/automation limit). Board-user routes pass `allow_nested`. */
+  parentDepthPolicy?: IssueParentDepthPolicy;
   workspaceSelection?: TaskWorkspaceSelection;
   workspaceSelectionSource?: "explicit" | "channel";
   workspaceSelectionActor?: AuthorizationActor;
@@ -5097,6 +5231,7 @@ const issueListSelect = {
   originKind: issues.originKind,
   originId: issues.originId,
   originRunId: issues.originRunId,
+  originIssueId: issues.originIssueId,
   originIdentityContextId: issues.originIdentityContextId,
   continuationIdentityContextId: issues.continuationIdentityContextId,
   originFingerprint: issues.originFingerprint,
@@ -9677,7 +9812,8 @@ export function issueService(db: Db) {
           .limit(1)
           .then((rows) => rows[0]?.issue ?? null);
         if (existingChild) {
-          if (existingChild.parentId !== parent.id) {
+          // A flattened child keeps the requester as its originating task.
+          if (existingChild.parentId !== parent.id && existingChild.originIssueId !== parent.id) {
             throw conflict(
               "Child creation idempotency key belongs to another parent issue",
             );
@@ -9692,19 +9828,29 @@ export function issueService(db: Db) {
             db,
           );
           return {
-            issue: withRelations,
+            issue: withParentAdjustment(withRelations, null),
             parentBlockerAdded: false,
           };
         }
       }
 
+      // Under the agent depth limit a child of a child lands beside it; count
+      // the requester's own fan-out either way.
+      const { effectiveParentId } = await resolveNewTaskParent(
+        db, parent.companyId, parent.id, data.parentDepthPolicy ?? "flatten",
+      );
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
         .where(
           and(
             eq(issues.companyId, parent.companyId),
-            eq(issues.parentId, parent.id),
+            effectiveParentId === parent.id
+              ? eq(issues.parentId, parent.id)
+              : and(
+                  effectiveParentId ? eq(issues.parentId, effectiveParentId) : isNull(issues.parentId),
+                  eq(issues.originIssueId, parent.id),
+                ),
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
@@ -9803,11 +9949,13 @@ export function issueService(db: Db) {
             tx,
           );
         });
+        const parentAdjusted = child.parentAdjusted;
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
           db,
         );
+        child = withParentAdjustment(child, parentAdjusted ?? null);
       }
 
       return {
@@ -10204,8 +10352,13 @@ export function issueService(db: Db) {
         allowDuplicate,
         assertCanReuseIssue,
         onDeduplicated,
+        parentDepthPolicy = "flatten",
         ...issueData
       } = data;
+      // The parent the caller asked for. It still drives provenance, privacy and
+      // workspace inheritance when the depth policy places the task elsewhere.
+      const requestedParentId = issueData.parentId ?? null;
+      let parentAdjustment: IssueParentAdjustment | null = null;
       const explicitTitle = issueData.title?.trim();
       const provisionalTitle = issueData.description
         ? provisionalTitleFromDescription(issueData.description)
@@ -10244,6 +10397,9 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
+        const parentResolution = await resolveNewTaskParent(tx, companyId, requestedParentId, parentDepthPolicy);
+        parentAdjustment = parentResolution.adjustment;
+        issueData.parentId = parentResolution.effectiveParentId;
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
@@ -10372,7 +10528,7 @@ export function issueService(db: Db) {
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
-            issueData.parentId ??
+            requestedParentId ??
             null);
         const hasExplicitExecutionWorkspaceOverride =
           (workspaceSelection !== undefined && workspaceSelectionSource === "explicit") ||
@@ -10618,13 +10774,15 @@ export function issueService(db: Db) {
           companyId, ...conversationHandoff,
           userId: issueData.createdByUserId, agentId: issueData.createdByAgentId,
         }) : null;
-        let privacyParentIssueId = issueData.parentId ?? handoffSource?.id ?? null;
+        // The originating task: the requested parent (even when flattened), the
+        // chat that handed this off, or the task the creating run was bound to.
+        let privacyParentIssueId = requestedParentId ?? handoffSource?.id ?? null;
         const sourceRunId = issueData.originRunId ?? actorRunId;
         if (!privacyParentIssueId && sourceRunId) {
           const [sourceRun] = await tx.select().from(heartbeatRuns)
             .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
           const sourceId = sourceRun?.nativeIssueId ?? sourceRun?.issueId ?? sourceRun?.contextSnapshot?.issueId;
-          if (typeof sourceId === "string") privacyParentIssueId = sourceId;
+          if (typeof sourceId === "string" && isUuidLike(sourceId)) privacyParentIssueId = sourceId;
         }
         let inheritedPrivateSubtree = false;
         if (privacyParentIssueId) {
@@ -10673,6 +10831,8 @@ export function issueService(db: Db) {
           visibility,
           privacyRootIssueId,
           privacyParentIssueId,
+          // Audit-only provenance; never read for hierarchy or authorization.
+          originIssueId: issueData.originIssueId ?? privacyParentIssueId,
           titleNeedsGeneration,
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
@@ -10789,10 +10949,15 @@ export function issueService(db: Db) {
           [enriched],
           tx,
         );
+        insertedNewIssue = true;
         return withRelations;
       };
-      if (dbOrTx === db) return db.transaction(persist);
-      return persist(dbOrTx as DbTransaction);
+      let insertedNewIssue = false;
+      const created = dbOrTx === db
+        ? await db.transaction(persist)
+        : await persist(dbOrTx as DbTransaction);
+      // Deduplicated returns are existing rows; only a fresh insert reports an adjustment.
+      return withParentAdjustment(created, insertedNewIssue ? parentAdjustment : null);
     },
 
     /**
@@ -11139,6 +11304,8 @@ export function issueService(db: Db) {
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
         expectedStatusVersion?: number;
+        /** Defaults to `flatten` for parent changes. Board-user routes pass `allow_nested`. */
+        parentDepthPolicy?: IssueParentDepthPolicy;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -11166,6 +11333,16 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      let parentAdjustment: IssueParentAdjustment | null = null;
+      if (data.parentId && data.parentId !== existing.parentId) {
+        // A skipped move drops only `parentId`; the rest of the patch applies.
+        const plan = await planIssueParentChange(dbOrTx, existing, data.parentId, data.parentDepthPolicy ?? "flatten");
+        parentAdjustment = plan.adjustment;
+        const { parentId: _requestedParentId, ...rest } = data;
+        data = plan.parentId === undefined || plan.parentId === existing.parentId
+          ? rest
+          : { ...rest, parentId: plan.parentId };
+      }
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
@@ -11190,6 +11367,7 @@ export function issueService(db: Db) {
         workspaceSelectionActor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        parentDepthPolicy: _parentDepthPolicy,
         ...issueData
       } = data;
       if (expectedStatusVersion !== undefined && (
@@ -12043,7 +12221,7 @@ export function issueService(db: Db) {
       if (dbOrTx === db && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
       }
-      return result;
+      return result ? withParentAdjustment(result, parentAdjustment) : result;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (

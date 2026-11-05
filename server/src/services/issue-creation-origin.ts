@@ -27,7 +27,8 @@ export function createdFromIssueCondition(companyId: string, sourceIssueId: stri
   return sql<boolean>`
     ${issues.id} <> ${sourceIssueId}
     AND (
-      ${issues.originRunId} IN (${originatingRuns})
+      ${issues.originIssueId} = ${sourceIssueId}
+      OR ${issues.originRunId} IN (${originatingRuns})
       OR (${issues.originRunId} IS NULL AND EXISTS (
         SELECT 1 FROM ${activityLog}
         WHERE ${activityLog.companyId} = ${companyId}
