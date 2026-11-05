@@ -65045,7 +65045,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const retryAt = Date.parse(String(current.result?.retryAt));
         expect(Number.isFinite(retryAt)).toBe(true);
         await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 1));
-        await f.service.processFailedChatRunRetries();
+        if (attempt === 0) {
+          const earlyClock = vi.spyOn(Date, "now").mockReturnValue(retryAt - 1);
+          try { expect(await f.service.processFailedChatRunRetries()).toBe(0); }
+          finally { earlyClock.mockRestore(); }
+          const [unchanged] = await db.select().from(chatActions).where(eq(chatActions.id, current.id));
+          expect(unchanged).toEqual(current);
+          expect(f.wakeup).not.toHaveBeenCalled();
+        }
+        await vi.waitFor(async () => {
+          await f.service.processFailedChatRunRetries();
+          const [admitted] = await db.select().from(chatActions).where(eq(chatActions.id, current.id));
+          expect(admitted.result?.attemptCount).toBe(attempt + 1);
+        });
       }
       const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
       expect(failed).toMatchObject({ status: "failed", result: { attemptCount: 8, identityContentionCount: 1,
