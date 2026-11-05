@@ -1541,7 +1541,7 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
     if normalized == "tokenbudgetcontrol" {
         return !value.is_boolean();
     }
-    if normalized == "tokenbudget" {
+    if matches!(normalized.as_str(), "tokenbudget" | "tokensused") {
         return !value.is_number() && !value.is_null();
     }
     if matches!(
@@ -1558,7 +1558,6 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "totaltokens"
             | "pretokens"
             | "posttokens"
-            | "tokensused"
     ) {
         return !value.is_number();
     }
@@ -3690,6 +3689,13 @@ mod tests {
         assert_eq!(sanitized["tokenBudget"], json!(4096));
         assert_eq!(sanitized["tokensUsed"], json!(128));
         assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
+        let unknown = sanitize_value(&json!({"tokenBudget":null, "tokensUsed":null}));
+        assert!(unknown["tokenBudget"].is_null());
+        assert!(unknown["tokensUsed"].is_null());
+        assert_eq!(
+            sanitize_value(&json!({"tokensUsed":"synthetic credential"}))["tokensUsed"],
+            json!("[REDACTED]")
+        );
     }
 
     #[test]
