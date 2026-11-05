@@ -232,7 +232,7 @@ async function main() {
     if(input.mode === "company-secret-create"){
       if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!new URL(input.setupURL).pathname.endsWith("/company/settings/secrets"))throw new Error("Invalid finite company secret operation");
       await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).click();
-      const dialog=page.getByRole("dialog");await dialog.getByLabel("Name",{exact:true}).fill("Deployment API key");
+      const dialog=page.getByRole("dialog",{name:"Create secret",exact:true});await dialog.getByLabel("Name",{exact:true}).fill("Deployment API key");
       await dialog.getByLabel("Provider",{exact:true}).selectOption("local_encrypted");
       await dialog.getByLabel("Value",{exact:true}).fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/secrets`&&response.request().method()==="POST"&&response.status()===201);
