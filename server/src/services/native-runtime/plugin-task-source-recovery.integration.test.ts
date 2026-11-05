@@ -111,7 +111,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
   it("authorizes only the claimed predecessor identity while preserving A's accepted outcome", async () => {
     const f = await fixture();
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
-    await expect(f.task()).rejects.toThrow("ownership_unverified");
+    await expect(f.task()).rejects.toThrow("execution identity mismatch");
     await claimPluginTaskSourceRecovery(db, f);
     const attachment = { ...f.operation, resumeFrom: undefined, priorIdentity: f.identity,
       requirements: { ...f.operation.requirements, identity: { ...f.identity, runId: f.runId, turnId: `turn-${f.runId}`, itemId: `item-${f.runId}` } } };
@@ -145,6 +145,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(after).toEqual(before);
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(JSON.stringify(lease.metadata)).not.toContain(f.owner.leaseOwner);
+  });
+
+  it("keeps naked mismatches ordinary and malformed claims fail closed", async () => {
+    const f = await fixture();
+    for (const claim of [undefined, false, {}, true, "untrusted"]) {
+      if (claim !== undefined) await db.update(environmentLeases).set({ metadata:
+        sql`${environmentLeases.metadata} || ${JSON.stringify({ runnerTaskSourceRecovery: claim })}::jsonb` }).where(eq(environmentLeases.id, f.leaseId));
+      await expect(f.task()).rejects.toThrow(claim ? "ownership_unverified" : "execution identity mismatch");
+    }
+    expect(f.workers.call).not.toHaveBeenCalled();
   });
 
   it("requires a complete claimed launch before any predecessor RPC", async () => {
