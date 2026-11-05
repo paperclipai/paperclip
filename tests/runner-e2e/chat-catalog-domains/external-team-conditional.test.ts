@@ -343,8 +343,8 @@ describe("same-skill contextual repeat caveat", () => {
 });
 
 describe("reviewed skill assertion subject and polarity boundaries", () => {
-  it("accepts an honestly negated installation result", () => {
-    expect(truthfulTeamPartial("I could not get Launch Checklist installed because its local slug conflicts.", skill)).toBe(true);
+  it.each(["Launch Checklist", "**Launch Checklist**"])("accepts an honestly negated installation result for %s", name => {
+    expect(truthfulTeamPartial(`I could not get ${name} installed because its local slug conflicts.`, skill)).toBe(true);
   });
   it.each([
     "I resolved Launch Checklist's conflict by installing it under another slug.",

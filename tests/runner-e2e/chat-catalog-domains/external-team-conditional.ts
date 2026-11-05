@@ -194,7 +194,7 @@ function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" |
   return bound;
 }
 function negatedTeamRecovery(before: string): boolean {
-  return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|get|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before);
+  return /\b(?:not|never|isn.t|aren.t|wasn.t|weren.t|hasn.t|haven.t)\s+(?:(?:be|been|get|yet|currently|still|successfully|fully|completely)\s+){0,2}$/i.test(before.replace(/[*_`]+\s*$/, ""));
 }
 function teamSkillSubject(skill: Pick<CatalogSkill, "slug" | "name">): string {
   return "[*_`]*(?:" + [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")[*_`]*";
