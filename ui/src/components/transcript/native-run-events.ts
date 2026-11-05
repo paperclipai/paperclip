@@ -595,11 +595,9 @@ function toolPresentation(
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: item?.input ?? {
-      ...(operation ? { operation } : {}),
-      ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
-      ...(text(payload.target) ? { target: text(payload.target) } : {}),
-    },
+    // Operation and namespace are classification data, not something a
+    // person reads; only a concrete target belongs in the row's input summary.
+    input: item?.input ?? (text(payload.target) ? { path: text(payload.target) } : {}),
   };
 }
 

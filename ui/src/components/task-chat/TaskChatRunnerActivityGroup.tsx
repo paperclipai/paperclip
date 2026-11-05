@@ -44,9 +44,10 @@ export function formatToolDuration(ms: number): string {
 }
 
 function toolPresentation(item: ToolActivity) {
+  // Classify by the native name only: a canonical operation is a weak guess
+  // for MCP tools (Claude reports most of them as "execute").
   return toolActivityPresentation({
     name: item.rawName ?? item.name,
-    operation: item.operation ?? item.toolKind,
     target: item.target,
   });
 }
