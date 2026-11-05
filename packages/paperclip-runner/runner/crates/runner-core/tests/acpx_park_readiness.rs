@@ -126,6 +126,169 @@ fn settle(executor: &mut NativeProviderCommandExecutor) -> Vec<serde_json::Value
 }
 
 #[test]
+fn hosted_park_slow_acpx_observation_preserves_the_provider_and_next_turn() {
+    for agent in ["codex", "claude"] {
+        let (fixture, _config, mut executor, opened) = fixture(agent);
+        assert!(
+            !executor.host_park_ready().unwrap(),
+            "opening is not completed work"
+        );
+        executor
+            .execute(&command(
+                3,
+                "turn.start",
+                json!({"turnId":"first", "text":"Complete first work."}),
+            ))
+            .unwrap();
+        settle(&mut executor);
+        assert!(
+            executor.host_park_ready().unwrap(),
+            "completed surviving ACPX must become eligible"
+        );
+        fs::write(fixture.0.join("fault"), "slow-snapshot").unwrap();
+        let start = Instant::now();
+        assert!(!executor.host_park_ready().unwrap());
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "park probe blocked ordinary work"
+        );
+        assert!(
+            !executor.host_park_ready().unwrap(),
+            "an unfinished observation cannot prove readiness"
+        );
+        assert!(std::process::Command::new("kill")
+            .args(["-0", &opened["processId"].to_string()])
+            .status()
+            .unwrap()
+            .success());
+        fs::write(fixture.0.join("fault"), "").unwrap();
+        let second = executor
+            .execute(&command(
+                5,
+                "turn.start",
+                json!({"turnId":"second", "text":"Continue on the healthy session."}),
+            ))
+            .unwrap();
+        let events = settle(&mut executor);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["payload"]["code"] == "slow_park_observation")
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .any(|event| event["payload"]["message"] == "Retained after a slow read."));
+        let snapshot = executor
+            .execute(&command(6, "session.snapshot", json!({})))
+            .unwrap();
+        assert_eq!(
+            snapshot.result["providerSessionId"],
+            opened["providerSessionId"]
+        );
+        // Existing MCP receipt epoch isolation replaces the sidecar on the next turn.
+        assert!(second.result["status"] == "accepted");
+        assert!(executor.host_park_ready().unwrap());
+        let journal = fs::read_to_string(fixture.0.join("sidecar.jsonl")).unwrap();
+        assert_eq!(
+            journal
+                .lines()
+                .filter(|line| line.contains("processStart"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            journal
+                .lines()
+                .filter(|line| line.contains("\"command\":\"turn.start\""))
+                .count(),
+            2
+        );
+        executor.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn hosted_park_acpx_preserves_late_goals_and_rejects_foreign_or_busy_observations() {
+    for agent in ["codex", "claude"] {
+        let (fixture, _config, mut executor, _) = fixture(agent);
+        executor
+            .execute(&command(
+                3,
+                "turn.start",
+                json!({"turnId":"first", "text":"Complete."}),
+            ))
+            .unwrap();
+        settle(&mut executor);
+        for fault in [
+            "active",
+            "tool",
+            "goal",
+            "foreign-snapshot",
+            "reject-goal",
+            "reject-snapshot",
+        ] {
+            fs::write(fixture.0.join("fault"), fault).unwrap();
+            assert!(
+                !executor.host_park_ready().unwrap(),
+                "{agent} admitted {fault}"
+            );
+        }
+        fs::write(fixture.0.join("fault"), "").unwrap();
+        assert!(
+            executor.host_park_ready().unwrap(),
+            "a refused optional read must leave the provider healthy"
+        );
+        fs::write(fixture.0.join("fault"), "goal-during-snapshot").unwrap();
+        assert!(!executor.host_park_ready().unwrap());
+        let retained = executor.retained_events().unwrap();
+        assert!(retained.iter().any(|event| event
+            .payload
+            .pointer("/goal/status")
+            .and_then(Value::as_str)
+            == Some("active")));
+        assert_eq!(executor.retained_events().unwrap(), retained);
+        assert!(!executor.host_park_ready().unwrap());
+        executor.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn hosted_park_acpx_requires_completion_in_this_lifetime_and_exact_authority() {
+    let (fixture, mut config, mut executor, _) = fixture("claude");
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"first", "text":"Complete."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    assert!(executor.host_park_ready().unwrap());
+    config.run_id = "other-run".to_owned();
+    executor.rotate_authority(&config);
+    assert!(!executor.host_park_ready().unwrap());
+    config.run_id = "run-1".to_owned();
+    drop(executor);
+    let before = fs::read_to_string(fixture.0.join("sidecar.jsonl")).unwrap();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&fixture.0, &config);
+    assert!(!recovered.host_park_ready().unwrap());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("sidecar.jsonl")).unwrap(),
+        before
+    );
+    recovered
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap();
+    assert!(
+        !recovered.host_park_ready().unwrap(),
+        "restored identity is not a completed current-generation turn"
+    );
+    recovered.shutdown().unwrap();
+}
+
+#[test]
 fn ordinary_acpx_read_tail_survives_immediate_next_turn_without_a_park_probe() {
     let (fixture, _config, mut executor, _) = fixture("claude");
     executor
@@ -290,4 +453,19 @@ fn rejected_read_tail_returns_a_command_error_without_starting_another_turn() {
             .unwrap();
     assert_eq!(state["lifecycle"], "closed");
     assert_eq!(state["activeTurnId"], Value::Null);
+}
+
+#[test]
+fn hosted_park_acpx_does_not_enable_an_unqualified_park_provider() {
+    let (_fixture, _config, mut executor, _) = fixture("grok");
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId":"first", "text":"Complete on an otherwise qualified release."}),
+        ))
+        .unwrap();
+    settle(&mut executor);
+    assert!(!executor.host_park_ready().unwrap());
+    executor.shutdown().unwrap();
 }
