@@ -2213,7 +2213,10 @@ The lease carries the verified stop forward as
 `workspaceRecoveryCleanup.stopReceipt`. The saved message, Retry and the next
 remote workspace writer wait for that stop, not for the destroy. So they continue
 right after recovery, instead of after the cleanup retry. A lease without a
-matching stop receipt still blocks them.
+matching stop receipt still blocks them. The same holds when the Stop or
+interrupt landed before the provider turn opened: the saved message then goes
+through ordinary admission once the acknowledged Stop has a verified stop, and
+that check also accepts the carried-forward receipt.
 
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
