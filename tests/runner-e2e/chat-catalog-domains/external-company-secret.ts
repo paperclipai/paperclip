@@ -89,7 +89,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
   const o=externalObservation(value);
   if(!o?.state.initialQuestionId||!gradeCompanySecret(value).passed)return;
   return {interactionId:String(o.state.initialQuestionId),sourceRunId:String(o.state.initialRunId),userId:String(o.state.currentPersonId)};
- },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v6",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
+ },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v7",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
  sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   const deadline=chatCatalogOriginalPhaseDeadline(ctx),remaining=()=>remainingIdentityObservationBudget(ctx);
