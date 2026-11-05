@@ -931,6 +931,12 @@ restore does not recreate runtime IPC. Named pipes and device entries remain
 unsupported, while regular files, directories and confined symlinks retain their
 existing validation.
 
+Portable archives also preserve a standalone `REBASE_HEAD` bookmark and its commit
+when no Git operation state or unmerged index remains. Capture does not remove or
+change the source bookmark. The archive checks its identity throughout capture
+and retains its objects even when no branch references them. An unfinished
+rebase, merge, revert, cherry-pick, sequencer or bisect still blocks export.
+
 Disk-backed native sandbox workspace snapshots run in at most two worker threads per
 controller process. Each capture retains the same file hashes, modes, symlinks,
 exclusions and ignored-path manifest as an inline capture. A worker seals its
