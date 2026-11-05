@@ -627,6 +627,7 @@ test("disabling Agent Chat lets an active turn settle and keeps idle history", a
   const f = await setup(request);
   try {
     await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
     await send(page, { action: "delayed" });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
