@@ -56,8 +56,12 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)
-    .set({ assigneeAgentId: null, createdByAgentId: null })
-    .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+    .set({ assigneeAgentId: null })
+    .where(eq(issues.assigneeAgentId, id));
+  await tx
+    .update(issues)
+    .set({ createdByAgentId: null })
+    .where(eq(issues.createdByAgentId, id));
   await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
   await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
   await tx.delete(activityLog).where(
