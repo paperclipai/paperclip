@@ -1714,17 +1714,41 @@ fn codex_workspace_relative_path(item: &Value, path: &str) -> Option<String> {
 
 /// Non-flag operands after the program name, ignoring `sed` line ranges.
 fn codex_command_operands(command: &str) -> usize {
-    shell_words(command)
-        .into_iter()
-        .skip(1)
-        .filter(|token| {
-            !token.is_empty()
-                && !token.starts_with('-')
-                && !token.trim_end_matches('p').split(',').all(|part| {
-                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$')
-                })
-        })
-        .count()
+    let words = shell_words(command);
+    let program = words
+        .first()
+        .map(|word| word.rsplit('/').next().unwrap_or(word).to_owned())
+        .unwrap_or_default();
+    // `sed -n 1,20p FILE`: the script is not a file. `head -n 20 FILE`: the
+    // flag's value is not a file. Every other non-flag word is an operand,
+    // including numeric filenames.
+    let is_sed_script = |word: &str| {
+        word.trim_end_matches('p')
+            .split(',')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$'))
+    };
+    let mut count = 0;
+    let mut skip_next = false;
+    for word in words.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if word.is_empty() {
+            continue;
+        }
+        if word.starts_with('-') {
+            skip_next = matches!(program.as_str(), "head" | "tail")
+                && matches!(word.as_str(), "-n" | "-c")
+                || program == "sed" && word == "-e";
+            continue;
+        }
+        if program == "sed" && is_sed_script(word) {
+            continue;
+        }
+        count += 1;
+    }
+    count
 }
 
 /// Split a command into words the way a POSIX shell groups them: single and
@@ -2330,6 +2354,10 @@ mod tests {
             }}),
         );
         assert_eq!(quoted[0].payload["target"], "docs/setup guide.md");
+        assert_eq!(codex_command_operands("cat 2025 2026"), 2);
+        assert_eq!(codex_command_operands("head -n 20 src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '1,20p' src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '$p' a.md b.md"), 2);
         assert_eq!(
             shell_words(r#"sed -n '1,20p' a\ b.md "c d.md""#),
             ["sed", "-n", "1,20p", "a b.md", "c d.md"]
