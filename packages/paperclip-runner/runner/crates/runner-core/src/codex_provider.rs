@@ -454,11 +454,18 @@ pub struct CodexProviderConfig {
 /// Codex's native plan collaboration mode for a read-only Codex run. The
 /// preset keeps Codex's built-in plan-mode instructions (`developer_instructions`
 /// null) and the run's own model and effort.
-fn codex_plan_collaboration_mode(config: &CodexProviderConfig, effort: Option<&Value>) -> Option<Value> {
+fn codex_plan_collaboration_mode(
+    config: &CodexProviderConfig,
+    effort: Option<&Value>,
+) -> Option<Value> {
     if config.provider != "codex" || !config.read_only {
         return None;
     }
-    let model = config.model.as_deref().map(str::trim).filter(|model| !model.is_empty())?;
+    let model = config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())?;
     Some(json!({
         "mode": "plan",
         "settings": {
@@ -4555,7 +4562,9 @@ mod tests {
         };
         assert_eq!(
             super::codex_plan_collaboration_mode(&config, Some(&json!("high"))),
-            Some(json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})
+            ),
         );
         config.read_only = false;
         assert_eq!(super::codex_plan_collaboration_mode(&config, None), None);
