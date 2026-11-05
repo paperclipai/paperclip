@@ -1485,7 +1485,8 @@ describe("PaperclipRunnerToolAuthority", () => {
     const subtask = await create("chat-subtask", { title: "Landing page", parentTaskId: parent.task.id });
     expect(subtask.task.parentId).toBe(parent.task.id);
     const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, subtask.task.id));
-    expect(row?.originIssueId).toBe(parent.task.id);
+    // Provenance names the chat whose run created it; the parent is structure.
+    expect(row?.originIssueId).toBe(conversationId);
 
     // A child of a child is placed beside it.
     const deeper = await create("chat-deeper", { title: "Landing copy", parentTaskId: subtask.task.id });

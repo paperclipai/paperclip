@@ -9705,8 +9705,8 @@ export function issueService(db: Db) {
           .limit(1)
           .then((rows) => rows[0]?.issue ?? null);
         if (existingChild) {
-          // A flattened child keeps the requester as its originating task.
-          if (existingChild.parentId !== parent.id && existingChild.originIssueId !== parent.id) {
+          // A placed child keeps the requester as its privacy parent.
+          if (existingChild.parentId !== parent.id && existingChild.privacyParentIssueId !== parent.id) {
             throw conflict(
               "Child creation idempotency key belongs to another parent issue",
             );
@@ -9742,7 +9742,7 @@ export function issueService(db: Db) {
               ? eq(issues.parentId, parent.id)
               : and(
                   effectiveParentId ? eq(issues.parentId, effectiveParentId) : isNull(issues.parentId),
-                  eq(issues.originIssueId, parent.id),
+                  eq(issues.privacyParentIssueId, parent.id),
                 ),
             notInArray(issues.status, ["done", "cancelled"]),
           ),
@@ -10377,7 +10377,7 @@ export function issueService(db: Db) {
                   ? eq(issues.parentId, issueData.parentId)
                   : isNull(issues.parentId),
                 ...(parentAdjustment?.applied && requestedParentId
-                  ? [eq(issues.originIssueId, requestedParentId)]
+                  ? [eq(issues.privacyParentIssueId, requestedParentId)]
                   : []),
                 isNull(issues.hiddenAt),
                 notInArray(issues.status, ["done", "cancelled"]),
@@ -10680,16 +10680,22 @@ export function issueService(db: Db) {
           companyId, ...conversationHandoff,
           userId: issueData.createdByUserId, agentId: issueData.createdByAgentId,
         }) : null;
-        // The originating task: the requested parent (even when flattened), the
-        // chat that handed this off, or the task the creating run was bound to.
-        let privacyParentIssueId = requestedParentId ?? handoffSource?.id ?? null;
+        // The task the creating run was bound to, when a run created this task.
+        let runSourceIssueId: string | null = null;
         const sourceRunId = issueData.originRunId ?? actorRunId;
-        if (!privacyParentIssueId && sourceRunId) {
+        if (sourceRunId && isUuidLike(sourceRunId)) {
           const [sourceRun] = await tx.select().from(heartbeatRuns)
             .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
           const sourceId = sourceRun?.nativeIssueId ?? sourceRun?.issueId ?? sourceRun?.contextSnapshot?.issueId;
-          if (typeof sourceId === "string" && isUuidLike(sourceId)) privacyParentIssueId = sourceId;
+          if (typeof sourceId === "string" && isUuidLike(sourceId)) {
+            const [runSource] = await tx.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.id, sourceId), eq(issues.companyId, companyId)));
+            runSourceIssueId = runSource?.id ?? null;
+          }
         }
+        // Privacy follows structure: the requested parent (even when placed
+        // beside it), the chat that handed this off, or the run's task.
+        let privacyParentIssueId = requestedParentId ?? handoffSource?.id ?? runSourceIssueId;
         let inheritedPrivateSubtree = false;
         if (privacyParentIssueId) {
           const [source] = await tx.select().from(issues)
@@ -10738,7 +10744,9 @@ export function issueService(db: Db) {
           privacyRootIssueId,
           privacyParentIssueId,
           // Audit-only provenance; never read for hierarchy or authorization.
-          originIssueId: privacyParentIssueId,
+          // Audit-only provenance: the task whose work created this one. A run
+          // working on task A that files work under task B originates from A.
+          originIssueId: runSourceIssueId ?? handoffSource?.id ?? privacyParentIssueId,
           titleNeedsGeneration,
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,

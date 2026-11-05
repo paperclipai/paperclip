@@ -1366,7 +1366,7 @@ Terminal states: `done`, `cancelled`
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
 - Agent-created task trees are at most two levels deep (a top-level task and its children). A create or move that would make a grandchild is not rejected: the task is placed under the requested parent's parent, and the response carries `parentAdjusted` (`reason`, `requestedParent`, `effectiveParent`, `applied`). Moving a task that has children is skipped with `reason: "has_children"`. Board users are not limited, and existing deeper trees stay valid.
-- `originIssueId` (read-only, server-set) records the task whose work created this one: the requested parent, the chat that handed it off, or the task your run was on. It is an audit trail, not hierarchy. `originRunId` is the run that created it.
+- `originIssueId` (read-only, server-set) records the task whose work created this one: the task your run was on, otherwise the chat that handed it off or the requested parent. It is an audit trail, not hierarchy. `originRunId` is the run that created it.
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.

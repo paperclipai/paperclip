@@ -283,7 +283,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       .rejects.toMatchObject({ status: 404 });
   });
 
-  it("lists a placed task only under its recorded origin, not its creating run's task", async () => {
+  it("originates from the creating run's task, not the named parent, in detail and lists", async () => {
     const { companyId, agentId } = await seedCompany();
     const { childId } = await seedTree(companyId);
     const runTaskId = await seedIssue(companyId);
@@ -293,12 +293,15 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     const created = await issueService(db).create(companyId, {
       title: "Named parent from another run", parentId: childId, createdByAgentId: agentId, actorRunId: runId,
     });
-    expect(created.originIssueId).toBe(childId);
+    // A run working on runTask filed this under childId: it originates from runTask.
+    expect(created.originIssueId).toBe(runTaskId);
+    expect(created.privacyParentIssueId).toBe(childId);
 
     const fromRunTask = await issueService(db).list(companyId, { createdFromIssueId: runTaskId });
     const fromChild = await issueService(db).list(companyId, { createdFromIssueId: childId });
-    expect(fromRunTask.map((row) => row.id)).not.toContain(created.id);
-    expect(fromChild.map((row) => row.id)).toContain(created.id);
+    expect(fromRunTask.map((row) => row.id)).toContain(created.id);
+    expect(fromChild.map((row) => row.id)).not.toContain(created.id);
+    expect((await resolveIssueCreationSource(db, created))?.sourceIssue.id).toBe(runTaskId);
   });
 
   describe("moves", () => {

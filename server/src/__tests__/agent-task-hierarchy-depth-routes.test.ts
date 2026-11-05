@@ -185,7 +185,8 @@ describePostgres("agent task hierarchy depth through the issue routes", () => {
       .send({ title: "Draft the announcement", parentId: top.body.id, assigneeAgentId: agentId });
     expect(child.status, JSON.stringify(child.body)).toBe(201);
     expect(child.body.parentId).toBe(top.body.id);
-    expect(child.body.originIssueId).toBe(top.body.id);
+    // Both originate from the chat that created them.
+    expect(child.body.originIssueId).toBe(conversationId);
     expect(child.body).not.toHaveProperty("parentAdjusted");
   });
 });
