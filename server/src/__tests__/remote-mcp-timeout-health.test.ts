@@ -176,6 +176,12 @@ async function createRemoteMcpFixture(
   return { application, connection, catalogEntry };
 }
 
+async function gatewayRejection(call: Promise<unknown>): Promise<ToolGatewayHttpError> {
+  const outcome = await call.then(() => null, (caught: unknown) => caught);
+  expect(outcome).toBeInstanceOf(ToolGatewayHttpError);
+  return outcome as ToolGatewayHttpError;
+}
+
 describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -428,11 +434,11 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
         .find((tool) => tool.providerType === "mcp_remote_http")!;
       expect(targetTool, testCase.name).toBeDefined();
 
-      const error = await gateway.executeTool({
+      const error = await gatewayRejection(gateway.executeTool({
         sessionToken: session.token,
         tool: targetTool.name,
         parameters: {},
-      }).catch((caught: unknown) => caught as ToolGatewayHttpError);
+      }));
 
       expect(error.status, testCase.name).toBe(502);
       expect(error.reasonCode, testCase.name).toBe(testCase.reasonCode);
@@ -473,11 +479,11 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
     const targetTool = (await gateway.listToolsForSession(session.token))
       .find((tool) => tool.providerType === "mcp_remote_http")!;
 
-    const error = await gateway.executeTool({
+    const error = await gatewayRejection(gateway.executeTool({
       sessionToken: session.token,
       tool: targetTool.name,
       parameters: {},
-    }).catch((caught: unknown) => caught as ToolGatewayHttpError);
+    }));
 
     expect(error.reasonCode).toBe("mcp_remote_status");
     expect(error.details.sessionExpired).toBe(true);
@@ -516,11 +522,11 @@ describeEmbeddedPostgres("remote MCP timeout and health resilience", () => {
     const targetTool = (await gateway.listToolsForSession(session.token))
       .find((tool) => tool.providerType === "mcp_remote_http")!;
 
-    const error = await gateway.executeTool({
+    const error = await gatewayRejection(gateway.executeTool({
       sessionToken: session.token,
       tool: targetTool.name,
       parameters: {},
-    }).catch((caught: unknown) => caught as ToolGatewayHttpError);
+    }));
 
     expect(error.status).toBe(502);
     expect(error.reasonCode).toBe("mcp_remote_fetch_failed");
