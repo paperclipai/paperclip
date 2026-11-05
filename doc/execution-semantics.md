@@ -2281,6 +2281,11 @@ not grant board Stop or continuation authority, change the cancelled result,
 or prove physical termination. Normal recovery stops and retains the same
 allocation, saves its files, and obtains a fresh stop receipt before cleanup
 can apply the original destroy disposition. It starts no provider turn.
+An audited acknowledgement with `dispatched: false` also admits this preservation
+when Stop found no live controller. The worker retains the exact prepared source
+and obtains independent provider-stop evidence through normal recovery. It does
+not convert the no-op acknowledgement into a dispatched interrupt receipt or
+permission to continue the cancelled turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
