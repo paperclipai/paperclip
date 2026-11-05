@@ -1,7 +1,7 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
-import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, not, or, sql, type SQL } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
 import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
@@ -126,14 +126,20 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
-// Pre-turn runner lifecycle. Every other provider-sourced event, and every
-// turn, tool or provider event however recorded, is evidence of provider work.
-const PRE_TURN_PROVIDER_EVENT_TYPES = ["harness.ready", "harness.diagnostic", "session.starting", "session.started",
-  "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
-  "run.attached", "run.detached", "provider.notice.recorded"] as const;
-const PROVIDER_WORK_EVENT_TYPES = ["turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed",
-  "turn.interrupted", "turn.cancelled", "tool.execution.started", "provider.event", "provider.rpc_result",
-  "run.result.proposed", "run.result.accepted"] as const;
+// Runner protocol families that exist only once a turn was submitted: the turn
+// itself, its items, tools, apps, questions, results, usage and status
+// decisions. Startup lifecycle (harness, session, workspace, runtime phase)
+// opens no turn, so new startup events cannot hide a pre-turn Stop.
+export const PROVIDER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "mcp_app.tool_",
+  "mcp_app.action.", "runtime_request.", "interaction.", "attention.", "run.result.", "work.assessment.",
+  "issue.status.decision.", "usage."] as const;
+export const PROVIDER_TURN_WORK_EVENT_TYPES = ["provider.event", "provider.rpc_result"] as const;
+
+/** SQL truth for an event type (column or alias) that proves provider turn work. */
+export function providerTurnWorkEventCondition(eventType: SQL) {
+  return sql`(${eventType} in (${sql.join(PROVIDER_TURN_WORK_EVENT_TYPES.map(type => sql`${type}`), sql`, `)})
+    or ${sql.join(PROVIDER_TURN_WORK_EVENT_PREFIXES.map(prefix => sql`starts_with(${eventType}, ${prefix})`), sql` or `)})`;
+}
 
 /**
  * A Stop that the native startup owner fenced before it published a provider
@@ -150,9 +156,7 @@ export function stoppedBeforeProviderTurnCondition() {
     and stopped.result_json->'nativeCancellation'->'beforeProviderTurn' = 'true'::jsonb
     and not exists (select 1 from ${heartbeatRunEvents} work
       where work.company_id = stopped.company_id and work.run_id = stopped.id
-        and (work.event_type in (${sql.join(PROVIDER_WORK_EVENT_TYPES.map(type => sql`${type}`), sql`, `)})
-          or (work.source_event_id is not null
-            and work.event_type not in (${sql.join(PRE_TURN_PROVIDER_EVENT_TYPES.map(type => sql`${type}`), sql`, `)}))))
+        and ${providerTurnWorkEventCondition(sql`work.event_type`)})
     and not exists (select 1 from ${nativeRunResults} result
       where result.company_id = stopped.company_id and result.run_id = stopped.id))`;
 }

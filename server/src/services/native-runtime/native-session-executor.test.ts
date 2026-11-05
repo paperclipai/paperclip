@@ -8485,6 +8485,43 @@ describe("native session cancellation", () => {
     } finally { state.release?.(); await running; }
   });
 
+  it("records no pre-turn proof for a startup Stop under restart recovery", async () => {
+    // A recovered controller may reattach a provider that already worked.
+    const current = structuredClone(execution);
+    current.binding.runId = "restart-recovery-startup-stop";
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    const db = leaseDb(current, { leaseOwner: "recovered-controller", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1 });
+    let open!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const submitTurn = vi.fn();
+    state.cancel.mockClear();
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started(); await opening;
+      await options.onSession({ cancel: state.cancel });
+      submitTurn();
+      throw new Error("a stopped startup must not reach prompt submission");
+    });
+    const outcome = executePaperclipNativeSession({ db, execution: current, runnerInstanceId: "runner",
+      leaseOwner: "recovered-controller", restartRecovery: { kind: "bootstrap_incomplete" as const, runId: current.binding.runId,
+        leaseOwner: "recovered-controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "hard" as const,
+        recoveryRequestId: null } }).catch(error => error);
+    const persistence = cancellationDb({ runId: current.binding.runId });
+    try {
+      await admitted;
+      const stopping = cancelNativeSession(current.binding.runId, "operator Stop", { db: persistence.db, scope: "run" });
+      await new Promise(resolve => setImmediate(resolve));
+      open();
+      expect(await stopping).toMatchObject({ dispatched: true });
+      await outcome;
+      expect(persistence.getResultJson().nativeCancellation).toMatchObject({ dispatchState: "acknowledged" });
+      expect(persistence.getResultJson().nativeCancellation).not.toHaveProperty("beforeProviderTurn");
+      expect(submitTurn).not.toHaveBeenCalled();
+    } finally { open(); await outcome; }
+  });
+
   it("routes control-plane cancellation to the active normalized session and removes the handle", async () => {
     const running = executePaperclipNativeSession({
       db: leaseDb(),

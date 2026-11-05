@@ -3103,6 +3103,11 @@ describe("automatic retained workspace recovery", () => {
     const f = await seed();
     const agentId = (await run(f.runId)).agentId;
     await stopBeforeSessionOpen(f, { errorCode: "cancelled" });
+    // Startup lifecycle from the runner opens no turn and is not provider work.
+    for (const [seq, eventType] of ["harness.starting", "harness.ready", "workspace.ready", "runtime.phase.changed",
+      "session.starting", "session.started", "session.updated"].entries()) await db.insert(heartbeatRunEvents).values({
+      companyId: f.companyId, runId: f.runId, agentId, seq: 9_000 + seq, eventType, stream: "system", level: "info",
+      message: eventType, sourceEventId: randomUUID() });
     const followUp = await queueFollowUp(f, agentId);
     // No executor may touch the workspace while its files are unrecovered.
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, workspaceRepairRequired: true });
@@ -3137,7 +3142,8 @@ describe("automatic retained workspace recovery", () => {
     expect((await pendingTurns(f)).map(item => item.id)).toEqual([handoff.id]);
   }, 30_000);
 
-  it.each(["no-proof", "turn-event", "provider-event", "running-writer", "other-task-writer", "unscoped-queued-writer"] as const)
+  it.each(["no-proof", "turn-event", "provider-event", "running-writer", "other-task-writer", "unscoped-queued-writer",
+    "non-gating-hold"] as const)
   ("keeps the stopped agent held when provider work cannot be excluded (%s)", async kind => {
     const f = await seed();
     const agentId = (await run(f.runId)).agentId;
@@ -3153,6 +3159,17 @@ describe("automatic retained workspace recovery", () => {
         ...(kind === "unscoped-queued-writer" ? { issueId: f.issueId } : {}),
         contextSnapshot: kind === "running-writer" ? { issueId: f.issueId }
           : kind === "other-task-writer" ? { issueId: randomUUID(), executionWorkspaceId: f.issueId } : {} });
+      await expect(recoverySources.inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({ code: "workspace_writer_active" });
+      return;
+    }
+    if (kind === "non-gating-hold") {
+      // A resolved action without a no-replay hold does not gate dispatch, so a
+      // queued turn for the task can start and must still count as a writer.
+      const held = await action(f.actionId);
+      await db.update(issueRecoveryActions).set({ evidence: { ...held.evidence,
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.runId, replay: "allowed" } } })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+      await queueFollowUp(f, agentId);
       await expect(recoverySources.inspectWorkspaceRecoverySource(db, f)).rejects.toMatchObject({ code: "workspace_writer_active" });
       return;
     }

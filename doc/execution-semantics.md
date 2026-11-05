@@ -2101,7 +2101,8 @@ A Stop or reassignment can reach a native run while its provider session is
 still opening. The startup owner then fences the late handle before any prompt,
 and the Stop acknowledgement records `nativeCancellation.beforeProviderTurn`.
 A reattached provider from restart recovery never gets this proof. When the run
-also has no turn, tool, provider-sourced or result evidence, no provider outcome
+also has no turn-scoped event (turn, item, tool, question, result or usage) and
+no native result, no provider outcome
 is unknown. The completed copyback receipt then releases the hold for the stopped
 run's own agent as well, so the user's redirect continues once. The hold row and
 its evidence are unchanged.
