@@ -2154,6 +2154,15 @@ describeEmbeddedPostgres("tool access service", () => {
       let replacementFinished: Promise<unknown> | undefined;
       try {
         await waitForFirstReplacementLock(cleanupPid);
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+
+        // Start the empty replacement only once cleanup owns the membership
+        // row. Had it queued behind the first replacement too, both waiters
+        // would wake on that commit and race for the row; a replacement that
+        // wins it legitimately widens before cleanup, which made the
+        // fail-closed outcome below depend on scheduling.
         let replacementSettled = false;
         const replacement = replacementService
           .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2165,12 +2174,10 @@ describeEmbeddedPostgres("tool access service", () => {
             replacementSettled = true;
           });
         replacementFinished = replacement;
-        await waitForFirstReplacementLock(replacementPid);
-        expect(replacementSettled).toBe(false);
-
-        releaseFirstReplacement();
-        await firstReplacement;
-        await membershipIsLocked;
+        await vi.waitFor(async () => {
+          const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${replacementPid}) as blockers`);
+          expect(waiting!.blockers).toContain(cleanupPid);
+        }, { timeout: 5000 });
         expect(replacementSettled).toBe(false);
         releaseCleanup();
         await cleanup;

@@ -14,10 +14,26 @@ import { IssueRow } from "@/components/IssueRow";
 import { MetricCard } from "@/components/MetricCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { QuotaBar } from "@/components/QuotaBar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { IssueStatusBadge, StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type { TaskStatusPresentationInput } from "@/lib/task-status-presentation";
 import { createIssue } from "../../fixtures/paperclipData";
+
+const sameStateAcrossViews: Array<{ label: string; state: TaskStatusPresentationInput }> = [
+  {
+    label: "Blocked, covered by an active sub-task (in queue)",
+    state: {
+      status: "blocked",
+      blockerAttention: {
+        state: "covered", reason: "active_child", unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+        attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: "ONB-3", sampleStalledBlockerIdentifier: null,
+      },
+    },
+  },
+  { label: "In review, conversation waiting (idle)", state: { status: "in_review", externalConversationState: "waiting" } },
+  { label: "In progress, monitoring", state: { status: "in_progress", displayStatus: "monitoring" } },
+];
 
 function Section({
   eyebrow,
@@ -412,6 +428,25 @@ function StatusLanguage() {
                 ))}
               </CardContent>
             </Card>
+          </div>
+        </Section>
+
+        <Section eyebrow="One mapping" title="Same state, every view">
+          <div className="grid gap-3 md:grid-cols-3">
+            {sameStateAcrossViews.map((item) => (
+              <div key={item.label} className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+                <div className="text-sm font-medium">{item.label}</div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <StatusIcon {...item.state} /> Sidebar / list row
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <IssueStatusBadge {...item.state} /> Chat card chip
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <StatusIcon {...item.state} showLabel onChange={() => {}} /> Status menu (open to compare the current row)
+                </div>
+              </div>
+            ))}
           </div>
         </Section>
 

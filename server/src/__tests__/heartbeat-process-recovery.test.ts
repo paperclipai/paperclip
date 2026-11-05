@@ -1010,18 +1010,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     try {
       await executorHeartbeat.resumeQueuedRuns();
-      await Promise.race([
-        adapterStarted,
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () =>
-              reject(
-                new Error("Timed out waiting for adapter execution to start"),
-              ),
-            3_000,
-          );
-        }),
-      ]);
+      // Starting the run includes real runtime skill preparation for this
+      // fresh company, which alone takes several seconds. A fixed 3s budget
+      // raced that work, so wait for the adapter itself and fail fast only
+      // when the run settles without reaching it. The test timeout bounds a
+      // start that hangs.
+      let started = false;
+      void adapterStarted.then(() => { started = true; });
+      const settledBeforeStart = (async () => {
+        while (!started) {
+          const run = await executorHeartbeat.getRun(runId);
+          if (!run || (run.status !== "queued" && run.status !== "running")) {
+            throw new Error(
+              `Run settled as ${run?.status ?? "missing"} (${run?.errorCode ?? "no error code"}) before adapter execution started`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      })();
+      await Promise.race([adapterStarted, settledBeforeStart]);
 
       await db
         .update(heartbeatRuns)
@@ -1057,7 +1064,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       releaseAdapter();
       await executorHeartbeat.drainActiveRunExecutions();
     }
-  });
+    // Start alone measures 3-6s locally, before the 5s settle wait.
+  }, 30_000);
 
   async function seedStrandedIssueFixture(input: {
     status: "todo" | "in_progress";

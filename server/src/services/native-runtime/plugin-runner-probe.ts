@@ -43,7 +43,7 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       identity: managed?.identity, accountIdentity: managed?.accountIdentity,
       home: managed?.home, environment,
     });
-    const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
+    const owner = createPluginRunnerTaskOwner({ ...credentials, taskId: description.taskId, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
       harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
       credentialIdentity: managed?.identity });
     probeStarted = true;

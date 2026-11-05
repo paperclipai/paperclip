@@ -99,6 +99,13 @@ after a failed resume, it opens a fresh provider session as before. Otherwise th
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
 
+Saved OpenCode and Cursor Cloud provider state binds the digest of its own
+qualified launch profile (command, proxy script and, for OpenCode, the
+executable, each by path and SHA-256). These providers do not re-bind. A changed
+profile fails restore with the same `provider_state_incompatible`
+classification and follows the same disposition, so the controller does not
+retry the restore or try to reattach a runner that already rejected it.
+
 ## Profile identity
 
 Every ACPX provider's `commandDigest` attests only its own upstream release.

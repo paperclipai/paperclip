@@ -8,7 +8,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
-import { isSecretSensitiveHttpRequest } from "./http-log-policy.js";
+import {
+  isSecretSensitiveHttpRequest,
+  secretSensitiveRouteFamily,
+} from "./http-log-policy.js";
+import { SecretSensitiveRequestError } from "./secret-sensitive-request-error.js";
 import {
   collectSensitiveStringValues,
   redactSensitiveValueOccurrences,
@@ -69,12 +73,13 @@ function attachErrorContext(
 }
 
 function sanitizeSecretSensitiveError(req: Request, error: Error): Error {
-  if (!isSecretSensitiveHttpRequest(req.method, req.originalUrl)) return error;
-  const sanitized = new Error("Secret-sensitive request failed");
-  // Both `name` and `message` are attacker/provider-controlled properties on
-  // JavaScript errors. Do not preserve either on a credential-bearing route.
-  sanitized.name = "Error";
-  return sanitized;
+  const routeFamily = secretSensitiveRouteFamily(req.method, req.originalUrl);
+  if (!routeFamily) return error;
+  return new SecretSensitiveRequestError(error, {
+    routeFamily,
+    method: req.method,
+    routePath: (req.route as { path?: unknown } | undefined)?.path,
+  });
 }
 
 function sanitizeSecretSensitiveResponse(

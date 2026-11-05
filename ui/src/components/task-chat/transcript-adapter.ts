@@ -5,6 +5,7 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
 import { turnChangesFromEditRows } from "./turn-file-changes";
@@ -317,9 +318,17 @@ const PROVIDER_DETAIL_KEYS: Record<
     "failure",
   ],
   review: ["state", "scope"],
-  hook: ["event", "scope", "status", "blocking", "durationMs", "summary"],
+  hook: ["event", "toolName", "outcome", "status", "source", "durationMs", "blocking", "scope"],
   memory: ["label", "available", "reference"],
-  safety: ["status", "decision", "targetExecutionId", "summary"],
+  safety: [
+    "decision",
+    "actionKind",
+    "action",
+    "riskLevel",
+    "userConsent",
+    "decidedBy",
+    "targetExecutionId",
+  ],
   terminal: ["origin", "inputClass", "byteCount"],
   wait: ["reason", "status", "plannedDurationMs", "elapsedDurationMs"],
   verification: ["status", "detail", "reasonCode"],
@@ -386,7 +395,8 @@ function providerActivityItem(
         (entry.family === "provider_notice" && (key === "summary" || key === "message")) ||
           (entry.family === "verification" && key === "detail")
           ? 4000
-          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+          : key === "message" || key === "summary" || key === "reason" ? 320
+            : entry.family === "safety" && key === "action" ? 1000 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -658,6 +668,24 @@ export function reconcileSegmentRuntimeRequests(
  * assistant deltas and threading tool_result/diff onto their tool_call. Mirrors
  * buildAssistantPartsFromTranscript's grouping, emitting our presentation model.
  */
+/**
+ * Apply canonical tool facts from the runner. The subject (command, pattern,
+ * URL) or the workspace-relative path becomes the row target; the generic
+ * "operation: …" input summary is never shown when canonical data exists.
+ */
+function applyToolDetail(tool: TaskChatToolItem, detail: NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>) {
+  if (detail.operation) tool.operation = detail.operation;
+  const subject = detail.operation === "read" || detail.operation === "list" || detail.operation === "edit"
+    ? detail.target ?? detail.subject
+    : detail.subject ?? detail.target;
+  // Older runs carry no subject; keep the input summary they already had.
+  if (subject) tool.target = clip(subject, 400);
+  if (detail.description) tool.description = detail.description;
+  if (detail.exitCode !== undefined) tool.exitCode = detail.exitCode;
+  if (detail.durationMs !== undefined) tool.durationMs = detail.durationMs;
+  if (detail.blockedReason) tool.blockedReason = detail.blockedReason;
+}
+
 export function transcriptToTaskChatItems(
   entries: readonly TranscriptEntry[],
   { runId, agentName, running }: TranscriptAdapterOptions,
@@ -808,7 +836,11 @@ export function transcriptToTaskChatItems(
           // generic name must never displace the initial call's real one. ACP
           // also retitles a call to its invocation once known ("Terminal" →
           // "ls -la"); that is detail for the target slot, not a new identity.
-          if (!isGenericToolName(entry.name)) {
+          if (entry.detail && !isGenericToolName(entry.name)) {
+            // Canonical runner data: the latest native name is authoritative.
+            existing.name = toolDisplayName(entry.name);
+            existing.rawName = entry.name ?? undefined;
+          } else if (!isGenericToolName(entry.name)) {
             if (isGenericToolName(existing.rawName)) {
               existing.name = toolDisplayName(entry.name);
               existing.rawName = entry.name ?? undefined;
@@ -816,9 +848,10 @@ export function transcriptToTaskChatItems(
               existing.target = clip(entry.name!, TARGET_MAX);
             }
           }
+          if (entry.detail) applyToolDetail(existing, entry.detail);
           lastToolIndex = existingIndex!;
         } else {
-          items.push({
+          const tool: TaskChatToolItem = {
             id: `${runId}:tool:${toolCallId}`,
             kind: "tool",
             name: toolDisplayName(entry.name),
@@ -826,7 +859,9 @@ export function transcriptToTaskChatItems(
             target: summarizeToolInput(entry.input),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
-          });
+          };
+          if (entry.detail) applyToolDetail(tool, entry.detail);
+          items.push(tool);
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
         }
@@ -951,7 +986,16 @@ export function transcriptToTaskChatItems(
           : `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
-        if (existingIndex == null) {
+        const previous = existingIndex == null ? undefined : items[existingIndex];
+        // A harness can reuse one hook id for two calls (for example two
+        // calls in the same second). Once a hook row has finished, a later
+        // record with that id is a new call: keep both rows, so a later pass
+        // can never hide an earlier block reason.
+        const newHookCall = entry.family === "hook"
+          && previous?.kind === "protocol"
+          && previous.surface === "provider_activity"
+          && previous.status !== "running";
+        if (existingIndex == null || newHookCall) {
           items.push(item);
           protocolIndexByKey.set(key, items.length - 1);
         } else {
@@ -1178,17 +1222,18 @@ export function transcriptToTaskChatItems(
   // Every turn that edited files ends with its changed files, just before its
   // final answer. A harness that reports only per-edit patches gets the card
   // assembled from its edit rows.
-  const changeIndex = items.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
+  const folded = foldApprovedAutoReviews(items, runId);
+  const changeIndex = folded.findIndex((item) => item.kind === "protocol" && item.surface === "workspace_change");
   const changes = changeIndex >= 0
-    ? items.splice(changeIndex, 1)[0]
-    : turnChangesFromEditRows(items, runId ?? "run", !running);
+    ? folded.splice(changeIndex, 1)[0]
+    : turnChangesFromEditRows(folded, runId ?? "run", !running);
   if (changes) {
-    const last = items.at(-1);
+    const last = folded.at(-1);
     const beforeFinal = last?.kind === "message" && last.channel === "final";
-    items.splice(beforeFinal ? items.length - 1 : items.length, 0, changes);
+    folded.splice(beforeFinal ? folded.length - 1 : folded.length, 0, changes);
   }
 
-  return items;
+  return folded;
 }
 
 /**
