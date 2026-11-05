@@ -180,7 +180,7 @@ function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" |
   const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
   const bound: string[] = [];
   for (const paragraph of reply.split(/\n\s*\n/)) {
-    let previousNamesTarget = false;
+    let previousNamesTarget = false, previousHistorical = false;
     for (const rawClause of paragraph.split(/[.!?;\n]+|(?=\bbut\b)|(?=\band\s+(?:(?:it|(?:this|that) skill)\s+)?(?:is|are|was|were|remains?|has|have|could|can)\b)/i).map(text => text.trim()).filter(Boolean)) {
       const coordinated = /^(?:but|and)\b/i.test(rawClause);
       const clause = rawClause.replace(/^(?:but|and)\s+/i, "");
@@ -188,7 +188,15 @@ function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" |
       const reference = /^(?:it|(?:this|that) skill|(?:the )?(?:collision|conflict|caveat))\b/i;
       const pronoun: boolean = previousNamesTarget && reference.test(clause);
       const elidedSubject: boolean = coordinated && previousNamesTarget && /^(?:is|are|was|were|remains?|has|have|could|can)\b/i.test(clause);
-      if (named || pronoun || elidedSubject) bound.push(pronoun ? clause.replace(reference, skill.name) : elidedSubject ? skill.name + " " + clause : clause);
+      if (named || pronoun || elidedSubject) {
+        const assertion = pronoun ? clause.replace(reference, skill.name) : elidedSubject ? skill.name + " " + clause : clause;
+        const inheritedHistory = coordinated && previousNamesTarget && previousHistorical
+          && /^(?:was|were|had|could)\b/i.test(clause.replace(reference, "").trim())
+          && !/\b(?:now|currently|still)\b/i.test(clause);
+        const scoped = inheritedHistory ? "Earlier, " + assertion : assertion;
+        bound.push(scoped);
+        previousHistorical = historicalTeamSkillClause(scoped, skill);
+      } else previousHistorical = false;
       previousNamesTarget = named || continuePronouns && (pronoun || elidedSubject);
     }
   }
@@ -205,7 +213,7 @@ function historicalTeamSkillClause(clause: string, skill: Pick<CatalogSkill, "sl
   const before = clause.slice(0, subject?.index ?? 0).trim();
   const assertion = clause.slice(subject?.index ?? 0).split(/[,;]|\b(?:because|due to|since|although|though|while|whereas)\b/i)[0]!;
   return (/\b(?:earlier|previously|initially|formerly)\b|\bbefore\s*$/i.test(assertion)
-      || /^(?:earlier|previously|initially|formerly),?$/i.test(before))
+      || /^(?:earlier|previously|initially|formerly),?(?:\s+(?:the|a|an))?$/i.test(before))
     && !/\b(?:now|currently|still)\b/i.test(assertion);
 }
 function assertedTeamRecovery(clause: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {

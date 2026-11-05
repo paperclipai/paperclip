@@ -470,3 +470,22 @@ it("preserves a fronted historical adverb on the named skill assertion", () => {
   o.phaseReplies[0]!.body = "The existing CTO was preserved and the imported role is CTO 2. Earlier, Launch Checklist was not installed.";
   expect(gradeTeamConditions(o, "initial").passed).toBe(true);
 });
+
+
+it.each([
+  "Initially, the Launch Checklist skill could not be installed, but it is now installed under another slug.",
+  "Earlier, Launch Checklist was unavailable and was not installed. It is now installed under another slug.",
+])("preserves the reported fronted or coordinated historical scope: %s", body => {
+  for (const phase of [0, 1]) {
+    const { o } = recovered();
+    o.phaseReplies[phase]!.body = "The existing CTO was preserved and the imported role is CTO 2. " + body;
+    expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(true);
+  }
+});
+it("does not inherit history for a coordinated past assertion with a current marker", () => {
+  for (const phase of [0, 1]) {
+    const { o } = recovered();
+    o.phaseReplies[phase]!.body = "The existing CTO was preserved and the imported role is CTO 2. Earlier, Launch Checklist was unavailable and was still not installed now.";
+    expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
+  }
+});
