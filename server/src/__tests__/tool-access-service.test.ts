@@ -3795,7 +3795,14 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
       credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
     });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const deadline = Date.now() + 10_000;
+    let blocked = false;
+    while (!blocked && Date.now() < deadline) {
+      const rows = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database() and query ilike '%connection_grants%'`);
+      blocked = Array.from(rows as unknown as unknown[]).length > 0;
+      if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(blocked).toBe(true);
 
     const connectionRowFree = await db.transaction(async (tx) => {
       try {
