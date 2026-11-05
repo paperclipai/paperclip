@@ -2846,23 +2846,28 @@ precedence and dependency failures use the original built-in detector.
 
 ### Personal workspace preference
 
-Coordinator is the default workspace for a new human. The upgrade migration retains
-the classic workspace for existing people without a saved preference.
-Settings → Experimental can restore the classic workspace. Explicit saved choices
-remain authoritative. The choice defaults on and is saved per user across companies
-on an instance in
-`user_workspace_preferences`; it is not an instance feature or a company capability.
-Turning it off restores the classic shell without modifying canonical tasks, agents,
-artifacts, permissions, or runs. Local-trusted development uses the existing shared
-`local-board` identity, explicitly identified in Settings. Anonymous and agent actors
-cannot read or update this personal choice.
+Coordinator is the standard workspace for every person. It is not an experiment.
+Settings → Experimental offers **Classic workspace**, a personal opt-in that
+defaults off. Existing Coordinator experiment values, including historical off
+values, do not opt anyone into Classic. The choice is saved per user across
+companies on an instance in `user_workspace_preferences.classic_workspace_enabled`;
+it is not an instance feature or a company capability. Turning Classic off returns
+to Coordinator without modifying canonical tasks, agents, artifacts, permissions,
+or runs. Local-trusted development uses the existing shared `local-board` identity,
+explicitly identified in Settings. Anonymous and agent actors cannot read or update
+this personal choice.
 
-`GET /api/workspace-preferences/me` reads only the caller's choice.
-`PUT /api/companies/{companyId}/workspace-preferences/me` updates it with authorized
-company audit context; active viewers may update their own presentation. The preference
-and sparse audit event commit atomically. Client caches are keyed by human identity,
-and switching waits for successful persistence; unavailable preferences fall back to
-the classic shell. This preference does not replace `enableClassicTaskInterface`.
+`GET /api/workspace-preferences/me` reads only the caller's choice. For client
+compatibility, `coordinatorWorkspaceEnabled` reports the inverse of the Classic
+opt-in. The old stored Coordinator column is retained but no longer selects the
+workspace. `PUT /api/companies/{companyId}/workspace-preferences/me` saves the
+Classic choice through that same inverse property with authorized company audit
+context; active viewers may update their own presentation. The preference and
+sparse audit event commit atomically. Client caches are keyed by human identity,
+and switching waits for successful persistence; unavailable preferences use the
+standard Coordinator workspace. This preference does not replace
+`enableClassicTaskInterface`.
+
 ## Agent connection administration (2026-10-13)
 
 Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.

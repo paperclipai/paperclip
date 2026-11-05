@@ -5,7 +5,9 @@ import { boolean, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-or
 export const userWorkspacePreferences = pgTable("user_workspace_preferences", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: text("user_id").notNull(),
+  // Retained for older clients; Classic is now the only presentation opt-in.
   coordinatorWorkspaceEnabled: boolean("coordinator_workspace_enabled").notNull().default(true),
+  classicWorkspaceEnabled: boolean("classic_workspace_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, table => ({

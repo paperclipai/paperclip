@@ -1905,11 +1905,13 @@ pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
 
-## New-user workspace defaults
+## Standard workspace and Classic opt-in
 
-Migration `0432_fancy_pretty_boy.sql` changes the workspace preference column's
-default to Coordinator. Before that change, it preserves the classic default for
-existing auth users, human company members, and the shared Local Board on existing
-installations. Existing saved choices remain intact. Agent Chat is always available;
-its retired stored flag is ignored without rewriting instance settings. No task,
-agent, permission, or execution state changes.
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
-export function CoordinatorWorkspaceSetting() {
+export function ClassicWorkspaceSetting() {
   const { selectedCompany } = useCompany();
   const workspace = useCoordinatorWorkspaceEnabled();
   const error = workspace.error instanceof Error ? workspace.error.message : null;
@@ -12,26 +12,26 @@ export function CoordinatorWorkspaceSetting() {
     <Card className="block bg-transparent p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1.5">
-          <h3 id="coordinator-workspace-title" className="text-sm font-medium">Coordinator workspace</h3>
-          <p id="coordinator-workspace-description" className="text-sm text-muted-foreground">
-            Use the Chat, Tasks, and Needs You workspace. This changes your interface across companies on this instance.
+          <h3 id="classic-workspace-title" className="text-sm font-medium">Classic workspace</h3>
+          <p id="classic-workspace-description" className="text-sm text-muted-foreground">
+            Use the previous workspace instead of the standard Coordinator workspace. This changes your interface across companies on this instance.
           </p>
           <p className="text-xs text-muted-foreground">
-            On by default for new users. Turn it off to return to the classic workspace. Your work and your teammates’ settings stay the same.
+            Off by default. Turn it off to return to Coordinator. Your work and your teammates’ settings stay the same.
           </p>
           {workspace.userId === "local-board" && (
             <p className="text-xs text-muted-foreground">This local instance uses the shared Local Board identity.</p>
           )}
         </div>
         <ToggleSwitch
-          checked={workspace.enabled}
+          checked={workspace.loaded && !workspace.enabled}
           disabled={!workspace.loaded || workspace.isSaving || !workspace.userId || !selectedCompany || !!workspace.error}
-          aria-label="Enable coordinator workspace"
-          aria-describedby="coordinator-workspace-description"
-          onCheckedChange={(enabled) => {
+          aria-label="Enable classic workspace"
+          aria-describedby="classic-workspace-description"
+          onCheckedChange={(classicEnabled) => {
             if (!selectedCompany) return;
             // The hook exposes the error for the account that attempted the save.
-            void workspace.setEnabled(selectedCompany.id, enabled).catch(() => {});
+            void workspace.setEnabled(selectedCompany.id, !classicEnabled).catch(() => {});
           }}
         />
       </div>

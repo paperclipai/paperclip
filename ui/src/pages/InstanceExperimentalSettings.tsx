@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
-import { CoordinatorWorkspaceSetting } from "@/components/CoordinatorWorkspaceSetting";
+import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
 import { describeError } from "@/api/errors";
 
 type WorktreeRunExecutionDisplayState =
@@ -184,7 +184,7 @@ export function InstanceExperimentalSettings() {
   if (experimentalQuery.isLoading || experimentalView.kind === "reconnecting") {
     return (
       <div className="max-w-6xl space-y-6">
-        <CoordinatorWorkspaceSetting key="personal-workspace" />
+        <ClassicWorkspaceSetting key="personal-workspace" />
         <div className="text-sm text-muted-foreground">Loading experimental settings...</div>
       </div>
     );
@@ -192,7 +192,7 @@ export function InstanceExperimentalSettings() {
 
   if (experimentalView.kind === "error") {
     return (
-<div className="max-w-6xl space-y-6"><CoordinatorWorkspaceSetting key="personal-workspace" />      <QueryErrorState
+<div className="max-w-6xl space-y-6"><ClassicWorkspaceSetting key="personal-workspace" />      <QueryErrorState
         size="page"
         error={experimentalQuery.error}
         action="load experimental settings"
@@ -274,7 +274,7 @@ export function InstanceExperimentalSettings() {
         </p>
       </div>
 
-      <CoordinatorWorkspaceSetting key="personal-workspace" />
+      <ClassicWorkspaceSetting key="personal-workspace" />
 
       <div
         role="alert"

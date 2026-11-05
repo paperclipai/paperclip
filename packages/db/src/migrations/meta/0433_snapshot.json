@@ -1,5 +1,5 @@
 {
-  "id": "eb14b024-18a0-4809-8e36-225ce3454765",
+  "id": "10b23b32-3586-4a30-a993-618e7d3ca893",
   "prevId": "a87278a8-15b3-4187-94a9-f4bb79d8640d",
   "version": "7",
   "dialect": "postgresql",
@@ -61885,6 +61885,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "classic_workspace_enabled": {
+          "name": "classic_workspace_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",

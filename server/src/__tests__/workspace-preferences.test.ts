@@ -44,6 +44,17 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     expect(await db.select().from(userWorkspacePreferences).where(eq(userWorkspacePreferences.userId, userId))).toHaveLength(0);
   });
 
+  it.each([false, true])("uses Coordinator for an old experimental preference (%s) until Classic is explicitly selected", async legacyEnabled => {
+    const userId = randomUUID();
+    const companyId = await company();
+    await db.insert(userWorkspacePreferences).values({ userId, coordinatorWorkspaceEnabled: legacyEnabled });
+    expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(true);
+    await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: false }).expect(200);
+    expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(false);
+    await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: true }).expect(200);
+    expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(true);
+  });
+
   it("lets a viewer opt in and out across companies without changing another person's choice", async () => {
     const first = await company(), second = await company(), userId = randomUUID(), otherUser = randomUUID();
     await request(app(actor(first, userId))).put(url(first)).send({ coordinatorWorkspaceEnabled: true }).expect(200);
