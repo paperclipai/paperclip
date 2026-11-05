@@ -1,11 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { experimentalSettingKey } from "@paperclipai/shared";
-import { accessApi } from "@/api/access";
-import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCompany } from "@/context/CompanyContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useHiddenSettings } from "@/hooks/useHiddenSettings";
-import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -13,23 +7,6 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 export function CoordinatorWorkspaceSetting() {
   const { selectedCompany } = useCompany();
   const workspace = useCoordinatorWorkspaceEnabled();
-  const { hidden, loaded: visibilityLoaded } = useHiddenSettings();
-  const experimental = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const chatDisabled = experimental.isSuccess && experimental.data.enableAgentChat !== true;
-  const boardAccess = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    enabled: chatDisabled && !!workspace.userId,
-    staleTime: 30_000,
-  });
-  const chatManaged = experimental.data?.managedKeys?.enableAgentChat?.managed === true;
-  const chatHidden = hidden.has(experimentalSettingKey("enableAgentChat"));
-  const canEnableChat = visibilityLoaded && !chatHidden && !chatManaged && boardAccess.data?.userId === workspace.userId && (
-    boardAccess.data?.source === "local_implicit" || boardAccess.data?.isInstanceAdmin === true
-  );
   const error = workspace.error instanceof Error ? workspace.error.message : null;
   return (
     <Card className="block bg-transparent p-5">
@@ -44,18 +21,6 @@ export function CoordinatorWorkspaceSetting() {
           </p>
           {workspace.userId === "local-board" && (
             <p className="text-xs text-muted-foreground">This local instance uses the shared Local Board identity.</p>
-          )}
-          {chatDisabled && (
-            <p className="text-sm text-muted-foreground">
-              Agent Chat is off for this instance. Your workspace preference does not enable it.{" "}
-              {canEnableChat ? (
-                <a href="#experimental-enableAgentChat" className="underline underline-offset-4">Enable Agent Chat below</a>
-              ) : chatManaged || chatHidden ? (
-                "Chat availability is managed by your hosting provider."
-              ) : (
-                "Ask an administrator to enable Agent Chat in Experimental settings."
-              )}
-            </p>
           )}
         </div>
         <ToggleSwitch

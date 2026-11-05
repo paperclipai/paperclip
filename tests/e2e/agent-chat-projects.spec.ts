@@ -616,7 +616,7 @@ test("shared history loads older messages without replacing the latest turn", as
   }
 });
 
-test("disabling Agent Chat lets an active turn settle and keeps idle history", async ({
+test("retired Chat opt-outs do not interrupt active turns or hide existing history", async ({
   page,
   request,
 }) => {
@@ -652,20 +652,13 @@ test("disabling Agent Chat lets an active turn settle and keeps idle history", a
             .conversationState,
       )
       .toBe("waiting");
-    expect(
-      (
-        await request.post(`/api/issues/${chat.id}/comments`, {
-          data: { body: "/new" },
-        })
-      ).status(),
-    ).toBe(404);
     const before = (
       await json(
         await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
       )
     ).length;
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Active turn settled after feature disable.", { exact: true })).toBeVisible();
     expect(
       (
         await json(

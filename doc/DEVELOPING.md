@@ -554,8 +554,7 @@ views. The plus button opens the existing agent picker; adding an agent creates
 one sidebar entry, and choosing them again reopens the same conversation. The
 **Add and reopen** component story exercises that constraint. Agent selection
 and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
-use the same sidebar, picker, landing page, and existing chat surface when the
-Agent Chat experimental setting is enabled.
+use the same sidebar, picker, landing page, and existing chat surface for everyone.
 
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
@@ -2895,8 +2894,7 @@ and `deny-all` options. Codex conversion keeps a non-empty model and
 otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
 applies the same default to older runner rows whose model is missing or blank.
 
-For an Agent Chat test drive, enable **Agent Chat** in Experimental settings and
-configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
+For an Agent Chat test drive, configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
 the Claude account through the agent's **AI connection** section (or supply an
 explicit supported provider credential); an ambient Claude CLI login alone is
 not a credential source for its isolated runner home. The default

@@ -2189,10 +2189,10 @@ Chat list/detail responses use per-user read state before human participation;
 the foreground chat marks rendered messages read through an optional comment
 cutoff, retaining unseen concurrent arrivals. Existing navigation ordering is
 preserved with accessible unread dots and an aggregate Chat indicator.
-`enableAgentChat` gates delivery; external channels, push/email and private-chat
+Agent Chat is available to every person; external channels, push/email and private-chat
 redesign are outside this contract.
 
-`enableAgentChat` is an instance setting, default true for Cloud and self-hosted instances. Upgrades preserve the previous default for existing instances; explicit stored and managed choices remain authoritative. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
+`enableAgentChat` is a retired compatibility key. Agent Chat is always available for Cloud and self-hosted instances, including existing people and instances with stored or managed off values. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
 
@@ -2208,7 +2208,7 @@ in decision history.
 
 Standalone `/new` is an ordered queue command with no model response. It advances a durable session generation and boundary comment, resets only this issue's provider context, and preserves the issue ID and history. Generation checks reject stale context writes and replies. Fresh replay excludes earlier messages and summaries. The shared transcript renders a session divider.
 
-Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. Feature disablement prevents new turns and resets while retaining data and lifecycle protection; already-running turns may settle normally.
+Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. The retired feature flag cannot prevent turns, resets, or discovery. Ordinary authentication, company and conversation ownership, privacy, run authority, and execution admission checks still apply.
 
 ### Agent chat project handoff (2026-09-11)
 

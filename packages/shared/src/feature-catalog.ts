@@ -198,9 +198,8 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAgentChat: {
-    title: "Agent Chat",
-    description:
-      "Persistent task-backed conversations that clarify goals and hand work off to tasks. Chat leads the Work group with an agent rail, and each chat's side panel shows the agent's tasks and artifacts as cards.",
+    title: "Agent Chat (compatibility)",
+    description: "Deprecated compatibility key. Agent Chat is always enabled; stored and managed values are ignored.",
     tier: "managed",
     cloudDefault: true,
     selfHostedDefault: true,

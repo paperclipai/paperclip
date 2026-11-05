@@ -126,7 +126,7 @@ test("chat first open is read-only; concurrent first sends and retries share one
   }
 });
 
-test("feature flag blocks new sends and resets while preserving existing history", async ({
+test("retired Chat opt-outs allow sends and resets while preserving existing history", async ({
   page,
   request,
 }) => {
@@ -140,22 +140,22 @@ test("feature flag blocks new sends and resets while preserving existing history
         data: { enableAgentChat: false },
       }),
     );
-    for (const body of ["blocked message", "/new"])
+    for (const body of ["Available to existing people", "/new"])
       expect(
         (
           await request.post(`/api/issues/${issue.id}/comments`, {
-            data: { body },
+            data: { body, clientRequestId: crypto.randomUUID() },
           })
         ).status(),
-      ).toBe(404);
+      ).toBe(201);
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Visible history", { exact: true }).first()).toBeVisible();
     expect(
       (await json(await request.get(`/api/issues/${issue.id}/comments`))).some(
         (c: any) => c.body.includes("Visible history"),
       ),
     ).toBe(true);
-    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(404);
+    expect((await request.post(f.chatPath, { data: {} })).status()).toBe(200);
   } finally {
     await f.restore();
   }

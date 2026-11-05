@@ -309,18 +309,6 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
-          title="Agent Chat"
-          description="Talk to each agent in one ongoing conversation. Clarify goals and create tasks for execution. Chat leads the Work group and opens an agent rail beside the nav, and each chat's side panel shows the agent's tasks and artifacts as cards."
-          footnote="Enabled by default for new instances. Turning this off preserves conversations and lets active runs finish, but prevents new messages."
-          checked={experimentalQuery.data?.enableAgentChat ?? true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableAgentChat"
-          managed={managedKeys.enableAgentChat}
-          ariaLabel="Toggle agent chat experimental setting"
-        />
-
-        <ExperimentalToggleCard
           title="Assistant connections (MCP)"
           description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
           footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}

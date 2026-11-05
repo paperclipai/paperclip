@@ -1,13 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "@/api/instanceSettings";
-import { queryKeys } from "@/lib/queryKeys";
+/** Agent Chat is a standard product surface. Keep this facade for existing
+ * consumers without making navigation wait for experimental settings. */
 export function useAgentChatEnabled() {
-  const query = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  return {
-    enabled: query.data?.enableAgentChat === true,
-    loaded: query.isFetched,
-  };
+  return { enabled: true, loaded: true };
 }

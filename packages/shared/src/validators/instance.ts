@@ -64,6 +64,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePaperclipNotebook: z.boolean().default(false),
   enableGoogleWorkspaceConnector: z.boolean().default(false),
   enableCases: z.boolean().default(false),
+  // Compatibility only. Agent Chat is always available; saved off values are ignored.
   enableAgentChat: z.boolean().default(true),
   enableCombinedInboxTasks: z.boolean().default(false),
   enableArtifactsV1: z.boolean().default(true),

@@ -267,7 +267,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
-      enableAgentChat: parsed.data.enableAgentChat ?? true,
+      // Agent Chat graduated; retain the stored key only for compatibility.
+      enableAgentChat: true,
       enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
       enableArtifactsV1: parsed.data.enableArtifactsV1 ?? true,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
@@ -326,11 +327,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enablePaperclipNotebook: false,
     enableGoogleWorkspaceConnector: false,
     enableCases: false,
-    // Preserve an operator opt-out even when an unrelated setting is malformed.
-    enableAgentChat: !(
-      raw !== null && typeof raw === "object" && !Array.isArray(raw)
-      && "enableAgentChat" in raw && raw.enableAgentChat === false
-    ),
+    enableAgentChat: true,
     enableCombinedInboxTasks: false,
     enableArtifactsV1: true,
     enableConferenceRoomChat: false,
@@ -388,8 +385,8 @@ export function applyManagedExperimentalOverlay(
     [ManagedExperimentalFeatureKey, boolean]
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
-    // document during rollout, but never let retired flags disable Apps or MCP aggregators.
-    if (key === "enableApps" || key === "enableMcpAggregators") continue;
+    // document during rollout, but never let retired flags disable Apps, Agent Chat or MCP aggregators.
+    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }

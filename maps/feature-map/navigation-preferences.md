@@ -107,11 +107,8 @@ workspace on upgrade. Settings → Experimental → Coordinator workspace can ch
 the personal choice; off restores classic. The server saves it by user across
 companies, separate from instance feature flags. The local-trusted identity is shared
 Local Board, not evidence of multi-user isolation.
-Agent Chat remains an independent instance prerequisite. When it is off, the
-personal card explains the dependency and links eligible instance administrators
-to the existing Agent Chat control. Hidden or Cloud-managed controls are not
-presented as editable. Disabled Chat routes link back to Experimental settings.
-Enabling the personal workspace never changes the instance capability.
+Agent Chat is available to everyone independently of this personal workspace
+choice. Its retired instance flag and historical managed off values are ignored.
 
 Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
 [prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
