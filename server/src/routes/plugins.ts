@@ -24,6 +24,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
 import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { logger } from "../middleware/logger.js";
 import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
@@ -200,7 +201,12 @@ type DiscoveredBundledPlugin = {
   packageRoot: string;
   pkgJson: Record<string, unknown>;
 };
+type BundledPluginReadFailure = { path: string; error: string };
 let bundledPluginsCache: Promise<DiscoveredBundledPlugin[]> | null = null;
+
+function recordReadFailure(failures: BundledPluginReadFailure[], filePath: string, error: unknown): void {
+  failures.push({ path: filePath, error: error instanceof Error ? error.message : String(error) });
+}
 
 function titleCasePluginName(packageName: string): string {
   const localName = packageName.split("/").pop() ?? packageName;
@@ -217,22 +223,33 @@ async function fileExists(filePath: string): Promise<boolean> {
   return access(filePath).then(() => true, () => false);
 }
 
-async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
+async function readJsonFile(
+  filePath: string,
+  failures: BundledPluginReadFailure[],
+): Promise<Record<string, unknown> | null> {
   try {
     return JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
-  } catch {
+  } catch (error) {
+    recordReadFailure(failures, filePath, error);
     return null;
   }
 }
 
-async function findPackageJsonFiles(root: string, maxDepth = 4): Promise<string[]> {
+async function findPackageJsonFiles(
+  root: string,
+  failures: BundledPluginReadFailure[],
+  maxDepth = 4,
+): Promise<string[]> {
   if (!(await fileExists(root))) return [];
 
   const packageJsonFiles: string[] = [];
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > maxDepth) return;
 
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
+      recordReadFailure(failures, dir, error);
+      return [];
+    });
     for (const entry of entries) {
       if (entry.name === "node_modules" || entry.name === "dist") continue;
       const entryPath = path.join(dir, entry.name);
@@ -278,6 +295,7 @@ function firstStringLiteral(source: string, key: string): string | null {
 async function bundledPluginMetadata(
   packageRoot: string,
   pkgJson: Record<string, unknown>,
+  failures: BundledPluginReadFailure[],
 ): Promise<{ pluginKey?: string; displayName?: string; description?: string }> {
   const sourcePath = manifestSourcePath(packageRoot, pkgJson);
   if (!sourcePath || !(await fileExists(sourcePath))) return {};
@@ -295,7 +313,8 @@ async function bundledPluginMetadata(
       displayName: firstStringLiteral(source, "displayName") ?? undefined,
       description: firstStringLiteral(source, "description") ?? undefined,
     };
-  } catch {
+  } catch (error) {
+    recordReadFailure(failures, sourcePath, error);
     return {};
   }
 }
@@ -308,12 +327,14 @@ function isExperimentalBundledPlugin(packageRoot: string, packageName: string): 
   );
 }
 
-async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
+async function discoverBundledPlugins(
+  failures: BundledPluginReadFailure[],
+): Promise<DiscoveredBundledPlugin[]> {
   const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
   const bundledPlugins: DiscoveredBundledPlugin[] = [];
-  for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
+  for (const packageJsonPath of await findPackageJsonFiles(pluginRoot, failures)) {
     const packageRoot = path.dirname(packageJsonPath);
-    const pkgJson = await readJsonFile(packageJsonPath);
+    const pkgJson = await readJsonFile(packageJsonPath, failures);
     const paperclipPlugin = pkgJson?.paperclipPlugin;
     if (
       !pkgJson
@@ -327,7 +348,7 @@ async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
     const packageName = pkgJson.name;
     if (typeof packageName !== "string" || packageName.length === 0) continue;
 
-    const metadata = await bundledPluginMetadata(packageRoot, pkgJson);
+    const metadata = await bundledPluginMetadata(packageRoot, pkgJson, failures);
     const tag = packageRoot.includes(`${path.sep}examples${path.sep}`) ? "example" : "first-party";
     bundledPlugins.push({
       entry: {
@@ -352,10 +373,26 @@ async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
 }
 
 async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
-  bundledPluginsCache ??= discoverBundledPlugins().catch((error: unknown) => {
-    bundledPluginsCache = null;
-    throw error;
-  });
+  if (!bundledPluginsCache) {
+    const failures: BundledPluginReadFailure[] = [];
+    const discovery: Promise<DiscoveredBundledPlugin[]> = discoverBundledPlugins(failures).then(
+      (discovered) => {
+        if (failures.length > 0) {
+          logger.warn(
+            { readFailures: failures },
+            "Bundled plugin discovery could not read some files; the catalog is not cached",
+          );
+          if (bundledPluginsCache === discovery) bundledPluginsCache = null;
+        }
+        return discovered;
+      },
+      (error: unknown) => {
+        if (bundledPluginsCache === discovery) bundledPluginsCache = null;
+        throw error;
+      },
+    );
+    bundledPluginsCache = discovery;
+  }
   const discovered = await bundledPluginsCache;
   // Recompute the filesystem-dependent flag per request so a plugin auto-built
   // during install is no longer reported as missing its entrypoints.
@@ -363,6 +400,14 @@ async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
     ...entry,
     hasBuiltEntrypoints: listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson).length === 0,
   }));
+}
+
+export function __listBundledPluginsForTests(): Promise<AvailableBundledPlugin[]> {
+  return listBundledPlugins();
+}
+
+export function __clearBundledPluginsCacheForTests(): void {
+  bundledPluginsCache = null;
 }
 
 /**
