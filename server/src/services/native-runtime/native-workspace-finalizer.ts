@@ -357,7 +357,8 @@ export async function resumeNativeWorkspaceFinalization(input: Parameters<typeof
   return result.kind === "completed" ? result.operation : null;
 }
 
-export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string, operation: { stderrExcerpt: string | null }) {
+export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string,
+  operation: { stderrExcerpt: string | null; metadata?: Record<string, unknown> | null }) {
   const unrecoverable = operation.stderrExcerpt?.includes("workspace_sync_out_unrecoverable");
   const pluginFailure = operation.stderrExcerpt?.trim();
   const pluginRepair = pluginFailure === "plugin_workspace_branch_mismatch" || pluginFailure === "plugin_workspace_owner_mismatch";
@@ -366,5 +367,6 @@ export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string, 
     error: new Error(pluginRepair ? `native_${pluginFailure}` : unrecoverable
       ? "native_workspace_sync_out_unrecoverable" : "native_workspace_sync_out_failed"),
     projectRunStatus: true, failureScope: "workspace", permanent: unrecoverable,
+    failureCause: readString(record(record(operation.metadata).workspaceSync).cause),
   });
 }
