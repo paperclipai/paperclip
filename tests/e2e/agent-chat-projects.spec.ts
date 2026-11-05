@@ -335,9 +335,8 @@ for (const mode of ["Ask", "Plan"])
         );
         expect(revised.latestRevisionId).not.toBe(first.latestRevisionId);
         expect(revised.body).toContain("Revised plan");
-        await expect(
-          page.getByRole("tab", { name: "Plan", exact: true }),
-        ).toBeVisible();
+        await page.getByRole("link", { name: /Open Revised plan revision 2 in task sidebar/ }).click();
+        await expect(page.getByRole("tab", { name: "Plan", exact: true })).toBeVisible();
       }
       expect(
         await json(await request.get(`/api/companies/${f.company.id}/issues`)),

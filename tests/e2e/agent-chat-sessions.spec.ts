@@ -253,13 +253,53 @@ test("Stop then queued /new resets unpause the conversation without losing histo
   }
 });
 
+test("Coordinator agent switching preserves drafts and opens one conversation only on send", async ({ page, request }) => {
+  const f = await setup(request);
+  try {
+    await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
+    const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
+    const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
+    const switchTo = async (name: string) => {
+      await page.getByRole("button", { name: /^Switch agent. Currently / }).click();
+      await picker.getByRole("combobox").fill(name);
+      await picker.getByRole("combobox").press("Enter");
+      await expect(picker).not.toBeVisible();
+      await expect(page.getByRole("button", { name: `Switch agent. Currently ${name}`, exact: true })).toBeVisible();
+    };
+    await editor.fill("Unsent Coordinator draft for Alpha");
+    await switchTo("Beta");
+    await expect(editor).toHaveText("");
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats/${f.agents[1].id}`))).toBeNull();
+    await switchTo("Alpha");
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    await page.reload();
+    await expect(editor).toContainText("Unsent Coordinator draft for Alpha");
+    expect(await json(await request.get(f.chatPath))).toBeNull();
+    await editor.fill("");
+    await send(page, "Coordinator conversation acceptance");
+    await idle(request, f.chatPath);
+    const chat = await json(await request.get(f.chatPath));
+    await switchTo("Beta");
+    await switchTo("Alpha");
+    await expect(page.getByText("Coordinator conversation acceptance", { exact: true })).toBeVisible();
+    expect((await json(await request.get(f.chatPath))).id).toBe(chat.id);
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats`))).toHaveLength(1);
+  } finally {
+    await f.restore();
+  }
+});
+
 test("secondary chat navigation preserves layout, unique conversations, history, and drafts", async ({
   page,
   request,
 }) => {
   const originalExperimental = await json(await request.get("/api/instance/settings/experimental"));
   const f = await setup(request);
+  const originalWorkspace = await json(await request.get("/api/workspace-preferences/me"));
+  const workspacePath = `/api/companies/${f.company.id}/workspace-preferences/me`;
   try {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: false } }));
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: true },
     }));
@@ -365,6 +405,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await page.reload();
     await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
+    await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
     await json(await request.patch("/api/instance/settings/experimental", {
       data: { enableStreamlinedUi: originalExperimental.enableStreamlinedUi },

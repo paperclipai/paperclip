@@ -117,7 +117,8 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("sidebar says Connectors and links to /apps", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/dashboard`);
+    await page.goto(`/${seed.prefix}/issues`);
+    await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
     const connectorsLink = page.getByRole("link", { name: "Connectors", exact: true });
     await expect(connectorsLink).toBeVisible({ timeout: 30_000 });
     await expect(connectorsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));

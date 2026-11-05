@@ -24,10 +24,11 @@ async function setup(page: Page, request: APIRequestContext, mobile = false) {
   if (mobile) {
     await page.getByRole("button", { name: "More actions", exact: true }).click();
     await page.getByRole("button", { name: "Properties", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "Show properties", exact: true }).click();
   }
   const panel = mobile ? page.getByTestId("mobile-task-side-panel") : page.locator("aside").filter({ has: page.getByRole("button", { name: "Open a new tab", exact: true }) });
-  await panel.getByRole("button", { name: "Open a new tab", exact: true }).click();
-  await page.getByRole("option", { name: "Artifacts", exact: true }).click();
+  await panel.getByRole("option", { name: "Artifacts", exact: true }).click();
   await expectTaskPanelTab(panel, mobile, "Artifacts");
   await expect(panel.getByRole("button", { name: "Upload files", exact: true })).toBeVisible();
   return { company, issue, panel };
