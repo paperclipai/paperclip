@@ -13,8 +13,10 @@ export interface ReasoningSummarySection {
 }
 
 const HEADLINE = /^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*$/;
-/** Opening or closing fence of a Markdown code block. */
-const FENCE = /^\s{0,3}(```|~~~)/;
+/** CommonMark fence opener: a backtick fence's info string has no backticks. */
+const FENCE_OPEN = /^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$/;
+/** CommonMark fence closer: only the fence characters, then spaces. */
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/;
 /** A headline whose closing emphasis has not streamed in yet. */
 const STREAMING_HEADLINE = /^\s*(?:\*\*|__)([^*_]+)$/;
 
@@ -36,10 +38,15 @@ export function reasoningSummarySections(text: string): ReasoningSummarySection[
   let fence: string | null = null;
   for (const [index, line] of lines.entries()) {
     // Lines inside a fenced code block are code, never section headlines.
-    const fenceMarker = FENCE.exec(line)?.[1];
-    if (fence || fenceMarker) {
-      if (!fence) fence = fenceMarker![0]!;
-      else if (fenceMarker?.[0] === fence) fence = null;
+    const openBefore = fence;
+    if (fence) {
+      const closer = FENCE_CLOSE.exec(line)?.[1];
+      if (closer && closer[0] === fence[0] && closer.length >= fence.length) fence = null;
+    } else {
+      const opener = FENCE_OPEN.exec(line);
+      if (opener) fence = opener[1] ?? opener[2] ?? null;
+    }
+    if (openBefore || fence) {
       if (!current) current = { headline: null, body: [] };
       current.body.push(line);
       continue;

@@ -36,4 +36,16 @@ describe("reasoning summary sections", () => {
     expect(sections[0]?.body).toContain("**Example**");
     expect(latestReasoningHeadline(text)).toBe("Drafting the example");
   });
+
+  it("treats single-line triple-backtick code as inline, not an open fence", () => {
+    const text = "**Checking the constant**\n\n```const x = 1```\n\n**Verifying edge cases**";
+    expect(reasoningSummarySections(text).map((section) => section.headline))
+      .toEqual(["Checking the constant", "Verifying edge cases"]);
+    expect(latestReasoningHeadline(text)).toBe("Verifying edge cases");
+  });
+
+  it("closes a fence only with a matching fence of at least the same length", () => {
+    const text = "**Drafting**\n\n````md\n```\n**Inside**\n````\n\n**After the sample**";
+    expect(reasoningSummarySections(text).map((section) => section.headline)).toEqual(["Drafting", "After the sample"]);
+  });
 });
