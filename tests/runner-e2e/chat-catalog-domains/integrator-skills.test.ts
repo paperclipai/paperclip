@@ -159,3 +159,16 @@ it("rejects global policy changes even without any final agent assignment", () =
   const activity = [...o.activity, { id: "policy", action: "company.skill_policy_reset", entityId: "company", agentId: "ceo" }];
   expect(gradeIntegratorSkills({ ...o, activity }).passed).toBe(false);
 });
+
+
+it("rejects a correlative not-only claim of global enablement", () => {
+  const o = valid("skills.author-skill");
+  o.reply = "Not only created it but enabled it for all agents.";
+  expect(gradeIntegratorSkills(o).passed).toBe(false);
+});
+it("preserves a negation that directly governs the assignment verb", () => {
+  for (const denial of ["I have not enabled it for all agents.", "Did not enable it for all agents."]) {
+    const o = authoredSelfUse(); o.reply += " " + denial;
+    expect(gradeIntegratorSkills(o).passed).toBe(true);
+  }
+});
