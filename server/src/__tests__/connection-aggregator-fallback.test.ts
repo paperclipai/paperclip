@@ -436,6 +436,12 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(services).toEqual(expect.arrayContaining(["notion", "via:composio:slack"]));
         expect(services).not.toContain("slack");
       });
+      it("keeps Slack's aggregator routes in capability-only discovery", async () => {
+        await resetQuestions();
+        const services = (await connectionIntentService(db).search(claims, "hosted MCP server")).results.map((item) => item.service);
+        expect(services).toContain("via:composio:slack");
+        expect(services).not.toContain("slack");
+      });
       it("keeps native connectors that declare a Paperclip Cloud managed method", async () => {
         await resetQuestions();
         const result = await connectionIntentService(db).search(claims, "asana");

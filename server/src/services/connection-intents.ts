@@ -533,12 +533,16 @@ export function connectionIntentService(db: Db) {
       }});
     }
     // A yielded native service is not offered for new setup when an aggregator
-    // route can serve it; without such a route it remains the fallback.
+    // route can serve it; its routes take its place in ranked results, so broad
+    // and capability-only searches still find the app. Without a route the
+    // native service remains the fallback.
+    const yieldedRoutes: typeof candidates = [];
     for (const service of yieldingServices) {
       const candidate = candidates.find(({ item }) => item.service === service);
       const routes = candidate ? await aggregatorAlternatives(service, candidate.item.name, findAggregatorService(service)) : [];
-      if (routes.length) candidates.splice(candidates.indexOf(candidate!), 1);
-      else yieldingServices.delete(service);
+      if (!routes.length) continue;
+      candidates.splice(candidates.indexOf(candidate!), 1);
+      yieldedRoutes.push(...routes.map(item => ({ item, score: candidate!.score, nameScore: candidate!.nameScore })));
     }
     const publicMatches = searchAggregatorServices(preparedQuery);
     const bestMatches = publicMatches.filter(match => Math.floor(match.nameScore / 100) === Math.floor((publicMatches[0]?.nameScore ?? 0) / 100));
@@ -568,7 +572,7 @@ export function connectionIntentService(db: Db) {
     // A typo match such as Notion must not hide the distinctly named app Motion.
     const exact = candidates.filter(({ item, nameScore }) => ((nameScore >= 200 && Math.floor(nameScore / 100) >= bestExternalTier) || item.service === publicService?.slug)
       && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
-    const ranked = () => candidates.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
+    const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
@@ -670,7 +674,8 @@ export function connectionIntentService(db: Db) {
       instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questionSet:providerQuestionSet} exactly as returned. Otherwise use ask_user_questions with payload {version:1, questions:[providerQuestion]}. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
-      return { version: 1, query, results: results.slice(0, 40),
+      const seen = new Set<string>();
+      return { version: 1, query, results: results.filter(item => !seen.has(item.service) && Boolean(seen.add(item.service))).slice(0, 40),
         instruction: "These are possible connection matches. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods and AgentMail use connection_request to show the inline setup card; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
     }
   }
