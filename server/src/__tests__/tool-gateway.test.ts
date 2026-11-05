@@ -47,6 +47,7 @@ import {
 } from "@paperclipai/db";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -6095,5 +6096,55 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+
+  it("advertises on initialize only the capabilities that the gateway token may list", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `capability-gateway-${randomUUID()}`,
+      name: `Capability gateway ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Capability gateway", profileId: profile!.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const createToken = (allowedActions?: ToolMcpGatewayTokenAction[]) =>
+      gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: {
+          name: `Token ${randomUUID()}`,
+          clientLabel: "Capability client",
+          ownerNote: "Capability fixture token",
+          ...(allowedActions ? { allowedActions } : {}),
+        },
+      });
+    const capabilitiesFor = async (allowedActions?: ToolMcpGatewayTokenAction[]) => {
+      const token = await createToken(allowedActions);
+      const initialized = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
+        .expect(200);
+      return initialized.body.result.capabilities;
+    };
+
+    expect(await capabilitiesFor(["tools/list", "tools/call"])).toEqual({ tools: {} });
+    expect(await capabilitiesFor(["tools/list", "tools/call", "prompts/list"])).toEqual({ tools: {}, prompts: {} });
+    expect(await capabilitiesFor(["tools/list", "resources/list", "resources/read"])).toEqual({ tools: {}, resources: {} });
+    expect(await capabilitiesFor(["tools/call", "resources/read", "prompts/get"])).toEqual({});
+    expect(await capabilitiesFor()).toEqual({ tools: {}, resources: {}, prompts: {} });
+
+    const toolsOnly = await createToken(["tools/list", "tools/call"]);
+    const resources = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${toolsOnly.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "resources/list" })
+      .expect(403);
+    expect(resources.body.error.data.reasonCode).toBe("gateway_token_action_denied");
   });
 });
