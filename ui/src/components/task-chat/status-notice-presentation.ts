@@ -121,6 +121,9 @@ export function statusNoticePresentation(
         ? { category, icon: Loader2, tone: "progress", label: "Compacting context", active: true, fatal: false }
         : { category, icon: Layers, tone: "neutral", label: "Context compacted", active: false, fatal: false };
     case "provider_retry":
+      if (!options.resolved && item.status === "interrupted") {
+        return { category, icon: AlertTriangle, tone: "neutral", label: "Retry stopped", detail: summary(item), active: false, fatal: false };
+      }
       return options.resolved
         ? { category, icon: Check, tone: "neutral", label: "Recovered after retry", detail: summary(item), active: false, fatal: false }
         : { category, icon: RotateCw, tone: "warning", label: `${retryLabel(item)}${attemptSuffix(item)}`, detail: summary(item), active: true, fatal: false };

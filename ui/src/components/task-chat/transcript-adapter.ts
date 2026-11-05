@@ -1816,9 +1816,12 @@ export function buildTurnTimelineRows(
       // A compaction still "running" when the turn has ended was cut short.
       const stoppedCompaction = !running && statusNoticeCategory(item) === "context_compaction" &&
         item.details.find((detail) => detail.label === "Phase")?.value === "running";
-      rows.push(retry && later.some(statusNoticeResolvesRetry)
+      const resolved = retry && later.some(statusNoticeResolvesRetry);
+      // A retry with no later work in a turn that has ended never recovered.
+      const stoppedRetry = retry && !resolved && !running;
+      rows.push(resolved
         ? { ...item, resolved: true }
-        : stoppedCompaction ? { ...item, status: "interrupted" } : item);
+        : stoppedCompaction || stoppedRetry ? { ...item, status: "interrupted" } : item);
     } else if (
       item.kind === "tool" ||
       item.kind === "usage" ||

@@ -38,6 +38,8 @@ describe("TaskChatStatusNotice", () => {
     act(() => root.render(<TaskChatStatusNotice item={item} resolved />));
     expect(container.textContent).toContain("Recovered after retry");
     expect(container.querySelector("[data-status-notice-resolved=true]")).not.toBeNull();
+    act(() => root.render(<TaskChatStatusNotice item={{ ...item, status: "interrupted" }} />));
+    expect(container.textContent).toContain("Retry stopped");
   });
 
   it("shows compaction phases and a model fallback target", () => {
