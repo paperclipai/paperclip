@@ -69,6 +69,7 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
+import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -2009,6 +2010,15 @@ export async function resolveExternalChatWakeProvider(input: {
 }
 
 /** Bind an already-claimed chat/reply turn without checking out or approving it. */
+const CHAT_ATTACHMENT_DENIAL_REASONS: ReadonlyMap<
+  string,
+  ReviewedChatBindingDenialReason
+> = new Map<string, ReviewedChatBindingDenialReason>([
+  ["paperclip_runner_chat_attachment_binding_denied", "binding_denied"],
+  ["paperclip_runner_chat_attachment_destination_denied", "destination_denied"],
+  ["paperclip_runner_chat_attachment_principal_denied", "principal_denied"],
+]);
+
 export async function attestReviewedExternalChatRun(input: {
   db: Db;
   companyId: string;
@@ -2018,12 +2028,19 @@ export async function attestReviewedExternalChatRun(input: {
   contextSnapshot: Record<string, unknown>;
   /** Diagnostic-only value from the committed, authorized answer; never a wake field. */
   onQuestionResponseAttested?: (answeredAtMs: number) => void;
+  /** Receives the closed label of the first failed check when attestation is denied. */
+  onDenied?: (reason: ReviewedChatBindingDenialReason) => void;
 }): Promise<boolean> {
   const attempt = () =>
     input.db.transaction(
       async (
         transaction,
-      ): Promise<boolean | "pending_delivery" | { answeredAtMs: number }> => {
+      ): Promise<
+        | true
+        | { denied: ReviewedChatBindingDenialReason }
+        | "pending_delivery"
+        | { answeredAtMs: number }
+      > => {
         const tx = transaction as unknown as Db;
         const [issue] = await tx
           .select()
@@ -2059,25 +2076,27 @@ export async function attestReviewedExternalChatRun(input: {
           )
           .for("update", { noWait: true })
           .limit(1);
+        if (!issue || !run || !actor) return { denied: "binding_missing" };
         if (
-          !issue ||
-          !run ||
-          !actor ||
           !(
             issue.status === "in_review" ||
             (input.contextSnapshot.source === "issue.interaction.respond" &&
               issue.status === "in_progress")
-          ) ||
-          issue.assigneeAgentId !== input.agentId ||
-          issue.executionRunId !== input.runId ||
-          run.status !== "running" ||
-          (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId) ||
-          // This attestation precedes execution-start's transition to running.
-          // A prior run's error projection is invokable, unlike an operator
-          // pause, termination, or pending approval; all binding checks remain.
-          DIRECT_NON_INVOKABLE_STATUSES.has(actor.status)
+          )
         )
-          return false;
+          return { denied: "issue_status" };
+        if (issue.assigneeAgentId !== input.agentId)
+          return { denied: "assignee_mismatch" };
+        if (issue.executionRunId !== input.runId)
+          return { denied: "owner_mismatch" };
+        if (run.status !== "running") return { denied: "run_not_running" };
+        if (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId)
+          return { denied: "native_issue_mismatch" };
+        // This attestation precedes execution-start's transition to running.
+        // A prior run's error projection is invokable, unlike an operator
+        // pause, termination, or pending approval; all binding checks remain.
+        if (DIRECT_NON_INVOKABLE_STATUSES.has(actor.status))
+          return { denied: "agent_not_invokable" };
         const admittedContext = parseObject(run.contextSnapshot);
         const admittedIds = extractWakeCommentIds(admittedContext);
         const suppliedIds = extractWakeCommentIds(input.contextSnapshot);
@@ -2089,7 +2108,7 @@ export async function attestReviewedExternalChatRun(input: {
           admittedIds.length !== suppliedIds.length ||
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
-          return false;
+          return { denied: "context_mismatch" };
         try {
           const answer =
             admittedContext.source === "issue.interaction.respond"
@@ -2102,7 +2121,7 @@ export async function attestReviewedExternalChatRun(input: {
                 )
               : null;
           if (admittedContext.source === "issue.interaction.respond" && !answer)
-            return false;
+            return { denied: "question_response_missing" };
           // The marker is built here only after proving the real execution owner.
           // The shared boundary then verifies current provider/resource/principal
           // access for every admitted message; no lifecycle state is mutated.
@@ -2166,15 +2185,11 @@ export async function attestReviewedExternalChatRun(input: {
               return "pending_delivery";
             }
           }
-          if (
-            error instanceof Error &&
-            [
-              "paperclip_runner_chat_attachment_binding_denied",
-              "paperclip_runner_chat_attachment_destination_denied",
-              "paperclip_runner_chat_attachment_principal_denied",
-            ].includes(error.message)
-          )
-            return false;
+          const denied =
+            error instanceof Error
+              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(error.message)
+              : undefined;
+          if (denied) return { denied };
           throw error;
         }
       },
@@ -2185,6 +2200,10 @@ export async function attestReviewedExternalChatRun(input: {
   for (let attemptNumber = 0; attemptNumber < 51; attemptNumber += 1) {
     try {
       const result = await attempt();
+      if (typeof result === "object" && "denied" in result) {
+        input.onDenied?.(result.denied);
+        return false;
+      }
       if (typeof result === "object") {
         // The transaction (including COMMIT) must succeed before any attempt-
         // local timing is accepted. A retry/rollback cannot publish this value.

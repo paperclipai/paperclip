@@ -2,6 +2,8 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
@@ -19,7 +21,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
@@ -32,6 +34,7 @@ import { CURRENT_WAKE_COMMENTS_BINDING_SCHEMA, READ_CURRENT_WAKE_COMMENTS_TOOL_N
 import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-read.js";
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
@@ -99,6 +102,46 @@ describe("PaperclipRunnerToolAuthority", () => {
 
   afterAll(async () => {
     await temporary?.cleanup();
+  });
+
+  it("routes call_api through the private controller instead of the public callback origin", async () => {
+    const privateRequests: Array<{ path: string | undefined; authenticated: boolean }> = [];
+    const callbackRequests: string[] = [];
+    const controller = createPaperclipHttpServer((request, response) => {
+      privateRequests.push({ path: request.url, authenticated: /^Bearer /.test(request.headers.authorization ?? "") });
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ workProducts: [] }));
+    }, { apiUrl: "https://advertised.example.test" });
+    const callback = createServer((request, response) => {
+      callbackRequests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await Promise.all([controller, callback].map(server => new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))));
+    try {
+      const controllerAddress = controller.address();
+      const callbackAddress = callback.address();
+      if (!controllerAddress || typeof controllerAddress === "string" || !callbackAddress || typeof callbackAddress === "string") throw new Error("Expected owned TCP listeners");
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "private-controller-test-secret");
+      vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", "true");
+      vi.stubEnv("PAPERCLIP_API_URL", `http://127.0.0.1:${callbackAddress.port}`);
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://callback-only.example.test");
+      vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(controllerAddress.port));
+      vi.stubEnv("PORT", "3100");
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiUrl: resolveLocalRuntimeApiUrl() });
+      const result = await authority.execute({ tool: "call_api", callId: "private-controller-read", arguments: {
+        operationId: "GET /api/issues/{id}/work-products", pathParams: { id: issueId },
+      } });
+      expect(result).toMatchObject({ ok: true, status: 200 });
+      expect(privateRequests).toEqual([{ path: `/api/issues/${issueId}/work-products`, authenticated: true }]);
+      expect(callbackRequests).toEqual([]);
+      expect(process.env.PAPERCLIP_API_URL).toBe(`http://127.0.0.1:${callbackAddress.port}`);
+    } finally {
+      await Promise.all([controller, callback].map(server => new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close(error => error ? reject(error) : resolve());
+      })));
+    }
   });
 
   it("registers pinned connector definitions without discovery and rejects revoked assignments at use", async () => {
@@ -248,7 +291,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -291,7 +334,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);

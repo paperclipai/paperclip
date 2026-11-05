@@ -70,8 +70,9 @@ work. Finish the run and inspect its saved version. Replace the webserver and
 verify the next task turn uses the same remote folder without a controller
 checkout. Then release the saved allocation and verify a new one restores the
 files, Git state, and managed same-project repositories without the old sandbox
-or original Git remote. Read-only cross-project referenced folders must fail
-admission. Separate workspaces may run concurrently; shared concurrent writers
+or original Git remote. Authorized referenced Git repositories must be editable
+task copies; explicitly read-only sources must fail admission. Separate workspaces
+may run concurrently; shared concurrent writers
 must be rejected.
 
 The Files panel must label **Live workspace** or **Saved copy** with its save
@@ -190,8 +191,8 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
   is no periodic workspace backup. The experiment does not remove the instance
   volume or establish zero-outage deployment for other data paths.
 - Terminal workspace cleanup wakes after committed task/workspace/PR changes and
-  restores cooldown deadlines at startup. Empty lanes stop scanning. Display Git
-  results can lag by thirty seconds. Compatible records share one advisory Git
+  restores cooldown deadlines at startup. Empty lanes stop scanning. Metadata
+  reads do not inspect storage. Compatible records share one advisory Git
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
   The [worker tests](../../server/src/__tests__/terminal-workspace-work.test.ts)
@@ -213,5 +214,4 @@ Capability ID: `workspaces/closure`.
 Scope: ui
 Storybook: Close-readiness checks, pending changes/active runs, blocked/pending/error close, retry close and eligible reopening.
 Production: Confirm owned workspace shutdown, preserved files/Git state and permitted lifecycle transition/reopening; Browser Use session closure is unrelated.
-Workspace detail and operation-history reads do not inspect Git or remote storage. Delivery is unknown until explicit close readiness or lifecycle inspection. Verify that these reads work during an inspection outage, while destructive close still refuses unverified data.
 Sources: Source: [ExecutionWorkspaceDetail.tsx](../../ui/src/pages/ExecutionWorkspaceDetail.tsx), [ExecutionWorkspaceCloseDialog.tsx](../../ui/src/components/ExecutionWorkspaceCloseDialog.tsx), [execution-workspaces.ts](../../server/src/routes/execution-workspaces.ts). Tests: [execution-workspaces-routes.test.ts](../../server/src/__tests__/execution-workspaces-routes.test.ts), [execution-workspaces-service.test.ts](../../server/src/__tests__/execution-workspaces-service.test.ts), [execution-workspace-reopen.test.ts](../../server/src/__tests__/execution-workspace-reopen.test.ts)

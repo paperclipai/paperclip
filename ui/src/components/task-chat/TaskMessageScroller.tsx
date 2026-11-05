@@ -191,6 +191,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
   const handleScroll = useCallback(() => {
     if (!ref.current?.clientHeight) return;
     const top = ref.current.scrollTop;
+    const moved = top !== previousScrollTop.current;
     const scrollingUp = top < previousScrollTop.current;
     previousScrollTop.current = top;
     if ((scrollingUp || upwardIntent.current) && top <= 192 && !easingRef.current) requestEarlierHistory();
@@ -213,11 +214,11 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
         pinnedRef.current = true;
         hidePill();
       }
-      rememberAnchor();
+      rememberAnchor(moved);
       return;
     }
     pinnedRef.current = pinned;
-    rememberAnchor();
+    rememberAnchor(moved);
     if (pinned) hidePill();
     else showPill();
   }, [

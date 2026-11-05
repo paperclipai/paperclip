@@ -7,8 +7,10 @@ import {
   hasPendingBudgetEnforcement,
   nextBudgetReconciliationAt,
   reconcileDueBudgetPolicies,
+  flushBudgetEvaluationWorkPage,
   type BudgetServiceHooks,
 } from "./budgets.js";
+import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
 import { readCostAccountingWork } from "./run-cost-accounting.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
 
@@ -26,28 +28,35 @@ export function wakeCostAccountingWork(db: Db): void {
 export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, hooks: BudgetServiceHooks) {
   let startup = true;
   let reconciliationCursor: string | null = null;
+  let evaluationCursor: string | null = null;
   let reconciling = false;
+  let reconciliationFailed = false;
   let nextDeadline: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
+    coalesceMs: 1_000,
     runDuringDrain: true,
     async run(signal) {
       if (signal.aborted) return;
       if (startup || reconciling || (nextDeadline !== null && nextDeadline <= Date.now())) {
         const page = await reconcileDueBudgetPolicies(db, { startup, ...(reconciliationCursor ? { cursor: reconciliationCursor } : {}) });
         reconciliationCursor = page.nextCursor;
+        reconciliationFailed ||= Boolean(page.hadFailures);
         reconciling = reconciliationCursor !== null;
-        if (!reconciling) startup = false;
+        if (!reconciling) { startup = reconciliationFailed; reconciliationFailed = false; }
       }
+      if (signal.aborted) return;
+      const evaluation = await flushBudgetEvaluationWorkPage(db, { ...(evaluationCursor ? { cursor: evaluationCursor } : {}) });
+      evaluationCursor = evaluation.nextCursor;
       if (signal.aborted) return;
       await withBudgetSpan("budget.enforcement.deliver", () => deliverBudgetEnforcement(db, hooks));
     },
     async hasPending() {
-      const [pending, next] = await Promise.all([
-        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db),
+      const [pending, next, evaluation] = await Promise.all([
+        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db), hasPendingBudgetEvaluation(db),
       ]);
       nextDeadline = next?.getTime() ?? null;
-      return pending || reconciling;
+      return pending || evaluation || reconciling || startup || evaluationCursor !== null;
     },
     nextRunAt: () => nextDeadline,
   });

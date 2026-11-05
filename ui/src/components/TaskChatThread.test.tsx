@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
@@ -23,6 +24,8 @@ import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadIntera
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@paperclipai/shared";
+import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -376,19 +379,41 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
 
 it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
   sidebarState.isMobile = mobile;
-  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), historyControl: <button>More messages</button>, onAdd: async () => {} };
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), threadHeader: <h2>Saved task title</h2>, historyControl: <button>More messages</button>, onAdd: async () => {} };
   render(<TaskChatThread {...props} initialHistoryPending />);
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')?.textContent).not.toContain("Saved task title");
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   await settleThreadLayout();
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("Saved task title");
   expect(container.textContent).toContain("More messages");
   const editor = container.querySelector('[data-testid="mock-editor"]');
   expect(editor).not.toBeNull();
   render(<TaskChatThread {...props} initialHistoryPending />);
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it.each([false, true])("waits for fonts but bounds a stalled request (stalled=%s)", async (stalled) => {
+  const original = Object.getOwnPropertyDescriptor(document, "fonts");
+  const fonts = { status: "loading" };
+  Object.defineProperty(document, "fonts", { configurable: true, value: fonts });
+  vi.useFakeTimers();
+  try {
+    render(<TaskChatThread issueId="font-readiness" comments={createLongThreadComments()} onAdd={async () => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+    if (!stalled) fonts.status = "loaded";
+    await act(async () => { await vi.advanceTimersByTimeAsync(stalled ? 3100 : 100); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  } finally {
+    if (original) Object.defineProperty(document, "fonts", original);
+    else Reflect.deleteProperty(document, "fonts");
+    vi.useRealTimers();
+  }
 });
 
 it("keeps revealed history scrollable while metadata for another page is pending", async () => {
@@ -695,6 +720,31 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
+});
+
+it.each(["offline", "reconnecting"] as const)("reveals a cached task header while history waits through %s and keeps it after recovery", async status => {
+  const store = createConnectivityStore({ probe: () => new Promise(() => {}) });
+  store.setBrowserOnline(false);
+  if (status === "reconnecting") store.setBrowserOnline(true);
+  const show = (pending: boolean) => render(<ConnectivityProvider store={store}>
+    <TaskChatThread issueId="cached-task" comments={[]} onAdd={async () => {}} initialHistoryPending={pending}
+      threadHeader={<h2>Cached task title</h2>} emptyMessage="No comments yet" />
+  </ConnectivityProvider>);
+  try {
+    show(true);
+    const header = container.querySelector('[data-testid="task-chat-thread-header"]');
+    expect(header?.textContent).toContain("Cached task title");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.textContent).toContain("Loading task history…");
+    expect(container.textContent).not.toContain("No comments yet");
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    expect(container.querySelector('[data-testid="task-chat-thread-header"]')).toBe(header);
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    show(false);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Loading task history…");
+    expect(container.textContent).toContain("No comments yet");
+  } finally { store.dispose(); }
 });
 
 it.each([true, false])("reveals saved conversation when initial history stalls (mobile=%s)", async (mobile) => {
@@ -5199,6 +5249,36 @@ describe("TaskChatThread live transcript", () => {
 });
 
 describe("TaskChatThread composer execution controls", () => {
+  it("reconciles a timed-out Stop from exact company-bound historical proof after its live action disappears", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = { id: "stopped-run", status: "running", runtimeMode: "native" as const, invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-11-03T15:00:00Z", finishedAt: null, createdAt: "2026-11-03T15:00:00Z", agentId: "agent-1", agentName: "Alex", adapterType: "paperclip_runner" };
+      const requested: Partial<HeartbeatRun> & { runtimeMode: "native" } = {
+        id: run.id, companyId: "company", status: "cancelled", runtimeMode: "native",
+        resultJson: { executionCancellation: { state: "requested" } },
+      };
+      const onStop = () => waitForStoppedRuns([run.id], { timeoutMs: 1000, getRun: async () => requested as HeartbeatRun });
+      const base = { comments: [], onAdd: async () => {}, issueStatus: "in_progress", companyId: "company" };
+      render(<TaskChatThread {...base} activeRun={run} onCancelRun={onStop} />);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!.click(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      const historical = { runId: run.id, agentId: run.agentId, adapterType: run.adapterType, createdAt: run.createdAt,
+        startedAt: run.startedAt, finishedAt: run.startedAt, status: "cancelled", runtimeMode: "native" as const,
+        resultJson: { executionCancellation: { state: "acknowledged" }, nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId: run.id, companyId: "company", dispatchState: "acknowledged" } } };
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, runtimeMode: undefined }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { executionCancellation: { state: "acknowledged" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[{ ...historical, resultJson: { ...historical.resultJson,
+        nativeCancellation: { ...historical.resultJson.nativeCancellation, companyId: "foreign" } } }]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatThread {...base} linkedRuns={[historical]} />);
+      await act(async () => {}); expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
   it.each(["process", "paperclip_runner"])("passes the task's stop action through for %s execution", async (adapterType) => {
     const onStop = vi.fn(async () => {});
     const run = {

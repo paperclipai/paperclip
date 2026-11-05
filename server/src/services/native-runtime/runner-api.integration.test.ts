@@ -3,9 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import * as nativeSetupReadiness from "./setup-readiness.js";
 import { secretService } from "../secrets.js";
 import { authorizationService } from "../authorization.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
@@ -23,6 +24,11 @@ import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
+  const nativeAuthProbe = vi.fn<typeof nativeSetupReadiness.testNativeRunnerAuthentication>(async () => ({
+    adapterType: "paperclip_runner", status: "fail", testedAt: new Date().toISOString(),
+    checks: [{ code: "codex_hello_probe_auth_required", level: "error", message: "The API authority fixture has no provider credentials." }],
+  }));
+  let restoreNativeAuthProbe: (() => void) | undefined;
   const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const oldMasterKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   beforeEach(() => {
@@ -31,16 +37,22 @@ describe("runner API against real HTTP routes", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
+    // API authorization and replay use the real lifecycle; external model login is unavailable here.
+    const probe = vi.spyOn(nativeSetupReadiness, "testNativeRunnerAuthentication").mockImplementation(nativeAuthProbe);
+    restoreNativeAuthProbe = () => probe.mockRestore();
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
     server = await startRunnerApiTestServer();
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = join(server.root, "master.key");
   }, 60_000);
   afterAll(async () => {
-    await server?.close();
-    if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
-    if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    try { await server?.close(); }
+    finally {
+      restoreNativeAuthProbe?.();
+      if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
+      if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    }
   });
 
   it.each(["http_response", "runner_response"])("counts committed effects independently after losing the %s", async boundary => {
@@ -231,6 +243,90 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       .toMatchObject({ status: "blocked", billingCode: "REST-PARITY" });
   });
 
+  it.each(["company owner", "unrelated parent", "no fallback"])(
+    "keeps the authenticated native run responsible user over %s", async fallback => {
+      const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+      const ownerUserId = randomUUID();
+      if (fallback !== "no fallback") {
+        await server.db.insert(authUsers).values({ id: ownerUserId, name: "Company owner", email: `${ownerUserId}@fixture.invalid`,
+          emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+        await server.db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user",
+          principalId: ownerUserId, status: "active", membershipRole: "owner" });
+      }
+      if (fallback === "unrelated parent") {
+        await server.db.update(issues).set({ responsibleUserId: ownerUserId }).where(eq(issues.id, fixture.blockerId));
+      }
+      const call = { tool: "call_api", callId: "bound-routine", arguments: {
+        operationId: "POST /api/companies/{companyId}/routines", body: {
+          title: "Native run owned routine", assigneeAgentId: fixture.agentId, status: "paused",
+          ...(fallback === "unrelated parent" ? { parentIssueId: fixture.blockerId } : {}),
+          actorResponsibleUserId: ownerUserId, responsibleUserId: ownerUserId, createdByUserId: ownerUserId,
+        },
+      } };
+      const created = await fixture.authority.execute(call);
+      expect(created).toMatchObject({ ok: true, status: 201 });
+      expect(await new PaperclipRunnerToolAuthority(server.db, fixture).execute(call)).toEqual(created);
+      const [routine] = await server.db.select({ id: routines.id, responsibleUserId: routines.responsibleUserId,
+        createdByAgentId: routines.createdByAgentId, createdByUserId: routines.createdByUserId }).from(routines)
+        .where(eq(routines.companyId, fixture.companyId));
+      expect(routine).toEqual({ id: expect.any(String), responsibleUserId: fixture.responsibleUserId,
+        createdByAgentId: fixture.agentId, createdByUserId: null });
+      const revisions = await server.db.select({ responsibleUserId: routineRevisions.responsibleUserId,
+        createdByRunId: routineRevisions.createdByRunId }).from(routineRevisions)
+        .where(eq(routineRevisions.routineId, routine.id));
+      expect(revisions).toEqual([{ responsibleUserId: fixture.responsibleUserId, createdByRunId: fixture.runId }]);
+      await expect(fixture.authority.execute({ ...call, callId: "foreign-routine", arguments: {
+        ...call.arguments, pathParams: { companyId: fixture.foreignCompanyId },
+      } })).rejects.toThrow("another company");
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(fixture.authority.execute({ ...call, callId: "cancelled-routine" })).rejects.toThrow("binding_not_authorized");
+      expect(await server.db.select({ id: routines.id }).from(routines).where(eq(routines.companyId, fixture.companyId)))
+        .toEqual([{ id: routine.id }]);
+    },
+  );
+
+  it("uses the current run identity when an agent JWT carries a stale user claim", async () => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId, "stale-user");
+    const response = await fetch(`${fixture.apiUrl}/api/companies/${fixture.companyId}/routines`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Current identity routine", assigneeAgentId: fixture.agentId, status: "paused" }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ responsibleUserId: fixture.responsibleUserId,
+      createdByAgentId: fixture.agentId, createdByUserId: null });
+  });
+
+  it("rejects routine creation after the bound responsible user loses company membership", async () => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    await server.db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, fixture.companyId),
+      eq(companyMemberships.principalId, fixture.responsibleUserId!)));
+    await expect(fixture.authority.execute({ tool: "call_api", callId: "revoked-user-routine", arguments: {
+      operationId: "POST /api/companies/{companyId}/routines", body: {
+        title: "Revoked authority routine", assigneeAgentId: fixture.agentId, status: "paused",
+      },
+    } })).rejects.toMatchObject({ status: 403 });
+    expect(await server.db.select({ id: routines.id }).from(routines).where(eq(routines.companyId, fixture.companyId))).toEqual([]);
+  });
+
+  it.each([true, false])("keeps agent API-key responsibility binding (present=%s)", async bound => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    const token = `pcp_fixture_${randomUUID()}`;
+    await server.db.insert(agentApiKeys).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      name: "Routine API fixture", keyHash: createHash("sha256").update(token).digest("hex"),
+      responsibleUserId: bound ? fixture.responsibleUserId : null });
+    const response = await fetch(`${fixture.apiUrl}/api/companies/${fixture.companyId}/routines`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "API-key routine", assigneeAgentId: fixture.agentId, status: "paused" }),
+    });
+    expect(response.status).toBe(bound ? 201 : 403);
+    const rows = await server.db.select({ responsibleUserId: routines.responsibleUserId,
+      createdByAgentId: routines.createdByAgentId, createdByUserId: routines.createdByUserId }).from(routines)
+      .where(eq(routines.companyId, fixture.companyId));
+    expect(rows).toEqual(bound ? [{ responsibleUserId: fixture.responsibleUserId,
+      createdByAgentId: fixture.agentId, createdByUserId: null }] : []);
+  });
+
   it("manages owned routines and triggers with durable replay, attribution and owner denials", async () => {
     const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
     await server.db.update(issues).set({ responsibleUserId: fixture.responsibleUserId }).where(eq(issues.id, fixture.issueId));
@@ -408,6 +504,12 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const call = { tool, callId: "completed-bridge-write", arguments: args };
     const result = await fixture.authority.execute(call);
     expect(result).toMatchObject({ ok: true, status: expect.any(Number), apiOperationId: expect.any(String) });
+    if (tool === "hire_agent") {
+      await expect.poll(() => nativeAuthProbe.mock.calls
+        .filter(([context]) => context.companyId === fixture.companyId)
+        .map(([context, provider]) => ({ companyId: context.companyId, provider, configProvider: context.config.provider })),
+      { timeout: 5_000 }).toEqual([{ companyId: fixture.companyId, provider: "codex", configProvider: "codex" }]);
+    }
     const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
     const effects = async () => {
       const snapshot = await fixture.snapshot();

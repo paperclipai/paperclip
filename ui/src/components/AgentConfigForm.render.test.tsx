@@ -979,6 +979,19 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("is ignored. The agent can still run.");
   });
 
+  it.each(["cursor_cloud", "paperclip_runner"])("does not offer unsupported thinking effort for saved Cursor Cloud on %s", async adapterType => {
+    const result = await renderForm([], { adapterType, adapterConfig: {
+      ...(adapterType === "paperclip_runner" ? { provider: "cursor_cloud", lifecycleMode: "per_turn" } : {}),
+      model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    } });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    if (adapterType === "paperclip_runner") {
+      expect(result.container.querySelector('[aria-label="Model"]')).not.toBeNull();
+      expect(result.container.textContent).toContain("Experimental");
+    }
+  });
+
   it.each(["codex", "claude", "grok"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
     const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: harness, model: harness === "grok" ? "grok-4.7" : "claude-opus-5-5" };
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
@@ -1309,6 +1322,49 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it.each([null, "saved-computer"])("tests native Cursor Cloud without a Computer when the saved target is %s", async defaultEnvironmentId => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "instance-computer" });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", defaultEnvironmentId,
+      adapterConfig: { provider: "cursor_cloud", model: "claude-sonnet-4-5", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: null, agentId: "agent-1" }));
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+  });
+
+  it("clears a Computer inherited by a new native Cursor Cloud draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "paperclip_runner", runner: "paperclip", defaultEnvironmentId: "previous-computer",
+      adapterSchemaValues: { provider: "cursor_cloud", model: "claude-sonnet-4-5" },
+    });
+    roots.push(result.root);
+    expect(result.onChange).toHaveBeenCalledWith({ defaultEnvironmentId: "" });
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it("tests the native default explicitly when creating Cursor Cloud with automatic runner selection", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "cursor_cloud", runner: "auto", model: "claude-sonnet-4-5",
+      adapterSchemaValues: { provider: "cursor_cloud", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "cursor_cloud", expect.objectContaining({
+      environmentId: null, runner: "paperclip",
+    }));
   });
 
   it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {
@@ -3963,6 +4019,87 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Authenticated");
     expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
+  });
+
+  it("keeps the loaded adapter models when a refetch fails transiently", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({ adapterConfig: { model: "gpt-6-astra" } })}
+                onSave={vi.fn()}
+                hidePromptTemplate
+                showAdapterTypeField={false}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(container.textContent).toContain("gpt-6-astra");
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
+
+    mockAgentsApi.adapterModels.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flushUntil(() => mockAgentsApi.adapterModels.mock.calls.length > 1);
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(container.textContent).not.toContain("Loading models…");
+
+    // The cached list is still the dropdown's content.
+    const trigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(trigger).toBeTruthy();
+    await clickElement(trigger);
+    expect(document.body.textContent).toContain("gpt-5.6-sol");
+  });
+
+  it("shows readable copy and a Retry button when the adapter models fail to load", async () => {
+    mockAgentsApi.adapterModels
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue([{ id: "gpt-6-astra", label: "gpt-6-astra" }]);
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') !== null);
+
+    expect(result.container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(result.container.textContent).toContain("Boom");
+    expect(result.container.textContent).not.toContain("Failed to load adapter models.");
+    const retry = findButton(result.container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await clickElement(retry);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') === null);
+
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2);
+    expect(result.container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });
 

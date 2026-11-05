@@ -5,7 +5,9 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import type { LogActivityInput } from "../services/activity-log.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import { inboxBlockedActivity } from "../../../tests/runner-e2e/product-journeys/inbox-triage-fixture.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -55,7 +57,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
-  getInvocationBlock: vi.fn(async () => null),
+  getInvocationBlock: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -92,16 +94,20 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
   unlink: vi.fn(),
-  listApprovalsForIssue: vi.fn(async () => []),
+  listApprovalsForIssue: vi.fn(async (): Promise<unknown[]> => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
-  getActiveForIssue: vi.fn(async () => null),
+  getActiveForIssue: vi.fn(async (): Promise<unknown> => null),
   listActiveForIssues: vi.fn(async () => new Map()),
-  resolveActiveForIssue: vi.fn(async () => null),
+  resolveActiveForIssue: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockTaskWatchdogService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
-  revalidateMutationScope: vi.fn(async () => ({
+  revalidateMutationScope: vi.fn(async (): Promise<{
+    allowed: boolean;
+    reason?: string;
+    classification: { state: string; stopFingerprint?: string; liveIssueIds?: string[] };
+  }> => ({
     allowed: true,
     classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
   })),
@@ -117,9 +123,9 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
+  getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
@@ -158,8 +164,8 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
-const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null) }));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
@@ -356,6 +362,7 @@ function createRunContextDb(
   runId: string = ownerRunId,
   chatBindings: Array<{ id: string; companyId: string; issueId: string; state: string }> = [],
   emptyWakeQueue = false,
+  humanInboxFixture?: { userId: string },
 ) {
   const chatBindingQueries: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const runRows = Array.isArray(runAgentOrRows)
@@ -410,9 +417,20 @@ function createRunContextDb(
   };
   const dbStub = {
     chatBindingQueries,
-    transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (humanInboxFixture && getTableName(table) === "issue_approvals") {
+          // This disposable human task has no pending approval. A generic
+          // selected-ID row would invent one and bypass the real route guard.
+          return { innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })) };
+        }
+        if (humanInboxFixture && getTableName(table) === "company_memberships") {
+          return { where: vi.fn((condition: SQL) => ({ limit: vi.fn(async () =>
+            new PgDialect().sqlToQuery(condition).params.includes(humanInboxFixture.userId)
+              ? [{ id: "inbox-member" }] : []),
+          })) };
+        }
         if (getTableName(table) === "case_handoffs") return emptyCaseHandoffQuery();
         if (emptyWakeQueue && getTableName(table) === "agent_wakeup_requests") {
           return buildQuery({}, false, true);
@@ -1833,6 +1851,32 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it.each(["bare blocked update", "human-owned inbox fixture"] as const)(
+    "applies the production blocked contract to the %s", async kind => {
+      const actor = boardActor();
+      const existing = makeIssue({ status: "in_progress", assigneeAgentId: null, assigneeUserId: actor.userId });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...existing, ...patch }));
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [], false, { userId: actor.userId });
+      const payload = kind === "bare blocked update" ? { status: "blocked" } : inboxBlockedActivity(actor.userId);
+
+      const res = await request(await createApp(actor, db)).patch(`/api/issues/${issueId}`).send(payload);
+
+      if (kind === "bare blocked update") {
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
+        expect(res.body.error).toBe("Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor");
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      } else {
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body).toMatchObject({ status: "blocked", unblockDescriptor: {
+          owner: { userId: actor.userId }, action: "Review the QA inbox task before continuing.",
+        } });
+        expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining(payload));
+      }
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
@@ -2798,7 +2842,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("uses the authorization decision path for assignment changes", async () => {
-    const decide = vi.fn(async () => ({
+    const decide = vi.fn(async (_input: { action: string }) => ({
       allowed: false,
       action: "tasks:assign",
       reason: "deny_policy_restricted",
@@ -3023,6 +3067,43 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["in_review", "done"])("rejects recovery resolution changing its own task to %s", async status => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        ownerAgentId,
+        evidence: { runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      });
+
+      const app = createApp(runActor());
+      const res = await request(app).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+
+      const edit = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Continue authorized work" });
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+    });
+
+    it.each(["native", "legacy", "board"])("preserves permitted %s recovery resolution", async kind => {
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({ id: recoveryActionId, ownerAgentId });
+      if (kind === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, runtimeMode: "legacy" });
+      if (kind === "native") mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_review", executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+      }));
+
+      const res = await request(createApp(kind === "board" ? boardActor() : runActor()))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(kind === "native" ? 0 : 1);
     });
 
     it.each([

@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNotConnected } from "./AppNotConnected";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
@@ -199,7 +201,46 @@ describe("AppNotConnected", () => {
       );
     });
     await flushReact();
+    return client;
   }
+
+  it.each([["applications", 403], ["applications", 429], ["connections", 403], ["connections", 429]] as const)(
+    "shows a %s %s failure while the other read pauses and keeps Retry available",
+    async (failed, status) => {
+      const failedRead = failed === "applications" ? listApplicationsMock : listConnectionsMock;
+      const otherRead = failed === "applications" ? listConnectionsMock : listApplicationsMock;
+      const failedResult = failed === "applications" ? { applications: [application()] } : { connections: [connection()] };
+      const otherResult = failed === "applications" ? { connections: [connection()] } : { applications: [application()] };
+      failedRead.mockRejectedValueOnce(new ApiError("Read rejected", status, null)).mockResolvedValue(failedResult);
+      let resume!: () => void;
+      otherRead.mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(otherResult); }));
+      const client = await renderPage();
+      try {
+        const otherKey = failed === "applications" ? queryKeys.tools.connections("company-1") : queryKeys.tools.applications("company-1");
+        const otherQuery = client.getQueryCache().find({ queryKey: otherKey, exact: true })!;
+        await act(() => { otherQuery.setState({ fetchStatus: "paused" }); }); await flushReact();
+        expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+        await act(() => { otherQuery.setState({ fetchStatus: "fetching" }); }); await flushReact();
+        const error = container.querySelector('[data-query-view="error"]')!;
+        expect(error).not.toBeNull();
+        const retry = error.querySelector("button");
+        if (status === 429) {
+          expect(retry).not.toBeNull();
+          expect(retry!.disabled).toBe(false);
+          await act(() => { retry!.click(); }); await flushReact();
+          expect(failedRead).toHaveBeenCalledTimes(2);
+          expect(otherRead).toHaveBeenCalledOnce();
+          expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+          await act(() => { resume(); }); await flushReact();
+          expect(container.textContent).toContain("GitHub");
+        } else {
+          expect(retry).toBeNull();
+          await act(() => { resume(); }); await flushReact();
+          expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+        }
+      } finally { client.clear(); }
+    },
+  );
 
   it("redirects the application root route to Permissions", async () => {
     mockParams.tab = undefined;

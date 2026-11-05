@@ -211,6 +211,10 @@ describe("TaskMessageScroller", () => {
     width = 500; rowTop = 80;
     for (const callback of resize) callback();
     expect(scroller().scrollTop).toBe(130);
+    rowTop = 70;
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    for (const callback of resize) callback();
+    expect(scroller().scrollTop).toBe(120);
     width = 600; rowTop = 60;
     await dispatch(scroller(), new Event("scroll", { bubbles: true }));
     for (const callback of resize) callback();

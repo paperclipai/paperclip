@@ -110,7 +110,7 @@ describe("instance settings service", () => {
       enableMuse: false,
       enableGrokBot: false,
       enableCombinedInboxTasks: false,
-      enableArtifactsV1: false,
+      enableArtifactsV1: true,
       enableChatConnectors: false,
       enableGitHubReviewBots: false,
       enableMemoryConnectors: false,

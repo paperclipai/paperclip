@@ -3195,6 +3195,11 @@ export class ChatSdkRuntime {
     return [...this.endpoints.values()];
   }
 
+  /** Retirement failures retain their owner even after get/list hide it. */
+  hasUnsettledLifecycle(): boolean {
+    return this.retiringEndpoints.size > 0 || this.lifecycleTails.size > 0;
+  }
+
   private enqueueLifecycle<T>(
     endpointId: string,
     operation: () => Promise<T>,

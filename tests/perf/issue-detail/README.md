@@ -52,6 +52,23 @@ include completed requests observed during the sample, even after content paint.
 
 ## Task layout stability
 
+The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
+It seeds a smaller API-only task and checks desktop/mobile frame and composer
+geometry, title typography, the initial reading position, Classic preference
+loading and typography, mobile shell handoff, and a stalled font request. It does not require a separate database URL.
+The rich 200-message fixture below remains an additional local stress journey.
+
+`loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
+200 saved messages, document and PR cards, a monitor, and a pending confirmation.
+It records every animation frame during direct and list-based entry on desktop
+and mobile, including delayed web fonts and workspace preferences. It rejects real headers shown before
+the initial conversation is ready, loading-frame movement, different header
+typography, composer displacement, and movement of the initial reading position.
+The fixture requires the disposable PostgreSQL URL described below. Its agent
+has interval and on-demand wakes disabled, including when the retained fixture
+is reused. The suite does not start provider work.
+Videos, screenshots, and `frames.json` are retained with each result.
+
 `compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
 a plan, three documents and three saved PR cards. It holds the enriched task
 response, records each visible frame's card count and geometry, and rejects

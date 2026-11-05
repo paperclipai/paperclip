@@ -16,6 +16,7 @@ import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
+import { agentDetailHref } from "@/pages/agent-detail-navigation";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
@@ -91,13 +92,24 @@ export function TaskChatAgentIdentity({
   agentIcon?: string | null;
   agent?: AvatarAgent;
 }) {
-  return (
-    <span
-      className="flex items-center gap-2 px-1"
-      data-testid="task-chat-agent-identity"
-    >
+  const identity = (
+    <>
       <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
       <span className="text-sm font-semibold text-foreground">{agentName}</span>
+    </>
+  );
+  const className = "flex items-center gap-2 px-1";
+  return agent?.id ? (
+    <Link
+      to={agentDetailHref(agent.id)}
+      className={cn(className, "no-underline hover:no-underline")}
+      data-testid="task-chat-agent-identity"
+    >
+      {identity}
+    </Link>
+  ) : (
+    <span className={className} data-testid="task-chat-agent-identity">
+      {identity}
     </span>
   );
 }

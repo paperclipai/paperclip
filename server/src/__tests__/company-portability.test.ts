@@ -21,7 +21,7 @@ const companySvc = {
   // Async-empty default (not a bare vi.fn()): every new-company import reads
   // the existing names for de-duplication, including describes that never
   // touch this mock.
-  list: vi.fn(async () => []),
+  list: vi.fn(async (): Promise<Array<{ name: string }>> => []),
   create: vi.fn(),
   update: vi.fn(),
 };
@@ -516,7 +516,7 @@ describe("company portability", () => {
       entryFile: "AGENTS.md",
       warnings: [],
     }));
-    agentInstructionsSvc.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: Record<string, unknown> }) => ({
+    agentInstructionsSvc.materializeManagedBundle.mockImplementation(async (agent: { id: string; adapterConfig: Record<string, unknown> }) => ({
       bundle: null,
       adapterConfig: {
         ...agent.adapterConfig,

@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
-import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
 /** Admission denied by an existing hold is not a provider attempt. Require the
@@ -18,27 +18,7 @@ function preDispatchExecutionWaitPredicate() {
     AND (${heartbeatRuns.issueId} IS NULL OR ${heartbeatRuns.issueId}
       = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)})
     AND ${canonicalExecutionUuid(sql`${heartbeatRuns.resultJson}->'executionWait'->>'recoveryActionId'`)} IS NOT NULL
-    AND ${heartbeatRuns.startedAt} IS NULL AND ${heartbeatRuns.runtimeModeResolvedAt} IS NULL
-    AND ${heartbeatRuns.processPid} IS NULL AND ${heartbeatRuns.processGroupId} IS NULL
-    AND ${heartbeatRuns.processStartedAt} IS NULL AND ${heartbeatRuns.nativeIssueId} IS NULL
-    AND ${heartbeatRuns.nativeSessionId} IS NULL AND ${heartbeatRuns.sessionIdAfter} IS NULL
-    AND ${heartbeatRuns.controllerBootId} IS NULL AND ${heartbeatRuns.controllerLeaseExpiresAt} IS NULL
-    AND ${heartbeatRuns.executionStage} IS NULL
-    AND coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
-    AND coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
-    AND NOT EXISTS (SELECT 1 FROM ${environmentLeases}
-      WHERE ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
-        AND ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})
-    AND NOT EXISTS (SELECT 1 FROM ${nativeRunFinalizations}
-      WHERE ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        AND ${nativeRunFinalizations.runId} = ${heartbeatRuns.id})
-    AND NOT EXISTS (SELECT 1 FROM ${heartbeatRunEvents}
-      WHERE ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
-        AND ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
-        AND (${heartbeatRunEvents.sourceEventId} IS NOT NULL OR ${heartbeatRunEvents.eventType} IN
-          ('adapter.invoke', ${PROCESS_START_REQUESTED}, ${PROCESS_IDENTITY_RECORDED}, 'harness.ready',
-           'session.started', 'session.resumed', 'session.updated', 'turn.started',
-           'provider.event', 'provider.rpc_result', 'tool.execution.started'))), false)`;
+    AND ${noRetainedExecutionPredicate()}, false)`;
 }
 
 export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {

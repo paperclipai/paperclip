@@ -1,0 +1,208 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { appendFile, lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { admitDispatch, hash, reject, validateSelection, evidencePolicy, catalogDefinition } from './chat-completion-testops-contract.mjs';
+import { testopsClient, bootstrapPilotPlan, completePilotRegistration, validatePilotSelection, launchPilotPlan, verifyPilotUpload } from './chat-completion-testops-api.mjs';
+import { parseOfficialBootstrapContext } from './testops-chat-reporter.mjs';
+import { exportPilotAllure, readPilotExport } from './chat-completion-testops-results.mjs';
+import { prepareCaseBundle, publishCaseBundle, publicationSet, gatherCaseProjections } from './chat-catalog-testops-streaming.mjs';
+
+const execute = promisify(execFile);
+const fullCatalogFailureCodes = new Set([
+  'case_alias_conflict', 'case_identity', 'case_metadata', 'catalog_case', 'catalog_identity',
+  'catalog_incomplete', 'catalog_page', 'created_case', 'created_plan', 'manifest', 'manifest_alias',
+  'mutation_marker', 'plan_conflict', 'plan_identity', 'plan_page', 'plan_scope', 'reconciliation_changed',
+].map(code => `chat_full_catalog_testops_${code}`));
+function compactCase(row) {
+  return Object.fromEntries(['key', 'scenario', 'executionId', 'fullName', 'registeredFullName', 'caseId'].filter(key => row[key] !== undefined).map(key => [key, row[key]]));
+}
+export function executionMatrix(selection, context, jobRunId) {
+  const selected = validateSelection(selection, context, jobRunId);
+  const matrix = { include: selected.map((row, index) => ({ executionId: row.executionId, key: row.key,
+    ...(context.catalog === 'full' ? { index, required_credentials: row.requiredCredentials,
+      external: row.externalInput != null, timeout_minutes: Math.ceil(row.attemptTimeoutMs / 60_000) + 15,
+      private_ids: JSON.stringify([row.executionId]),
+      private_policy: JSON.stringify(evidencePolicy({ ...selection, cases: [row] }, context, jobRunId)) } : {}) })) };
+  if (JSON.stringify(matrix).length * 2 > 768_000) reject('matrix_size');
+  return matrix;
+}
+export function executionPartition(selection, context, jobRunId) {
+  const matrix = executionMatrix(selection, context, jobRunId);
+  if (context.catalog !== 'full') reject('catalog');
+  const small = matrix.include.length <= 3;
+  const native = { include: matrix.include.filter(row => !row.external) };
+  const external = { include: matrix.include.filter(row => row.external) };
+  const size = [matrix, native, external, selection.cases.map(row => row.executionId)]
+    .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0);
+  if (size > 1_000_000) reject('matrix_size');
+  return { matrix, native, external, parallelism: small ? external.include.length ? '1' : '2' : '8' };
+}
+async function readOwned(file, root, limit) {
+  const absolute = path.resolve(file), base = await realpath(root);
+  if (!absolute.startsWith(`${base}${path.sep}`)) reject('file_path');
+  let current = base; const parts = path.relative(base, absolute).split(path.sep);
+  for (const [index, part] of parts.entries()) {
+    if (!/^[A-Za-z0-9._-]+$/.test(part) || ['.', '..'].includes(part)) reject('file_path');
+    current = path.join(current, part); const stat = await lstat(current);
+    if (stat.isSymbolicLink() || (index < parts.length - 1 ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1 || stat.size > limit)) reject('file_path');
+  }
+  return readFile(absolute);
+}
+export async function actualContext(env, exec = execute) {
+  if (!env.GITHUB_EVENT_PATH || !env.GH_TOKEN || !/^[1-9][0-9]{0,15}$/.test(env.GITHUB_RUN_ID ?? '')) reject('context');
+  const stat = await lstat(env.GITHUB_EVENT_PATH);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 65_536) reject('event');
+  const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
+  const { stdout } = await exec('gh', ['api', `repos/paperclipai/paperclip/actions/runs/${env.GITHUB_RUN_ID}`],
+    { env, shell: false, timeout: 30_000, maxBuffer: 512_000, encoding: 'utf8' });
+  const run = JSON.parse(stdout), context = admitDispatch(env, event, run.triggering_actor?.id);
+  if (run.id !== Number(context.runId) || run.run_attempt !== 1 || run.head_sha !== context.workflowSha || run.head_branch !== 'master'
+    || run.event !== 'workflow_dispatch' || run.path !== catalogDefinition(context).workflow || run.repository?.full_name !== 'paperclipai/paperclip' || run.repository.private !== false
+    || run.actor?.id !== context.actorId || run.run_number !== Number(env.GITHUB_RUN_NUMBER)
+    || !Number.isSafeInteger(run.workflow_id) || run.workflow_id <= 0) reject('actual_run');
+  return { ...context, workflowId: run.workflow_id };
+}
+async function readSelection(file, env, context) {
+  if (!/^[a-f0-9]{64}$/.test(env.EXPECTED_SELECTION_SHA256 ?? '')) reject('selection_digest');
+  const bytes = await readOwned(file, env.GITHUB_WORKSPACE, context.catalog === 'full' ? 262_144 : 32_768);
+  if (hash(bytes) !== env.EXPECTED_SELECTION_SHA256) reject('selection_digest');
+  const selected = JSON.parse(bytes); validateSelection(selected, context, env.ALLURE_JOB_RUN_ID); return selected;
+}
+async function output(env, key, value) {
+  if (!env.GITHUB_OUTPUT || /[\r\n]/.test(value)) reject('output');
+  await appendFile(env.GITHUB_OUTPUT, `${key}=${value}\n`);
+}
+async function stateDirectory(env, command, existing = false) {
+  const root = path.join(await realpath(env.RUNNER_TEMP), `chat-completion-testops-${command}`);
+  if (!existing) await mkdir(root, { mode: 0o700 });
+  const stat = await lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077 || process.getuid && stat.uid !== process.getuid()) reject('state_directory');
+  return root;
+}
+const writeReceipt = (root, name, value) => writeFile(path.join(root, name), JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
+function mutationMarker(root) {
+  return async stage => {
+    if (!/^[a-z_]{1,80}$/.test(stage)) reject('mutation_marker');
+    const handle = await open(path.join(root, `once-${stage}.json`), 'wx', 0o600);
+    await handle.writeFile(JSON.stringify({ stage, status: 'STARTED_NO_AUTOMATIC_RESEND' })); await handle.close();
+  };
+}
+
+export async function run(command, argument, env = process.env, { fetchImpl = fetch, exec = execute } = {}) {
+  let state;
+  try {
+    if (!['guard', 'bootstrap', 'bootstrap-context', 'selection', 'launch-plan', 'verify-selection', 'upload', 'verify-upload',
+      'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command)) reject('operation');
+    const context = await actualContext(env, exec);
+    if (command === 'guard') {
+      await output(env, 'operation', context.operation); await output(env, 'target_sha', context.targetSha);
+      await output(env, 'workflow_id', String(context.workflowId)); return 0;
+    }
+    if (command === 'verify-selection') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      await readSelection(argument, env, context); return 0;
+    }
+    if (['bootstrap', 'bootstrap-context'].includes(command) && context.operation !== 'bootstrap'
+      || command === 'launch-plan' && context.operation !== 'launch-plan'
+      || ['selection', 'upload', 'verify-upload', 'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command) && context.operation !== 'evaluate') reject('operation');
+    state = await stateDirectory(env, command === 'bootstrap-context' ? 'bootstrap' : command, command === 'bootstrap-context');
+    if (command === 'prepare-case-upload') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+      const prepared = await prepareCaseBundle(path.resolve(argument), env.ALLURE_RESULTS, context, selected,
+        env.CHAT_TESTOPS_EXECUTION_ID, env.EXPECTED_SELECTION_SHA256);
+      await writeReceipt(state, 'prepared.json', prepared); return 0;
+    }
+    if (command === 'gather-case-projections') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+      await gatherCaseProjections(env.CHAT_TESTOPS_BUNDLES, path.resolve(argument), context, selected, env.EXPECTED_SELECTION_SHA256);
+      return 0;
+    }
+    const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
+    if (command === 'bootstrap') {
+      const prepared = await bootstrapPilotPlan(api, Number(env.CHAT_TESTOPS_INTEGRATION_ID), mutationMarker(state), context);
+      await writeReceipt(state, 'prepared.json', context.catalog === 'full' ? { ...prepared, cases: prepared.cases.map(compactCase) } : prepared); return 0;
+    }
+    if (command === 'bootstrap-context') {
+      const official = parseOfficialBootstrapContext((await exec('allurectl', ['job-run', 'env'],
+        { env, shell: false, timeout: 30_000, maxBuffer: 16_384, encoding: 'utf8' })).stdout);
+      const prepared = JSON.parse(await readOwned(path.join(state, 'prepared.json'), env.RUNNER_TEMP, context.catalog === 'full' ? 262_144 : 32_768));
+      const receipt = await completePilotRegistration(api, prepared, official, context, context.workflowId, mutationMarker(state),
+        observation => writeReceipt(state, 'registration-observed.json', observation));
+      await writeReceipt(state, 'registration.json', receipt); return 0;
+    }
+    if (command === 'launch-plan') {
+      const receipt = await launchPilotPlan(api, env, context, context.workflowId, mutationMarker(state));
+      await writeReceipt(state, 'launch.json', receipt); return 0;
+    }
+    if (command === 'selection') {
+      const selection = await validatePilotSelection(api, env, context, context.workflowId);
+      if (context.catalog === 'full') selection.cases = selection.cases.map(compactCase);
+      await writeReceipt(state, 'selection.json', selection);
+      const bytes = Buffer.from(JSON.stringify(selection, null, 2));
+      await writeFile(path.join(env.GITHUB_WORKSPACE, 'testops-pilot-selection.json'), bytes, { flag: 'wx', mode: 0o600 });
+      await output(env, 'selection_sha256', hash(bytes));
+      await output(env, 'execution_ids', JSON.stringify(selection.cases.map(row => row.executionId)));
+      const matrix = executionMatrix(selection, context, env.ALLURE_JOB_RUN_ID);
+      await output(env, 'matrix', JSON.stringify(matrix));
+      if (context.catalog === 'full') {
+        const partition = executionPartition(selection, context, env.ALLURE_JOB_RUN_ID);
+        for (const name of ['native', 'external']) {
+          const { include } = partition[name];
+          await output(env, `${name}_matrix`, JSON.stringify({ include })); await output(env, `${name}_count`, String(include.length));
+        }
+        await output(env, 'parallelism', partition.parallelism);
+      }
+      await output(env, 'policy', JSON.stringify(context.catalog === 'full' ? null : evidencePolicy(selection, context, env.ALLURE_JOB_RUN_ID))); return 0;
+    }
+    const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+    if (command === 'upload-case') {
+      const prepared = JSON.parse(await readOwned(env.CHAT_TESTOPS_PREPARED_FILE, env.RUNNER_TEMP, 65_536));
+      const publication = await publishCaseBundle(api, path.resolve(argument), env.ALLURE_RESULTS, prepared, context, selected,
+        env.CHAT_TESTOPS_EXECUTION_ID, env.EXPECTED_SELECTION_SHA256, () => mutationMarker(state)('upload_case'));
+      await writeReceipt(state, 'publication.json', publication);
+      return publication.exported.status === 'passed' ? 0 : 1;
+    }
+    if (command === 'verify-stream') {
+      const exported = await publicationSet(env.CHAT_TESTOPS_BUNDLES, env.CHAT_TESTOPS_PUBLICATIONS, context, selected, env.EXPECTED_SELECTION_SHA256);
+      const { campaign } = await readPilotExport(path.resolve(argument), context, selected);
+      if (exported.some(row => {
+        const original = campaign.results.find(value => value.executionId === row.executionId);
+        return !original || row.status !== (original.status === 'passed' && original.cleanup === 'passed' ? 'passed' : 'failed') || row.cleanup !== original.cleanup;
+      })) reject('upload_receipt');
+      const verification = await verifyPilotUpload(api, selected, context, exported);
+      await writeReceipt(state, 'verification.json', verification);
+      return exported.some(row => row.status !== 'passed') ? 1 : 0;
+    }
+    if (command === 'upload') {
+      const exported = await exportPilotAllure(path.resolve(argument), env.ALLURE_RESULTS, context, selected);
+      await writeReceipt(state, 'exported.json', exported); return exported.some(row => row.status !== 'passed') ? 1 : 0;
+    }
+    const prior = path.join(env.RUNNER_TEMP, 'chat-completion-testops-upload', 'exported.json');
+    const exported = JSON.parse(await readOwned(prior, env.RUNNER_TEMP, context.catalog === 'full' ? 262_144 : 32_768));
+    const { campaign } = await readPilotExport(path.resolve(argument), context, selected);
+    if (exported.some(row => {
+      const original = campaign.results.find(value => value.executionId === row.executionId);
+      return !original || row.status !== (original.status === 'passed' && original.cleanup === 'passed' ? 'passed' : 'failed') || row.cleanup !== original.cleanup;
+    })) reject('upload_receipt');
+    const verification = await verifyPilotUpload(api, selected, context, exported);
+    await writeReceipt(state, 'verification.json', verification); return 0;
+  } catch (error) {
+    const code = fullCatalogFailureCodes.has(error?.message)
+      || /^(chat_completion_testops_[a-z_]{1,80}|testops_(?:api|auth)_http(?:_[1-5][0-9]{2})?)$/.test(error?.message ?? '') ? error.message : 'chat_completion_testops_unknown';
+    const receipt = { command, code, httpStatus: Number.isInteger(error?.status) ? error.status : null };
+    if (code === 'chat_completion_testops_stream_upload_uncertain'
+      && ['testops_api_http', 'testops_response_invalid', 'testops_response_too_large', 'transport_or_response_failure'].includes(error.uploadFailure?.kind)) {
+      receipt.uploadFailure = { kind: error.uploadFailure.kind,
+        httpStatus: Number.isInteger(error.uploadFailure.httpStatus) ? error.uploadFailure.httpStatus : null };
+    }
+    if (state) await writeReceipt(state, 'failure.json', receipt).catch(() => {});
+    process.stderr.write(`Chat completion TestOps stopped: ${JSON.stringify(receipt)}\n`); return 1;
+  }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  run(process.argv[2], process.argv[3]).then(code => { process.exitCode = code; });
+}

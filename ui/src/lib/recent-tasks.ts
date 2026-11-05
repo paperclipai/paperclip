@@ -11,6 +11,7 @@ export interface RecentTaskEntry {
   title: string;
   identifier: string | null;
   status: IssueStatus;
+  displayStatus?: Issue["displayStatus"];
   externalConversationState?: Issue["externalConversationState"];
   recordedAt: number;
   // Server version of the title/status snapshot, independent of comment activity.
@@ -114,9 +115,9 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
   // Conversation readiness also depends on deliveries and decisions, which
   // can change without changing the task's title/status version.
   if (snapshotUpdatedAt === entry.snapshotUpdatedAt) {
-    return issue.externalConversationState !== undefined
-      && issue.externalConversationState !== entry.externalConversationState
-      ? { ...entry, status: issue.status, externalConversationState: issue.externalConversationState }
+    return (issue.externalConversationState !== undefined
+      && issue.externalConversationState !== entry.externalConversationState) || issue.displayStatus !== entry.displayStatus
+      ? { ...entry, status: issue.status, displayStatus: issue.displayStatus, externalConversationState: issue.externalConversationState }
       : entry;
   }
   return {
@@ -124,6 +125,7 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
+    displayStatus: issue.displayStatus,
     externalConversationState: issue.externalConversationState,
     snapshotUpdatedAt,
     recordedAt: Math.max(entry.recordedAt, snapshotUpdatedAt),
@@ -131,7 +133,7 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "externalConversationState" | "updatedAt" | "conversationAgentId">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "updatedAt" | "conversationAgentId">,
   userId: string | null | undefined,
   recordedAt = new Date(issue.updatedAt).getTime(),
 ) {
@@ -149,6 +151,7 @@ export function recordRecentTask(
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
+    displayStatus: issue.displayStatus,
     externalConversationState: issue.externalConversationState,
     recordedAt: activityAt,
     ...(Number.isFinite(snapshotUpdatedAt) ? { snapshotUpdatedAt } : {}),
@@ -163,6 +166,7 @@ export function recordRecentTask(
     && existing.title === entry.title
     && existing.identifier === entry.identifier
     && existing.status === entry.status
+    && existing.displayStatus === entry.displayStatus
     && existing.externalConversationState === entry.externalConversationState
     && existing.recordedAt === entry.recordedAt
     && existing.snapshotUpdatedAt === entry.snapshotUpdatedAt

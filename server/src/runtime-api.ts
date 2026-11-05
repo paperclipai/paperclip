@@ -1,4 +1,19 @@
 import os from "node:os";
+import type { Server } from "node:http";
+import { isIP } from "node:net";
+
+const runtimeApiListeners = new Set<Server>();
+const registeredRuntimeApiListeners = new WeakSet<Server>();
+
+/** Track listener ownership without treating configured or advertised URLs as authority. */
+export function registerLocalRuntimeApiServer(server: Server): void {
+  if (!registeredRuntimeApiListeners.has(server)) {
+    registeredRuntimeApiListeners.add(server);
+    server.on("listening", () => runtimeApiListeners.add(server));
+    server.on("close", () => runtimeApiListeners.delete(server));
+  }
+  if (server.listening) runtimeApiListeners.add(server);
+}
 
 function normalizeHost(value: string | null | undefined): string {
   return (value ?? "").trim();
@@ -62,6 +77,34 @@ function parsePublicOrigin(rawUrl: string | null | undefined): string | null {
   }
   return origin === "null" ? null : origin;
 }
+
+export function chooseLocalRuntimeApiUrl(input: {
+  bindHost: string;
+  port: number;
+}): string {
+  const bindHost = normalizeHost(input.bindHost).replace(/^\[([^\]]+)\]$/, "$1");
+  if (isIP(bindHost) === 0 || !Number.isInteger(input.port) || input.port < 1 || input.port > 65535) {
+    throw new Error("local_runtime_api_listener_address_invalid");
+  }
+  const connectHost = bindHost === "::" ? "::1"
+    : bindHost === "0.0.0.0" ? "127.0.0.1"
+    : bindHost;
+  return formatOrigin("http:", connectHost, input.port);
+}
+
+export function resolveLocalRuntimeApiUrl(): string {
+  const listeners = [...runtimeApiListeners].filter(server => server.listening);
+  if (listeners.length !== 1) {
+    throw new Error(listeners.length ? "local_runtime_api_listener_ambiguous" : "local_runtime_api_listener_unavailable");
+  }
+  const address = listeners[0]!.address();
+  if (!address || typeof address === "string") throw new Error("local_runtime_api_listener_unavailable");
+  return chooseLocalRuntimeApiUrl({ bindHost: address.address, port: address.port });
+}
+
+export const runtimeApiInternals = {
+  resetForTests(): void { runtimeApiListeners.clear(); },
+};
 
 export function choosePrimaryRuntimeApiUrl(input: {
   authPublicBaseUrl?: string | null;

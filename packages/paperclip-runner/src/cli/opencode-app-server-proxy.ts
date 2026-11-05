@@ -20,6 +20,7 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -58,9 +59,10 @@ const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
 
-function send(value: unknown): void {
+const output = createOpenCodeProxyOutput(value => {
   process.stdout.write(`${JSON.stringify(value)}\n`);
-}
+});
+const send = output.send;
 
 function requestController(method: string, params: unknown, retainEnvelope = false): Promise<unknown> {
   if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
@@ -132,6 +134,9 @@ async function open(
     ),
     runtimeContext,
     dynamicTools,
+    // Runner owns these calls until a durable result, cancellation, or lease
+    // expiry. A shorter MCP deadline would leave an unknown effect pending.
+    durableToolRequests: true,
     completionFeedback: openCodeProxyCompletionFeedback((method, params) => requestController(method, params, true)),
     dynamicToolHandler: async (call) =>
       requestController("item/tool/call", {
@@ -492,6 +497,7 @@ function shutdown(exitCode = 0): Promise<void> {
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
     await eventPump?.catch(() => {});
+    output.flush();
     // A failed turn can be the last frame before a fatal exit. Pipe writes
     // are asynchronous on some platforms, so let it reach runnerd first.
     await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));

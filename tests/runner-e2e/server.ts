@@ -1,4 +1,9 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { superviseRollingDeployment } from "./rolling-deployment-supervisor.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
+import { superviseLegacyWorkspaceMigration } from "./legacy-workspace-migration-supervisor.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
+import { startCursorCloudCallbackProxy } from "./cursor-cloud-callback-proxy.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
 import { createControllerRecoveryObserver } from "./controller-recovery-observer.js";
@@ -446,10 +451,23 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+  const legacyMigration = executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isLegacyWorkspaceMigration(execution); });
+  if (upgradeArtifacts || legacyMigration || executionIds.some(id => id.endsWith(".recover-controller"))) {
     // The wrapper owns this sibling process. Killing the serving child must
     // leave Postgres available to the stopped-controller observer and successor.
     controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  if (legacyMigration) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Migration source qualification cannot claim installed-artifact evidence");
+    await superviseLegacyWorkspaceMigration({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
+  }
+  if (executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); })) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Rolling source qualification cannot claim installed-artifact evidence");
+    await superviseRollingDeployment({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
   }
   const initial = await startServer();
   if (upgradeArtifacts) await waitForHealth(initial);
@@ -469,7 +487,9 @@ async function supervise() {
 }
 
 let exitCode = 0;
+let closeCursorCloudCallbackProxy: (() => Promise<void>) | undefined;
 try {
+  if (executionIds.some(id => id.startsWith("cursor-cloud."))) closeCursorCloudCallbackProxy = await startCursorCloudCallbackProxy({ port: Number(required("PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT")), appPort: Number(port) });
   await supervise();
 } catch (error) {
   exitCode = 1;
@@ -497,5 +517,6 @@ catch (error) {
   exitCode = 1;
   appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+await closeCursorCloudCallbackProxy?.();
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;

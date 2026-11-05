@@ -41,7 +41,7 @@ beforeAll(async () => {
     status: "succeeded", contextSnapshot: { issueId }, resultJson: { unusedPayload: "x".repeat(65536) } })));
   const rootKey = createHash("sha256").update(cwd).digest("hex");
   await db.insert(executionWorkspaceRepositoryAccess).values(runIds.map(scopeId => ({ companyId, rootKey,
-    canonicalCwd: cwd, kind: "reader", scopeId, issueId, agentId, responsibleUserId: userId })));
+    canonicalCwd: cwd, kind: "reader" as const, scopeId, issueId, agentId, responsibleUserId: userId })));
 }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -66,7 +66,7 @@ it("does no historical reader work and keeps query/path counts constant as peer 
     await db.insert(executionWorkspaces).values(sourceIds.map(id => ({ id, companyId, projectId, cwd,
       sourceIssueId: issueId, name: "Historical source", mode: "shared_workspace", strategyType: "operator_directory" })));
     await db.insert(executionWorkspaceRepositoryAccess).values(sourceIds.map(scopeId => ({ companyId,
-      canonicalCwd: cwd, rootKey: createHash("sha256").update(cwd).digest("hex"), kind: "reader", scopeId,
+      canonicalCwd: cwd, rootKey: createHash("sha256").update(cwd).digest("hex"), kind: "reader" as const, scopeId,
       issueId: randomUUID(), agentId: randomUUID(), responsibleUserId: "deleted-user" })));
     await service.assertPublicationAllowed(input());
     expect(queries).toHaveLength(smallQueries);

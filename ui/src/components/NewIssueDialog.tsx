@@ -1,7 +1,8 @@
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
-import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -13,7 +14,6 @@ import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { useNavigate } from "../lib/router";
@@ -36,7 +36,6 @@ import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeVal
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown, Lock } from "lucide-react";
-import { cn } from "../lib/utils";
 import type { MentionOption } from "./MarkdownEditor";
 import { TaskChatComposer } from "./task-chat/TaskChatComposer";
 import { ComposerWorktreePicker } from "./task-chat/ComposerWorktreePicker";
@@ -51,14 +50,17 @@ import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend,
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
+import { useStagedIssueFiles } from "../hooks/useStagedIssueFiles";
+import type { StagedIssueFile } from "../lib/staged-issue-files";
+import { isImageAttachment } from "./task-chat/task-chat-attachments";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 /** A create that is waiting to resend: its request body and idempotency key. */
 const PENDING_CREATE_KEY = "paperclip:issue-draft:pending-create";
 
 /**
- * The create request. Staged files cannot be stored, so they ride in memory and
- * only their names are saved: a create restored after reload knows it needs them.
+ * The create request keeps file names for reconciliation. File bytes are stored
+ * separately in the account- and company-scoped browser draft.
  */
 type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[] };
 
@@ -202,14 +204,6 @@ interface IssueDraft {
   workMode?: IssueWorkMode;
   composerSettings?: ComposerRunSettings | null;
 }
-
-type StagedIssueFile = {
-  id: string;
-  file: File;
-  kind: "document" | "attachment";
-  documentKey?: string;
-  title?: string | null;
-};
 
 /**
  * Files a keyed create has already added to its task. A replayed create (same
@@ -491,8 +485,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const [isPrivate, setIsPrivate] = useState(false);
   const { isMobile } = useSidebar();
   const [composerSettings, setComposerSettings] = useState<ComposerRunSettings | null>(null);
-  const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
-  const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
@@ -502,6 +494,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   // sent or cancelled, whatever the files and fields look like when resubmitted.
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean; payload?: PendingCreate } | null>(null);
   const draftOwner = useDraftOwner();
+  const { files: stagedFiles, setFiles: setStagedFiles, restoring: filesRestoring, error: filesStorageError } = useStagedIssueFiles(draftOwner, effectiveCompanyId);
   const [restoredLaunch, setRestoredLaunch] = useState<{ owner: string | undefined; parentId?: string; goalId?: string } | null>(null);
   const savedLaunch = restoredLaunch?.owner === draftOwner ? restoredLaunch : null;
   const parentId = savedLaunch ? savedLaunch.parentId : newIssueDefaults.parentId;
@@ -619,25 +612,26 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const assertCurrentOwner = () => {
     if (!active.current || draftOwner === undefined || readOwner() !== draftOwner) throw new PendingSendAccountChangedError();
   };
-  const createIssue = useMutation({
+  const createIssue = useAccountBoundMutation({
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
       navigateOnCreate,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
-      assertCurrentOwner();
+    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>, { assertCurrentAccount }) => {
+      const assertVerifiedOwner = () => { assertCurrentAccount(); assertCurrentOwner(); };
+      assertVerifiedOwner();
       const issue = await issuesApi.create(companyId, data);
-      assertCurrentOwner();
+      assertVerifiedOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
         issueId: issue.id,
         stagedFiles: pendingStagedFiles,
-        assertCurrentOwner,
+        assertCurrentOwner: assertVerifiedOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
 
-      assertCurrentOwner();
+      assertVerifiedOwner();
       return { issue, companyId, failures, navigateOnCreate };
     },
     onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
@@ -1054,7 +1048,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     setIsPrivate(false);
 
     setStagedFiles([]);
-    setIsFileDragOver(false);
 
     executionWorkspaceDefaultProjectId.current = null;
     initializationKeyRef.current = null;
@@ -1063,7 +1056,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
     const currentTitle = titleRef.current.trim();
     const currentDescription = body.trim();
-    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
+    if (!effectiveCompanyId || filesRestoring || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeChrome ? "custom" : assigneeModelLane,
@@ -1200,7 +1193,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   }
 
   function stageFiles(files: File[]) {
-    if (files.length === 0 || createIssue.isPending || durableCreate.pending) return;
+    if (files.length === 0 || filesRestoring || createIssue.isPending || durableCreate.pending) return;
     setStagedFiles((current) => {
       const next = [...current];
       for (const file of files) {
@@ -1224,31 +1217,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       }
       return next;
     });
-  }
-
-  function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
-    evt.preventDefault();
-    setIsFileDragOver(true);
-  }
-
-  function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
-    evt.preventDefault();
-    evt.dataTransfer.dropEffect = "copy";
-    setIsFileDragOver(true);
-  }
-
-  function handleFileDragLeave(evt: DragEvent<HTMLDivElement>) {
-    if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-    setIsFileDragOver(false);
-  }
-
-  function handleFileDrop(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.files.length) return;
-    evt.preventDefault();
-    setIsFileDragOver(false);
-    stageFiles(Array.from(evt.dataTransfer.files));
   }
 
   function removeStagedFile(id: string) {
@@ -1329,7 +1297,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     [orderedProjects],
   );
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
-  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
+  const isStagedImage = (item: StagedIssueFile) => isImageAttachment({ name: item.file.name, url: "", contentType: item.file.type });
+  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment" && !isStagedImage(file));
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
@@ -1453,12 +1422,9 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
         <div
           ref={dialogBodyRef}
-          className={cn("min-h-0 overflow-y-auto overscroll-contain", isFileDragOver && "bg-accent/20")}
-          onDragEnter={handleFileDragEnter}
-          onDragOver={handleFileDragOver}
-          onDragLeave={handleFileDragLeave}
-          onDrop={handleFileDrop}
+          className="min-h-0 overflow-y-auto overscroll-contain"
         >
+          {filesStorageError ? <p className="mb-2 text-sm text-destructive" role="alert">{filesStorageError}</p> : null}
           <TaskChatPresentationProvider mode={streamlinedUiEnabled || coordinatorEnabled ? "streamlined" : "production"}>
             <TaskChatComposer
               workMode={workMode}
@@ -1467,11 +1433,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
               placeholder="Describe a task…"
               mobile={isMobile}
               mentions={mentionOptions}
-              onImageUpload={async (file) => {
-                if (!effectiveCompanyId) throw new Error("No organization selected");
-                const asset = await assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
-                return asset.contentPath;
-              }}
               companyId={effectiveCompanyId}
               enableReassign
               reassignOptions={assigneeOptions}
@@ -1512,10 +1473,12 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                 submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
+                images: stagedFiles.filter(isStagedImage).map(item => ({ id: item.id, name: item.file.name, file: item.file })),
+                onRemoveImage: removeStagedFile,
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode || coordinatorEnabled || durableCreate.pending || resendError ? (
+                  hasTitle || isSubIssueMode || durableCreate.pending || resendError ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {durableCreate.pending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice
@@ -1575,7 +1538,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           </div>
                         </div>
                       ) : null}
-                      {coordinatorEnabled ? <p className="text-sm font-medium text-foreground">New Task</p> : null}
                     </div>
                   ) : undefined,
                 details: (
@@ -1592,7 +1554,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           : "The selected worktree is no longer available. Choose another worktree or start a new one."}
                       </p>
                     ) : null}
-                    {stagedFiles.length > 0 ? (
+                    {stagedDocuments.length > 0 || stagedAttachments.length > 0 ? (
                       <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
                         {stagedDocuments.length > 0 ? (
                           <div className="space-y-2">
@@ -1725,8 +1687,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     ) : null}
                   </>
                 ),
-                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(durableCreate.pending),
-                readOnly: Boolean(durableCreate.pending),
+                submitDisabled: filesRestoring || worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(durableCreate.pending),
+                readOnly: filesRestoring || Boolean(durableCreate.pending),
                 contextBar: (
                   <>
                     <InlineEntitySelector

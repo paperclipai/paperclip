@@ -24,7 +24,7 @@ use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
-const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -348,6 +348,7 @@ pub struct AcpxProviderSession {
     catalog_revision: u64,
     working_directory: PathBuf,
     closed: bool,
+    failure: Option<LocalRunnerError>,
     transport_terminated: bool,
     runtime_retired: bool,
 }
@@ -383,6 +384,7 @@ impl AcpxProviderSession {
             catalog_revision: config.catalog_revision,
             working_directory: config.working_directory.clone(),
             closed: false,
+            failure: None,
             transport_terminated: false,
             runtime_retired: false,
         })
@@ -1112,7 +1114,10 @@ impl AcpxProviderSession {
 
     fn ensure_open(&self) -> Result<(), LocalRunnerError> {
         if self.closed {
-            return Err(LocalRunnerError::invalid("ACPX provider session is closed"));
+            return Err(self
+                .failure
+                .clone()
+                .unwrap_or_else(|| LocalRunnerError::invalid("ACPX provider session is closed")));
         }
         Ok(())
     }
@@ -1197,7 +1202,12 @@ impl AcpxProviderSession {
 
     fn fail_closed(&mut self, error: LocalRunnerError) -> LocalRunnerError {
         self.closed = true;
-        with_cleanup_error(error, self.terminate_transport())
+        let error = with_cleanup_error(
+            self.failure.clone().unwrap_or(error),
+            self.terminate_transport(),
+        );
+        self.failure = Some(error.clone());
+        error
     }
 }
 
@@ -1701,12 +1711,32 @@ fn with_cleanup_error(
         Ok(()) => error,
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
-        )),
+        ))
+        .with_provider_failure(error.provider_failure()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn startup_cleanup_failure_keeps_the_validated_provider_cause() {
+        use super::*;
+        let cause = json!({
+            "schema":"paperclip.provider-failure.v1", "provider":"claude", "phase":"startup",
+            "category":"authentication", "message":"Sign in to the provider.", "retryability":"requires_action"
+        });
+        let original = LocalRunnerError::invalid("ACPX sidecar command session.open was rejected (retryable=false, classification=provider_authentication)")
+            .with_provider_failure(Some(cause.clone()));
+        let error = with_cleanup_error(
+            original.clone(),
+            Err(LocalRunnerError::invalid("cleanup was not confirmed")),
+        );
+        assert_eq!(error.provider_failure(), Some(cause));
+        assert!(error.to_string().starts_with(&original.to_string()));
+        assert!(error.to_string().contains("cleanup was not confirmed"));
+        assert!(!error.to_string().contains("Sign in to the provider."));
+    }
+
     #[test]
     fn live_request_snapshot_requires_current_unique_typed_callbacks() {
         use super::*;

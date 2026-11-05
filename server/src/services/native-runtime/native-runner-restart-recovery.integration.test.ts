@@ -1,19 +1,18 @@
-import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
+import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   authUsers,
   companies,
@@ -35,27 +34,17 @@ import {
   nativeRunnerCheckpoints,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "@paperclipai/db";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
+import { heartbeatService } from "../heartbeat.js";
 
 import {
   canonicalNativeRuntimeContextDigest,
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
   parseNativeExecutionInput,
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
-  readRunnerdArtifactBinding,
-  type RunnerProcessHandle,
-  type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
-import {
-  startEmbeddedPostgresTestDatabase,
-} from "../../__tests__/helpers/embedded-postgres.js";
-import {
-  registerRunnerPrpAuthority,
-  runnerPrpWebSocketInternals,
-  setupRunnerPrpWebSocketServer,
-} from "../../realtime/runner-prp-ws.js";
+import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
@@ -64,12 +53,22 @@ import { buildNativeExecutionWithCheckpoint, findNativeSessionResumeRun, nativeT
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { materializeAsset } from "./runtime-context.js";
 import { createRunnerTestTlsTunnel, dockerCommandRunner } from "../../__tests__/helpers/docker-command-runner.js";
-import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
-import { closeIdleWarmNativeSessionsForRestart, detachNativeSessionsForRestart, executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
-import { listExpiredNativeRunnerAuthorities, loadNativeRunnerCheckpoint, nativeRunnerCheckpointRegistration, nativeRunnerCheckpointWriter, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import {
+  closeIdleWarmNativeSessionsForRestart,
+  detachNativeSessionsForRestart,
+  executePaperclipNativeSession,
+  NativeControllerDetachedForRestartError,
+} from "./native-session-executor.js";
+import {
+  listExpiredNativeRunnerAuthorities,
+  loadNativeRunnerCheckpoint,
+  nativeRunnerCheckpointRegistration,
+  nativeRunnerCheckpointWriter,
+  registerNativeRunnerCheckpoint,
+  restoreNativeRunnerCheckpoint,
+} from "./native-runner-checkpoint.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
 import { HttpError } from "../../errors.js";
@@ -83,12 +82,7 @@ vi.mock("../../sentry.js", async () => {
     captureRunFailure: mockCaptureRunFailure,
   };
 });
-
-import {
-  claimNativeRestartRecoveries,
-  currentNativeControllerIdentity,
-  type NativeControllerIdentity,
-} from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeControllerIdentity } from "./native-restart-recovery.js";
 
 // Exact v5 wire prompt from before the task-monitor upgrade (#15446).
 const historicalPrompt = {
@@ -103,229 +97,167 @@ const unregisteredPrompt = {
   text: "Complete the assigned task using the saved instructions.",
   digest: "b0cab3306694028624bbccbf40984a7aca7c809f77b29bfd959325a2af3f7a66",
 } as const;
-
-// An explicitly supplied disposable database also permits qualification on hosts
-// where native Postgres cannot allocate semaphores. Never fall back silently.
-const describeEmbeddedPostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
-
-const fakeCodexAppServer = resolve(
-  import.meta.dirname,
-  "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server",
-);
-const binariesAvailable =
-  existsSync(defaultCapabilityRunnerdBinary()) && existsSync(fakeCodexAppServer);
-const realProcessIt = binariesAvailable ? it : it.skip;
-
-async function closeServer(server: Server | null): Promise<void> {
-  if (!server) return;
-  server.closeAllConnections();
-  if (!server.listening) return;
-  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-}
-
-function processAlive(pid: number | null): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForCondition(
-  description: string,
-  condition: () => boolean | Promise<boolean>,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await condition()) return;
-    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25));
-  }
-  throw new Error(`Timed out waiting for ${description}`);
-}
-
-async function stopOwnedProcessGroup(
-  pid: number | null,
-  expectedStateRoot: string,
-): Promise<void> {
-  if (!pid || !processAlive(pid)) return;
-  const command = await import("node:child_process").then(
-    ({ execFileSync }) =>
-      execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-        encoding: "utf8",
-      }).trim(),
-  );
-  if (!command.includes(expectedStateRoot)) {
-    throw new Error(`Refusing to signal process ${pid}; ownership changed`);
-  }
-  if (process.platform !== "win32") process.kill(-pid, "SIGKILL");
-  else process.kill(pid, "SIGKILL");
-  await waitForCondition(`owned process ${pid} to exit`, () => !processAlive(pid));
-}
+import {
+  remotePreparedWorkspace,
+  nativeRestartFixture,
+  describeEmbeddedPostgres,
+  realProcessIt,
+  processAlive,
+  waitForCondition,
+  stopOwnedProcessGroup,
+} from "../../__tests__/helpers/native-restart.js";
 
 describeEmbeddedPostgres("native runner restart recovery with real processes", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
-  let runtimeRoot: string;
-  let paperclipHome: string;
-  let server: Server | null = null;
-  let apiUrl: string;
-  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
-  let isolatedHome: ReturnType<typeof createIsolatedTestHome>;
+  const environment = nativeRestartFixture();
+  const { seedRun, transportOptions } = environment;
+  let temporary: typeof environment.current.temporary;
+  let runtimeRoot: typeof environment.current.runtimeRoot;
+  let companyId: typeof environment.current.companyId;
+  let agentId: typeof environment.current.agentId;
+  let successor: typeof environment.current.successor;
+  beforeAll(() => { ({ temporary, runtimeRoot, companyId, agentId, successor } = environment.current); });
 
-  const companyId = randomUUID();
-  const agentId = randomUUID();
-  let successor: NativeControllerIdentity;
-
-  beforeAll(async () => {
-    temporary = await startRecoveryPostgres("native-runner-restart-recovery-");
-    runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
-    isolatedHome = createIsolatedTestHome();
-    paperclipHome = isolatedHome.home;
-    process.env.PAPERCLIP_HOME = paperclipHome;
-    const controllerStartedAt = await readProcessStartedAt(process.pid);
-    successor = {
-      bootId: randomUUID(),
-      pid: process.pid,
-      processStartedAt: controllerStartedAt
-        ? new Date(controllerStartedAt)
-        : new Date(),
-    };
-    server = createServer();
-    await new Promise<void>((resolveListen) =>
-      server!.listen(0, "127.0.0.1", resolveListen),
-    );
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected restart recovery TCP listener");
-    }
-    apiUrl = `http://127.0.0.1:${address.port}`;
-    setupRunnerPrpWebSocketServer(server, { apiUrl });
-
-    const db = createDb(temporary.connectionString);
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Native restart recovery",
-      issuePrefix: "NRR",
-      requireBoardApprovalForNewAgents: false,
+  it.each(["issue", "run", "coordinator"] as const)("defers a busy %s row without blocking replacement startup", async kind => {
+    const fixture = await seedRun(`OVERLAP-BUSY-${kind}`);
+    let acquired!: () => void, release!: () => void;
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const holder = fixture.db.transaction(async tx => {
+      if (kind === "issue") await tx.select().from(issues).where(eq(issues.id, fixture.issueId)).for("update");
+      else if (kind === "run") await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).for("update");
+      else await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+      acquired(); await released;
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Native restart runner",
-      role: "engineer",
-      status: "active",
-      adapterType: "paperclip_runner",
-      adapterConfig: { provider: "codex" },
-      runtimeConfig: {},
-      permissions: {},
-    });
-  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-
-  afterAll(async () => {
-    runnerPrpWebSocketInternals.resetForTests();
-    await closeServer(server);
-    await temporary?.cleanup();
-    if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
-    isolatedHome?.cleanup();
-    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    await locked;
+    const now = new Date();
+    const heartbeat = heartbeatService(fixture.db);
+    try {
+      const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId], now });
+      expect(dispositions).toEqual([{ kind: "awaiting_evidence", runId: fixture.runId,
+        reason: "recovery_rows_busy", retryAt: new Date(now.getTime() + 1_000) }]);
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator.controllerGeneration).toBe(0);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const startup = await Promise.race([
+          heartbeat.recoverNativeRunsAfterRestart(now, [fixture.runId]),
+          new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("startup blocked on the serving controller")), 2_000); }),
+        ]);
+        expect(startup).toMatchObject({ claims: [], awaitingEvidenceRunIds: [fixture.runId] });
+      } finally { clearTimeout(deadline); }
+    } finally { await heartbeat.drainActiveRunExecutions(); release(); await holder; }
+    const [next] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  async function seedRun(
-    label: string,
-    existingDb?: ReturnType<typeof createDb>,
-  ) {
-    const db = existingDb ?? createDb(temporary.connectionString);
-    const issueId = randomUUID();
-    const runId = randomUUID();
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      identifier: `NRR-${label}`,
-      title: `Recover ${label}`,
-      status: "in_progress",
-      priority: "medium",
-      workMode: "standard",
-      assigneeAgentId: agentId,
+  it("preserves a retry when another task owns its routine slot and continues startup recovery", async () => {
+    const candidates = [await seedRun("ROUTINE-COLLISION"), await seedRun("AFTER-ROUTINE-COLLISION")]
+      .sort((a, b) => a.runId.localeCompare(b.runId));
+    const [waiting, unrelated] = candidates;
+    const holder = await seedRun("ROUTINE-SLOT-OWNER", waiting.db);
+    const routineId = randomUUID();
+    const now = new Date();
+    await waiting.db.update(issues).set({ executionRunId: null, originKind: "routine_execution",
+      originId: routineId, originFingerprint: "scheduled" }).where(eq(issues.id, waiting.issueId));
+    await waiting.db.update(issues).set({ originKind: "routine_execution",
+      originId: routineId, originFingerprint: "scheduled" }).where(eq(issues.id, holder.issueId));
+    await waiting.db.update(heartbeatRuns).set({ status: "failed", finishedAt: now,
+      nativePhase: "retryable_failure", runnerProfileJson: { ...waiting.preparedProfile,
+        nativeWorkspaceSync: remotePreparedWorkspace(),
+        sessionCheckpoint: { identity: { companyId, agentId, issueId: waiting.issueId, runId: waiting.runId,
+          sessionId: waiting.native.normalizedSessionId }, providerSessionId: "retained-routine-session" },
+      } }).where(eq(heartbeatRuns.id, waiting.runId));
+    await waiting.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      leaseOwner: "predecessor-routine-controller", leaseExpiresAt: new Date(now.getTime() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, waiting.runId));
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(runtimeRoot, waiting.runId),
+      identity: transportOptions(waiting, runtimeRoot).prpIdentity,
+      expectedRunnerVersion: "routine-recovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      await registerNativeRunnerCheckpoint({ db: waiting.db,
+        binding: { companyId, issueId: waiting.issueId, runId: waiting.runId }, bootId: successor.bootId, authority });
+    } finally { await authority.stop(); }
+    await waiting.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0), failureCode: "provider_transport_interrupted",
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+        providerSessionEstablished: true, providerEventsExist: false } })
+      .where(eq(nativeRunFinalizations.runId, waiting.runId));
+    const state = async () => ({
+      run: await waiting.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.runId)),
+      coordinator: await waiting.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, waiting.runId)),
+      checkpoint: await waiting.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, waiting.runId)),
+      task: await waiting.db.select().from(issues).where(eq(issues.id, waiting.issueId)),
+      holder: await waiting.db.select().from(issues).where(eq(issues.id, holder.issueId)),
     });
-    const [run] = await db
-      .insert(heartbeatRuns)
-      .values({
-        id: runId,
-        companyId,
-        agentId,
-        status: "running",
-        runtimeMode: "native",
-        nativeIssueId: issueId,
-        invocationSource: "assignment",
-        triggerDetail: "system",
-        contextSnapshot: { issueId },
-      })
-      .returning();
-    if (!run) throw new Error("Failed to seed native restart run");
-    await db
-      .update(issues)
-      .set({ executionRunId: runId })
-      .where(eq(issues.id, issueId));
-    const native = await prepareNativeHeartbeatRun({
-      db,
-      run,
-      issue: {
-        id: issueId,
-        title: `Recover ${label}`,
-        description: null,
-        reviewPolicy: null,
-      },
-      environmentLeaseId: `lease-${label}`,
-    });
-    await db.insert(nativeRunFinalizations).values({
-      runId,
-      companyId,
-      issueId,
-      phase: "observed",
-    });
-    const [preparedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    return { db, issueId, runId, native, preparedProfile: preparedRun.runnerProfileJson };
-  }
+    const before = await state();
+    expect(before.checkpoint.length).toBeGreaterThan(0);
+    const onClaim = vi.fn();
+    const input = { db: waiting.db, controller: successor, restartKind: "hard" as const, now };
+    const dispositions = await claimNativeRestartRecoveries({ ...input, onClaim,
+      runIds: candidates.map(candidate => candidate.runId) });
+    expect(dispositions).toEqual([
+      { kind: "awaiting_evidence", runId: waiting.runId, reason: "routine_execution_busy",
+        retryAt: new Date(now.getTime() + 30_000) },
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: unrelated.runId }),
+    ]);
+    expect(onClaim).toHaveBeenCalledOnce();
+    expect(onClaim.mock.calls[0][0].runId).toBe(unrelated.runId);
+    expect(await state()).toEqual(before);
+    expect(await waiting.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiting.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(0);
+    expect(await waiting.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, waiting.runId))).toHaveLength(0);
 
-  function transportOptions(
-    fixture: Awaited<ReturnType<typeof seedRun>>,
-    stateDirectory: string,
-  ) {
-    return {
-      runnerBinary: defaultCapabilityRunnerdBinary(),
-      codexCommand: fakeCodexAppServer,
-      codexArgs: [
-        "--state-file",
-        resolve(stateDirectory, "fake-codex-state.json"),
-        "--call-log",
-        resolve(stateDirectory, "fake-codex-calls.log"),
-      ],
-      stateDirectory,
-      lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
-      prpIdentity: {
-        runnerInstanceId: fixture.native.runnerInstanceId,
-        environmentLeaseId: fixture.native.environmentLeaseId,
-        runId: fixture.runId,
-        normalizedSessionId: fixture.native.normalizedSessionId,
-        turnId: fixture.native.turnId,
-        itemId: fixture.native.itemId,
-      },
-      controlPlaneRegistration: (authority: Parameters<typeof registerRunnerPrpAuthority>[0]["authority"]) =>
-        registerRunnerPrpAuthority({
-          companyId,
-          runId: fixture.runId,
-          authority,
-        }),
-    };
-  }
+    const heartbeat = heartbeatService(waiting.db);
+    try {
+      await expect(heartbeat.recoverNativeRunsAfterRestart(now, [waiting.runId]))
+        .resolves.toMatchObject({ claims: [], awaitingEvidenceRunIds: [waiting.runId] });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(await state()).toEqual({ ...before, run: [{ ...before.run[0],
+      nextEventSeq: before.run[0].nextEventSeq + 1, updatedAt: expect.any(Date) }] });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
-    const hardRestart = !["warm", "same-server"].includes(scenario);
+    await waiting.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, holder.issueId));
+    const recovered = (await Promise.all([1, 2].map(() => claimNativeRestartRecoveries({ ...input,
+      runIds: [waiting.runId] })))).flat();
+    expect(recovered.filter(row => row.kind === "reattach_remote_runner")).toHaveLength(1);
+    const after = await state();
+    expect(after.run[0].runnerProfileJson).toEqual(before.run[0].runnerProfileJson);
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(after.coordinator[0]).toMatchObject({ attempt: 2, controllerGeneration: 1 });
+    expect(after.task[0].executionRunId).toBe(waiting.runId);
+    expect(await waiting.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiting.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);
+  });
+
+  it("defers another database constraint failure without calling it a routine wait", async () => {
+    const fixture = await seedRun("UNRELATED-DATABASE-FAILURE");
+    const db = new Proxy(fixture.db, { get(target, key) {
+      if (key === "transaction") return () => target.transaction(async tx => {
+        await tx.execute(sql`create temp table recovery_constraint_control
+          (id integer constraint recovery_unrelated_unique unique) on commit drop`);
+        await tx.execute(sql`insert into recovery_constraint_control values (1), (1)`);
+      });
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const onClaim = vi.fn();
+    await expect(claimNativeRestartRecoveries({ db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId], onClaim })).resolves.toEqual([{ kind: "awaiting_evidence",
+      runId: fixture.runId, reason: NATIVE_RESTART_RECOVERY_FAILED, retryAt: expect.any(Date) }]);
+    expect(onClaim).not.toHaveBeenCalled();
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", controllerGeneration: 0, leaseOwner: null });
+  });
+
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "finalizer-wait", "warm-suspended", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+    const hardRestart = !["warm", "same-server", "warm-suspended"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
+    const warmSuspended = scenario === "warm-suspended" || scenario.startsWith("diskless-warm-suspended");
+    const resumedAfterSuspension = perTurn || warmSuspended;
+    const suspendedBeforeThird = perTurn || (diskless && warmSuspended);
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;
     const tunnel = await createRunnerTestTlsTunnel({ port: Number(process.env.PAPERCLIP_TEST_RUNNER_PORT),
       key: process.env.PAPERCLIP_TEST_RUNNER_TLS_KEY!, cert: process.env.NODE_EXTRA_CA_CERTS! });
@@ -389,7 +321,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       onLog: async (_stream: "stdout" | "stderr", text: string) => { logs.push(text); },
     };
     let controller: ReturnType<typeof spawn> | undefined;
-    const executeInController = (executionOptions: Parameters<typeof executePaperclipNativeSession>[0]) => new Promise<{ exitCode: number | null }>((resolveResult, reject) => {
+    const executeInController = (executionOptions: Parameters<typeof executePaperclipNativeSession>[0]) => new Promise<{ exitCode: number | null; inspectionOverridden?: boolean }>((resolveResult, reject) => {
         controller = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), resolve("server/src/__tests__/helpers/remote-warm-controller.test-worker.ts")],
           { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
         let timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error("Controller fixture imports exceeded 120 seconds")); }, 120_000);
@@ -401,7 +333,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           if (message.ready) {
             clearTimeout(timer);
             timer = setTimeout(() => { controller?.kill("SIGKILL"); reject(new Error(`Warm controller admission exceeded 60 seconds: ${logs.join("").slice(-3_000)}`)); }, 60_000);
-            controller!.send?.({ connectionString: temporary.connectionString, container, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
+            controller!.send?.({ connectionString: temporary.connectionString, container, suspendAfterTurn: warmSuspended, transientBackpressureInspection: scenario === "diskless-live-inspection" && executionOptions.execution.binding.runId !== fixture.runId, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
               options: { ...executionOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...executionOptions.runnerExecutionTarget, runner: undefined } } });
           }
           if (message.log) logs.push(message.log.text);
@@ -460,17 +392,18 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           onExecutionLeaseAcquired: () => preparation!.stop(),
           instructionWorkingCopy: {
             hasChanges: async () => {
-              // Completion has released the coordinator, but the startup still
-              // owns its session. A leftover preparation timer would detach it.
               const [settled] = await fixture.db.select().from(nativeRunFinalizations)
                 .where(eq(nativeRunFinalizations.runId, fixture.runId));
-              expect(settled.leaseOwner).toBeNull();
+              expect(settled).toMatchObject({ leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt });
               await new Promise(resolve => setTimeout(resolve, 21_000));
               return false;
             },
             collectStopped: async () => undefined,
           },
         }).finally(() => preparation?.stop().catch(() => undefined));
+        const [released] = await fixture.db.select().from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(released.leaseOwner).toBeNull();
         expect(logs.filter(line => line.includes("controller authority detached for restart"))).toHaveLength(1);
         const recoveredCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
         expect(recoveredCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
@@ -480,11 +413,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       };
       const first = hardRestart ? await executeInController(firstOptions) : await executeFirst();
       expect(first.exitCode).toBe(0);
+      if (scenario === "warm-suspended") expect(await closeIdleWarmNativeSessionsForRestart())
+        .toEqual({ closed: 1, busy: 0, failed: 0 });
       await finalizeNativeRun({ db: fixture.db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       const snapshot = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
       expect(snapshot.exitCode).toBe(0);
       const saved = JSON.parse(snapshot.stdout);
-      expect(saved.lifecycle).toBe(perTurn ? "suspended" : "ready");
+      expect(saved.lifecycle).toBe(resumedAfterSuspension ? "suspended" : "ready");
       const processBefore = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
       expect(processBefore.exitCode).toBe(0);
       const historyBefore = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
@@ -515,7 +450,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         (controller as ReturnType<typeof spawn>).kill("SIGKILL");
         await exited;
         controller = undefined;
-        if (!perTurn) await expect(executePaperclipNativeSession({ ...nextOptions,
+        if (!resumedAfterSuspension) await expect(executePaperclipNativeSession({ ...nextOptions,
           runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget,
             sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "unrelated-sandbox" } },
         })).rejects.toThrow("prior_owner_terminal_state_indeterminate");
@@ -533,6 +468,28 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           changed++;
         }
         expect(changed).toBe(1);
+      }
+      if (scenario === "stale-projection") {
+        const checkpoint = await loadNativeRunnerCheckpoint(fixture.db, { companyId,
+          issueId: fixture.issueId, runId: fixture.runId });
+        expect(checkpoint).not.toBeNull();
+        const sessions = resolve(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/durable-sessions");
+        let projected = 0;
+        for (const name of await readdir(sessions)) {
+          const root = resolve(sessions, name), path = resolve(root, "control-plane/control-plane-state.json");
+          if (!existsSync(path) || JSON.parse(await readFile(path, "utf8")).identity?.runId !== fixture.runId) continue;
+          checkpoint!.restoreSessionDirectory(root);
+          const state = JSON.parse(await readFile(path, "utf8"));
+          const terminalIndex = state.committedEvents.findLastIndex((event: { eventType: string }) => event.eventType === "run.terminal");
+          expect(terminalIndex).toBeGreaterThan(0);
+          // Retain a full local projection from just before the terminal. The
+          // database keeps the complete same-run checkpoint and all receipts.
+          state.committedEvents = state.committedEvents.slice(0, terminalIndex);
+          state.ackedSourceSeq = state.committedEvents.at(-1).sourceSeq;
+          await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+          projected++;
+        }
+        expect(projected).toBe(1);
       }
       if (diskless) {
         // Preserve sandbox/provider storage and workspace dependencies. Delete
@@ -553,7 +510,24 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           ...(perTurn ? { sessionCheckpoint: admission.checkpoint } : {}) } }).where(eq(heartbeatRuns.id, row.id));
       };
       await admitContinuation(nextOptions.execution);
-      if (scenario === "diskless-per-turn-read-retry") {
+      let continuationLeaseOwner: string | undefined;
+      if (scenario === "finalizer-wait") {
+        const retryAt = new Date(Date.now() + 60_000);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: "fixture-finalizer", leaseExpiresAt: retryAt })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        await expect(executePaperclipNativeSession(nextOptions)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+        const [waiting] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, nextRunId));
+        expect(waiting).toMatchObject({ phase: "retryable_failure", attempt: 0, nextAttemptAt: retryAt });
+        const calls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
+        expect(calls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        const [claim] = await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: next.runnerInstanceId,
+          runIds: [nextRunId], now: retryAt });
+        expect(claim).toBeDefined();
+        continuationLeaseOwner = claim.leaseOwner;
+      }
+      if (scenario.endsWith("-read-retry")) {
         let rejectedReads = 0;
         await expect(executePaperclipNativeSession({ ...nextOptions,
           runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget, runner: { ...runner,
@@ -570,8 +544,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         // Retry with the partial PRP projection left by the failed read. No
         // fixture writes a suspended receipt or changes the surviving Runner.
       }
-      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession(nextOptions);
+      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession({ ...nextOptions,
+        ...(continuationLeaseOwner ? { leaseOwner: continuationLeaseOwner } : {}) });
       expect(second.exitCode).toBe(0);
+      if (scenario === "diskless-live-inspection") expect("inspectionOverridden" in second && second.inspectionOverridden).toBe(true);
       const historyAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
       const providerAfter = JSON.parse(historyAfter.stdout);
       expect(providerAfter.threadId).toBe(providerBefore.threadId);
@@ -581,10 +557,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       expect(calls.stdout.split("\n").filter(line => line === "thread/start")).toHaveLength(1);
       const providerStarts = calls.stdout.split("\n").filter(line => line === "process-start").length;
       expect(providerStarts).toBeGreaterThanOrEqual(1);
-      expect(providerStarts).toBeLessThanOrEqual(perTurn || ["legacy", "changed"].includes(scenario) ? 3 : hardRestart ? 2 : 1);
+      expect(providerStarts).toBeLessThanOrEqual(resumedAfterSuspension || ["legacy", "changed"].includes(scenario) ? 3 : hardRestart ? 2 : 1);
       const processAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
       expect(processAfter.exitCode).toBe(0);
-      if (perTurn || ["legacy", "changed"].includes(scenario)) expect(processAfter.stdout).not.toBe(processBefore.stdout);
+      if (resumedAfterSuspension || ["legacy", "changed"].includes(scenario)) expect(processAfter.stdout).not.toBe(processBefore.stdout);
       else expect(processAfter.stdout).toBe(processBefore.stdout);
       await finalizeNativeRun({ db: fixture.db, runId: nextRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       if (diskless && controller) {
@@ -623,9 +599,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const finalCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
       expect(finalCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(3);
       expect(finalCalls.stdout.split("\n").filter(line => line === "thread/start")).toHaveLength(1);
-      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (perTurn ? 1 : 0));
+      expect(finalCalls.stdout.split("\n").filter(line => line === "process-start")).toHaveLength(providerStarts + (suspendedBeforeThird ? 1 : 0));
       const finalProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
-      if (perTurn) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
+      if (suspendedBeforeThird) expect(finalProcess.stdout).not.toBe(processAfter.stdout);
       else expect(finalProcess.stdout).toBe(processAfter.stdout);
       expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: perTurn ? 0 : 1, busy: 0, failed: 0 });
       const suspended = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
@@ -1027,56 +1003,6 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  it("retains remote ownership through two delayed successful liveness-pool renewals", async () => {
-    const fixture = await seedRun("DELAYED-RENEWAL-SUCCESS");
-    const owner = createDb(temporary.connectionString);
-    const pool = livenessDb(owner);
-    const input = { db: owner, runId: fixture.runId, companyId, issueId: fixture.issueId,
-      controller: successor, leaseOwner: "delayed-renewal-owner", attempt: 1, remote: true,
-      onLost: vi.fn(async () => undefined) };
-    const initialExpiry = new Date(Date.now() + 60_000);
-    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
-      controllerPid: successor.pid, controllerProcessStartedAt: successor.processStartedAt,
-      leaseOwner: input.leaseOwner, attempt: 1, leaseExpiresAt: initialExpiry })
-      .where(eq(nativeRunFinalizations.runId, fixture.runId));
-    let release: (() => void) | undefined;
-    let occupied: Promise<unknown> | undefined;
-    let guard: NativeExecutionLeaseRenewal | undefined;
-    const occupyPool = async () => {
-      let entered = 0;
-      let ready!: () => void;
-      const acquired = new Promise<void>(resolve => { ready = resolve; });
-      const barrier = new Promise<void>(resolve => { release = resolve; });
-      occupied = Promise.all([0, 1].map(() => pool.transaction(async () => {
-        if (++entered === 2) ready();
-        await barrier;
-      })));
-      await acquired;
-    };
-    const savedExpiry = async () => {
-      const [saved] = await fixture.db.select({ expires: nativeRunFinalizations.leaseExpiresAt })
-        .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
-      return saved.expires!.getTime();
-    };
-    try {
-      await occupyPool();
-      guard = startNativeSessionExecutionLeaseRenewal(input);
-      await new Promise(resolve => setTimeout(resolve, 50_000));
-      release!(); await occupied;
-      await vi.waitFor(async () => expect(await savedExpiry()).toBeGreaterThan(initialExpiry.getTime() + 40_000));
-      const firstExpiry = await savedExpiry();
-      await occupyPool();
-      await new Promise(resolve => setTimeout(resolve, 40_000));
-      release!(); await occupied;
-      await vi.waitFor(async () => expect(await savedExpiry()).toBeGreaterThan(firstExpiry + 30_000));
-      expect(input.onLost).not.toHaveBeenCalled();
-      await guard.stop();
-    } finally {
-      release?.(); await occupied; await guard?.stop().catch(() => undefined);
-      await closeLivenessDb(owner, 1); await owner.$client.end({ timeout: 1 });
-    }
-  }, 120_000);
-
   it("renews remote ownership while the application pool is saturated and bounds row-lock waits", async () => {
     const fixture = await seedRun("RENEWAL-LIVENESS-POOL");
     const owner = createDb(temporary.connectionString, { maxConnections: 1 });
@@ -1132,146 +1058,6 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     } finally {
       releaseLock?.(); await holder; await slow;
       await closeLivenessDb(owner, 1); await owner.$client.end({ timeout: 1 });
-    }
-  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-
-  it.each(["preparation", "claim lock"])("gives a fresh remote claim its full lease through blocked %s", async (blockedPhase) => {
-    const fixture = await seedRun(`FRESH-SLOW-${blockedPhase === "claim lock" ? "CLAIM-LOCK" : "PREPARATION"}`);
-    const environmentId = randomUUID(), leaseId = randomUUID();
-    await fixture.db.insert(environments).values({ id: environmentId, name: `Fresh preparation fixture ${environmentId}`, driver: "sandbox" });
-    await fixture.db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId,
-      heartbeatRunId: fixture.runId, issueId: fixture.issueId, status: "active",
-      provider: "fixture", providerLeaseId: `fresh-preparation-${leaseId}` });
-    const execution = buildNativeExecutionInput({ companyId, agentId, runId: fixture.runId,
-      issue: { id: fixture.issueId, identifier: "NRR-FRESH-SLOW", title: "Prepare slowly", description: null, workMode: "standard" },
-      taskPrompt: "Prepare a fresh execution.", provider: "codex",
-      workspace: { id: fixture.runId, cwd: runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: fixture.native.normalizedSessionId, runtimeContext: nativeRuntimeContextFixture(),
-      completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
-        contract: { revision: "1", objective: "Prepare once", criteria: [{ id: "objective", requirement: "Retain ownership" }] } },
-    });
-    // Stop at the provider boundary after checking ownership; no harness is launched.
-    const failure = new Error("end fresh preparation experiment");
-    const backend = { descriptor: async () => { throw failure; }, openSession: async () => { throw failure; } };
-    let reached!: () => void, release!: () => void;
-    const claimed = new Promise<void>(resolveReady => { reached = resolveReady; });
-    const preparation = new Promise<void>(resolveReady => { release = resolveReady; });
-    let releaseLock: (() => void) | undefined;
-    let holder: Promise<void> | undefined;
-    let lockPid: number | undefined;
-    let leaseStartsAfter: Date | undefined;
-    if (blockedPhase === "claim lock") {
-      let locked!: () => void;
-      const lockTaken = new Promise<void>(resolve => { locked = resolve; });
-      const lockReleased = new Promise<void>(resolve => { releaseLock = resolve; });
-      holder = fixture.db.transaction(async tx => {
-        const [connection] = await tx.execute(sql`select pg_backend_pid() as pid`);
-        lockPid = Number(connection.pid);
-        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)).for("update");
-        locked(); await lockReleased;
-      });
-      await lockTaken;
-    }
-    const running = executePaperclipNativeSession({ db: fixture.db, execution,
-      runnerInstanceId: fixture.native.runnerInstanceId, backend,
-      runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, leaseId, remoteCwd: runtimeRoot },
-      onEvent: async event => {
-        if (event.payload?.span === "native.coordinator.claim") { reached(); await preparation; }
-      },
-    }).catch(error => error);
-    try {
-      if (blockedPhase === "claim lock") {
-        // Observe the real claim waiting on the run row after it has locked its
-        // coordinator. The lease must start after this wait, not before it.
-        await expect.poll(async () => {
-          const [waiting] = await fixture.db.execute(sql`select exists (
-            select 1 from pg_stat_activity where ${lockPid} = any(pg_blocking_pids(pid))
-              and query like 'select %from "heartbeat_runs"%for update%'
-          ) as blocked`);
-          return waiting.blocked;
-        }, { timeout: 10_000 }).toBe(true);
-        await fixture.db.execute(sql`select pg_sleep(1)`);
-        const [observed] = await fixture.db.execute(sql`select clock_timestamp() as observed_at`);
-        leaseStartsAfter = new Date(String(observed.observed_at));
-        releaseLock!(); await holder;
-      }
-      await Promise.race([claimed, running.then(error => { throw error; })]);
-      const [initial] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
-      if (leaseStartsAfter) {
-        expect(initial.leaseExpiresAt!.getTime() - leaseStartsAfter.getTime()).toBeGreaterThan(59_900);
-        release();
-        expect(await running).toBe(failure);
-        return;
-      }
-      await new Promise(resolveWait => setTimeout(resolveWait, Math.max(0, initial.leaseExpiresAt!.getTime() - Date.now() + 2_000)));
-      const [current] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
-      expect(current.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
-      expect(current.leaseOwner).toBe(initial.leaseOwner);
-      expect(current.controllerGeneration).toBe(initial.controllerGeneration);
-      expect(current.attempt).toBe(1);
-      release();
-      expect(await running).toBe(failure);
-    } finally { releaseLock?.(); await holder; release(); await running; }
-  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-
-  it("renews a remote claim through slow preparation and shares renewal with execution", async () => {
-    const fixture = await seedRun("SLOW-RECOVERY-PREPARATION");
-    const root = resolve(runtimeRoot, fixture.runId);
-    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
-    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: {
-      ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace(),
-      sessionCheckpoint: { identity: { ...binding, agentId, sessionId: fixture.native.normalizedSessionId },
-        providerSessionId: "surviving-provider" },
-    } }).where(eq(heartbeatRuns.id, fixture.runId));
-    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
-      controllerGeneration: 1, leaseOwner: "previous-owner", leaseExpiresAt: new Date(Date.now() + 60_000) })
-      .where(eq(nativeRunFinalizations.runId, fixture.runId));
-    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(root, "control-plane"),
-      identity: transportOptions(fixture, root).prpIdentity,
-      expectedRunnerVersion: "lease-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
-    await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId: successor.bootId, authority });
-    await authority.stop();
-    // Establish the abandoned predecessor before the fault; claimed leases are
-    // never edited below. The successor must retain ownership for a real minute.
-    await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
-      .where(eq(nativeRunFinalizations.runId, fixture.runId));
-    const controller = { ...successor, bootId: randomUUID() };
-    const onLost = vi.fn(async () => undefined);
-    let preparation: NativeExecutionLeaseRenewal | undefined;
-    let execution: NativeExecutionLeaseRenewal | undefined;
-    let acquired = false;
-    try {
-      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller,
-        restartKind: "hard", runIds: [fixture.runId], onClaim: (claim, scope) => {
-          expect(scope.remote).toBe(true);
-          preparation = startNativeSessionExecutionLeaseRenewal({ db: fixture.db, ...scope,
-            runId: claim.runId, leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt, onLost });
-          acquired = true;
-        } });
-      expect(acquired).toBe(true);
-      expect(claim.kind).toBe("reattach_remote_runner");
-      if (!("leaseOwner" in claim)) throw new Error("Expected recovery claim");
-      const [initial] = await fixture.db.select().from(nativeRunFinalizations)
-        .where(eq(nativeRunFinalizations.runId, fixture.runId));
-      await new Promise(resolveWait => setTimeout(resolveWait, 30_000));
-      execution = startNativeSessionExecutionLeaseRenewal({ db: fixture.db, ...binding,
-        leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt, controller, remote: true, onLost });
-      await preparation!.stop();
-      await preparation!.stop(); // A caller cannot release another caller's reference.
-      const remaining = Math.max(0, initial.leaseExpiresAt!.getTime() - Date.now() + 2_000);
-      await new Promise(resolveWait => setTimeout(resolveWait, remaining));
-      const [current] = await fixture.db.select().from(nativeRunFinalizations)
-        .where(eq(nativeRunFinalizations.runId, fixture.runId));
-      expect(current.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
-      expect(current.controllerGeneration).toBe(claim.controllerGeneration);
-      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: { ...controller, bootId: randomUUID() },
-        restartKind: "hard", runIds: [fixture.runId] })).toEqual([
-        expect.objectContaining({ kind: "awaiting_evidence", runId: fixture.runId }),
-      ]);
-      expect(onLost).not.toHaveBeenCalled();
-    } finally {
-      await preparation?.stop();
-      await execution?.stop();
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
@@ -1573,8 +1359,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(run?.processPid).toBe(remotePid);
   });
 
-  it("gives a recovery claim its full lease after an old batch observation", async () => {
-    const fixture = await seedRun("LATE-BATCH-CLAIM");
+  it.each(["running", "interrupted-stop", "interrupted-no-intent", "interrupted-foreign-intent", "interrupted-missing-audit", "interrupted-foreign-owner", "interrupted-terminal", "interrupted-no-checkpoint"])("gives only eligible recovery a full lease after an old batch observation (%s)", async mode => {
+    const fixture = await seedRun(`LATE-BATCH-CLAIM-${mode}`);
     const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
     const root = resolve(runtimeRoot, fixture.runId);
     const observedAt = new Date(Date.now() - 90_000);
@@ -1596,9 +1382,45 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       // Set up an abandoned predecessor. Never alter the successor's deadline.
       await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(observedAt.getTime() - 1_000) })
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (mode !== "running") {
+        const intentAuditId = randomUUID(), requestedAt = new Date().toISOString();
+        await fixture.db.insert(activityLog).values({ id: intentAuditId, companyId, actorType: "system", actorId: "native-session-cancellation",
+          action: "native.cancellation_intent_recorded", entityType: "heartbeat_run", entityId: fixture.runId, runId: fixture.runId, agentId });
+        await fixture.db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: new Date(),
+          errorCode: "lease_released_before_terminal", resultJson: {
+            cancelledByActorType: "user", cancelledByUserId: "test-board",
+            cancellation: { expected: true, initiator: { type: "user" }, reason: "Operator requested Stop" },
+            startupCancellation: { beforeNativeSelection: false, requestedAt, errorCode: "cancelled" },
+            executionCancellation: { state: "requested", requestedAt },
+            nativeCancellation: { schema: "paperclip.native-cancellation.v1", ...binding,
+              ...(mode === "interrupted-foreign-intent" ? { issueId: randomUUID() } : {}), scope: "run", reasonCode: "cancellation_run_only",
+              intentId: `native-cancellation:${randomUUID()}`, intentAuditId: mode === "interrupted-missing-audit" ? randomUUID() : intentAuditId, dispatchState: "pending", dispatched: false,
+              effects: ["release_run_resources"] },
+          } }).where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, fixture.issueId));
+        if (mode === "interrupted-no-intent") await fixture.db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, fixture.runId));
+        if (mode === "interrupted-foreign-owner") {
+          const other = await seedRun(`OTHER-${mode}`);
+          await fixture.db.update(issues).set({ executionRunId: other.runId }).where(eq(issues.id, fixture.issueId));
+        }
+        if (mode === "interrupted-terminal") await fixture.db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        if (mode === "interrupted-no-checkpoint") await fixture.db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'sessionCheckpoint'`,
+        }).where(eq(heartbeatRuns.id, fixture.runId));
+      }
       const controller = { ...successor, bootId: randomUUID() };
       const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller,
         restartKind: "hard", now: observedAt, runIds: [fixture.runId] });
+      if (mode !== "running" && mode !== "interrupted-stop") {
+        expect(["reattach_existing_runner", "reattach_remote_runner", "resume_dead_runner", "bootstrap_incomplete"]).not.toContain(claim?.kind);
+        const [unchanged] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(unchanged.status).toBe("interrupted");
+        const [owner] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(owner.controllerGeneration).toBe(1);
+        expect(owner.leaseOwner).toBe("previous-batch-owner");
+        return;
+      }
       expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId });
       if (!("leaseOwner" in claim)) throw new Error("Expected a recovery claim");
       const [saved] = await fixture.db.execute(sql`select extract(epoch from (lease_expires_at - clock_timestamp())) as remaining
@@ -1609,266 +1431,6 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt, leaseTtlMs: 60_000 })).resolves.toBeUndefined();
     } finally { await authority.stop(); }
   });
-
-  realProcessIt("keeps checkpoint SQL independent of streamed output volume with a real Postgres writer", async () => {
-    const samples: Array<{ chunks: number; checkpointWrites: number; transactions: number;
-      changedRows: number; checkpointBytes: number; walBytes: number; elapsedMs: number; idleSql: number;
-      streamSql: number; streamTransactions: number; streamChangedRows: number; renewalSql: number }> = [];
-    for (const chunks of [8, 512, 8192]) {
-      const fixture = await seedRun(`CHECKPOINT-COST-${chunks}`);
-      const root = resolve(runtimeRoot, fixture.runId);
-      const releaseOutput = resolve(root, "release-output");
-      const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
-      const owner = { ...binding, authorityRunId: fixture.runId, bootId: successor.bootId,
-        generation: 1, leaseOwner: "cost-controller" };
-      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: owner.bootId,
-        controllerPid: successor.pid, controllerProcessStartedAt: successor.processStartedAt,
-        controllerGeneration: 1, leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
-      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
-      let authority!: DurablePrpControlPlane;
-      let measuring = false;
-      let transactions = 0, changedRows = 0, checkpointBytes = 0;
-      const statements: string[] = [];
-      const renewalStatements: string[] = [];
-      let leaseLost = false;
-      const renewal = startNativeSessionExecutionLeaseRenewal({ db: fixture.db, ...binding, leaseOwner: owner.leaseOwner,
-        attempt: 0, controller: successor, remote: true, onLost: async () => { leaseLost = true; } });
-      const capturedClients = [fixture.db.$client, checkpointDb(fixture.db).$client, livenessDb(fixture.db).$client];
-      const priorDebug = capturedClients.map(client => client.options.debug);
-      // Capture statements only, never SQL parameters (encrypted state or secrets).
-      capturedClients.forEach((client, index) => {
-        client.options.debug = (_connection, query) => {
-          if (!measuring) return;
-          // Renewals are existing liveness traffic, reported separately. A
-          // checkpoint query on any pool still counts against the zero oracle.
-          if (index === 2 && !query.includes("native_runner_checkpoints")) renewalStatements.push(query);
-          else statements.push(query);
-        };
-      });
-      const write = nativeRunnerCheckpointWriter(fixture.db, owner);
-      let costFailure: unknown;
-      const transport = createRunnerdCodexTransport({ ...transportOptions(fixture, root),
-        codexArgs: ["--state-file", resolve(root, "provider.json"), "--linger-after-turn-start",
-          "--held-output", "--held-output-count", String(chunks), "--held-output-release-file", releaseOutput],
-        controlPlaneRegistration: async core => {
-          authority = core;
-          core.setCheckpointPersistence(async checkpoint => {
-            if (measuring) {
-              transactions++;
-              changedRows += checkpoint.changedRecords.size;
-              checkpointBytes += [...checkpoint.changedRecords.values()].reduce((sum, value) => sum + Buffer.byteLength(value), 0);
-              expect([...checkpoint.changedRecords.values()].join("\n")).not.toContain("still computing");
-            }
-            await write(checkpoint);
-          });
-          return registerRunnerPrpAuthority({ ...binding, authority: core });
-        },
-      });
-      try {
-        await transport.transport.request("thread/start", { cwd: root, dynamicTools: [] });
-        await authority.flushCheckpoint();
-        const [walStart] = await fixture.db.execute(sql`select pg_current_wal_insert_lsn()::text as lsn`);
-        const started = performance.now();
-        measuring = true;
-        await transport.transport.request("turn/start", { input: [{ type: "text", text: "Produce the scripted stream." }] });
-        await waitForCondition("settled control setup before releasing text", () =>
-          authority.store.state.commands.every(command => command.status === "completed")
-          && authority.store.state.committedEvents.some(event => event.eventType === "turn.started"));
-        await authority.flushCheckpoint();
-        const beforeStream = { sql: statements.length, transactions, changedRows };
-        await writeFile(releaseOutput, "release\n", { flag: "wx" });
-        await waitForCondition(`the final scripted text chunk of ${chunks}`, () => authority.store.state.committedEvents
-          .some(event => event.eventType === "item.delta" && JSON.stringify(event.envelope).includes(`still computing ${chunks - 1} `)), chunks > 4096 ? 480_000 : 60_000)
-          .catch(error => { console.info("checkpoint-cost-stream-diagnostic", JSON.stringify({ chunks,
-            cursor: authority.store.state.ackedSourceSeq,
-            receivedTextEvents: authority.store.state.committedEvents.filter(event => event.eventType === "item.delta").length })); throw error; });
-        await authority.flushCheckpoint();
-        measuring = false;
-        const elapsedMs = performance.now() - started;
-        const [walEnd] = await fixture.db.execute(sql`select pg_wal_lsn_diff(pg_current_wal_insert_lsn(), ${String(walStart.lsn)}::pg_lsn)::text as bytes`);
-        const checkpointWrites = statements.filter(query => /^\s*(insert|update|delete)\b/i.test(query)
-          && query.includes("native_runner_checkpoints")).length;
-        expect(checkpointWrites).toBeGreaterThan(0); // The collector must see real control writes.
-        const snapshot = { chunks, checkpointWrites, transactions, changedRows, checkpointBytes,
-          walBytes: Number(walEnd.bytes), elapsedMs, idleSql: 0, renewalSql: renewalStatements.length,
-          streamSql: statements.length - beforeStream.sql,
-          streamTransactions: transactions - beforeStream.transactions,
-          streamChangedRows: changedRows - beforeStream.changedRows };
-        // Setup control messages may coalesce differently. The released text-only
-        // interval must add exactly zero work, independent of that scheduling.
-        expect(snapshot).toMatchObject({ streamSql: 0, streamTransactions: 0, streamChangedRows: 0 });
-        expect(leaseLost).toBe(false);
-        statements.length = 0;
-        measuring = true;
-        await new Promise(done => setTimeout(done, 100));
-        await authority.flushCheckpoint();
-        snapshot.idleSql = statements.length;
-        expect(statements).toEqual([]);
-        // Positive calibration: an actual new control operation must trip the zero-write oracle.
-        authority.queueCommand("session.snapshot", {}, `cost-positive-control-${chunks}`);
-        await authority.flushCheckpoint();
-        expect(statements.some(query => /insert into "native_runner_checkpoints"/i.test(query))).toBe(true);
-        measuring = false;
-        samples.push(snapshot);
-        console.info("native-checkpoint-cost-sample", JSON.stringify(snapshot));
-      } catch (error) {
-        costFailure = error;
-        throw error;
-      } finally {
-        measuring = false;
-        capturedClients.forEach((client, index) => { client.options.debug = priorDebug[index]; });
-        try { await transport.transport.close(); }
-        catch (error) {
-          if (costFailure) throw new AggregateError([costFailure, error], "Checkpoint cost measurement and cleanup failed");
-          throw error;
-        }
-        finally {
-          await renewal.stop().catch(error => {
-            if (costFailure) throw new AggregateError([costFailure, error], "Checkpoint cost measurement and lease renewal failed");
-            throw error;
-          });
-        }
-      }
-    }
-    const report = { schema: "paperclip.checkpoint-cost/v1", samples,
-      scope: "isolated Postgres; control operations included; WAL is diagnostic; no production capacity claim" };
-    if (process.env.PAPERCLIP_TEST_CHECKPOINT_COST_REPORT) await writeFile(process.env.PAPERCLIP_TEST_CHECKPOINT_COST_REPORT,
-      `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    // Each stream size was checked independently; total setup counts remain
-    // diagnostic because control-message batching is scheduling-dependent.
-    console.info("native-checkpoint-cost", JSON.stringify(report));
-  }, 540_000);
-
-  realProcessIt.each([false, true])("adopts the same runner from Postgres after losing the controller filesystem (prepared task: %s)", async preparedTask => {
-    const fixture = await seedRun(`EMPTY-CONTROLLER-DISK-${preparedTask}`);
-    const controllerRoot = resolve(runtimeRoot, `${fixture.runId}-controller`);
-    const sandboxRoot = resolve(runtimeRoot, `${fixture.runId}-sandbox`);
-    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
-    const outageMs = Number(process.env.PAPERCLIP_TEST_CONTROLLER_OUTAGE_MS ?? 1000);
-    if (!Number.isFinite(outageMs) || outageMs < 0 || outageMs > 300_000) throw new Error("Invalid controller outage duration");
-    await mkdir(sandboxRoot, { recursive: true });
-    await mkdir(resolve(sandboxRoot, "filesystem/codex-home"), { recursive: true });
-    let bootId = randomUUID();
-    const taskLeaseId = randomUUID();
-    if (preparedTask) {
-      const [environment] = await fixture.db.insert(environments).values({ name: "Surviving plugin task", driver: "plugin", status: "active", config: {} }).returning();
-      await fixture.db.insert(environmentLeases).values({ id: taskLeaseId, companyId, environmentId: environment.id,
-        heartbeatRunId: fixture.runId, issueId: fixture.issueId, status: "active", leasePolicy: "ephemeral",
-        provider: "plugin", providerLeaseId: "saved-task", metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true } });
-    }
-    const originalLeaseExpiresAt = new Date(Date.now() + 60_000);
-    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: bootId,
-      controllerGeneration: 1, controllerPid: process.pid, controllerProcessStartedAt: new Date(),
-      leaseOwner: "original-controller", leaseExpiresAt: originalLeaseExpiresAt,
-    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
-    const options = {
-      ...transportOptions(fixture, controllerRoot),
-      ...(preparedTask ? { prpIdentity: { ...transportOptions(fixture, controllerRoot).prpIdentity, environmentLeaseId: taskLeaseId } } : {}),
-      runnerStateDirectory: resolve(sandboxRoot, "runner"),
-      runnerFilesystemRoot: resolve(sandboxRoot, "filesystem"),
-      runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
-      codexArgs: ["--state-file", resolve(sandboxRoot, "provider.json"),
-        "--call-log", resolve(sandboxRoot, "calls.log"), "--linger-after-turn-start", "--held-output"],
-      controlPlaneRegistration: async (authority: DurablePrpControlPlane) => {
-        await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId, authority });
-        return registerRunnerPrpAuthority({ ...binding, authority });
-      },
-    };
-    const prepareLaunch = vi.fn(async (requirements: RunnerProviderLaunchRequirements) => ({
-      configurationId: "provider-owned-configuration", requirementsDigest: runnerLaunchRequirementsDigest(requirements),
-      provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: options.codexArgs },
-        root: sandboxRoot, cwd: sandboxRoot, codexHome: resolve(sandboxRoot, "filesystem/codex-home"),
-        codexCommand: fakeCodexAppServer, providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: "" }),
-    }));
-    const first = createRunnerdCodexTransport({ ...options, ...(preparedTask ? {
-      prepareLaunch, runnerArtifact: readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary()),
-      runnerProcessLauncher: (spec: RunnerProcessLaunchSpec): RunnerProcessHandle => {
-        const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: { ...process.env, ...spec.environment },
-          detached: process.platform !== "win32", stdio: "ignore" });
-        return { child, processGroupId: child.pid ?? null, completion: new Promise((resolveExit, reject) => {
-          child.once("error", reject);
-          child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
-        }) };
-      },
-    } : {}) });
-    let adopted: ReturnType<typeof createRunnerdCodexTransport> | undefined;
-    let runnerPid: number | null = null;
-    try {
-      const thread = (await first.transport.request("thread/start", { cwd: sandboxRoot, dynamicTools: [] })).thread as Record<string, unknown>;
-      const turn = (await first.transport.request("turn/start", { input: [{ type: "text", text: "Keep computing while the controller is offline." }] })).turn as Record<string, unknown>;
-      runnerPid = first.evidence().runnerPid;
-      const providerPid = first.evidence().providerPid;
-      if (!runnerPid || !providerPid) throw new Error("Runner/provider process identity missing");
-      const startedAt = await readProcessStartedAt(runnerPid);
-      if (!startedAt) throw new Error("Runner start identity missing");
-      await waitForCondition("streaming ACK advances without a recovery checkpoint", async () => {
-        const runner = JSON.parse(await readFile(resolve(sandboxRoot, "runner/runner-state.json"), "utf8"));
-        const checkpoint = await loadNativeRunnerCheckpoint(fixture.db, binding);
-        const cursor = checkpoint && JSON.parse(checkpoint.records.get("cursor")!);
-        return cursor && runner.ackedSourceSeq >= cursor.ackedSourceSeq + 64;
-      });
-      const beforeRestart = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
-      expect([...beforeRestart.records.entries()].filter(([key]) => key.startsWith("event:"))
-        .some(([, value]) => JSON.parse(value).eventType === "item.delta")).toBe(false);
-      await fixture.db.update(heartbeatRuns).set({ processPid: runnerPid, processStartedAt: new Date(startedAt),
-        runnerProfileJson: { ...fixture.preparedProfile,
-          ...(!preparedTask ? { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
-            descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
-            workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox", remoteCwd: sandboxRoot } } : {}),
-          sessionCheckpoint: { identity: { ...binding, agentId, sessionId: fixture.native.normalizedSessionId },
-            providerSessionId: thread.id, process: { providerPid } },
-        },
-      }).where(eq(heartbeatRuns.id, fixture.runId));
-      await first.detachControllerForRestart();
-      await rm(controllerRoot, { recursive: true, force: true });
-      expect(existsSync(controllerRoot)).toBe(false);
-      await new Promise(resolveOutage => setTimeout(resolveOutage, outageMs));
-      expect(processAlive(runnerPid)).toBe(true);
-      expect(processAlive(providerPid)).toBe(true);
-      bootId = randomUUID();
-      if (originalLeaseExpiresAt.getTime() > Date.now()) {
-        const [waiting] = await claimNativeRestartRecoveries({ db: fixture.db, controller: { ...successor, bootId },
-          restartKind: "hard", runIds: [fixture.runId] });
-        expect(waiting).toMatchObject({ kind: "awaiting_evidence", reason: "remote_controller_lease_live", retryAt: originalLeaseExpiresAt });
-        await new Promise(resolveExpiry => setTimeout(resolveExpiry, Math.max(0, originalLeaseExpiresAt.getTime() - Date.now()) + 20));
-      }
-      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: { ...successor, bootId },
-        restartKind: "hard", runIds: [fixture.runId] });
-      expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: 0, controllerGeneration: 2 });
-      if (preparedTask) expect(claim).toMatchObject({ remote: { kind: "plugin_task", leaseId: taskLeaseId } });
-      const checkpoint = await restoreNativeRunnerCheckpoint(fixture.db, binding, controllerRoot);
-      if (!checkpoint) throw new Error("Missing durable authority");
-      const duplicateLauncher = vi.fn(() => { throw new Error("duplicate runner spawn attempted"); });
-      prepareLaunch.mockClear();
-      const authorizeRunnerAdoption = vi.fn(async () => {});
-      adopted = createRunnerdCodexTransport({ ...options,
-        ...(preparedTask ? { prepareLaunch, authorizeRunnerAdoption } : {}),
-        runnerBinary: resolve(controllerRoot, "new-release-does-not-contain-old-runner"),
-        runnerArtifact: { version: checkpoint.runnerVersion, digest: checkpoint.runnerDigest },
-        resumeDynamicTools: [], runnerProcessLauncher: duplicateLauncher,
-        adoptExistingRunner: { pid: preparedTask ? null : runnerPid, processGroupId: preparedTask ? null : first.evidence().runnerProcessGroupId,
-          startedAt: preparedTask ? null : startedAt, isAlive: () => processAlive(runnerPid) },
-      });
-      await expect(adopted.transport.request("thread/read", {})).resolves.toMatchObject({
-        thread: { id: thread.id, turns: [{ id: turn.id, status: "inProgress" }] },
-      });
-      await adopted.transport.request("turn/steer", { input: [{ type: "text", text: "Continue the same turn." }],
-        expectedTurnId: turn.id, correlationId: "after-empty-disk-restart" });
-      expect(adopted.evidence().runnerPid).toBe(preparedTask ? null : runnerPid);
-      expect(adopted.evidence().providerPid).toBe(providerPid);
-      expect(await readProcessStartedAt(runnerPid)).toBe(startedAt);
-      expect(duplicateLauncher).not.toHaveBeenCalled();
-      expect(prepareLaunch).not.toHaveBeenCalled();
-      if (preparedTask) expect(authorizeRunnerAdoption).toHaveBeenCalledExactlyOnceWith("provider-owned-configuration", options.prpIdentity);
-      const calls = await readFile(resolve(sandboxRoot, "calls.log"), "utf8");
-      expect(calls.match(/^turn\/start$/gm)).toHaveLength(1);
-      expect(calls.match(/^turn\/steer$/gm)).toHaveLength(1);
-    } finally {
-      await adopted?.transport.close().catch(() => undefined);
-      await first.transport.close().catch(() => undefined);
-      await stopOwnedProcessGroup(runnerPid, sandboxRoot).catch(() => undefined);
-    }
-  }, 345_000);
 
   realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
     const fixture = await seedRun("LIVE");
@@ -2542,6 +2104,29 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
   });
 
+  it("recovers an unclaimed remote startup that a graceful shutdown suspended during preparation", async () => {
+    const fixture = await seedRun("REMOTE-UNCLAIMED-DRAINED");
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const heartbeat = heartbeatService(fixture.db);
+    try {
+      await expect(heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [fixture.runId]))
+        .resolves.toMatchObject({ restartSuspendedRunIds: [fixture.runId] });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    const [suspended] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(suspended).toMatchObject({ phase: "observed", leaseOwner: null, controllerBootId: null,
+      recoveryState: "awaiting_runner_reattach" });
+
+    const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(dispositions).toEqual([
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 0, controllerGeneration: 1 }),
+    ]);
+    expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
   it.each([false, true])("yields an original preparation after remote recovery claims its run (expired lease=%s)", async (expired) => {
     const fixture = await seedRun(`REMOTE-PREPARATION-${expired}`);
     await fixture.db.update(heartbeatRuns).set({
@@ -2596,14 +2181,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   });
 
-  function remotePreparedWorkspace() {
-    return { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
-      descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
-      workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: randomUUID(),
-      remoteCwd: "/workspace", resourceDisposition: "destroy" };
-  }
-
-  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
+  it.each(["claimed", "generation", "unexpired-lease", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
     "keeps remote startup recovery blocked with contradictory %s evidence", async (kind) => {
       const fixture = await seedRun(`REMOTE-${kind}`);
       let profile = fixture.preparedProfile;
@@ -2626,6 +2204,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       }).where(eq(heartbeatRuns.id, fixture.runId));
       if (kind === "claimed" || kind === "generation") await fixture.db.update(nativeRunFinalizations)
         .set(kind === "claimed" ? { attempt: 1 } : { controllerGeneration: 1 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (kind === "unexpired-lease") await fixture.db.update(nativeRunFinalizations)
+        .set({ leaseExpiresAt: new Date(Date.now() + 60_000) })
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
       if (kind === "launch" || kind === "provider-event") await fixture.db.insert(heartbeatRunEvents).values({
         companyId, runId: fixture.runId, agentId, seq: 1, stream: "system", level: "info",
@@ -2789,6 +2370,5 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ).toBe(true);
   }, 30_000);
 });
-
 
 enableRunFailureReporting();
