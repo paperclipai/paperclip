@@ -155,11 +155,21 @@ describe("multipart continuation on the visible question surface", () => {
     o.interactions.push({ id: "later", companyId: "company", issueId: "source", createdByAgentId: "ceo", sourceRunId: o.runs[1]!.id,
       kind: "ask_user_questions", status: "pending", payload: { questionSet: { description, questions: [] } } });
     o.state.afterAnswerReply = "";
-    o.state.visibleContinuationDescriptions = [{ id: "later", description }];
+    o.state.visibleContinuationDescriptions = [{ id: "later", rawDescription: description, visibleText: description }];
     return o;
   }
   it("accepts the actual visible bound card summary without an extra comment", () => {
     expect(gradeQuestions(cardSummary()).passed).toBe(true);
+  });
+  it("uses rendered Markdown text rather than its source markup", () => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    card.payload.questionSet!.description = "**Researchers**\n\nTone: `Clear`; headline: **Acorn 42**.";
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description,
+      visibleText: "Researchers\n\nTone: Clear; headline: Acorn 42." }];
+    expect(gradeQuestions(o).passed).toBe(true);
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description,
+      visibleText: "Researchers; tone: Clear" }];
+    expect(gradeQuestions(o).passed).toBe(false);
   });
   it.each(["hidden", "wrong-run", "wrong-issue", "wrong-agent", "historical", "missing-answer"])("rejects %s card evidence", mode => {
     const o = cardSummary(); const card = o.interactions.at(-1)!;
@@ -170,7 +180,7 @@ describe("multipart continuation on the visible question surface", () => {
     if (mode === "historical") card.id = "question";
     if (mode === "missing-answer") {
       card.payload.questionSet!.description = "Researchers, Clear";
-      o.state.visibleContinuationDescriptions = [{ id: card.id, description: card.payload.questionSet!.description }];
+      o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description, visibleText: card.payload.questionSet!.description }];
     }
     expect(gradeQuestions(o).passed).toBe(false);
   });

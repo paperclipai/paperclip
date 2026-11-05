@@ -56,8 +56,10 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
       if (!await row.isVisible()) continue;
       await row.click();
       const context = ctx.input.page.getByTestId("task-chat-composer-takeover").getByRole("region", { name: "Question context", exact: true });
-      if (await context.getByText(description, { exact: true }).isVisible())
-        (state.visibleContinuationDescriptions as Array<{ id: string; description: string }>).push({ id: card.id, description });
+      if (await context.isVisible())
+        (state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }>).push({
+          id: card.id, rawDescription: description, visibleText: await context.innerText(),
+        });
     }
   }
   const brief = observed.tasks.find(row => `${row.title}\n${row.description}`.includes(String(state.answer)));
@@ -116,9 +118,10 @@ export function gradeQuestions(value: unknown) {
       && answers.some(row => row.questionId === "headline" && row.otherText === o.state.answer), "The submitted choice/choice/custom-text set preserves earlier pages.");
     c.add("no-default-consent", o.state.unsubmittedPending === true && o.state.validationObserved === true && o.state.retainedAudience === true,
       "Missing required input cannot submit, unfinished pages stay pending, and back navigation retains the first selection.");
-    const visible = o.state.visibleContinuationDescriptions as Array<{ id: string; description: string }> | undefined;
+    const visible = o.state.visibleContinuationDescriptions as Array<{ id: string; rawDescription: string; visibleText: string }> | undefined;
     const summary = [String(o.state.afterAnswerReply), ...multipartContinuationCards(o).flatMap(card =>
-      visible?.some(row => row.id === card.id && row.description === card.payload.questionSet?.description) ? [card.payload.questionSet!.description!] : [])].join("\n");
+      visible?.filter(row => row.id === card.id && row.rawDescription === card.payload.questionSet?.description)
+        .map(row => row.visibleText) ?? [])].join("\n");
     c.add("submitted-set-only-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
       && /researchers/i.test(summary) && /clear/i.test(summary) && summary.includes(String(o.state.answer)),
       "The submitted set causes one request-bound continuation whose actual later visible chat response accurately summarizes all three answers.");
