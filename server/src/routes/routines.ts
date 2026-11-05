@@ -418,7 +418,7 @@ export function routineRoutes(
       details: {
         title: updated?.title ?? routine.title,
         ...(req.body.responsibleUserId !== undefined ? {
-          previousResponsibleUserId: routine.responsibleUserId,
+          previousResponsibleUserId: updated?.previousResponsibleUserId,
           responsibleUserId: updated?.responsibleUserId,
         } : {}),
       },
@@ -434,7 +434,12 @@ export function routineRoutes(
         triggerCount: null,
       });
     }
-    res.json(updated);
+    if (updated) {
+      const { previousResponsibleUserId: _previousResponsibleUserId, ...response } = updated;
+      res.json(response);
+    } else {
+      res.json(null);
+    }
   });
 
   router.post("/routines/:id/revisions/:revisionId/restore", async (req, res) => {

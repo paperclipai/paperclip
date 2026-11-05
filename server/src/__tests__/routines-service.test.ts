@@ -1196,6 +1196,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restored.revision.snapshot.routine.responsibleUserId).toBe(userId);
   });
 
+  it("returns the actual predecessor for concurrent transfers without a base revision", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const people = ["next-person", "last-person"];
+    await db.insert(companyMemberships).values(people.map((principalId) => ({
+      companyId, principalType: "user" as const, principalId, status: "active" as const,
+    })));
+    const acquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    const transfers = Promise.all(people.map((responsibleUserId) => svc.update(routine.id, { responsibleUserId }, {})));
+    let results;
+    try {
+      await vi.waitFor(async () => {
+        const waiters = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+          and query like 'select id from "routines"%for update'`);
+        expect(waiters.length).toBe(2);
+      }, { timeout: 5_000, interval: 20 });
+    } finally {
+      release.resolve();
+      await blocker;
+      results = await transfers;
+    }
+    const [first, second] = results.sort((a, b) => a!.latestRevisionNumber! - b!.latestRevisionNumber!);
+    expect(first?.previousResponsibleUserId).toBe(routine.responsibleUserId);
+    expect(second?.previousResponsibleUserId).toBe(first?.responsibleUserId);
+    expect((await svc.get(routine.id))?.responsibleUserId).toBe(second?.responsibleUserId);
+  });
+
   it.each(["missing", "suspended", "archived", "other-company"])("rejects a %s responsible person", async (state) => {
     const { companyId, routine, svc } = await seedFixture();
     const userId = randomUUID();

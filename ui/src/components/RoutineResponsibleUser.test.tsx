@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { RoutineDetail } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accessApi } from "@/api/access";
@@ -71,7 +71,37 @@ describe("RoutineResponsibleUser", () => {
     expect(routinesApi.update).toHaveBeenCalledWith("routine-1", { responsibleUserId: "user-sam", baseRevisionId: "revision-1" });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.routines.detail("routine-1") });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.routines.revisions("routine-1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.routines.activity("company-1", "routine-1") });
     expect(document.querySelector('[role="option"]')).toBeNull();
+  });
+
+  it("keeps the picker disabled until the saved detail is refreshed, then uses the new revision", async () => {
+    let resolveRefresh!: (value: RoutineDetail) => void;
+    const refresh = new Promise<RoutineDetail>((resolve) => { resolveRefresh = resolve; });
+    const saved = { ...routine, responsibleUserId: "user-sam", latestRevisionId: "revision-2" };
+    vi.mocked(routinesApi.update).mockResolvedValue(saved);
+    function Detail() {
+      const detail = useQuery({
+        queryKey: queryKeys.routines.detail(routine.id),
+        queryFn: () => refresh,
+        initialData: routine,
+        staleTime: Infinity,
+      });
+      return <RoutineResponsibleUser routine={detail.data} />;
+    }
+    await act(async () => root.render(<QueryClientProvider client={client}><Detail /></QueryClientProvider>));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await selectSam();
+    expect(container.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Saving…");
+    await act(async () => resolveRefresh(saved));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(container.querySelector<HTMLButtonElement>("button")?.disabled).toBe(false);
+    expect(container.textContent).toContain("Sam");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    const alex = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes("Alex"));
+    await act(async () => alex!.click());
+    expect(routinesApi.update).toHaveBeenLastCalledWith(routine.id, { responsibleUserId: "user-alex", baseRevisionId: "revision-2" });
   });
 
   it("does not save when the current person is selected", async () => {
@@ -101,6 +131,17 @@ describe("RoutineResponsibleUser", () => {
     vi.mocked(accessApi.listUserDirectory).mockRejectedValue(new Error("Unavailable"));
     await render();
     expect(container.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load people");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Unavailable");
+    expect(container.textContent).toContain("Retry");
+  });
+
+  it("keeps a cached person visible without a local alert during a transient directory failure", async () => {
+    await render();
+    vi.mocked(accessApi.listUserDirectory).mockRejectedValue(new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => client.invalidateQueries({ queryKey: queryKeys.access.companyUserDirectory(routine.companyId) }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(container.textContent).toContain("Alex");
+    expect(container.querySelector<HTMLButtonElement>("button")?.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 });

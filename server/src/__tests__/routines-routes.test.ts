@@ -542,12 +542,13 @@ describe("routine routes", () => {
     const app = await createApp({ type: "board", userId: "operator", source: kind === "local" ? "local_implicit" : "session", isInstanceAdmin: kind === "instance-admin", companyIds: [companyId] });
     mockAccessService.canUser.mockResolvedValue(kind === "granted");
     mockRoutineService.getDetail.mockResolvedValue(routine);
-    mockRoutineService.update.mockResolvedValue({ ...routine, responsibleUserId: "operator" });
+    mockRoutineService.update.mockResolvedValue({ ...routine, responsibleUserId: "operator", previousResponsibleUserId: "actual-predecessor" });
     expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(true);
     const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator", baseRevisionId: revisionId });
     expect(res.status).toBe(200);
     expect(mockRoutineService.update).toHaveBeenCalledWith(routineId, expect.objectContaining({ responsibleUserId: "operator", baseRevisionId: revisionId }), expect.objectContaining({ userId: "operator" }));
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "routine.updated", details: expect.objectContaining({ responsibleUserId: "operator" }) }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "routine.updated", details: expect.objectContaining({ responsibleUserId: "operator", previousResponsibleUserId: "actual-predecessor" }) }));
+    expect(res.body).not.toHaveProperty("previousResponsibleUserId");
   });
 
   it("prevents even the assigned agent from transferring routine responsibility", async () => {

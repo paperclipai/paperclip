@@ -4,11 +4,13 @@ import type { RoutineDetail } from "@paperclipai/shared";
 import { Check, ChevronDown, UserRound } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
 import { routinesApi } from "@/api/routines";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { queryKeys } from "@/lib/queryKeys";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "./ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { QueryErrorState, useQueryView } from "./QueryView";
 
 export function RoutineResponsibleUser({ routine }: { routine: RoutineDetail }) {
   const [open, setOpen] = useState(false);
@@ -17,6 +19,7 @@ export function RoutineResponsibleUser({ routine }: { routine: RoutineDetail }) 
     queryKey: queryKeys.access.companyUserDirectory(routine.companyId),
     queryFn: () => accessApi.listUserDirectory(routine.companyId),
   });
+  const directoryView = useQueryView(directory);
   const profiles = buildCompanyUserProfileMap(directory.data?.users);
   const label = routine.responsibleUserId
     ? profiles.get(routine.responsibleUserId)?.label
@@ -27,10 +30,16 @@ export function RoutineResponsibleUser({ routine }: { routine: RoutineDetail }) 
       responsibleUserId,
       baseRevisionId: routine.latestRevisionId,
     }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(routine.companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routine.id) });
+    onSuccess: async (saved) => {
+      queryClient.setQueryData<RoutineDetail>(queryKeys.routines.detail(routine.id), (current) => (
+        current ? { ...current, ...saved } : current
+      ));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(routine.companyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routine.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(routine.companyId, routine.id) }),
+      ]);
     },
   });
 
@@ -81,12 +90,14 @@ export function RoutineResponsibleUser({ routine }: { routine: RoutineDetail }) 
         </p>
       )}
       <p className="text-xs text-muted-foreground">Automatic tasks use this person. Manual runs use the person who starts them.</p>
-      {directory.isError ? <p role="alert" className="text-xs text-destructive">Could not load people. Reload to try again.</p> : null}
-      {change.isError ? (
+      {directoryView.kind === "error" ? (
+        <QueryErrorState error={directoryView.error} size="inline" action="load people" onRetry={directoryView.retry} retrying={directoryView.isFetching} />
+      ) : null}
+      {change.error ? (
         <p role="alert" className="text-xs text-destructive">
           {change.error instanceof ApiError && change.error.status === 409
             ? "This routine changed. Reload before changing responsibility."
-            : change.error instanceof Error ? change.error.message : "Could not change responsibility. Try again."}
+            : describeError(change.error, { action: "change responsibility" }).body}
         </p>
       ) : null}
     </section>

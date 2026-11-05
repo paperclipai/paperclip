@@ -2276,7 +2276,7 @@ export function routineService(
       return createdRoutine;
     },
 
-    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
+    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<(Routine & { previousResponsibleUserId: string | null }) | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
@@ -2336,6 +2336,7 @@ export function routineService(
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }
+      let previousResponsibleUserId: string | null = null;
       const updatedRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
@@ -2346,6 +2347,7 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        previousResponsibleUserId = locked.responsibleUserId;
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
@@ -2470,7 +2472,7 @@ export function routineService(
         }
         return routine;
       });
-      return updatedRoutine;
+      return updatedRoutine ? { ...updatedRoutine, previousResponsibleUserId } : null;
     },
 
     createTrigger: async (
