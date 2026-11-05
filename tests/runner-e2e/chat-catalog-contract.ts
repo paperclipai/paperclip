@@ -260,6 +260,14 @@ export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown
     .every(policy => policy === "anyone" || policy === "human_only");
 }
 
+export function chatCatalogSavedSecretNameIntent(text:string):boolean {
+ const prompt=text.replace(/\bnot (?:the )?value\b/gi,"");
+ const recipients=[...prompt.replace(/Deployment API key/g,"credential").matchAll(/\b(?:[Ff]or|[Tt]o)\s+(?:[Aa]gent\s+)?([A-Z][A-Za-z0-9_-]*)\b/g)];
+ return recipients.every(match=>match[1]==="Morgan")&&prompt.length<=400&&/\b(?:secret|credential|key)\b/i.test(prompt)
+  &&(/\b(?:name|alias|identifier|label)\b/i.test(prompt)||/\bkey\b[^.!?]{0,50}\bunder\b/i.test(prompt))
+  &&/\b(?:saved?|stored?|created?|added|used?|under)\b/i.test(prompt)
+  &&!/\b(?:value|plaintext|password|CEO|Riley|Jordan|another|other person)\b/i.test(prompt);
+}
 export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
@@ -279,6 +287,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     || row.createdByAgentId !== input.agentId || row.createdByUserId || row.addresseeUserId !== b.userId || row.addresseeAgentId
     || row.kind !== "ask_user_questions" || row.status !== "answered" || !chatCatalogHumanQuestionPolicies(row)
     || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1) return;
+  const source = input.runs.find(run => run.id === b.sourceRunId);
   const environmentName = b.companyEnvironmentNameAnswer, savedName=b.companySavedSecretNameAnswer;
   if(environmentName&&savedName)return;
   if (environmentName) {
@@ -294,8 +303,9 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     const parsed=askUserQuestionsPayloadSchema.safeParse(row.payload),qs=parsed.success?parsed.data.questionSet:undefined,q=qs?.questions[0],answer=row.result.answers[0];
     const secrets=input.companySecrets?.filter(secret=>secret.id===savedName.secretId),secret=secrets?.[0];
     if(!qs||qs.questions.length!==1||!q||q.id!==savedName.questionId||q.answerMode!=="text"||!q.required||q.options?.length||q.customAnswer?.enabled||q.initialText!==undefined
-      ||!/^What (?:secret )?key name did you save the deployment (?:API )?key under\?$/i.test(q.prompt)
+      ||!chatCatalogSavedSecretNameIntent(q.prompt)
       ||secrets?.length!==1||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId
+      ||!Number.isFinite(Date.parse(String(row.createdAt)))||!Number.isFinite(Date.parse(source?.startedAt??""))||Date.parse(secret.createdAt)<=Math.max(Date.parse(String(row.createdAt)),Date.parse(source?.startedAt??""))
       ||secret.key!==savedName.value||!/^[a-zA-Z0-9_.-]{1,120}$/.test(secret.key)||!Number.isFinite(Date.parse(secret.createdAt))||Date.parse(secret.createdAt)>Date.parse(String(row.resolvedAt))
       ||answer?.questionId!==q.id||answer.optionIds.length!==0||answer.otherText!==secret.key||createHash("sha256").update(JSON.stringify(row.payload)).digest("hex")!==savedName.payloadHash)return;
   } else if (row.result.answers.some(answer => !!answer.otherText)) return;
@@ -305,7 +315,6 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
   if (!Number.isFinite(resolvedAt) || audits.length !== 1 || !audit || audit.companyId !== input.companyId || audit.entityId !== input.issueId
     || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "ask_user_questions" || audit.details.interactionStatus !== "answered"
     || ((environmentName||savedName) && audit.details.answeredQuestionCount !== 1)) return;
-  const source = input.runs.find(run => run.id === b.sourceRunId);
   const continuations = input.runs.filter(run => run.contextSnapshot?.interactionId === b.interactionId), run = continuations[0];
   if (!source || source.companyId !== input.companyId || source.agentId !== input.agentId || source.runtimeMode !== "native" || source.status !== "succeeded"
     || source.contextSnapshot?.issueId !== input.issueId || source.contextSnapshot.commentId !== input.canonicalComment.id

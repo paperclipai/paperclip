@@ -164,3 +164,10 @@ it.each([false,true])("actual comment handoff chooses native binding unless oper
  }}},refreshIssue:async()=>{},issue:()=>({id:"source",companyId:"company",conversationState:"waiting"}),allRuns:async()=>[run]} as unknown as ChatCatalogContext;
  const state:Record<string,unknown>={currentPersonId:"person"};await expect(companySecretExternalCases[0]!.act!(ctx,state)).rejects.toThrow("NEXT_REAL_HUMAN_PHASE");expect(state.nativeBindingRequired).toBe(!operator);
 });
+
+it.each(["Which name did you use for the saved deployment secret?","What alias identifies the deployment credential you created?"])("accepts equivalent metadata-name intent: %s",prompt=>{
+ const row=savedNameQuestion();row.payload.questionSet!.questions[0]!.prompt=prompt;expect(companySecretQuestionHandoff(row,binding)).toMatchObject({savedSecretName:true});
+});
+it.each(["What name and value did you save for the deployment secret?","What name did you save the deployment secret under for Ada?"])("rejects mixed-value or foreign-recipient metadata: %s",prompt=>{
+ const row=savedNameQuestion();row.payload.questionSet!.questions[0]!.prompt=prompt;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
