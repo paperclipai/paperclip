@@ -13,6 +13,7 @@ import {
   ACP_TOOL_KINDS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { storageFailureDiagnosticsFor } from "../storage/failure-diagnostics.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
 import { readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError } from "./native-runtime/remote-runner-recovery-diagnostics.js";
@@ -435,6 +436,17 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
         }
       }
     }
+    // A bare socket error ("aborted", ECONNRESET) cannot say which storage
+    // read it interrupted; the provider's fixed-shape record can.
+    const storage = storageFailureDiagnosticsFor(error);
+    if (storage && execution.storageOperation === undefined) {
+      execution.storageProvider = storage.provider;
+      execution.storageOperation = storage.operation;
+      execution.storageErrorCode = storage.errorCode;
+      if (storage.httpStatus !== null) execution.storageHttpStatus = storage.httpStatus;
+      if (storage.requestId !== null) execution.storageRequestId = storage.requestId;
+      if (storage.attempts !== null) execution.storageAttempts = storage.attempts;
+    }
     const entry: RunFailureException = {};
     for (const field of ["name", "message", "stack", "code"] as const) {
       const value = read(error, field);
@@ -462,7 +474,7 @@ export function sanitizeRunFailureText(input: string, limit: number): string {
   const normalized = input
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/[\ud800-\udfff]/gu, "\ufffd");
+    .replace(/[\ud800-\udfff]/gu, "�");
   const clean = redactSensitiveText(redactDiagnosticText(redactCurrentUserText(normalized)));
   if (clean.length <= limit) return clean;
   const suffix = "\n[truncated]";
