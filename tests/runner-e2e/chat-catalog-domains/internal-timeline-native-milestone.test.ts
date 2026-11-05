@@ -42,6 +42,21 @@ it("accepts an ordered recorded reassignment without an unrequested human identi
   o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then the task was reassigned to Riley.");
   expect(gradeWorkTimeline(o).passed).toBe(true);
 });
+it.each([
+  { handoff: "Same task reassigned to Riley.", expected: true },
+  { handoff: "Same task reassigned to Morgan.", expected: false },
+  { handoff: "Same task reassigned to Riley by Morgan.", expected: false },
+  { handoff: "Same task continued.", expected: false },
+])("binds reduced-passive task handoffs: $handoff", ({ handoff, expected }) => {
+  const o = fixture();
+  o.reply = `Morgan ran verification which failed and work paused.\n\n## Repair — ${handoff}\nRiley repaired the label and the check passed.`;
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+it("does not move the repair before a reduced-passive handoff", () => {
+  const o = fixture();
+  o.reply = "Morgan ran verification which failed and work paused. Riley repaired the label and the check passed. Same task reassigned to Riley.";
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
 it("accepts the successor's natural ownership transition in the ordered account", () => {
   const o = fixture();
   o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then Riley took over the task.");
@@ -236,7 +251,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v7");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v8");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
