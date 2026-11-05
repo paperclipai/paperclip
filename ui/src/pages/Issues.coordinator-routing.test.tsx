@@ -40,3 +40,13 @@ it.each(["workspace=workspace", "originKind=routine_execution"])("keeps organiza
   try { expect(host.textContent).toContain("Coordinator tasks"); expect(host.textContent).not.toContain("Inbox owner"); }
   finally { cleanup(); }
 });
+
+it.each(["mine", "blocked", "recent", "everything"])("keeps shared %s label links on the Coordinator collection", async view => {
+  const url = `/ORG/issues?view=${view}&label=qa&label=review&sortField=taskId&sortDir=asc&keep=value#saved`;
+  const { host, cleanup } = render(url);
+  try {
+    await vi.waitFor(() => expect(host.textContent).toContain("Coordinator tasks"));
+    expect(host.textContent).not.toContain("Inbox owner");
+    expect(host.querySelector("output")?.textContent).toBe(url);
+  } finally { cleanup(); }
+});
