@@ -5,7 +5,7 @@ import {
   type PluginWorkspaceOperationFailureReason,
 } from "@paperclipai/plugin-sdk";
 import { HttpError } from "../errors.js";
-import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 
 /**
  * How a `workspaceOperation` call failed.
@@ -85,6 +85,18 @@ export function workspaceProviderCallFailure(error: unknown): WorkspaceProviderF
   if (!reason) return new WorkspaceProviderFailureError({ kind: "provider", retryable: true,
     message: "Workspace storage provider reported a failure; retry the same workspace" });
   return new WorkspaceProviderFailureError({ kind: "provider", reason, ...REASONS[reason] });
+}
+
+/**
+ * Before a call to a ready provider: a worker that is missing, or not running and without
+ * `workspaceOperation`, refuses the call retryably. A restart removes or replaces the worker
+ * while the plugin stays ready, and its methods are unknown until it runs. A running worker
+ * without the method is an unsupported provider, so this returns null for it.
+ */
+export function workspaceWorkerRefusal(pluginId: string, worker: { status?: string; supportedMethods?: readonly string[] } | undefined) {
+  if (worker?.supportedMethods?.includes("workspaceOperation") || worker?.status === "running") return null;
+  return workspaceProviderCallFailure(new PluginWorkerUnavailableError({ pluginId, workerStatus: worker?.status ?? null,
+    message: `Cannot call "workspaceOperation" — worker for "${pluginId}" is ${worker?.status ?? "not registered"}` }));
 }
 
 /** Find a provider call failure through setup's error wrappers. */

@@ -28,8 +28,7 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
-import { workspaceProviderCallFailure } from "./workspace-provider-failure.js";
-import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { workspaceProviderCallFailure, workspaceWorkerRefusal } from "./workspace-provider-failure.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -61,14 +60,9 @@ async function provider(
       ),
     );
   const worker = workers?.getWorker(pluginId);
-  if (beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
-    isWorkspaceProvider(plugin.manifestJson) && !worker?.supportedMethods?.includes("workspaceOperation") &&
-    (!worker || worker.status !== "running")) {
-    // A restart removes or replaces the worker while the plugin stays ready, and its methods are unknown until it
-    // runs. A running worker without the method is an unsupported provider and keeps the conflict below.
-    throw workspaceProviderCallFailure(new PluginWorkerUnavailableError({ pluginId, workerStatus: worker?.status ?? null,
-      message: `Cannot call "workspaceOperation" — worker for "${pluginId}" is ${worker?.status ?? "not registered"}` }));
-  }
+  const refusal = beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
+    isWorkspaceProvider(plugin.manifestJson) ? workspaceWorkerRefusal(pluginId, worker) : null;
+  if (refusal) throw refusal;
   if (
     !workers ||
     !plugin ||
@@ -280,13 +274,7 @@ export async function preparePluginWorkspace(
     throw conflict(
       "An existing local workspace cannot change storage providers",
     );
-  const selectedProvider = await provider(
-    db,
-    workers,
-    input.companyId,
-    pluginId,
-    true,
-  );
+  const selectedProvider = await provider(db, workers, input.companyId, pluginId, true);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
     throw conflict("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", { reason: "fresh_workspace_storage_unsupported" });
