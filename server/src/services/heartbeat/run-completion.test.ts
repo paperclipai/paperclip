@@ -27,6 +27,8 @@ import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
+import { EnvironmentRunError } from "../environment-run-orchestrator.js";
+import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -44,6 +46,7 @@ vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 const diagnosticNativeFixture = vi.hoisted(() => ({
   enabled: false,
   retireWarm: false,
+  beforeWarmClose: undefined as (() => Promise<void>) | undefined,
   backendOptions: undefined as Parameters<typeof import("../../vendor/paperclip-runner/index.js").createNativeSessionBackend>[1],
 }));
 vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
@@ -63,6 +66,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
       const transport = diagnosticNativeFixture.backendOptions!.codexTransportFactory!();
       const session = { close: async ({ reason }: { reason: string }) => { await transport.close(reason); } };
       await options.onSession?.(session as never);
+      await diagnosticNativeFixture.beforeWarmClose?.();
       if (diagnosticNativeFixture.retireWarm) await closeIdleWarmNativeSessionsForRestart();
       return { result: { summary: "accepted result" }, terminal: { runTerminalState: "succeeded" }, turnId: "test-turn",
         normalizedSessionId: options.input.session.normalizedSessionId, providerSessionId: "synthetic-provider",
@@ -173,12 +177,52 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
-  it.each([false, true])("finishes accepted output before ordinary lease teardown without writing to a retired recorder (stalled append=%s)", async stalledAppend => {
+  it.each(["ordinary", "stalled append", "object admission"] as const)("finishes accepted output before ordinary lease teardown without writing to a retired recorder (%s)", async mode => {
+    const stalledAppend = mode === "stalled append", stalledAdmission = mode === "object admission";
     const f = await fixture({ runtimeMode: "native",
       resultJson: { durable: "accepted result" } });
     const workspace = await realpath(await mkdtemp(join(tmpdir(), "diagnostic-completion-")));
     onTestFinished(() => rm(workspace, { recursive: true, force: true }));
-    const store = stalledAppend ? createDurableRunLogStore({ basePath: join(workspace, "run-logs") }) : objectLogFixture();
+    let holdUploads = false, uploadEntered = false, finalizeEntered = false;
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
+    const store = stalledAppend ? createDurableRunLogStore({ basePath: join(workspace, "run-logs") }) : objectLogFixture(async input => {
+      if (stalledAdmission && holdUploads && input.objectKey.includes("/objects/")) {
+        uploadEntered = true;
+        await uploadGate;
+      }
+    });
+    let latestOutputSeq = 0, admittedBytes = 0;
+    const diagnosticAdmissions: Array<{ chunk: string; admitted?: boolean; error?: string }> = [];
+    if (store.enqueue) {
+      const originalEnqueue = store.enqueue.bind(store);
+      vi.spyOn(store, "enqueue").mockImplementation(async (handle, event) => {
+        latestOutputSeq = event.seq ?? latestOutputSeq;
+        const observation = event.chunk.includes("runnerd diagnostic") ? { chunk: event.chunk } as typeof diagnosticAdmissions[number] : undefined;
+        if (observation) diagnosticAdmissions.push(observation);
+        let receipt;
+        try { receipt = await originalEnqueue(handle, event); if (observation) observation.admitted = true; }
+        catch (error) { if (observation) observation.error = error instanceof Error ? error.message : String(error); throw error; }
+        if (holdUploads) admittedBytes += Buffer.byteLength(JSON.stringify({ ts: event.ts,
+          attemptId: handle.attemptId, stream: event.stream, chunk: event.chunk, seq: event.seq }) + "\n");
+        return receipt;
+      });
+    }
+    const originalFinalize = store.finalize.bind(store);
+    vi.spyOn(store, "finalize").mockImplementation((...args) => {
+      finalizeEntered = true;
+      return originalFinalize(...args);
+    });
+    const readLog = async () => {
+      let content = "", offset = 0;
+      do {
+        const page = await store.read(output.handle!, { offset, limitBytes: 4 * 1024 * 1024 });
+        content += page.content;
+        if (page.nextOffset === undefined) break;
+        offset = page.nextOffset;
+      } while (true);
+      return { content };
+    };
     let releaseAppend!: () => void, observeAppend!: () => void;
     const appendGate = new Promise<void>(resolve => { releaseAppend = resolve; });
     const appendStarted = new Promise<void>(resolve => { observeAppend = resolve; });
@@ -207,17 +251,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await new Promise<void>((resolve, reject) => { api.once("error", reject); api.listen(0, "127.0.0.1", resolve); });
     onTestFinished(() => new Promise<void>(resolve => api.close(() => resolve())));
     diagnosticNativeFixture.enabled = true;
-    diagnosticNativeFixture.retireWarm = stalledAppend;
+    diagnosticNativeFixture.retireWarm = stalledAppend || stalledAdmission;
+    if (stalledAdmission) diagnosticNativeFixture.beforeWarmClose = async () => {
+      await store.flush!(output.handle!);
+      holdUploads = true;
+      const target = 8 * 1024 * 1024 - 1;
+      while (admittedBytes < target) {
+        const overhead = Buffer.byteLength(JSON.stringify({ ts: new Date().toISOString(),
+          attemptId: output.handle!.attemptId, stream: "stdout", chunk: "", seq: latestOutputSeq + 1 }) + "\n");
+        const chunk = "x".repeat(Math.min(64 * 1024, target - admittedBytes - overhead));
+        await handlers.onLog("stdout", chunk);
+      }
+      expect(admittedBytes).toBe(target);
+      expect(uploadEntered).toBe(true);
+    };
     let completed = false;
     const diagnosticWrites: Promise<void>[] = [];
     const finishing = (async () => {
-      const adapter = await executePaperclipNativeSession({ db, execution: execution as never,
-        runnerInstanceId: "synthetic-controller", useRunnerd: true, onLog: (stream, chunk) => {
-          const write = handlers.onLog(stream, chunk);
-          if (chunk.includes("runnerd diagnostic")) diagnosticWrites.push(write);
-          return write;
-        },
-        runnerEnvironment: { HOME: workspace, CODEX_HOME: join(workspace, "synthetic-codex-home") } });
       const event: PrpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1,
         sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1, sourceKind: "runner",
         runId: f.run.id, normalizedSessionId: execution.session.normalizedSessionId,
@@ -227,6 +277,13 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         nativeSource: { sourceInstanceId: event.sourceInstanceId, sourceEventId: event.sourceEventId,
           sourceSeq: event.sourceSeq, protocolSchemaVersion: 1, canonicalPayload: event as unknown as Record<string, unknown> } });
       if (!stalledAppend) await handlers.onPersistedNativeLog!(persisted.row.seq, formatNativeRunLogEvent(event));
+      const adapter = await executePaperclipNativeSession({ db, execution: execution as never,
+        runnerInstanceId: "synthetic-controller", useRunnerd: true, onLog: (stream, chunk) => {
+          const write = handlers.onLog(stream, chunk);
+          if (chunk.includes("runnerd diagnostic")) diagnosticWrites.push(write);
+          return write;
+        },
+        runnerEnvironment: { HOME: workspace, CODEX_HOME: join(workspace, "synthetic-codex-home") } });
       await db.update(heartbeatRuns).set({ status: "succeeded", nativePhase: "committed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
       Object.assign(f.run, await read(f.run.id));
       f.agent.adapterType = "paperclip_runner";
@@ -241,12 +298,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     })();
     void finishing.catch(() => undefined);
     try {
+      if (stalledAdmission) {
+        await vi.waitFor(() => expect(finalizeEntered).toBe(true), { timeout: 10_000 });
+        expect(diagnosticWrites.length).toBeGreaterThan(0);
+        releaseUpload();
+      }
       if (stalledAppend) {
         await appendStarted;
         await vi.waitFor(() => expect(completed).toBe(true), { timeout: 10_000 });
       }
       const { persisted, event } = await finishing;
-      const before = await store.read(output.handle!, { limitBytes: 65536 });
+      const before = await readLog();
       expect(before.content).toContain("accepted output for this exact run");
       const settled = await read(f.run.id);
       expect(settled).toMatchObject({ companyId: f.run.companyId, status: "succeeded", resultJson: { durable: "accepted result" } });
@@ -270,23 +332,35 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId: f.run.id, companyId: f.run.companyId,
         agentId: f.run.agentId, status: "succeeded", providerResourceDisposition: "destroy" });
       expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledOnce();
-      const after = await store.read(output.handle!, { limitBytes: 65536 });
+      const after = await readLog();
       expect(after.content).toBe(before.content);
       if (!stalledAppend) {
         const coverage = createNativeRunLogCoverageVerifier(db, f.run.companyId, f.run.id, { redactChunks: chunk => [chunk] });
         await coverage.write(Buffer.from(after.content));
         expect(await coverage.finish()).toBe(persisted.row.seq);
       }
+      if (stalledAdmission) {
+        await Promise.allSettled(diagnosticWrites);
+        expect(diagnosticAdmissions.length).toBeGreaterThan(0);
+        const storedChunks = before.content.trimEnd().split("\n").map(line => JSON.parse(line).chunk);
+        for (const admission of diagnosticAdmissions) {
+          expect(admission).toMatchObject({ admitted: true });
+          expect(admission.error).toBeUndefined();
+          expect(storedChunks).toContain(admission.chunk);
+        }
+      }
       const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
       expect(events.filter(event => (event.payload as { reason?: string } | null)?.reason === "object_log_persistence_failed")).toEqual([]);
     } finally {
       releaseAppend();
+      releaseUpload();
       await Promise.allSettled(diagnosticWrites);
       await finishing;
       if (stalledAppend) expect(await read(f.run.id)).toMatchObject({ logBytes: null, logSha256: null });
       await closeIdleWarmNativeSessionsForRestart();
       diagnosticNativeFixture.enabled = false;
       diagnosticNativeFixture.retireWarm = false;
+      diagnosticNativeFixture.beforeWarmClose = undefined;
     }
   });
 
@@ -848,6 +922,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRunSetup(f.setup(error, scenario === "started"));
     const failed = await read(f.run.id);
     expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "remote_workspace_prepare_timeout" : "setup_failed" });
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const providerError = Object.assign(new Error("Sandbox abc is not in a valid state: stopping /home/daytona/secret"), { statusCode: 400 });
+    const resume = new ReusableSandboxResumeError({ provider: "daytona", providerLeaseId: "lease-1", cause: providerError });
+    // The orchestrator wraps the runtime error, exactly as staging recorded it.
+    const wrapped = new EnvironmentRunError("lease_acquire_failed",
+      `Failed to acquire lease for environment "Paperclip Computer" (sandbox): ${resume.message}`, { cause: resume });
+    const error = scenario === "untrusted" ? new Error(wrapped.message) : wrapped;
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reusable_sandbox_resume_failed" : "setup_failed" });
+    // The closed-label cause is recorded; provider text never is.
+    expect(failed.error).toContain("cause=provider_error status=400");
+    expect(failed.error).not.toContain("/home/daytona");
     if (scenario === "fresh") {
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);

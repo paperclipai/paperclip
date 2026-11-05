@@ -19,7 +19,11 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
       : {}),
     environment: "node",
-    ...(process.env.GITHUB_ACTIONS === "true" ? { maxWorkers: Math.min(4, availableParallelism()) } : {}),
+    // Hermetic files also launch Runner and sidecar processes. Reserve CPU
+    // capacity for their startup within the original readiness deadlines.
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? { maxWorkers: Math.min(4, Math.max(1, Math.floor(availableParallelism() / 2))) }
+      : {}),
     sequence: { sequencer: RunnerSequencer },
     include: [
       "src/**/*.test.ts",

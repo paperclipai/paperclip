@@ -22,7 +22,6 @@ export function SentryGate() {
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
 
   const dsn = session?.sentryDsn;

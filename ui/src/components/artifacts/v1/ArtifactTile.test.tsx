@@ -64,6 +64,26 @@ describe("the Artifacts page tiles", () => {
     const print = container.querySelector<HTMLElement>("[data-artifact-print]");
     expect(print?.style.width).toBe("245px");
     expect(print?.style.height).toBe("163.33px");
+    const front = container.querySelector<HTMLElement>("[data-artifact-front]");
+    expect(front).not.toBeNull();
+    expect(front?.contains(print)).toBe(true);
+    expect(front?.style.position).toBe("absolute");
+    expect(print?.style.position).toBe("");
+  });
+
+  it("gives a single picture the same hover-lift hook as a sheet", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ArtifactTileGrid>
+            <ArtifactSingleTile subject={testSubject({ kind: "image", filename: "cap.png", thumbnailUrl: "/cap.png", aspect: 3 / 2 })} now={NOW} />
+          </ArtifactTileGrid>
+        </MemoryRouter>,
+      ),
+    );
+    const front = container.querySelector("[data-artifact-front]");
+    expect(front).not.toBeNull();
+    expect(front?.querySelector("[data-artifact-print]")).not.toBeNull();
   });
 
   it("plays a video's own stream in the print when it has no poster, never an image tag on the video", () => {

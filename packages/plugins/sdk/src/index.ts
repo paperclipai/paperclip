@@ -464,6 +464,10 @@ export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readE
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
 export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData, readEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
 export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
+export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
+export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 

@@ -116,12 +116,21 @@ export function seedIssueDetailCache(
   return merged;
 }
 
-/** Seed saved projections without replacing lists already read or refreshed. */
+/** Retain authenticated core aliases and saved projections without replacing
+ * data already read or refreshed. Core entries never fill full-detail keys. */
 export function seedIssueDetailProjections(
   queryClient: QueryClient,
   issue: Issue,
   issueRef?: string | null,
 ) {
+  // Canonical navigation must not discard metadata just fetched through a UUID.
+  // Only the response's own refs are aliases; an arbitrary requested ref is not.
+  for (const ref of getIssueDetailCacheRefs(issue)) {
+    const key = [...queryKeys.issues.detail(ref), "core"];
+    if (queryClient.getQueryData(key) === undefined) {
+      queryClient.setQueryData(key, issue);
+    }
+  }
   const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
   if (issue.planDocument !== undefined && queryClient.getQueryData(planKey) === undefined) {
     queryClient.setQueryData(planKey, issue.planDocument);

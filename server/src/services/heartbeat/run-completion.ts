@@ -9,6 +9,7 @@ import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } f
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
 import { RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
+import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -16,6 +17,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -1354,9 +1356,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const remoteWorkspacePreparationTimeout = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof RemoteWorkspacePreparationTimeoutError
       ? outerErr : null;
+    // A preserved sandbox that could not be resumed before provider dispatch
+    // is retried with the same bounded bootstrap budget. The retry resumes the
+    // same recorded lease; it never creates a replacement or a second executor.
+    const reusableSandboxResumeFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findReusableSandboxResumeError(outerErr) : null;
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
+      reusableSandboxResumeFailure?.code ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1409,6 +1417,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
       ...controllerLeaseLossResultJson(signal),
+      ...reviewedChatBindingDenialResultJson(outerErr),
       ...(!providerDispatchStarted
         ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
         : {}),

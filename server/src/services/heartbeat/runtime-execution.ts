@@ -1,6 +1,9 @@
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
+import { readNativePostResultFailureDiagnostic } from "../native-runtime/native-post-result-failure.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+import { describeFailedAttachment } from "../native-runtime/remote-warm-session-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -1143,6 +1146,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         : false;
     if (nativeResumeScheduled) {
       input.effects.onNativeSessionResumeScheduled();
+      const failedAttachment = describeFailedAttachment(adapterErr instanceof Error ? adapterErr.message : null);
+      if (failedAttachment) await Promise.resolve(onLog("stderr", `[paperclip] ${failedAttachment}\n`)).catch(() => undefined);
       throw new NativeSessionResumeScheduledError(adapterErr);
     }
     // Adapter (or its restore finally) threw — or the finalize record
@@ -1150,12 +1155,16 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // state. Best-effort record finalize=failed so the dependent readiness
     // check keeps the gate closed instead of waking on stale local state,
     // and surface the original error to the caller.
+    // The control code can be a fencing label; the closed diagnostic says
+    // what actually failed after an accepted result (no provider text).
+    const postResultFailure = readNativePostResultFailureDiagnostic(adapterErr);
     try {
       await recordWorkspaceFinalize("failed", {
         errorMessage:
           adapterErr instanceof Error
             ? adapterErr.message
             : String(adapterErr),
+        ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
       });
     } catch (recordErr) {
       logger.warn(
@@ -1192,6 +1201,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           projectRunStatus: true,
           failureScope: "workspace",
           permanent: unrecoverable,
+          failureCause: postResultFailure
+            ? `native_post_result_failure: category=${postResultFailure.category}`
+            : remoteWorkspaceFailureCause(adapterErr),
         });
         input.effects.onNativeWorkspaceFinalizeScheduled();
         throw new NativeWorkspaceFinalizeScheduledError(

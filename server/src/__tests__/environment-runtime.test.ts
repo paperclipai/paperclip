@@ -1,4 +1,4 @@
-import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -3804,7 +3804,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentResumeLease") {
-          throw new Error("stale sandbox");
+          // The real worker RPC path: a message and a numeric RPC code, with the
+          // provider status only in the validated resume-error envelope.
+          throw new JsonRpcCallError({ code: -32000, message: "stale sandbox /home/daytona/private-path",
+            data: environmentResumeErrorData(Object.assign(new Error("private"), { statusCode: 409 })) });
         }
         if (method === "environmentDestroyLease") {
           return undefined;
@@ -3840,7 +3843,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           id: executionWorkspaceId,
           mode: "shared_workspace",
         },
-      })).rejects.toThrow("the lease was preserved and no replacement was created");
+      })).rejects.toThrow(
+        // The provider refusal is named by closed labels; its text stays off the record.
+        /could not be resumed \(cause=provider_error status=409\); the lease was preserved and no replacement was created\.$/,
+      );
     } finally {
       now.mockRestore();
     }

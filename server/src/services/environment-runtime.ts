@@ -1,4 +1,5 @@
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
+import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
@@ -7,7 +8,7 @@ import { flushDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, wr
 import { executeEnvironmentTask, pluginEnvironmentSupportsTasks, settleDispatchedEnvironmentTask } from "./environment-task-runtime.js";
 import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
-import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
+import { nativeWorkspaceExportPendingForLease, nativeWorkspaceExportPendingForResource } from "./native-runtime/native-workspace-finalization-state.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { historicalProviderCredentials } from "./historical-provider-credentials.js";
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
@@ -706,26 +707,7 @@ export interface EnvironmentRuntimeDriver {
   flushDeferredOrphanCleanups?(): Promise<{ recovered: number; pending: number }>;
 }
 
-/** A reusable sandbox could not be resumed, but has not been proven lost. */
-export class ReusableSandboxResumeError extends Error {
-  readonly provider: string;
-  readonly providerLeaseId: string;
-
-  constructor(input: {
-    provider: string;
-    providerLeaseId: string;
-    cause?: unknown;
-  }) {
-    super(
-      `Reusable sandbox lease "${input.providerLeaseId}" could not be resumed; ` +
-        "the lease was preserved and no replacement was created.",
-      input.cause === undefined ? undefined : { cause: input.cause },
-    );
-    this.name = "ReusableSandboxResumeError";
-    this.provider = input.provider;
-    this.providerLeaseId = input.providerLeaseId;
-  }
-}
+export { ReusableSandboxResumeError };
 
 export class RunnerHarnessBackupUnavailableError extends Error {
   readonly providerLeaseId: string;
@@ -1720,7 +1702,10 @@ function createSandboxEnvironmentDriver(
               )
           : [];
         for (let index = reusableCandidateLeases.length - 1; index >= 0; index--) {
-          if (await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!)) reusableCandidateLeases.splice(index, 1);
+          // Protected allocations must stay out of both selection and obsolete cleanup.
+          if (await nativeWorkspaceExportPendingForResource(db, reusableCandidateLeases[index]!, input.heartbeatRunId)
+            || await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!))
+            reusableCandidateLeases.splice(index, 1);
         }
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
@@ -2056,7 +2041,10 @@ function createSandboxEnvironmentDriver(
               )
           : [];
       for (let index = reusableCandidateLeases.length - 1; index >= 0; index--) {
-        if (await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!)) reusableCandidateLeases.splice(index, 1);
+        // Protected allocations must stay out of both selection and obsolete cleanup.
+        if (await nativeWorkspaceExportPendingForResource(db, reusableCandidateLeases[index]!, input.heartbeatRunId)
+          || await legacyShutdownWorkspaceResourceProtected(db, reusableCandidateLeases[index]!))
+          reusableCandidateLeases.splice(index, 1);
       }
       const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
         reusableSandboxLeaseScopeMatches({

@@ -368,7 +368,8 @@ function admitTaskRetry(input: TaskRetryRequest) {
         // A completed preservation still owns its snapshot evidence. Bind the
         // new intent so sibling holds can select that same continuation, without
         // repeating recovery or renewing its attempt budget.
-        if (previous.state === "complete" || previous.state === "running") {
+        if (previous.state === "complete" || previous.state === "running" || (previous.state === "exhausted"
+            && previous.failure?.retryClass === "use_alternative_strategy" && !previous.freshAttemptRunId)) {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
           continue;

@@ -2103,6 +2103,29 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
   });
 
+  it("recovers an unclaimed remote startup that a graceful shutdown suspended during preparation", async () => {
+    const fixture = await seedRun("REMOTE-UNCLAIMED-DRAINED");
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const heartbeat = heartbeatService(fixture.db);
+    try {
+      await expect(heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [fixture.runId]))
+        .resolves.toMatchObject({ restartSuspendedRunIds: [fixture.runId] });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    const [suspended] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(suspended).toMatchObject({ phase: "observed", leaseOwner: null, controllerBootId: null,
+      recoveryState: "awaiting_runner_reattach" });
+
+    const dispositions = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(dispositions).toEqual([
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 0, controllerGeneration: 1 }),
+    ]);
+    expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
   it.each([false, true])("yields an original preparation after remote recovery claims its run (expired lease=%s)", async (expired) => {
     const fixture = await seedRun(`REMOTE-PREPARATION-${expired}`);
     await fixture.db.update(heartbeatRuns).set({
@@ -2157,7 +2180,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   });
 
-  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
+  it.each(["claimed", "generation", "unexpired-lease", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
     "keeps remote startup recovery blocked with contradictory %s evidence", async (kind) => {
       const fixture = await seedRun(`REMOTE-${kind}`);
       let profile = fixture.preparedProfile;
@@ -2180,6 +2203,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       }).where(eq(heartbeatRuns.id, fixture.runId));
       if (kind === "claimed" || kind === "generation") await fixture.db.update(nativeRunFinalizations)
         .set(kind === "claimed" ? { attempt: 1 } : { controllerGeneration: 1 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (kind === "unexpired-lease") await fixture.db.update(nativeRunFinalizations)
+        .set({ leaseExpiresAt: new Date(Date.now() + 60_000) })
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
       if (kind === "launch" || kind === "provider-event") await fixture.db.insert(heartbeatRunEvents).values({
         companyId, runId: fixture.runId, agentId, seq: 1, stream: "system", level: "info",
