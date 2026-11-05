@@ -31,6 +31,11 @@ describe("queued dependency wait presentation", () => {
       .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
     expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: true }))
       .toMatchObject({ state: "waiting_for_user", userAction: "approval" });
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: false,
+      action: { evidence: {}, status: "active" } as never })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: waitingRun, agent, paused: false, approval: false,
+      retryWait: { id: "retry", sourceRunId: waitingRun.id, requestedAt: new Date(), preparationStatus: "failed" } }))
+      .toMatchObject({ state: "failed", canRetry: true });
   });
 });
 

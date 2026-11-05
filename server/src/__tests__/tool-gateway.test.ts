@@ -681,6 +681,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
         connectionConfig: { sourceTemplateKey: "github" },
       });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", properties: { name: { type: "string" }, private: { type: "boolean" } },
+        required: ["name"], additionalProperties: false,
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
       const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
         connectionId: connection.id, toolName: catalogEntry.toolName });
       await allowToolsForAgent(db, company.id, agent.id, [toolName]);
@@ -688,7 +692,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         policyType: "require_approval", selectors: { connectionId: connection.id }, priority: 10 });
       const gateway = createTestToolGatewayService(db);
       const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
-      const parameters = { key: "name", value: "example-prototype" };
+      const parameters = { name: "example-prototype", private: true };
       await expect(gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters }))
         .rejects.toMatchObject({ reasonCode: "approval_required" });
       expect(remote.requests).toHaveLength(0);
@@ -700,6 +704,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       await expect(gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters,
         approvedActionRequestId: action!.id })).rejects.toMatchObject({ reasonCode: "github_access_denied" });
       expect(remote.requests).toHaveLength(1);
+      expect(remote.requests[0]?.body).toMatchObject({ method: "tools/call",
+        params: { name: "create_repository", arguments: parameters } });
       const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, action!.invocationId));
       expect(invocation).toMatchObject({ status: "failed", errorCode: "github_access_denied",
         errorMessage: denied });
@@ -709,7 +715,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       fail = false;
       await db.delete(toolPolicies).where(eq(toolPolicies.companyId, company.id));
       const result = await gateway.executeTool({ sessionToken: session.token, tool: toolName,
-        parameters: { key: "different", value: "permitted" } });
+        parameters: { name: "permitted-prototype", private: true } });
       expect(result.status).toBe("completed");
       expect(remote.requests).toHaveLength(2);
     } finally { await remote.close(); }
