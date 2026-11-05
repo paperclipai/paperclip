@@ -29,9 +29,8 @@ function websiteChecklistChecks(markdown: string): boolean[] {
         const overflow = /\boverflow(?:ing)?\b/i.exec(action);
         const restriction = /\b(?:on|with|using|against)\s+(.+)$/i.exec(action)?.[1];
         const qualified = !!restriction
-          && /\b(?:cached|stale|outdated|previous|old|archived)\b/i.test(restriction)
-          && /\b(?:build|version|snapshot|artifact|bundle)\b/i.test(restriction)
-          && !/\b(?:any|all|every|current|live|selected|375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
+          && /^(?:(?:a|an|the|any|all|every|this|that|these|those)\s+)?(?:cached|stale|outdated|previous|old|archived)\s+(?:build|version|snapshot|artifact|bundle)s?\b/i.test(restriction)
+          && !/\b(?:current|live|selected|375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
         return !!target && (!overflow || target.index < overflow.index) && !(affirmative && qualified);
       }));
   };

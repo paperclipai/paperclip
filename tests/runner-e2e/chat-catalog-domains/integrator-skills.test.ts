@@ -96,3 +96,7 @@ it("keeps the required viewport review when a separate restriction forbids testi
 it("rejects a universal execution restriction despite a separately stated viewport check", () => {
  expect(preservesWebsiteChecklist(`${websiteChecklist.join("\n")}; do not perform the check using any browser.`)).toBe(false);
 });
+
+it("keeps a quantified noncurrent artifact restriction separate from a universal review waiver", () => {
+ expect(preservesWebsiteChecklist(`${websiteChecklist.join("\n")}; do not perform the check on any cached build.`)).toBe(true);
+});
