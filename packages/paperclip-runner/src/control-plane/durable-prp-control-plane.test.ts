@@ -79,6 +79,20 @@ it("admits only source maintenance while the authenticated owner differs", async
   } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
+it("keeps already-dispatching target work independent of predecessor completion", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-target-dispatch-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+    authorityRunId: identity.runId });
+  try {
+    core.queueCommand("turn.start", { text: "Current target work" });
+    const settled = vi.spyOn(core, "semanticToolResultsSettled").mockReturnValue(false);
+    expect(() => core.enableSemanticInputDispatch(identity)).not.toThrow();
+    expect(settled).not.toHaveBeenCalled();
+    expect(core.queueCommand("session.goal.set", { status: "active" }).type).toBe("session.goal.set");
+    expect(() => core.enableSemanticInputDispatch({ ...identity, runId: "foreign" })).toThrow("source_attachment_pending");
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 it("recognizes a complete unclaimed bootstrap through cold checkpoint restoration", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-unclaimed-bootstrap-"));
   const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });

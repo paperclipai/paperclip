@@ -2232,8 +2232,11 @@ export class DurablePrpControlPlane {
 
   enableSemanticInputDispatch(identity: DurableRecoveryIdentity): void {
     if ((this.#authorityRunId() !== undefined && this.#authorityRunId() !== identity.runId)
-      || canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition
-      || this.#identity.runId === this.#semanticInputSourceRunId
+      || canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    if (this.#semanticInputMode === "dispatch") return;
+    if (this.#identity.runId === this.#semanticInputSourceRunId
       || this.activeRunnerConnectionCount() !== 1 || !this.semanticToolResultsSettled()) {
       throw new Error("native_runner_source_attachment_pending");
     }

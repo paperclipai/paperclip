@@ -89,7 +89,20 @@ another provider resume.
 If controller-local preparation is absent, `recoveryLaunch: { requirements }`
 supplies frozen source facts to a fresh authorized preparation. It neither
 replaces the ordinary source configuration nor populates its cache. It requires
-exact source identity and a preparer. A process owner may use the same data to
+exact source identity, a preparer and an authenticated `authorityRunId`. Same-run
+recovery supplies that same run ID. The owner must remain available through the
+transport's lifetime; losing it blocks command admission and semantic dispatch.
+The immutable recorded launch policy carries through later warm attachment.
+Explicit target settings must be effectively compatible under the provider
+factory's defaults; authenticated context and instruction grants retain their
+existing precedence and compatibility checks.
+
+Recovered interrupted attachment releases its source dispatch hold after the
+fresh target snapshot and checkpoint persist and the recovery-completion callback succeeds.
+Callback or checkpoint failure keeps that completion gate available for retry.
+Cancellation cleanup remains retain-only.
+
+A process owner may use the same data to
 adopt its verified existing incarnation without spawning another process. These
 checks do not establish vendor restore inertness, rollout fsync or physical
 process retirement; paired provider qualification remains necessary.

@@ -18,7 +18,7 @@ const read = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const absent = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
 const kill = (pid: number | null) => { if (pid) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
 
-async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"], nativeSource = false, homeMode: "isolated" | "preconfigured" = "isolated") {
+async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"], nativeSource = false, homeMode: "isolated" | "preconfigured" = "isolated", disableCodexWebSearch = false) {
   const root = await mkdtemp(join(tmpdir(), "runner-source-reconciliation-"));
   const home = join(root, "empty-codex-home"); await mkdir(home);
   const report = join(root, "completion.json");
@@ -30,6 +30,7 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(root, "--call-log", join(root, "calls"), "--record-process-start", "--durable-turn-ids", ...(nativeSource ? ["--terminal-result-file", report] : [])),
     stateDirectory: root, sourceCodexHome: home, prpIdentity: identity, homeMode,
+    ...(disableCodexWebSearch ? { disableCodexWebSearch: true } : {}),
     ...(homeMode === "preconfigured" ? { environment: { ...process.env, HOME: home, CODEX_HOME: home } } : {}),
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
     ...(registration ? { controlPlaneRegistration: registration } : {}),
@@ -89,7 +90,7 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
     await vi.waitFor(() => { expect(absent(evidence.runnerPid!)).toBe(true); expect(absent(evidence.codexPid!)).toBe(true); });
     expect((await read(runnerFile)).lifecycle).toBe("ready");
     const recover = (overrides: Partial<CapabilityRunnerdCodexTransportOptions> = {}) => {
-      const bundle = createCapabilityRunnerdCodexTransport({ ...options, sourceRecoveryVersion: 1, resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId }, onRecoveryAccountingEvent: async () => {}, ...overrides, get authorityRunId() { return overrides.authorityRunId ?? "run-target"; } });
+      const bundle = createCapabilityRunnerdCodexTransport({ ...options, sourceRecoveryVersion: 1, resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId }, onRecoveryAccountingEvent: async () => {}, ...overrides, get authorityRunId() { return Object.hasOwn(overrides, "authorityRunId") ? overrides.authorityRunId : "run-target"; } });
       bundles.push(bundle); return bundle;
     };
     return { root, options, identity, thread, runnerFile, providerFile, coreFile, calls, complete, settled, recover, dispose, nativeIdentity, execution, nativeSnapshot };
@@ -163,7 +164,7 @@ it.each(["attach", "suspend"] as const)("reconciles killed source then uses ordi
   } finally { await fixture.dispose(); }
 }, 30_000);
 
-it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless source %s without replacing the ordinary source configuration", async mode => {
+it.each([["launch", "default"], ["adopt", "default"], ["adopt-denied", "default"], ["launch", "saved"], ["launch", "conflict"]] as const)("prepares a cacheless source %s with %s policy without replacing the ordinary source configuration", async (mode, policy) => {
   let authority: DurablePrpControlPlane | null = null;
   const server = createServer();
   server.on("upgrade", (request, socket, head) => {
@@ -181,7 +182,7 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
   };
   let cleanup = async () => {};
   try {
-    const fixture = await sourceFixture(registration); cleanup = fixture.dispose;
+    const fixture = await sourceFixture(registration, false, "isolated", policy !== "default"); cleanup = fixture.dispose;
     const before = await read(fixture.coreFile), provider = before.runAttachTemplate.provider;
     before.preparedLaunchConfigurations = [{ identity: fixture.identity, configurationId: "old-source-configuration" }];
     await writeFile(fixture.coreFile, JSON.stringify(before));
@@ -196,8 +197,10 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
         codexHome: join(fixture.root, "codex-home"), codexCommand: fakeCodex, providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "" }) }));
     expect((await prepare(requirements)).provider).toEqual(provider); prepare.mockClear();
     const binary = fixture.options.runnerBinary;
-    const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1, authorityRunId: "prepared-target",
+    let owner: string | undefined = "prepared-target";
+    const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1, get authorityRunId() { return owner; },
       recoveryLaunch: { requirements }, prepareLaunch: prepare,
+      disableCodexWebSearch: policy === "conflict" ? false : undefined,
       runnerArtifact: { version: "0.3.0", digest: `sha256:${createHash("sha256").update(await readFile(binary)).digest("hex")}` },
       controlPlaneRegistration: registration,
       runnerProcessLauncher: spec => {
@@ -209,6 +212,16 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
         }) };
       },
     };
+    if (mode === "launch") {
+      const launch = { ...fixture.options, ...sourceOptions,
+        resumeProviderSession: { driverSessionId: fixture.thread.id, providerSessionId: fixture.thread.sessionId } };
+      for (const authorityRunId of [undefined, "", "  "]) {
+        expect(() => createCapabilityRunnerdCodexTransport({ ...launch, authorityRunId }))
+          .toThrow("recovery_launch_requirements_invalid");
+      }
+      expect(() => createCapabilityRunnerdCodexTransport({ ...launch, authorityRunId: fixture.identity.runId })).not.toThrow();
+      expect(prepare).not.toHaveBeenCalled();
+    }
     let resumed = fixture.recover(sourceOptions);
     expect((await resumed.transport.request("thread/read", {})).thread).toMatchObject(fixture.thread);
     expect(prepare).toHaveBeenCalledExactlyOnceWith(requirements, undefined);
@@ -242,12 +255,42 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
       await expect(readFile(join(fixture.root, "launch-preparation.json"))).rejects.toHaveProperty("code", "ENOENT");
     }
     const target = { ...fixture.identity, runId: "prepared-target", turnId: "prepared-turn", itemId: "prepared-item" };
-    await resumed.transport.attachRun!(target);
-    expect(prepare.mock.calls.at(-1)?.[0].instructions).toBe(requirements.instructions);
+    const attachedAuthority = authority!;
+    const grant = policy === "saved" ? { runtimeContext: null, instructions: requirements.instructions } : undefined;
+    if (policy === "conflict") {
+      const preparations = prepare.mock.calls.length;
+      await expect(resumed.transport.attachRun!(target)).rejects.toThrow("recovery_launch_policy_changed");
+      expect(prepare).toHaveBeenCalledTimes(preparations);
+      expect(attachedAuthority.store.state.identity).toEqual(fixture.identity);
+      expect(await fixture.calls("turn/start")).toBe(1);
+      return;
+    }
+    await resumed.transport.attachRun!({ ...target, ...(grant ? { currentRunGrant: grant } : {}) });
+    expect(prepare.mock.calls.at(-1)?.[0].instructions).toBe(grant?.instructions ?? requirements.instructions);
+    if (policy === "saved") expect(prepare.mock.calls.at(-1)?.[0].settings.disableCodexWebSearch).toBe(true);
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toContainEqual({ identity: target, configurationId: "target-configuration" });
     expect((await read(join(fixture.root, "launch-preparation.json"))).entries).toContainEqual(expect.objectContaining({ prepared: expect.objectContaining({ configurationId: "target-configuration" }) }));
+    if (mode === "launch") {
+      expect(attachedAuthority.store.state.identity).toEqual(target);
+      const commands = attachedAuthority.store.state.commands.length;
+      owner = undefined;
+      await expect(resumed.transport.request("turn/start", { input: [{ type: "text", text: "Unowned work" }] }))
+        .rejects.toThrow("recovery_launch_requirements_invalid");
+      expect(() => attachedAuthority.queueCommand("turn.start", { text: "Unowned work" }))
+        .toThrow("recovery_launch_requirements_invalid");
+      expect(attachedAuthority.store.state.commands).toHaveLength(commands);
+      expect(await fixture.calls("turn/start")).toBe(1);
+      owner = "prepared-target";
+    }
     await fixture.complete(resumed, "Continue after source preparation."); await fixture.settled();
     expect(await fixture.calls("turn/start")).toBe(2); expect(await fixture.calls("process-start")).toBe(2);
+    if (policy === "saved") {
+      owner = "warm-third";
+      await resumed.transport.attachRun!({ runId: owner, turnId: "third-turn", itemId: "third-item", currentRunGrant: { runtimeContext: null, instructions: requirements.instructions } });
+      expect(prepare.mock.calls.at(-1)?.[0]).toMatchObject({ identity: { runId: owner }, settings: { disableCodexWebSearch: true }, instructions: requirements.instructions });
+      await fixture.complete(resumed, "Continue with frozen launch policy."); await fixture.settled();
+      expect(await fixture.calls("turn/start")).toBe(3); expect(await fixture.calls("process-start")).toBe(2);
+    }
     await resumed.transport.close();
     expect((await read(fixture.runnerFile)).lifecycle).toBe("suspended");
     expect(() => fixture.recover({ recoveryLaunch: { requirements: { ...requirements, identity: { ...fixture.identity, runId: "foreign-source" } } }, prepareLaunch: prepare })).toThrow("recovery_launch_requirements_invalid");
