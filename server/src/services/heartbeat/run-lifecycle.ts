@@ -121,6 +121,7 @@ import {
 import {
   findHeartbeatRunCompletionComment,
   hasAcceptedSemanticResult,
+  completedPlanProposalIds,
   readCompletedAssistantMessageCandidate,
   selectHeartbeatRunFinalAgentMessage,
   type RunPresentationDecision,
@@ -2336,11 +2337,23 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       sourceEventId: string | null;
       channel: "final" | "unknown";
     }> = [];
+    const proposedItemIds = completedPlanProposalIds(await db
+      .select({ payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(
+        and(
+          eq(heartbeatRunEvents.companyId, companyId),
+          eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, "plan.proposed"),
+        ),
+      )
+      .limit(200));
     for (const row of rows) {
       const prpEvent = parseObject(parseObject(row.payload).prpEvent);
       const candidate = readCompletedAssistantMessageCandidate({
         seq: row.seq,
         prpEvent,
+        proposedItemIds,
       });
       if (candidate) candidates.push(candidate);
     }

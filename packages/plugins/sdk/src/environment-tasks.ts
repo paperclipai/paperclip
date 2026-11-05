@@ -137,6 +137,9 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     warmTaskVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
+    /** Each version attests stopped-source recovery for its provider independently. */
+    codexSourceRecoveryVersion: z.literal(1).optional(),
+    acpxSourceRecoveryVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),

@@ -1,6 +1,10 @@
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
+
+type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
+import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
+import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -87,6 +91,80 @@ function isItemIdentityEvent(eventType: string): boolean {
   return eventType === "item.started"
     || eventType === "item.delta"
     || eventType === "item.completed";
+}
+
+/**
+ * Codex plan mode wraps a streaming plan item in `<proposed_plan>` tags. Only
+ * that outer wrapper is removed; example tags inside the plan stay text.
+ */
+function proposedPlanMarkdown(value: string): string {
+  const trimmed = value.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  // A stored preview can end inside the block; hide its cut-off remainder.
+  return unclosedStart === null ? value : value.slice(0, unclosedStart).trim();
+}
+
+function planProposalEntry(
+  ts: string,
+  eventType: string,
+  proposalId: string,
+  markdown: string,
+  completed: boolean,
+  payload: Record<string, unknown>,
+): TranscriptEntry {
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "plan_proposal",
+    eventType,
+    status: completed ? "completed" : "running",
+    title: "Plan",
+    summary: completed ? "Proposed a plan" : "Writing a plan",
+    payload: { ...payload, proposalId, markdown, status: completed ? "completed" : "streaming" },
+  };
 }
 
 const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
@@ -657,6 +735,27 @@ function serializedNativeToolResult(item: NativeToolItemDetails): string {
   }
 }
 
+/** Names the task-chat tool taxonomy already knows, for a process that only read, searched or listed. */
+const PROCESS_OPERATION_NAMES: Record<string, string> = { read: "Read", search: "Grep", list: "Glob" };
+
+function toolExecutionDetail(payload: Record<string, unknown>): TranscriptToolDetail {
+  const status = text(payload.status);
+  const number = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  return {
+    ...(text(payload.operation) ? { operation: text(payload.operation)! } : {}),
+    ...(text(payload.subject) ? { subject: text(payload.subject)! } : {}),
+    ...(text(payload.target) ? { target: text(payload.target)! } : {}),
+    ...(text(payload.description) ? { description: text(payload.description)! } : {}),
+    ...(text(payload.blockedReason) ? { blockedReason: text(payload.blockedReason)! } : {}),
+    ...(status && status !== "running" && number(payload.exitCode) !== null
+      ? { exitCode: number(payload.exitCode) }
+      : {}),
+    ...(status && status !== "running" && number(payload.durationMs) !== null
+      ? { durationMs: number(payload.durationMs) }
+      : {}),
+  };
+}
+
 function toolPresentation(
   payload: Record<string, unknown>,
   item?: NativeToolItemDetails,
@@ -666,17 +765,16 @@ function toolPresentation(
   const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
     return {
-      name: "Bash",
+      // A read or listing without one concrete file stays a visible command.
+      name: (operation && (operation === "search" || text(payload.target)) && PROCESS_OPERATION_NAMES[operation]) || "Bash",
       input: reportedName ? { command: reportedName } : { operation: operation ?? "execute" },
     };
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: item?.input ?? {
-      ...(operation ? { operation } : {}),
-      ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
-      ...(text(payload.target) ? { target: text(payload.target) } : {}),
-    },
+    // Operation and namespace are classification data, not something a
+    // person reads; only a concrete target belongs in the row's input summary.
+    input: item?.input ?? (text(payload.target) ? { path: text(payload.target) } : {}),
   };
 }
 
@@ -685,9 +783,50 @@ function toolPresentation(
  * model already consumed by the task thread. Provider-native envelopes never
  * reach this boundary and unknown event kinds remain safely invisible.
  */
+/** Diff lines for one edit call's bounded `fileChanges`, attached to its row. */
+function fileChangeDiffEntries(
+  value: readonly unknown[] | undefined,
+  toolUseId: string,
+  ts: string,
+): TranscriptEntry[] {
+  if (!value) return [];
+  const entries: TranscriptEntry[] = [];
+  for (const raw of value.slice(0, 32)) {
+    const change = record(raw);
+    const path = text(change?.path);
+    if (!change || !path) continue;
+    // The producer counted the whole patch; the patch itself may be shortened.
+    const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    entries.push({
+      kind: "diff", ts, changeType: "file_header", text: path, toolUseId,
+      additions: count(change.additions), deletions: count(change.deletions),
+    });
+    const diff = text(change.diff) ?? "";
+    const classify = createUnifiedDiffClassifier();
+    for (const line of diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff ? diff.split("\n") : []) {
+      const { kind, text: value } = classify(line);
+      if (kind === "skip" || kind === "file") continue;
+      entries.push({ kind: "diff", ts, changeType: kind, text: value, toolUseId });
+    }
+    if (change.diffTruncated === true) {
+      entries.push({ kind: "diff", ts, changeType: "truncation", text: "Diff shortened for display.", toolUseId });
+    }
+  }
+  return entries;
+}
+
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
+  // A subagent's spawning call also arrives as a tool lifecycle on some
+  // transports. Its delegation card owns it, so the tool row is hidden.
+  const delegationIds = new Set<string>();
+  for (const event of events) {
+    if (!event.eventType.startsWith("delegation.")) continue;
+    const id = text(record(record(record(event.payload)?.prpEvent)?.payload)?.delegationId);
+    if (id) delegationIds.add(id);
+  }
   const startedToolIds = new Set<string>();
+  const toolSignatures = new Map<string, string>();
   const completedToolIds = new Set<string>();
   let usageSummary: {
     ts: string;
@@ -762,6 +901,26 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
   const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
+  // An edit call reports an optimistic patch when it starts and the exact one
+  // when it lands. The row shows the latest one, wherever it first appears.
+  const fileChangesByExecutionId = new Map<string, unknown[]>();
+  // Messages whose `<proposed_plan>` block became a completed proposal show
+  // it through the proposal card; any other message keeps its text.
+  const proposedMessageIds = new Set<string>();
+  for (const event of orderedEvents) {
+    if (event.eventType !== "plan.proposed") continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const proposalId = text(payload?.proposalId);
+    if (proposalId && payload?.status === "completed") proposedMessageIds.add(proposalId);
+  }
+  for (const event of orderedEvents) {
+    if (!event.eventType.startsWith("tool.execution.")) continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const executionId = text(payload?.executionId);
+    if (executionId && Array.isArray(payload?.fileChanges)) {
+      fileChangesByExecutionId.set(executionId, payload.fileChanges);
+    }
+  }
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -817,6 +976,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   let awaitingPostCompaction: Record<string, unknown> | null = null;
   let lastCompaction: Record<string, unknown> | null = null;
   let usageSinceLastCompaction = false;
+  const proposalMarkdownById = new Map<string, string>();
+  const completedProposalIds = new Set<string>();
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -892,7 +1053,9 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
-      const value = normalizedItemText(payload);
+      // A `<proposed_plan>` block is shown by its plan proposal card instead.
+      const raw = normalizedItemText(payload) ?? "";
+      const value = itemId && proposedMessageIds.has(itemId) ? withoutProposedPlanBlock(raw) : raw;
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
@@ -1018,6 +1181,90 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // A proposed plan document (Codex plan item, Claude ExitPlanMode) is the
+    // candidate for the task's Plan document, not the turn checklist.
+    if (event.eventType === "plan.proposed" && payload.schema === "paperclip.plan.proposed.v1" && text(payload.proposalId)) {
+      const proposalId = text(payload.proposalId)!;
+      const completed = payload.status === "completed";
+      // A completed proposal is already the unwrapped document; show it as is.
+      const markdown = text(payload.markdown) ?? proposedPlanMarkdown(proposalMarkdownById.get(proposalId) ?? "");
+      if (completed) completedProposalIds.add(proposalId);
+      proposalMarkdownById.set(proposalId, markdown);
+      entries.push(planProposalEntry(ts, event.eventType, proposalId, markdown, completed, payload));
+      continue;
+    }
+
+    // Codex streams the proposed plan as plan-item deltas before the
+    // completed plan.proposed event carries the whole document.
+    if (event.eventType === "item.delta" && itemKind === "plan" && itemId) {
+      if (completedProposalIds.has(itemId)) continue;
+      const accumulated = (proposalMarkdownById.get(itemId) ?? "") + (normalizedItemText(payload) ?? "");
+      proposalMarkdownById.set(itemId, accumulated);
+      entries.push(planProposalEntry(ts, "plan.proposed", itemId, proposedPlanMarkdown(accumulated), false, {}));
+      continue;
+    }
+
+    // Governance records (hooks, automatic approval reviews) keep their full
+    // payload so the task chat can show the decision, reason and target.
+    if ((event.eventType === "hook.started" || event.eventType === "hook.completed")
+      && payload.schema === "paperclip.hook.v1" && text(payload.hookId)) {
+      const outcome = text(payload.outcome) ?? text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "hook",
+        eventType: event.eventType,
+        status: outcome === "running" ? "running" : outcome === "failed" ? "failed" : "completed",
+        title: "Hook",
+        summary: text(payload.message)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+    if ((event.eventType === "safety.review.started" || event.eventType === "safety.review.completed")
+      && payload.schema === "paperclip.safety.review.v1" && text(payload.reviewId)) {
+      const decision = text(payload.decision);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "safety",
+        eventType: event.eventType,
+        status: decision === "pending" || payload.status === "running"
+          ? "running"
+          : decision === "denied" || decision === "timed_out" ? "failed" : "completed",
+        title: "Auto-review",
+        summary: text(payload.rationale)?.trim() || text(payload.summary)?.trim() || "",
+        payload,
+      });
+      continue;
+    }
+    // A delegation carries its children (subagent type, prompt, progress,
+    // result) to the task-chat subagent card, so keep the full snapshot.
+    if (
+      event.eventType.startsWith("delegation.")
+      && payload.schema === "paperclip.delegation.v1"
+      && text(payload.delegationId)
+    ) {
+      const status = text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "delegation",
+        eventType: event.eventType,
+        status: status === "failed"
+          ? "failed"
+          : status === "interrupted"
+            ? "interrupted"
+            : status === "completed" || status === "closed"
+              ? "completed"
+              : "running",
+        title: "Subagent",
+        summary: "Subagent",
+        payload,
+      });
+      continue;
+    }
+
     const cardActivity = cardProviderActivityEntry(event, payload, ts);
     if (cardActivity) {
       entries.push(cardActivity);
@@ -1049,21 +1296,52 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
-    if (event.eventType === "tool.execution.started" || event.eventType === "tool.execution.completed") {
+    if (
+      (event.eventType === "workspace.change.updated" || event.eventType === "workspace.diff.recorded")
+      && payload.schema === "paperclip.workspace.diff.v1"
+    ) {
+      entries.push(workspaceChangeEntry(payload, ts));
+      continue;
+    }
+
+    if (
+      event.eventType === "tool.execution.started" ||
+      event.eventType === "tool.execution.progressed" ||
+      event.eventType === "tool.execution.completed"
+    ) {
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
-      if (!executionId) continue;
+      if (!executionId || delegationIds.has(executionId)) continue;
       const nativeToolItem = nativeToolItemsById.get(executionId);
       const presentation = toolPresentation(payload, nativeToolItem);
-      if (!startedToolIds.has(executionId)) {
+      const parentToolUseId = text(payload.parentItemId);
+      const detail = toolExecutionDetail(payload);
+      // Providers refine a call as its input streams in ("Terminal" becomes
+      // "node --test") and report the outcome at the end. Re-emit the call
+      // whenever its canonical facts change; the adapter merges by id.
+      const signature = JSON.stringify([presentation.name, detail]);
+      const refines = Object.keys(detail).some((key) => key !== "operation");
+      if (!startedToolIds.has(executionId) || (refines && toolSignatures.get(executionId) !== signature)) {
+        // The latest patch is attached once, with the call's first row; a
+        // refinement only updates the call's facts.
+        const firstEmission = !toolSignatures.has(executionId);
+        toolSignatures.set(executionId, signature);
         startedToolIds.add(executionId);
+        const fileChanges = fileChangesByExecutionId.get(executionId);
+        const editedPath = text(record(fileChanges?.[0])?.path);
         entries.push({
           kind: "tool_call",
           ts,
           name: presentation.name,
-          input: presentation.input,
+          // An edit's opening event can precede its path; the patch names the file.
+          input: editedPath && typeof presentation.input === "object"
+            ? { ...presentation.input as Record<string, unknown>, path: editedPath }
+            : presentation.input,
           toolUseId: executionId,
+          detail,
+          ...(parentToolUseId ? { parentToolUseId } : {}),
         });
+        if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
       }
       if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
         completedToolIds.add(executionId);

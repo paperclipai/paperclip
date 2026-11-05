@@ -11,13 +11,11 @@ import {
   FileCheck2,
   FilePenLine,
   FileText,
-  GitBranch,
   Globe,
   Info,
   ListChecks,
   PackageCheck,
   Search,
-  ShieldCheck,
   TerminalSquare,
   Users,
 } from "lucide-react";
@@ -35,6 +33,7 @@ import {
   toolActivityPresentation,
   type ToolIcon,
 } from "./tool-taxonomy";
+import { governancePresentation, type GovernanceTone } from "./governance-presentation";
 
 export interface TaskChatActivityPresentation {
   icon: ToolIcon;
@@ -43,6 +42,9 @@ export interface TaskChatActivityPresentation {
   failedLabel?: string;
   interruptedLabel?: string;
   detail?: string;
+  /** Governance rows tint a stopped action and carry its reason as a note. */
+  tone?: GovernanceTone;
+  note?: string;
 }
 
 export function providerNoticeSeverity(item: TaskChatProviderActivityItem): "info" | "warning" | "error" {
@@ -142,6 +144,8 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         detail: [activityIsIdentity ? undefined : boundedActivity, source].filter(Boolean).join(" · ") || undefined,
       };
     }
+    case "plan_proposal":
+      return { icon: FileText, runningLabel: "Writing a plan", completedLabel: "Proposed a plan", failedLabel: "Plan proposal failed", interruptedLabel: "Plan proposal stopped", detail };
     case "plan":
       return { icon: ListChecks, runningLabel: "Updating the plan", completedLabel: "Updated the plan", failedLabel: "Plan update failed", interruptedLabel: "Plan update stopped", detail };
     case "delegation": {
@@ -171,11 +175,21 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         : { icon: FileCheck2, runningLabel: "Entering review mode", completedLabel: "Entered review mode", failedLabel: "Couldn’t enter review mode", interruptedLabel: "Review-mode change stopped", detail };
     }
     case "hook":
-      return { icon: GitBranch, runningLabel: "Running a hook", completedLabel: "Ran a hook", failedLabel: "Hook failed", interruptedLabel: "Hook stopped", detail };
+    case "safety": {
+      const governance = governancePresentation(item)!;
+      return {
+        icon: governance.icon,
+        runningLabel: governance.label,
+        completedLabel: governance.label,
+        failedLabel: governance.label,
+        interruptedLabel: governance.label,
+        detail: governance.detail,
+        tone: governance.tone,
+        note: governance.note,
+      };
+    }
     case "memory":
       return { icon: BookOpen, runningLabel: "Checking memory", completedLabel: "Referenced memory", failedLabel: "Memory lookup failed", interruptedLabel: "Memory lookup stopped", detail };
-    case "safety":
-      return { icon: ShieldCheck, runningLabel: "Reviewing safety", completedLabel: "Reviewed safety", failedLabel: "Safety review failed", interruptedLabel: "Safety review stopped", detail };
     case "terminal":
       return { icon: TerminalSquare, runningLabel: "Sending terminal input", completedLabel: "Sent terminal input", failedLabel: "Terminal input failed", interruptedLabel: "Terminal input stopped", detail };
     case "wait": {

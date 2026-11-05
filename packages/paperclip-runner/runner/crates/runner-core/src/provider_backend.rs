@@ -23,6 +23,7 @@ use crate::durable::{
     validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
     CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig, DurableRunnerError,
     EventPriority, OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
+    PROVIDER_STATE_INCOMPATIBLE,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -30,8 +31,8 @@ use crate::provider_bridge::{
     TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
-    codex_context_usage, normalize_codex_notification, normalized_codex_terminal_event_type,
-    with_terminal_outcome, NormalizedProviderEvent,
+    codex_context_usage, normalize_codex_notification, normalize_codex_notification_in,
+    normalized_codex_terminal_event_type, with_terminal_outcome, NormalizedProviderEvent,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -625,6 +626,30 @@ fn normalize_provider_notification(
     method: &str,
     params: &Value,
 ) -> Result<Vec<NormalizedProviderEvent>, DurableRunnerError> {
+    if state.config.provider == "codex" && method == "account/rateLimits/updated" {
+        // Account-scoped and sparse: merge into the last snapshot and report
+        // only a changed one, so repeated identical updates stay out of the log.
+        let Some(next) = crate::provider_rate_limits::codex_rate_limit_snapshot(
+            params,
+            state.codex_rate_limits.as_ref(),
+            &crate::provider_rate_limits::now_iso(),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let changed = crate::provider_rate_limits::rate_limit_snapshot_changed(
+            state.codex_rate_limits.as_ref(),
+            &next,
+        );
+        state.codex_rate_limits = Some(next.clone());
+        if !changed {
+            return Ok(Vec::new());
+        }
+        state.rate_limit_notice_seq = state.rate_limit_notice_seq.saturating_add(1);
+        return Ok(vec![crate::provider_rate_limits::rate_limit_notice(
+            &next,
+            &format!("codex-rate-limits-{}", state.rate_limit_notice_seq),
+        )]);
+    }
     if state.config.provider == "codex"
         && ["thread/tokenUsage/updated", "paperclip/resumeUsageSnapshot"].contains(&method)
     {
@@ -731,10 +756,12 @@ fn normalize_provider_notification(
         return Ok(events);
     }
     if method != "paperclip/runResult" {
-        return Ok(normalize_codex_notification(method, params)
-            .into_iter()
-            .map(|event| relabel_provider_event(event, &state.config.provider))
-            .collect());
+        return Ok(
+            normalize_codex_notification_in(method, params, Some(&state.config.cwd))
+                .into_iter()
+                .map(|event| relabel_provider_event(event, &state.config.provider))
+                .collect(),
+        );
     }
     let (result, fingerprint, disposition) = validate_proxy_run_result(state, params)?;
     match (
@@ -765,6 +792,35 @@ fn normalize_provider_notification(
 
 fn terminal_completion_rejected(state: &CodexProviderState) -> bool {
     state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none()
+}
+
+fn retain_goal_notification(
+    state: &mut CodexProviderState,
+    method: &str,
+    params: &Value,
+    working_now: bool,
+) -> Result<(), DurableRunnerError> {
+    let event_type = match method {
+        "thread/goal/updated" => {
+            state.goal = normalize_codex_goal(params, working_now);
+            "session.goal.updated"
+        }
+        "thread/goal/cleared" => {
+            state.goal = None;
+            "session.goal.cleared"
+        }
+        _ => return Ok(()),
+    };
+    state.goal_revision = state.goal_revision.saturating_add(1);
+    state.push_event(NormalizedProviderEvent {
+        event_type: event_type.to_owned(),
+        priority: EventPriority::P0,
+        payload: goal_event_payload(
+            state.goal.as_ref(),
+            state.goal_capability.as_ref(),
+            state.goal_revision,
+        ),
+    })
 }
 
 fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
@@ -1162,6 +1218,11 @@ struct CodexProviderState {
     cursor_cloud_terminal_receipt: Option<Value>,
     #[serde(default)]
     codex_usage: Option<CodexRunUsage>,
+    /// Latest Codex account rate-limit snapshot, merged across sparse updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_rate_limits: Option<Value>,
+    #[serde(default)]
+    rate_limit_notice_seq: u64,
     #[serde(default)]
     previous_accounting_origin: Option<CodexAccountingOrigin>,
     #[serde(default)]
@@ -1276,6 +1337,8 @@ impl CodexProviderState {
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
             codex_usage,
+            codex_rate_limits: None,
+            rate_limit_notice_seq: 0,
             previous_accounting_origin: None,
             completion_contract,
             tool_bridge,
@@ -2218,14 +2281,16 @@ impl CodexCommandExecutor {
         if state.opencode_launch_profile_digest != expected_launch_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "OpenCode runner launch profile changed across durable recovery",
-            ));
+            )
+            .with_classification(PROVIDER_STATE_INCOMPATIBLE));
         }
         let expected_cursor_cloud_profile_digest =
             self.bind_cursor_cloud_launch_profile(&state.config)?;
         if state.cursor_cloud_launch_profile_digest != expected_cursor_cloud_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "Cursor Cloud runner launch profile changed across durable recovery",
-            ));
+            )
+            .with_classification(PROVIDER_STATE_INCOMPATIBLE));
         }
         self.state = Some(state);
         Ok(())
@@ -2972,6 +3037,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid("Codex provider has not been prepared")
             })?;
             for (method, params) in tail {
+                retain_goal_notification(state, &method, &params, false)?;
                 let events = normalize_provider_notification(state, &method, &params)?;
                 state.extend_events(events)?;
             }
@@ -5041,31 +5107,7 @@ impl CodexCommandExecutor {
                             });
                         }
                     }
-                    if method == "thread/goal/updated" {
-                        state.goal = normalize_codex_goal(&params, working_now);
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.updated".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                state.goal.as_ref(),
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    } else if method == "thread/goal/cleared" {
-                        state.goal = None;
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.cleared".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                None,
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    }
+                    retain_goal_notification(state, &method, &params, working_now)?;
                     if let Some(reconciliation) = goal_reconciliation {
                         match reconciliation {
                             Ok(snapshot) => {
@@ -5278,6 +5320,61 @@ impl CodexCommandExecutor {
 }
 
 impl CommandExecutor for CodexCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        if state.config.provider != "codex"
+            || state.config.driver != "codex_app_server"
+            || self.provider.is_none()
+            || !state.completed_turn_authoritative
+            || state.completed_turn_process_generation != Some(state.provider_process_generation)
+            || state.completed_provider_turn_id.is_none()
+            || state.active_provider_turn_id.is_some()
+            || state.ambiguous_turn_start_pending
+            || state.startup_attempt.is_some()
+            || state.receipt_limit_interrupt_pending
+            || state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active" || goal.working_now)
+            || state.tool_bridge.pending_calls().next().is_some()
+            || !state.descendant_thread_ids.is_empty()
+            || !state.pending_events.is_empty()
+            || !state.queued_events.is_empty()
+            || state.lifecycle == "reconciliation_required"
+        {
+            return Ok(false);
+        }
+        self.retain_completed_accounting_tail()?;
+        let state = self
+            .state
+            .as_ref()
+            .expect("surviving native provider state");
+        if !state.pending_events.is_empty() || !state.queued_events.is_empty() {
+            return Ok(false);
+        }
+        let provider = self
+            .provider
+            .as_mut()
+            .expect("checked surviving native provider");
+        // Tail draining can consume a late goal update before the executor
+        // journal sees it. Check the live provider after that drain.
+        if provider.has_active_goal()
+            || provider.has_known_descendants()
+            || provider.observed_completed_turn_authority() != provider.completed_turn_authority()
+            || provider.completed_turn_authority()
+                != state
+                    .completed_turn_process_generation
+                    .zip(state.completed_provider_turn_id.as_deref())
+        {
+            return Ok(false);
+        }
+        Ok(provider
+            .warm_run_attachment_blockers()
+            .map_err(|_| DurableRunnerError::invalid("native Codex parking proof failed"))?
+            .is_empty())
+    }
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         // ProviderToolBridge persists the exact call/result and rejects changed
         // receipts. Delivery cannot execute a server-side semantic operation.
@@ -5862,6 +5959,40 @@ mod tests {
         state.active_provider_turn_id = Some("turn-1".to_owned());
         state.lifecycle = "turn_active".to_owned();
         state
+    }
+
+    #[test]
+    fn codex_rate_limit_updates_emit_only_changed_account_notices() {
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        let update = json!({"rateLimits": {"limitId": "codex",
+            "primary": {"usedPercent": 78, "windowDurationMins": 300, "resetsAt": 1_793_893_200_i64}}});
+        let first =
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
+                .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].event_type, "provider.notice.recorded");
+        assert_eq!(first[0].payload["category"], "provider.rate_limits");
+        assert_eq!(first[0].payload["noticeId"], "codex-rate-limits-1");
+        assert!(
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &update)
+                .unwrap()
+                .is_empty()
+        );
+        let sparse = json!({"rateLimits": {"limitId": "codex",
+            "secondary": {"usedPercent": 41, "windowDurationMins": 10080, "resetsAt": null}}});
+        let second =
+            normalize_provider_notification(&mut state, "account/rateLimits/updated", &sparse)
+                .unwrap();
+        let snapshot: Value =
+            serde_json::from_str(second[0].payload["details"][0]["value"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(snapshot["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["windows"][0]["usedPercent"], 78.0);
+        // Restored checkpoints keep the merged snapshot.
+        let restored: CodexProviderState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(restored.codex_rate_limits, state.codex_rate_limits);
     }
 
     fn valid_opencode_result() -> Value {
@@ -6866,6 +6997,8 @@ mod tests {
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
             codex_usage: Some(CodexRunUsage::new(false)),
+            codex_rate_limits: None,
+            rate_limit_notice_seq: 0,
             previous_accounting_origin: None,
             completion_contract: None,
             tool_bridge: ProviderToolBridge::default(),

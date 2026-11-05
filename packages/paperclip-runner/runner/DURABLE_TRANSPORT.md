@@ -76,7 +76,7 @@ the conversation. Core uses ordinary recovery for A, then attaches B with
 authenticated `run.attach`. If the original process is alive, its owner can
 verify and adopt it instead.
 
-**Is A idle?** Before launch, the host driver (`sourceRecoveryVersion: 1`)
+**Is A idle?** Before launch, the host driver (`codexSourceRecoveryVersion: 1`)
 checks that A’s process stopped and its saved session was idle. After launch,
 the Runner (`recoveryIntegrityVersion: 1`) verifies that Codex restored an idle
 session when no command effect is uncertain. It reads the goal, then the
@@ -120,3 +120,22 @@ and goal with A’s saved idle state. After reading the goal, it checks updates
 that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
+
+## Host park eligibility
+
+`CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
+for the existing process that completed the current turn. An eligibility check
+never selects or restores a provider. A restored process must complete its own
+authoritative turn before it can be eligible. Reconstructing an accepted finish
+during recovery preserves result delivery but does not qualify that process.
+ACPX remains ineligible in this slice, including after qualified recovery.
+Active turns, goals, startup attempts, tool calls, pending credentials, and
+unsettled events block parking. Known helper threads also block it: their
+diagnostic lineage does not prove that their work finished. The bounded
+completed-turn tail drain retains late accounting and goal changes for durable
+state and normal event delivery.
+The check also inspects the live provider
+after that drain, so a late active-goal notification cannot be hidden by the
+older executor journal. This hook does not detach a controller, stop a process,
+or advertise hosted parking support. The host-control consumer must separately
+validate the exact Runner identity and acknowledged sequence cut.

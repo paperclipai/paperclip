@@ -451,6 +451,40 @@ pub struct CodexProviderConfig {
     pub conversation_mode: Option<String>,
 }
 
+/// Codex's native plan collaboration mode for a read-only Codex run. The
+/// preset keeps Codex's built-in plan-mode instructions (`developer_instructions`
+/// null) and the run's own model and effort.
+fn codex_plan_collaboration_mode(
+    config: &CodexProviderConfig,
+    observed_model: Option<&str>,
+    effort: Option<&Value>,
+) -> Result<Option<Value>, LocalRunnerError> {
+    if config.provider != "codex" || !config.read_only {
+        return Ok(None);
+    }
+    // A model-less launch uses the model Codex reported for the thread. A
+    // planning run must never silently fall back to default mode.
+    let model = config
+        .model
+        .as_deref()
+        .or(observed_model)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            LocalRunnerError::invalid(
+                "planning_mode_unsupported: Codex reported no model for native plan collaboration mode",
+            )
+        })?;
+    Ok(Some(json!({
+        "mode": "plan",
+        "settings": {
+            "model": model,
+            "reasoning_effort": effort.cloned().unwrap_or(Value::Null),
+            "developer_instructions": Value::Null,
+        },
+    })))
+}
+
 /// Explicit per-turn skill selection. The controller resolves assigned skill
 /// names to paths on the provider filesystem before submitting the command.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -781,6 +815,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    observed_completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
@@ -1201,6 +1236,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            observed_completed_turn_authority: None,
             active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             goal_allows_autonomous_turns: false,
@@ -1518,7 +1554,10 @@ impl CodexProvider {
                         }
                         if matches!(
                             method.as_str(),
-                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                            "thread/tokenUsage/updated"
+                                | "paperclip/resumeUsageSnapshot"
+                                | "thread/goal/updated"
+                                | "thread/goal/cleared"
                         ) {
                             accounting.push((method, params));
                             continue;
@@ -1702,6 +1741,21 @@ impl CodexProvider {
         })
     }
 
+    pub(crate) fn observed_completed_turn_authority(&self) -> Option<(u64, &str)> {
+        self.observed_completed_turn_authority
+            .as_ref()
+            .map(|authority| {
+                (
+                    authority.process_generation,
+                    authority.provider_turn_id.as_str(),
+                )
+            })
+    }
+
+    pub(crate) fn has_known_descendants(&self) -> bool {
+        !self.descendant_thread_ids.is_empty()
+    }
+
     pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
@@ -1817,6 +1871,10 @@ impl CodexProvider {
             return Ok(());
         }
         self.restart_idle_identity_epoch()
+    }
+
+    pub(crate) fn has_active_goal(&self) -> bool {
+        self.goal_allows_autonomous_turns
     }
 
     pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
@@ -1988,6 +2046,10 @@ impl CodexProvider {
                 "Codex turn text is empty or exceeds the 1 MiB limit",
             ));
         }
+        // Resolve the planning preset before any turn state changes, so a
+        // local planning error never leaves an ambiguous turn start behind.
+        let collaboration_mode =
+            codex_plan_collaboration_mode(&self.config, self.observed_model.as_deref(), effort)?;
         self.rollover_settled_turn_epoch_if_needed()?;
         // Preserve the prior durable result until a replacement turn identity
         // is accepted. A rejected, ambiguous, or transport-failed attempt does
@@ -2018,6 +2080,12 @@ impl CodexProvider {
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none", so reasoning items carry no text. Request the
+        // provider's own reasoning summaries for every Codex turn.
+        if self.config.provider == "codex" {
+            turn_params_object.insert("summary".to_owned(), json!("auto"));
+        }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
         }
@@ -2028,6 +2096,12 @@ impl CodexProvider {
             );
         } else {
             turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        // A read-only (Planning) Codex run uses Codex's native plan
+        // collaboration mode, so a finished proposal arrives as Codex's own
+        // `plan` item for Paperclip's Plan document and approval gate.
+        if let Some(collaboration_mode) = collaboration_mode {
+            turn_params_object.insert("collaborationMode".to_owned(), collaboration_mode);
         }
         let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
@@ -3208,6 +3282,8 @@ impl CodexProvider {
                 self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
+                // Restored result authority cannot prove this process saw a terminal.
+                self.observed_completed_turn_authority = self.completed_turn_authority.clone();
                 self.completion_reconciliation_pending =
                     terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
@@ -4532,6 +4608,53 @@ fn codex_question_response(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn read_only_codex_turns_use_native_plan_collaboration_mode() {
+        let mut config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "fixture".to_owned(),
+            command: PathBuf::from("/bin/sh"),
+            args: vec![],
+            cwd: "/tmp".to_owned(),
+            model: Some("gpt-5.6-sol".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+            read_only: true,
+            include_skill_instructions: None,
+            conversation_mode: None,
+        };
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, Some(&json!("high"))).unwrap(),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})
+            ),
+        );
+        // A model-less launch uses the model Codex reported for the thread.
+        config.model = None;
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, Some("gpt-5.6-luna"), None).unwrap(),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-luna", "reasoning_effort": null, "developer_instructions": null}})
+            ),
+        );
+        // With no model at all, planning fails loudly instead of running in default mode.
+        assert!(super::codex_plan_collaboration_mode(&config, None, None).is_err());
+        config.read_only = false;
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
+        config.read_only = true;
+        config.provider = "opencode".to_owned();
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
+    }
     use super::*;
 
     #[test]
