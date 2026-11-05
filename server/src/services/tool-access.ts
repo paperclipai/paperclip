@@ -3533,7 +3533,15 @@ export function toolAccessService(
       await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
-        .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
+        .set({
+          status: "active", enabled: true,
+          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
+            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+          } : {}),
+          ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await tx

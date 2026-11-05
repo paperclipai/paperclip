@@ -956,6 +956,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await save({ agentIds: [] });
     await expect(select(f.agent.id)).resolves.toMatchObject({ configured: false });
     expect(await access.listConnectionInstalls(f.connection.id, f.company.id)).toEqual([]);
+    expect((await access.getConnection(f.connection.id, f.company.id)).config.mcpAgentAccessConfigured).toBe(true);
   });
 
   it("creates and resolves an access card for a 46-tool connector without model-supplied tool names", async () => {
