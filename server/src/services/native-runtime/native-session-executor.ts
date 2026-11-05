@@ -13338,8 +13338,6 @@ async function createRunnerdBackendWithinSessionClaim(
           nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
       })
     : undefined;
-  // Every Runner transport of a producer-owned run must deliver usage. Ownership
-  // turns off the fallback recorder, so a transport without these records nothing.
   const accountingTransportOptions = {
     onAccountingEvent: input.onAccountingEvent ? async (event: PrpEvent) => {
       const current = sessionToolAuthorityEpochs.get(sessionScopeId);

@@ -55,8 +55,6 @@ export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<
     provider: receipt.provider, biller: receipt.biller, billingType: receipt.billingType,
   });
   const receipts = saved.map(row => (row.receipt as UsageReceiptEnvelope).receipt as AdapterUsageCheckpoint);
-  // A finished run can have no receipts yet: its reports may still be in the
-  // Runner's outbox. Its recorded classification lets them settle now.
   const recorded = source.usage as Partial<AdapterUsageCheckpoint>;
   if (!receipts.length && !recorded.biller) throw new Error("native_usage_continuation_receipts_missing");
   const billing = classification(receipts[0] ?? recorded as AdapterUsageCheckpoint);
