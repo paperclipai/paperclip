@@ -1523,7 +1523,9 @@ fn codex_command_operands(command: &str) -> usize {
         .filter(|token| {
             !token.is_empty()
                 && !token.starts_with('-')
-                && !token.trim_end_matches('p').split(',').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$'))
+                && !token.trim_end_matches('p').split(',').all(|part| {
+                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$')
+                })
         })
         .count()
 }
@@ -1537,7 +1539,11 @@ fn codex_command_subject(item: &Value) -> Option<String> {
         let query = string(action.get("query")).trim();
         if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
             let path = string(action.get("path")).trim();
-            let scope = if path.is_empty() || path == "." { String::new() } else { format!(" in {path}") };
+            let scope = if path.is_empty() || path == "." {
+                String::new()
+            } else {
+                format!(" in {path}")
+            };
             return Some(bounded_text(&format!("\"{query}\"{scope}"), MAX_TEXT_CHARS));
         }
     }
@@ -1554,9 +1560,21 @@ fn codex_command_subject(item: &Value) -> Option<String> {
 }
 
 fn unwrap_shell_command(command: &str) -> &str {
-    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh", "zsh", "bash", "sh", "/usr/bin/env bash", "/usr/bin/env zsh"] {
+    for shell in [
+        "/bin/zsh",
+        "/bin/bash",
+        "/bin/sh",
+        "zsh",
+        "bash",
+        "sh",
+        "/usr/bin/env bash",
+        "/usr/bin/env zsh",
+    ] {
         for flag in [" -lc ", " -c "] {
-            if let Some(rest) = command.strip_prefix(shell).and_then(|rest| rest.strip_prefix(flag)) {
+            if let Some(rest) = command
+                .strip_prefix(shell)
+                .and_then(|rest| rest.strip_prefix(flag))
+            {
                 let rest = rest.trim();
                 for quote in ['\'', '"'] {
                     if rest.len() >= 2 && rest.starts_with(quote) && rest.ends_with(quote) {
@@ -2034,7 +2052,10 @@ mod tests {
                 "type": "tool_call", "toolCallId": "toolu_1", "status": "completed", "title": "Terminal",
                 "toolDetail": {"toolName": "Bash", "subject": "node --test", "description": "Run the tests", "exitCode": 0, "durationMs": 1840},
             }),
-            Some("execute"), "fallback", "turn-1", 0,
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
         );
         let payload = &completed[0].payload;
         assert_eq!(payload["name"], "Bash");
@@ -2047,7 +2068,10 @@ mod tests {
             AcpxRuntimeEventKind::ToolCall,
             &json!({"type": "tool_call", "toolCallId": "toolu_2", "status": "in_progress", "title": "Terminal",
                 "toolDetail": {"toolName": "Bash", "exitCode": 1, "durationMs": 5}}),
-            Some("execute"), "fallback", "turn-1", 0,
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
         );
         assert_eq!(running[0].payload["exitCode"], Value::Null);
         assert_eq!(running[0].payload["durationMs"], Value::Null);
@@ -2056,7 +2080,10 @@ mod tests {
             AcpxRuntimeEventKind::ToolCall,
             &json!({"type": "tool_call", "toolCallId": "toolu_3", "status": "failed", "title": "rm -rf build",
                 "toolDetail": {"toolName": "mcp__paperclip__delete", "blockedReason": "Denied by rule"}}),
-            Some("unknown"), "fallback", "turn-1", 0,
+            Some("unknown"),
+            "fallback",
+            "turn-1",
+            0,
         );
         assert_eq!(blocked[0].payload["name"], "delete");
         assert_eq!(blocked[0].payload["namespace"], "paperclip");

@@ -52,8 +52,15 @@ function toolPresentation(item: ToolActivity) {
   });
 }
 
+/** Only file reads fold; Skill, LSP and task lookups are also "read" family. */
+const FILE_READ_TOOLS = new Set(["read", "notebookread", "notebook_read"]);
+
 function isReadTool(item: Activity): item is ToolActivity {
-  return item.kind === "tool" && item.status === "completed" && !item.blockedReason && toolPresentation(item).family === "read";
+  return item.kind === "tool"
+    && item.status === "completed"
+    && !item.blockedReason
+    && Boolean(item.target?.trim())
+    && FILE_READ_TOOLS.has((item.rawName ?? item.name).trim().toLowerCase());
 }
 
 function presentation(item: Activity, active: boolean) {
@@ -73,8 +80,13 @@ function presentation(item: Activity, active: boolean) {
     const subject = item.target?.trim();
     // With a concrete subject, the verb alone reads better: "Read README.md".
     // A finished command needs no verb at all: the icon and "$" say it ran.
+    // A failure or stop keeps its marker ("Read · failed") unless an exit
+    // chip already says how a command ended.
+    const marker = item.status === "failed" || item.status === "interrupted" ? label.split(" · ").at(1) : undefined;
     const verb = subject && SUBJECT_FAMILIES.has(tool.family)
-      ? terminal && !running && (item.status === "completed" || item.exitCode != null) ? "" : label.split(" ")[0]!
+      ? terminal && !running && (item.status === "completed" || item.exitCode != null)
+        ? ""
+        : `${label.split(" ")[0]!}${marker ? ` · ${marker}` : ""}`
       : label;
     // Exit 0 is only news for commands; for reads and searches it is noise.
     const exitCode = item.exitCode ?? null;

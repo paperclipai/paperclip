@@ -767,7 +767,9 @@ fn optional_object(
 /// same bounds as the canonical tool-execution schema.
 fn validate_tool_detail(detail: &Value) -> Result<(), LocalRunnerError> {
     let Some(object) = detail.as_object() else {
-        return Err(LocalRunnerError::invalid("ACPX runtime tool detail must be an object"));
+        return Err(LocalRunnerError::invalid(
+            "ACPX runtime tool detail must be an object",
+        ));
     };
     for (key, value) in object {
         match key.as_str() {
@@ -779,15 +781,23 @@ fn validate_tool_detail(detail: &Value) -> Result<(), LocalRunnerError> {
             }
             "exitCode" => {
                 if !value.is_i64() {
-                    return Err(LocalRunnerError::invalid("ACPX runtime tool exit code must be an integer"));
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool exit code must be an integer",
+                    ));
                 }
             }
             "durationMs" => {
                 if !value.is_u64() {
-                    return Err(LocalRunnerError::invalid("ACPX runtime tool duration must be a non-negative integer"));
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX runtime tool duration must be a non-negative integer",
+                    ));
                 }
             }
-            _ => return Err(LocalRunnerError::invalid("ACPX runtime tool detail has an unknown field")),
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX runtime tool detail has an unknown field",
+                ))
+            }
         }
     }
     Ok(())

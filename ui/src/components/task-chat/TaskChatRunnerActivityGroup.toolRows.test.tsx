@@ -35,6 +35,25 @@ describe("tool row grammar", () => {
     expect(rows.map((row) => row.kind)).toEqual(["reads", "single", "single"]);
   });
 
+  it("keeps failure and stop markers and folds only file reads", () => {
+    expect(foldReadRuns([
+      tool("s1", { name: "Skill", rawName: "Skill", target: "pdf" }),
+      tool("s2", { name: "Skill", rawName: "Skill", target: "xlsx" }),
+      tool("s3", { name: "Skill", rawName: "Skill", target: "docx" }),
+    ]).map((row) => row.kind)).toEqual(["single", "single", "single"]);
+    act(() => root.render(
+      <TaskChatRunnerActivityGroup
+        defaultExpanded
+        item={phase([
+          tool("f1", { name: "Read", rawName: "Read", target: "src/missing.ts", status: "failed" }),
+          tool("f2", { operation: "execute", target: "sleep 100", status: "interrupted" }),
+        ])}
+      />,
+    ));
+    expect(container.querySelector('[data-activity-row="f1"]')?.textContent).toContain("Read · failed");
+    expect(container.querySelector('[data-activity-row="f2"]')?.textContent).toContain("· stopped");
+  });
+
   it("shows the command with its exit code and duration, hides exit 0 on reads, and explains a refusal", () => {
     act(() => root.render(
       <TaskChatRunnerActivityGroup
