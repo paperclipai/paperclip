@@ -4475,6 +4475,7 @@ describe("IssueAssigneePausedNotice", () => {
 
   it.each([
     ["preparing", "computer is being prepared"],
+    ["verifying", "setup isn't finished"],
     ["paused", "setup isn't finished"],
   ])("shows a setup-draft agent (%s) as still being set up, not manually paused", (lifecycleState, detail) => {
     const root = createRoot(container);
@@ -4495,7 +4496,7 @@ describe("IssueAssigneePausedNotice", () => {
     expect(text.toLowerCase()).toContain(detail);
     // Resuming a setup draft is not the recovery path; finishing setup is.
     expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
-    if (lifecycleState === "paused") {
+    if (lifecycleState !== "preparing") {
       const finish = container.querySelector('[data-testid="issue-assignee-finish-setup"]');
       expect(finish?.getAttribute("href")).toBe("/ONB/agents/ceo");
     } else {

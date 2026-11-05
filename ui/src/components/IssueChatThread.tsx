@@ -825,7 +825,9 @@ export function IssueAssigneePausedNotice({
   // its setup finishes. That is not an operator pause, so say what is actually
   // happening and point at the real recovery path instead of "Resume agent".
   if (agent.pauseReason === "setup") {
-    const stillPreparing = ["preparing", "verifying", "pausing"].includes(agent.lifecycleState ?? "");
+    // Only computer preparation advances on its own (matches NewAgentSetup).
+    // A "verifying" or parked draft waits for the user to finish the wizard.
+    const stillPreparing = ["preparing", "pausing"].includes(agent.lifecycleState ?? "");
     return (
       <div data-testid="issue-assignee-paused-notice" className="mb-3">
         <InlineBanner
