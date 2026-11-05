@@ -1518,6 +1518,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       .from(issues)
       .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
     if (!issue) return null;
+    // The run is already cancelled, so the task may have moved in between.
+    // Keep the wait only if the binding still names the deferral's workspace
+    // (a remote reservation can defer before it binds the execution workspace).
+    const stillBound = deferral.executionWorkspaceId
+      ? issue.executionWorkspaceId === null || issue.executionWorkspaceId === deferral.executionWorkspaceId
+      : issue.projectWorkspaceId === deferral.projectWorkspaceId;
+    if (!stillBound) return null;
     const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
     return {
       key,
