@@ -369,3 +369,11 @@ describe("reviewed skill assertion subject and polarity boundaries", () => {
     const o = valid(); o.phaseReplies[1]!.body = body; expect(gradeTeamConditions(o).passed).toBe(true);
   });
 });
+
+it("recognizes a Markdown-wrapped skill recovery subject", () => {
+  const { o } = recovered(); o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. **Launch Checklist** is now installed.";
+  expect(gradeTeamConditions(o).passed).toBe(true);
+});
+it("rejects the same Markdown-wrapped installation claim while the skill is missing", () => {
+  expect(truthfulTeamPartial("Launch Checklist's slug is occupied. **Launch Checklist** is now installed.", skill)).toBe(false);
+});
