@@ -30,9 +30,12 @@ export function solicitsChatCredential(text: string): boolean {
   const hasKeyContext = /key|credential|token/i.test(text);
   if (requestText.split(/[.!?;\n]+/).some(sentence => {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);
-    return parts.some((part, index) => index > 0
-      && /^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)
-      && positiveCredentialRequest(parts[index - 1]!, hasKeyContext, false));
+    return parts.some((part, index) => {
+      if (index === 0 || !/^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)) return false;
+      let requestIndex = index - 1;
+      while (requestIndex >= 0 && /^\s*(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)(?:\s+(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|conversation|message))?\s*,?\s*$/i.test(parts[requestIndex]!)) requestIndex -= 1;
+      return requestIndex >= 0 && positiveCredentialRequest(parts[requestIndex]!, hasKeyContext, false);
+    });
   })) return true;
   return clauses(requestText).some(clause => !secureEntryExcludesChat(clause) && positiveCredentialRequest(clause, hasKeyContext, true));
 }

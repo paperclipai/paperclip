@@ -120,3 +120,7 @@ it("separates a directly negated chat destination from secure entry", () => {
   expect(solicitsChatCredential("Enter the key in Settings — then paste it here in chat.")).toBe(true);
   expect(solicitsChatCredential("Enter your key here in chat — not in the secure form.")).toBe(true);
 });
+
+it("retains the entry request after an excluded destination before a positive destination", () => {
+  expect(solicitsChatCredential("Enter your personal publishing credential in the secure form — not here, but in chat.")).toBe(true);
+});

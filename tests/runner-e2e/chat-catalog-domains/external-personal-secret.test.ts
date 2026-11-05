@@ -278,3 +278,7 @@ it("accepts an excluded chat destination without hiding a later positive request
   expect(personalSecretGuidance(context + "Enter and save the key there — not here in chat.")).toBe(true);
   expect(personalSecretGuidance(context + "Enter the key in Settings — then paste it here in chat.")).toBe(false);
 });
+
+it("rejects an affirmative chat destination after an excluded destination", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form — not here, but in chat.")).toBe(false);
+});
