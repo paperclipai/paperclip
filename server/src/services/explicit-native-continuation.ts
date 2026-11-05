@@ -2,6 +2,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-n
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
+import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -13,7 +14,7 @@ import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
-import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -240,7 +241,8 @@ export async function admitExplicitNativeContinuation(input: {
           and result.schema_status = 'accepted' and result.result_json#>>'{terminal,runTerminalState}' = 'succeeded')`,
     )),
   )).for("update");
-  const sourceChecks = actions.map(action => ({ cause: action.cause, evidence: action.evidence }));
+  const sourceChecks: Array<{ id?: string; cause: string; evidence: Record<string, unknown> }> =
+    actions.map(action => ({ id: action.id, cause: action.cause, evidence: action.evidence }));
   if (nativeQueuedSend) {
     const [latest] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
@@ -331,7 +333,13 @@ export async function admitExplicitNativeContinuation(input: {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
-      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
+        if (!(taskRetry && run.id !== taskRetry.sourceRunId && freshIntent && agentIsNative &&
+              historicalAdapter === "paperclip_runner" && run.status === "failed") ||
+            run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
+            await hasPendingRunCleanup(db, companyId, run.id) ||
+            !await isFailedNativePreparationRetryAncestor(db, run, coordinator)) return null;
+      }
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
     const interruptedByThisClick = response?.source.requiresFreshSession === true &&
@@ -349,7 +357,12 @@ export async function admitExplicitNativeContinuation(input: {
         eq(nativeRunResults.schemaStatus, "accepted"),
         sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
       )).limit(1);
-      if (completedResult) return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      const recovery = readSystemRecovery(action.evidence);
+      const snapshotSettled = completedResult && freshIntent && action.id && recovery?.state === "complete"
+        && await verifiedWorkspaceSnapshotReceipt(db, { companyId, issueId, runId: run.id,
+          actionId: action.id, operationIds: recovery.preservationOperationIds });
+      if (completedResult && !(freshIntent && snapshotSettled))
+        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
     }
     // A repaired export no longer blocks execution. Its machine receipt still
     // binds the saved user turn; finalized file state alone is insufficient.

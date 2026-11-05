@@ -5,6 +5,7 @@ import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finaliza
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { readPreservedNativeResultFinalization, type PreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
@@ -1539,13 +1540,17 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "release_checkout") {
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
+    // Release only this run's own locks. A successor can claim execution
+    // without changing statusVersion, so a preserve decision committed after
+    // that claim must not clear it. Each SET reads the pre-update row.
+    const ownsExecution = sql`${issues.executionRunId} = ${input.runId}::uuid`;
     const [released] = await input.tx
       .update(issues)
       .set({
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
+        checkoutRunId: sql`case when ${issues.checkoutRunId} = ${input.runId}::uuid then null else ${issues.checkoutRunId} end`,
+        executionRunId: sql`case when ${ownsExecution} then null else ${issues.executionRunId} end`,
+        executionAgentNameKey: sql`case when ${ownsExecution} then null else ${issues.executionAgentNameKey} end`,
+        executionLockedAt: sql`case when ${ownsExecution} then null else ${issues.executionLockedAt} end`,
         updatedAt: new Date(),
       })
       .where(
@@ -1554,13 +1559,20 @@ async function materializeDecisionEffect(input: {
           eq(issues.companyId, input.companyId),
         ),
       )
-      .returning({ id: issues.id });
+      .returning({
+        id: issues.id,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      });
     if (!released) throw new Error("native_checkout_not_released");
     return {
       effectKind: effect.kind,
       targetType: "issue_checkout",
       targetId: released.id,
-      payload: { checkoutRunId: null, executionRunId: null },
+      payload: {
+        checkoutRunId: released.checkoutRunId,
+        executionRunId: released.executionRunId,
+      },
     };
   }
   if (effect.kind === "record_recovery") {
@@ -1609,6 +1621,7 @@ export async function commitNativeStatusDecision(input: {
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
   requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
+  requirePreservedResultFinalization?: PreservedNativeResultFinalization;
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
@@ -1843,6 +1856,16 @@ export async function commitNativeStatusDecision(input: {
       } else if (issue.assigneeAgentId !== owner.agentId || issue.assigneeUserId) {
         throw new NativeStatusRaceError();
       }
+    }
+    if (input.requirePreservedResultFinalization) {
+      let current;
+      try {
+        current = await readPreservedNativeResultFinalization(tx as unknown as Db, input.requirePreservedResultFinalization, true);
+      } catch (error) {
+        if (isExternalChatWaitAuthorizationContention(error)) throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!current || current.fingerprint !== input.requirePreservedResultFinalization.fingerprint) throw new NativeStatusRaceError();
     }
     if (input.requireExternalChatResponseWaitAuthorization) {
       let authorization;

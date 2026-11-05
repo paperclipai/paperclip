@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { isTransientError } from "../api/errors";
+import { useQueryView } from "./QueryView";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
@@ -53,12 +55,16 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
   const [checkedUnconfirmed, setCheckedUnconfirmed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const access = useQuery({ queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(), retry: false });
-  const canMutate = Boolean(owner && (access.data?.source === "local_implicit"
+    queryFn: () => accessApi.getCurrentBoardAccess() });
+  const accessView = useQueryView(access);
+  const accessReady = accessView.kind === "ready" || accessView.kind === "stale";
+  const canMutate = Boolean(accessReady && owner && (access.data?.source === "local_implicit"
     || owner !== "signed-out" && access.data?.userId === owner)
     && canBoardResolveRecoveryAction(companyId, access.data));
   const source = useQuery({ queryKey: queryKeys.issues.recoveryActions(issueId, action.id, runId),
-    queryFn: () => issuesApi.recoveryActions(issueId, { runId, actionId: action.id }), enabled: canMutate, retry: false });
+    queryFn: () => issuesApi.recoveryActions(issueId, { runId, actionId: action.id }), enabled: canMutate });
+  const sourceView = useQueryView(source);
+  const sourceReady = sourceView.kind === "ready" || sourceView.kind === "stale";
   const storageKey = owner ? pendingSendKeyFor(`workspace-file-recovery:${companyId}:${issueId}:${action.id}:${runId}`, owner) : null;
   const matchesInput = (value: unknown): value is RecoveryInput => {
     const input = asObject(value);
@@ -73,7 +79,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
       && state.runId === runId && state.schema === "paperclip.workspace-recovery.v1"
       && inspected?.actionId === action.id && inspected.runId === runId && inspected.status === "verified" ? current : null;
   }
-  const current = boundAction(source.data);
+  const current = sourceReady ? boundAction(source.data) : null;
   const recovery = asObject(current?.evidence.workspaceRecovery);
   const system = asObject(current?.evidence.systemRecovery);
   const serverAcknowledged = Boolean(pending && Array.isArray(recovery.requestIds) && recovery.requestIds.includes(pending.idempotencyKey));
@@ -87,7 +93,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     void client.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
     void client.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
   };
-  const request = useMutation({ retry: false, mutationFn: async (restartFailedAttempt: boolean) => {
+  const request = useMutation({ retry: false, mutationFn: async (restartFailedAttempt: boolean) => { // query-error-ok: recovery requests require an explicit action and receipt reconciliation.
     if (busy.current) return;
     busy.current = true;
     setNotice(null);
@@ -130,7 +136,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
       setNotice(error instanceof Error ? error.message : "Unable to inspect file recovery.");
     } finally { busy.current = false; }
   } });
-  const check = useMutation({ retry: false, mutationFn: async () => {
+  const check = useMutation({ retry: false, mutationFn: async () => { // query-error-ok: operator checks run once; the source read uses the shared query retry policy.
     const observed = await source.refetch();
     if (observed.error) throw observed.error;
     const fresh = boundAction(observed.data);
@@ -142,6 +148,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     setNotice(unconfirmed ? "No recovery request is confirmed yet. Trying again will reuse the saved request." : null);
     invalidate();
   } });
+  const checkError = isTransientError(check.error) ? null : check.error;
   const failedReceipt = serverAcknowledged && recovery.status === "blocked";
   const confirmedFailedAttempt = failedReceipt && retryable && system.state === "exhausted";
   const waiting = !failedReceipt && !saved && (restoring || acknowledged || serverAcknowledged);
@@ -157,19 +164,19 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
         className="self-start" disabled={request.isPending || check.isPending}
         onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
           : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}
-      {waiting || unconfirmed || failedReceipt || source.isError || source.data && !current ? <Button variant="ghost" size="sm" className="self-start"
+      {waiting || unconfirmed || failedReceipt || source.error || sourceReady && !current ? <Button variant="ghost" size="sm" className="self-start"
         disabled={request.isPending || check.isPending} onClick={() => check.mutate()}>
         {check.isPending ? "Checking file recovery…" : "Check file recovery status"}
       </Button> : null}
-      {source.isPending ? <p className="text-xs text-muted-foreground">Inspecting the recorded file source…</p> : null}
-      {source.isError || check.isError || notice ? <p role="alert" className="text-sm text-destructive">
-        {notice ?? (check.error instanceof Error ? check.error.message : "File recovery could not be inspected. Check its status again.")}
+      {sourceView.kind === "loading" || sourceView.kind === "reconnecting" ? <p className="text-xs text-muted-foreground">Inspecting the recorded file source…</p> : null}
+      {sourceView.kind === "error" || checkError || notice ? <p role="alert" className="text-sm text-destructive">
+        {notice ?? (checkError instanceof Error ? checkError.message : "File recovery could not be inspected. Check its status again.")}
       </p> : null}
       {current && recovery.status === "blocked" && (serverAcknowledged || recovery.retryable !== true)
         ? <p role="alert">File recovery has not finished. The saved source remains protected; service assistance is needed.</p> : null}
-      {source.data && !current ? <p role="alert">The recorded source is unavailable or has changed. Inspect recovery before continuing.</p> : null}
-    </> : access.isError ? <p role="alert" className="text-sm text-destructive">Task access could not be checked. Refresh before requesting file recovery.</p>
-      : access.isPending || !owner ? <p role="status" className="text-xs text-muted-foreground">Checking file recovery access…</p>
+      {sourceReady && !current ? <p role="alert">The recorded source is unavailable or has changed. Inspect recovery before continuing.</p> : null}
+    </> : accessView.kind === "error" ? <p role="alert" className="text-sm text-destructive">Task access could not be checked. Refresh before requesting file recovery.</p>
+      : accessView.kind === "loading" || accessView.kind === "reconnecting" || !owner ? <p role="status" className="text-xs text-muted-foreground">Checking file recovery access…</p>
         : <p className="text-xs text-muted-foreground">A board member with task access can request file recovery.</p>}
   </div>;
 }

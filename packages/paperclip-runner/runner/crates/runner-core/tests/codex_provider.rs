@@ -4160,6 +4160,176 @@ fn durable_backend_rejects_new_work_in_a_completed_turn_tail() {
 }
 
 #[test]
+fn durable_backend_attaches_after_a_settled_resume_usage_snapshot() {
+    let directory = temporary_directory("durable-snapshot-attach");
+    let config = provider_config(
+        &directory,
+        &[
+            "--durable-turn-ids",
+            "--resume-usage-snapshot",
+            "--cumulative-accounting-usage",
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+                "completionContract": {
+                    "revision": "sha256:snapshot-attach-contract",
+                    "criterionIds": ["criterion_snapshot_attach"]
+                },
+            }),
+        ))
+        .expect("prepare the durable provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the durable provider session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Settle before the session restarts."}),
+        ))
+        .expect("start the provider turn");
+
+    let mut saw_terminal = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
+        saw_terminal |= events
+            .iter()
+            .any(|event| event.event_type == "run.terminal");
+        if saw_terminal && events.is_empty() {
+            break;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(saw_terminal, "the first run must settle before attachment");
+    first.shutdown().expect("stop the first provider process");
+    drop(first);
+
+    // Codex replays the settled turn's cumulative usage on thread/resume, so
+    // the restored process reports it before the new run attaches.
+    let mut rotated = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let attached = rotated
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach with the settled turn's usage replay pending");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    let retained = rotated
+        .retained_events()
+        .expect("inspect the retained queue");
+    assert!(
+        retained
+            .iter()
+            .any(|event| event.payload["code"] == "codex_resume_usage_snapshot"),
+        "a pending fact stays in the retained FIFO instead of blocking or vanishing"
+    );
+    assert!(!retained
+        .iter()
+        .any(|event| event.event_type == "session.resumed"));
+    rotated.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn attachment_names_live_work_that_blocks_it() {
+    let directory = temporary_directory("durable-live-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids", "--hold-turn"]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Stay active."}),
+        ))
+        .unwrap();
+    let error = executor
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("run.attach requires a settled Codex provider session: active_turn"));
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn attachment_refuses_an_active_goal_on_a_running_provider() {
+    let directory = temporary_directory("durable-goal-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids"]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "goal",
+            3,
+            "session.goal.set",
+            json!({"objective": "Keep working.", "status": "active"}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    let error = executor
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("durable_active_goal"), "{error}");
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_attaches_after_a_settled_restore_notice() {
     let directory = temporary_directory("durable-settled-attach");
     let config = provider_config(&directory, &["--durable-turn-ids"]);
@@ -7131,7 +7301,7 @@ fn durable_codex_usage_keeps_run_baselines_through_requests_recovery_and_attachm
 }
 
 #[test]
-fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
+fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
     for mode in ["before", "after", "after-paid", "unsafe"] {
         let handoff_first = mode.starts_with("after");
         let directory = temporary_directory("late-accounting-reconciliation");
@@ -7255,87 +7425,82 @@ fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
             } else {
                 executor.poll_events().unwrap()
             };
+            // In "after-paid" the successor already counted past this total.
             if events.iter().any(|event| {
                 event.event_type == "usage.reported"
-                    || event.payload["code"] == "codex_usage_accounting_integrity"
+                    || (mode == "after-paid"
+                        && event.payload["code"] == "codex_resume_usage_snapshot")
             }) {
                 break events;
             }
             executor.acknowledge_events(events.len()).unwrap();
         };
-        if handoff_first {
-            assert!(retained
-                .iter()
-                .filter(|event| event.event_type == "usage.reported")
-                .all(|event| event.payload["runDeltaAvailable"] == false));
-            assert!(retained
-                .iter()
-                .any(|event| event.event_type == "usage.reported"
-                    && event.payload["runDeltaAvailable"] == false));
-            assert!(retained
-                .iter()
-                .any(|event| event.event_type == "run.terminal"
-                    && event.payload["runTerminalState"] == "failed"));
-            let required = retained
-                .iter()
-                .find(|event| event.event_type == "usage.reported")
-                .unwrap();
+        assert!(!retained
+            .iter()
+            .any(|event| event.event_type == "run.terminal"
+                || event.payload["code"] == "codex_usage_accounting_integrity"));
+        let reported = retained
+            .iter()
+            .find(|event| event.event_type == "usage.reported");
+        if mode == "after-paid" {
+            assert!(reported.is_none());
+        } else if handoff_first {
+            let reported = reported.unwrap();
+            assert_eq!(reported.payload["runDeltaAvailable"], false);
+            assert_eq!(reported.payload["runDelta"]["inputTokens"], 20);
             assert_eq!(
-                required.payload["reconciliation"]["cumulative"]["inputTokens"],
+                reported.payload["reconciliation"]["cumulative"]["inputTokens"],
                 120
             );
             assert_eq!(
-                required.payload["reconciliation"]["priorOrigin"]["runId"],
+                reported.payload["reconciliation"]["priorOrigin"]["runId"],
                 "run-1"
             );
-            let evidence = retained
-                .iter()
-                .find(|event| event.payload["code"] == "codex_usage_accounting_integrity")
-                .unwrap();
-            assert_eq!(evidence.payload["priorOrigin"]["runId"], "run-1");
-            assert_eq!(evidence.payload["receivedTurnId"], "provider-turn-1");
-            assert_eq!(evidence.payload["cumulative"]["inputTokens"], 120);
         } else {
-            assert_eq!(
-                retained
-                    .iter()
-                    .find(|event| event.event_type == "usage.reported")
-                    .unwrap()
-                    .payload["runDelta"]["inputTokens"],
-                120
-            );
+            assert_eq!(reported.unwrap().payload["runDelta"]["inputTokens"], 120);
         }
         let saved: Value =
             serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
                 .unwrap();
-        assert_eq!(saved["lifecycle"], "reconciliation_required");
-        assert!(!saved["pendingEvents"].as_array().unwrap().is_empty());
-        let error = executor
-            .execute(&command(
-                "blocked-attach",
-                5,
-                "run.attach",
-                json!({"authorizedTools":task_context_tool_set()}),
-            ))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("requires explicit reconciliation"));
+        if mode == "unsafe" {
+            // An unexpected tail still fails closed during the drain itself.
+            assert_eq!(saved["lifecycle"], "reconciliation_required");
+            let error = executor
+                .execute(&command(
+                    "blocked-attach",
+                    5,
+                    "run.attach",
+                    json!({"authorizedTools":task_context_tool_set()}),
+                ))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("requires explicit reconciliation"));
+        } else {
+            if mode == "after-paid" {
+                assert_eq!(saved["lifecycle"], "turn_active");
+                assert!(saved["activeProviderTurnId"].is_string());
+            } else {
+                assert_eq!(saved["lifecycle"], "session_open");
+                executor.acknowledge_events(retained.len()).unwrap();
+                for _ in 0..50 {
+                    let events = poll_and_ack(&mut executor).unwrap();
+                    if events.is_empty() {
+                        break;
+                    }
+                }
+                executor
+                    .execute(&command(
+                        "next-attach",
+                        5,
+                        "run.attach",
+                        json!({"authorizedTools":task_context_tool_set()}),
+                    ))
+                    .expect("late usage must not block the next run");
+            }
+        }
         executor.shutdown().unwrap();
         drop(executor);
-        let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-        let error = restored
-            .execute(&command(
-                "blocked-after-restart",
-                6,
-                "run.attach",
-                json!({"authorizedTools":task_context_tool_set()}),
-            ))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("requires explicit reconciliation"));
-        restored.shutdown().unwrap();
         fs::remove_dir_all(directory).unwrap();
     }
 }

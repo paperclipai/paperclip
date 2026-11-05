@@ -80,7 +80,6 @@ function WorkspaceValidationRecoverySurface({ run }: { run: HeartbeatRun }) {
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: Boolean(isWorkspaceValidationFailure && issueId),
-    retry: false,
   });
 
   const recoveryAction = issue?.activeRecoveryAction ?? null;

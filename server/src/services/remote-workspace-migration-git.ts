@@ -11,7 +11,7 @@ import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit, loadGitRestorePoint } from "./git-restore-point-storage.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
 import { ensureSavedGitCommit, gitRestorePointExpired, managedSourcePaths, readGitCacheRestoration,
-  verifiedGitCacheSource, type GitCacheRestoration } from "./git-workspace-restoration.js";
+  verifiedGitCacheSource, verifiedManagedGitObjectSource, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { localRepositoryPath } from "./local-repository-path.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 
@@ -24,6 +24,10 @@ export type ArchivedGitMigrationSource = {
 };
 const execute = promisify(execFile);
 const unavailable = () => new Error("remote_workspace_migration_archived_git_source_unavailable");
+function verifiedReceiptObjectSource(workspace: Workspace, sourcePath: string) {
+  return managedSourcePaths(workspace).includes(sourcePath)
+    ? verifiedManagedGitObjectSource(workspace, sourcePath) : verifiedGitCacheSource(workspace, sourcePath);
+}
 async function git(cwd: string, args: string[]) {
   return (await execute("git", ["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
     timeout: 120_000, maxBuffer: 1024 * 1024,
@@ -61,7 +65,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       eq(projectWorkspaces.companyId, workspace.companyId), workspace.projectId ? eq(projectWorkspaces.projectId, workspace.projectId) : undefined)) : [];
   const sourcePath = projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
   if (!sourcePath || projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
-  await verifiedGitCacheSource(workspace, sourcePath);
+  await verifiedReceiptObjectSource(workspace, sourcePath);
   const commit = await git(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
   if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
   return { commit, sourcePath, cleanupOperationId: operation.id, recipe: null };
@@ -80,7 +84,12 @@ export async function materializeArchivedGitMigrationSource(input: {
     throw error;
   });
   if (present) {
-    const verified = await verifiedGitCacheSource(workspace, source.sourcePath);
+    // A deletion receipt owns a specific committed tree. Its objects can come
+    // from the verified project cache after the private checkout was removed.
+    // Saved private edits still require their original restore-point source.
+    if (!source.recipe && !source.cleanupOperationId) throw unavailable();
+    const verified = source.recipe ? await verifiedGitCacheSource(workspace, source.sourcePath)
+      : await verifiedReceiptObjectSource(workspace, source.sourcePath);
     await fs.mkdir(cwd, { mode: 0o700 }); await git(cwd, ["init", "--quiet"]);
     // Fetch objects, never the current working tree of a shared project root.
     const presentCommit = await git(verified, ["cat-file", "-e", `${source.commit}^{commit}`]).then(() => true, () => false);

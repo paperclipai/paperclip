@@ -339,8 +339,9 @@ export const toolsApi = {
     api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
-  listApplications: (companyId: string) =>
-    api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
+  listApplications: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`, options)
+      : api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
   createApplication: (companyId: string, input: CreateToolApplicationInput) =>
     api.post<ToolApplication>(`/companies/${companyId}/tools/applications`, input),
   updateApplication: (applicationId: string, input: UpdateToolApplicationInput) =>
@@ -349,8 +350,9 @@ export const toolsApi = {
     api.delete<ToolApplication>(`/tool-applications/${applicationId}`),
 
   // --- Connections ---
-  listConnections: (companyId: string) =>
-    api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
+  listConnections: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`, options)
+      : api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
   getConnection: (connectionId: string) =>
     api.get<ToolConnection>(`/tool-connections/${connectionId}`),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's

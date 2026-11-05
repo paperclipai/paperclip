@@ -752,6 +752,17 @@ and current-user redaction. The task page uses one history read on mount/reconne
 and the existing live transcript stream, then makes a bounded plugin readiness
 check. No panel discovery timer scans runs or provider state while connected.
 
+## Post-result failure diagnostics
+
+`native.post_result_failure` records `stage: post_result_execution`, a closed
+`category` (`io_not_found`, `io_permission_denied`, `io_failure`, or
+`execution_failure`), and `resultAlreadyAccepted: true`. It requires an accepted
+selected result and exact current, unexpired controller authority. A busy diagnostic
+row lock is skipped. Reporting is best effort under the existing 60-second control
+bound; the sink can finish later and emit a late event. The `native_session_lease_lost`
+control classification stays unchanged. The labels grant no recovery, result,
+Stop, provider-work or payment authority and do not establish a hosted failure cause.
+
 ## Payload storage
 
 Structured events in this guide remain in `heartbeat_run_events`. When the
