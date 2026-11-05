@@ -78,12 +78,18 @@ describe.skipIf(!claude)("Claude CLI settings sources", () => {
         const hookRan = await readFile(marker, "utf8").then(() => true, () => false);
         expect(hookRan).toBe(hookExpected);
       } finally {
-        child.kill();
+        if (child.exitCode === null && child.signalCode === null) {
+          await new Promise<void>((resolve) => {
+            const timeout = setTimeout(resolve, 5000);
+            child.once("close", () => { clearTimeout(timeout); resolve(); });
+            child.kill();
+          });
+        }
       }
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 500 });
     }
   }, 45000);
 });
