@@ -30,7 +30,7 @@ type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: str
   writersStopped: true; terminalFailureOnly?: true };
 type InactiveSource = { root: string; manifestSha256: string; scopeDigest: string;
   normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
-const fail = (reason: string): never => { throw new Error(`native_harness_storage_${reason}`); };
+function fail(reason: string): never { throw new Error(`native_harness_storage_${reason}`); }
 const aad = (binding: Binding) => Buffer.from(JSON.stringify([SCHEMA, binding.companyId, binding.scopeDigest, binding.id]));
 const scope = (binding: Pick<Binding, "companyId" | "scopeDigest">) => and(
   eq(nativeHarnessBackups.companyId, binding.companyId), eq(nativeHarnessBackups.scopeDigest, binding.scopeDigest));
@@ -159,7 +159,7 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
         eq(environmentLeases.issueId, owner.issueId), eq(environmentLeases.providerLeaseId, inactiveSource.providerLeaseId),
         sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${inactiveSource.manifestSha256}`)).limit(1);
     const stamp = readNativeHarnessBackupStamp(lease?.stamp, inactiveSource.providerLeaseId);
-    if (!binding || stamp?.sessionScopeSha256 !== inactiveSource.scopeDigest
+    if (!binding || !stamp || stamp.sessionScopeSha256 !== inactiveSource.scopeDigest
       || stamp.normalizedSessionId !== inactiveSource.normalizedSessionId || stamp.runnerInstanceId !== inactiveSource.runnerInstanceId) {
       fail("prestage_source_changed");
     }
