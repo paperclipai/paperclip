@@ -2095,6 +2095,61 @@ export const providerEventSchema = {
               "type": "null"
             }
           ]
+        },
+        "fileChanges": {
+          "description": "Files changed by this one edit call, each with a bounded patch. Paths are workspace-relative.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "operation",
+              "previousPath",
+              "additions",
+              "deletions",
+              "diff",
+              "diffTruncated"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "modify",
+                  "delete",
+                  "rename"
+                ]
+              },
+              "previousPath": {
+                "$ref": "#/$defs/safePath"
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "diff": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 32768
+              },
+              "diffTruncated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -2948,6 +3003,10 @@ export const workspaceDiffSchema = {
               "null"
             ],
             "maxLength": 262144
+          },
+          "diffTruncated": {
+            "description": "The producer shortened or omitted this file's patch; additions and deletions still cover all of it.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false

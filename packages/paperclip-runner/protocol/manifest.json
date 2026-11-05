@@ -90,7 +90,7 @@
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "2f4f35299d5c023d4499e1931a8a325cfbca919e290a1774ad55143ae95c0297"
+      "sha256": "fb8473133d40f5ac878cdb317b38e29c84e3cb0b1aa59c78f72220f3f7349ea3"
     },
     {
       "path": "schemas/provider-failure.schema.json",
@@ -150,7 +150,7 @@
     {
       "path": "schemas/workspace-diff.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json",
-      "sha256": "f71b21f41cfc4c40aeaa503d1981d29355b4dd8b15036fcf3d8df5c35f8b8f6f"
+      "sha256": "883f9d8e40ec6af2d41bd2998e3e1146f35aab3a63f683ffdbcabe3d4e72479b"
     },
     {
       "path": "schemas/workspace-file-reference.schema.json",

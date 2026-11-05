@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
 import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
+import {
+  toolFileChangesFromAcpContent,
+  toolFileChangesFromCodexChanges,
+  type WorkspaceRoots,
+} from "./tool-file-changes.js";
+
+/** Context a canonical mapper needs to make provider file paths workspace-relative. */
+export interface CanonicalProviderEventContext {
+  workingDirectory?: WorkspaceRoots;
+}
 
 /**
  * Structural subset of an ACP runtime event consumed by the canonical event
@@ -712,6 +722,7 @@ function researchSources(
 export function canonicalProviderEventsFromCodex(
   method: string,
   paramsValue: unknown,
+  context: CanonicalProviderEventContext = {},
 ): CanonicalProviderEvent[] {
   const params = record(paramsValue);
   const item = record(params.item);
@@ -764,6 +775,34 @@ export function canonicalProviderEventsFromCodex(
           item,
           completed ? canonicalStatus(item.status, "completed") : "running",
         ),
+        itemId,
+      },
+    ];
+  }
+  if ((method === "item/started" || completed) && type === "fileChange") {
+    // The workspace-change projection keeps the whole-turn view; the edit row
+    // carries this one patch so each change can be reviewed where it happened.
+    const fileChanges = toolFileChangesFromCodexChanges(item.changes, context.workingDirectory);
+    const status = completed ? canonicalStatus(item.status, "completed") : "running";
+    return [
+      {
+        eventType: completed ? "tool.execution.completed" : "tool.execution.started",
+        payload: {
+          schema: "paperclip.tool.execution.v1",
+          executionId: itemId,
+          transport: "builtin",
+          operation: "edit",
+          name: "apply_patch",
+          target: fileChanges?.[0]?.path ?? null,
+          namespace: null,
+          readOnly: false,
+          status,
+          durationMs: null,
+          exitCode: null,
+          progress: null,
+          ...boundedOutput(""),
+          ...(fileChanges ? { fileChanges } : {}),
+        },
         itemId,
       },
     ];
@@ -1230,6 +1269,7 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
   event: AcpRuntimeEventShape,
   fallbackItemId: string,
   turnId?: string,
+  context: CanonicalProviderEventContext = {},
 ): CanonicalProviderEvent[] {
   const runtimeType = text(record(event).type);
   if (
@@ -1320,13 +1360,20 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
     const mcp = acpxMcpToolIdentity(title);
     const name = mcp?.name ?? title;
     const operation = acpxToolOperation(event.kind, name);
+    // ACP `diff` content: Claude Edit/Write send old/new text at tool_use time
+    // and a hunk-exact replacement after the edit lands.
+    const fileChanges = toolFileChangesFromAcpContent(
+      event.content,
+      event.locations,
+      context.workingDirectory,
+    );
     const payload = {
       schema: "paperclip.tool.execution.v1",
       executionId: itemId,
       transport: mcp ? "mcp" : "builtin",
       operation,
       name: name || null,
-      target: safeAcpLocation(event.locations?.[0]),
+      target: safeAcpLocation(event.locations?.[0]) ?? fileChanges?.[0]?.path ?? null,
       namespace: mcp?.namespace ?? null,
       readOnly: ["read", "search", "list"].includes(operation),
       ...(Object.prototype.hasOwnProperty.call(event, "rawInput")
@@ -1343,6 +1390,7 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       ...(parentToolCallId
         ? { parentItemId: safeId(parentToolCallId, "acpx-item") }
         : {}),
+      ...(fileChanges ? { fileChanges } : {}),
     };
     const terminal = status !== "running";
     return [

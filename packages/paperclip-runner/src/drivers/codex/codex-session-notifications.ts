@@ -265,6 +265,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       for (const canonical of canonicalProviderEventsFromCodex(
         notification.method,
         params,
+        { workingDirectory: state.workspaceRoots },
       )) {
         state.emit(canonical.eventType, canonical.payload, {
           turnId: turnId || undefined,

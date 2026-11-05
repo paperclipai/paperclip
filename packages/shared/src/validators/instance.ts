@@ -69,6 +69,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableArtifactsV1: z.boolean().default(true),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
+  enableLegacyComposerSubmit: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
