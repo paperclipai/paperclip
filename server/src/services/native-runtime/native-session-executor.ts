@@ -2015,6 +2015,7 @@ async function retireSupersededWarmNativeSessions(
   ownerScope: string,
   nextSessionScope: string,
   nextSessionId: string,
+  runId: string,
   ingress?: { db: Db; claim: NativeWarmIngressClaim },
 ): Promise<void> {
   for (const [scope, entry] of warmNativeSessions) {
@@ -2023,7 +2024,12 @@ async function retireSupersededWarmNativeSessions(
     const priorIngress = entry.ingressOwner;
     const physicalOwner = ingress && priorIngress && nativeWarmIngressAllocation(priorIngress.ingress) === nativeWarmIngressAllocation(ingress.claim.ingress);
     if (!logicalOwner && !physicalOwner) continue;
-    if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(scope)) {
+    // This run's own instruction-directory reservation on the prior owner of
+    // the same task is not contention. A follow-up that cannot resume the
+    // saved session reserves that directory, then must retire the old provider
+    // while keeping the directory it adopted. Any other reservation is busy.
+    const ownReservation = logicalOwner && entry.preparingRunId === runId;
+    if (entry.busy || (entry.preparingRunId && !ownReservation) || executingRunnerdSessionScopes.has(scope)) {
       throw new Error("native_session_supervisor_busy");
     }
     if (!logicalOwner) {
@@ -2038,7 +2044,10 @@ async function retireSupersededWarmNativeSessions(
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason, {
         discardUnsettledSession: logicalOwner && entry.normalizedSessionId !== nextSessionId,
+        ...(ownReservation ? { preserveInstructionsForRunId: runId } : {}),
       });
+      // A failed close keeps the reservation, so its release retries retirement.
+      if (ownReservation) entry.preparingRunId = undefined;
       forgetWarmNativeSession(scope, entry);
       if (!logicalOwner) await assertNativeWarmIngressRetirement(ingress!.db, ingress!.claim, priorIngress!);
     } finally {
@@ -8536,7 +8545,7 @@ export async function executePaperclipNativeSession(input: {
     }
     executingNativeOwnerScopes.set(ownerScope, ownerToken);
     if (!input.useRunnerd) await retireSupersededWarmNativeSessions(
-      ownerScope, nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution),
+      ownerScope, nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution), runId,
     );
     if ((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") && isCloudManagedInstance()
         && (!input.useRunnerd || input.runnerExecutionTarget?.kind !== "remote"
@@ -9181,7 +9190,7 @@ async function executePaperclipNativeSessionWithinScope(
     const ingress = nativeWarmIngressIdentity(input.execution, input.runnerExecutionTarget);
     if (input.useRunnerd && !claimedStopCleanup) await retireSupersededWarmNativeSessions(
       nativeSessionOwnerScope(input.execution, input.runnerExecutionTarget?.environmentId ?? null),
-      nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution),
+      nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution), input.execution.binding.runId,
       ingress ? { db: input.db, claim: { ...input.execution.binding, ingress, leaseOwner,
         controllerBootId: controller.bootId, controllerGeneration } } : undefined,
     );

@@ -10116,6 +10116,69 @@ describe("native warm session supervision", () => {
       await closeWarmNativeSessionsForEnvironment({ environmentId: f.target.environmentId, reason: "test" });
       expect(nextCopy.collectStopped).toHaveBeenCalledOnce();
     });
+    it("retires its own reserved directory owner when the session identity rotates", async () => {
+      // A follow-up run that cannot resume its saved session (for example after
+      // a configuration change) reserves the prior owner's directory, then
+      // starts a new session identity. Retiring that prior owner is this run's
+      // own reservation, not another executor's busy turn.
+      const name = "managed-identity-rotation";
+      const f = await start(name);
+      const reservation = await f.reserve(async () => true);
+      expect(reservation?.reuseRunId).toBe(f.current.binding.runId);
+      const nextCopy = { ...f.copy, runId: `${name}-two`, collectStopped: vi.fn(async () => undefined) };
+      reservation!.adopt(nextCopy.root, nextCopy.collectStopped);
+      const replacement = { close: vi.fn(async () => undefined) };
+      state.execute.mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        expect(f.close).toHaveBeenCalledOnce();
+        expect(nextCopy.collectStopped).not.toHaveBeenCalled();
+        await options.onSession?.(replacement); return result;
+      });
+      const next = { ...f.current, binding: { ...f.current.binding, runId: nextCopy.runId },
+        session: { ...f.current.session, normalizedSessionId: `${name}-rotated` } } as NativeExecutionInputV1;
+      await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+        runnerExecutionTarget: f.target, instructionWorkingCopy: nextCopy })).resolves.toMatchObject({ exitCode: 0 });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+      await reservation!.release();
+      expect(replacement.close).not.toHaveBeenCalled();
+      expect(f.copy.collectStopped).not.toHaveBeenCalled();
+      expect(nextCopy.collectStopped).not.toHaveBeenCalled();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: f.target.environmentId, reason: "test" });
+      expect(replacement.close).toHaveBeenCalledOnce();
+      expect(nextCopy.collectStopped).toHaveBeenCalledOnce();
+    });
+    it("retires its own reserved directory owner after the Runner claim when the session identity rotates", async () => {
+      // Production Runner path: retirement happens after the execution claim.
+      // This fixture has no remote Runner, so the turn itself fails later; the
+      // regression is that admission no longer rejects its own reservation.
+      const name = "managed-identity-rotation-runnerd";
+      const f = await start(name);
+      const reservation = await f.reserve(async () => true);
+      const nextCopy = { ...f.copy, runId: `${name}-two`, collectStopped: vi.fn(async () => undefined) };
+      reservation!.adopt(nextCopy.root, nextCopy.collectStopped);
+      const next = { ...f.current, binding: { ...f.current.binding, runId: nextCopy.runId },
+        session: { ...f.current.session, normalizedSessionId: `${name}-rotated` } } as NativeExecutionInputV1;
+      const outcome = await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+        runnerExecutionTarget: f.target, instructionWorkingCopy: nextCopy, useRunnerd: true }).then(() => null, (error: Error) => error);
+      expect(outcome?.message ?? "").not.toContain("native_session_supervisor_busy");
+      expect(f.close).toHaveBeenCalledOnce();
+      expect(f.copy.collectStopped).not.toHaveBeenCalled();
+      expect(nextCopy.collectStopped).not.toHaveBeenCalled();
+      await reservation!.release();
+    });
+    it("still rejects a session identity rotation over another run's directory reservation", async () => {
+      const f = await start("managed-identity-foreign");
+      const reservation = await f.reserve(async () => true);
+      const next = { ...f.current, binding: { ...f.current.binding, runId: "managed-identity-foreign-three" },
+        session: { ...f.current.session, normalizedSessionId: "managed-identity-foreign-rotated" } } as NativeExecutionInputV1;
+      state.execute.mockClear();
+      await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "foreign",
+        runnerExecutionTarget: f.target, instructionWorkingCopy: { ...f.copy, runId: next.binding.runId } }))
+        .rejects.toThrow("native_session_supervisor_busy");
+      expect(state.execute).not.toHaveBeenCalled();
+      expect(f.close).not.toHaveBeenCalled();
+      await reservation!.release();
+    });
     it("cannot reuse a provider with a different registered directory", async () => {
       const f = await start("managed-root-replaced");
       state.execute.mockImplementationOnce(async options => { expect(options.existingSession).toBeUndefined(); return result; });

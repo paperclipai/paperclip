@@ -46,6 +46,7 @@ export type TaskChatProviderActivityFamily =
   | "safety"
   | "terminal"
   | "wait"
+  | "verification"
   | "provider_notice";
 
 export type TaskChatProviderActivityStatus =
@@ -383,6 +384,8 @@ export interface TaskChatProviderActivityItem {
   transcriptIndex?: number;
   /** A retry status notice the turn has moved past. */
   resolved?: boolean;
+  /** When the provider first reported this activity (ISO timestamp). */
+  startedAt?: string;
 }
 
 export interface TaskChatWorkspaceChangeItem {
