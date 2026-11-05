@@ -3,6 +3,7 @@ import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -36,6 +37,7 @@ import {
   parseJson,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
+  materializePaperclipSkillCopy,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
@@ -107,6 +109,28 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+
+async function stageManagedUserSkills(configDir: string, skills: Awaited<ReturnType<typeof readPaperclipRuntimeSkillEntries>>): Promise<void> {
+  if (!skills.length) return;
+  const resolved = await fs.realpath(configDir);
+  const home = path.dirname(resolved);
+  const temp = await fs.realpath(os.tmpdir());
+  if (path.basename(resolved) !== "provider" || !path.basename(home).startsWith("paperclip-ai-") || path.dirname(home) !== temp) {
+    throw new Error("Refusing to stage selected skills outside a Paperclip-managed temporary Claude configuration");
+  }
+  const skillsHome = path.join(resolved, "skills");
+  const existingHome = await fs.lstat(skillsHome).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+  if (existingHome && (!existingHome.isDirectory() || existingHome.isSymbolicLink())) throw new Error("Managed Claude skills directory must be a real directory");
+  await fs.mkdir(skillsHome, { recursive: true });
+  for (const skill of skills) {
+    if (skill.runtimeName === "." || skill.runtimeName === ".." || path.basename(skill.runtimeName) !== skill.runtimeName || /[\\/]/.test(skill.runtimeName)) throw new Error("Invalid managed Claude skill name");
+    const target = path.join(skillsHome, skill.runtimeName);
+    const existing = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (existing) throw new Error(`Managed Claude skill destination already exists: ${skill.runtimeName}`);
+    const result = await materializePaperclipSkillCopy(await fs.realpath(skill.source), target);
+    if (result.skippedSymlinks.length) throw new Error(`Managed Claude skill contains unsupported symbolic links: ${skill.runtimeName}`);
+  }
+}
 
 interface ClaudeExecutionInput {
   agentIdentity?: AdapterExecutionContext["agentIdentity"];
@@ -582,6 +606,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  if (config.managedAiConnection) await stageManagedUserSkills(sharedClaudeConfigDir, mountableSkillEntries);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -851,7 +876,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
-    if (config.managedAiConnection) args.push("--setting-sources", executionTargetIsRemote ? "user" : "user,project");
+    if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,

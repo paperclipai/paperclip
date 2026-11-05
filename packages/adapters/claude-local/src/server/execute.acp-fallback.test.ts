@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -130,11 +133,57 @@ describe("claude_local ACP startup fallback", () => {
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
 
-  it("enables user and project sources for local managed Claude CLI runs", async () => {
-    const ctx = buildContext({ engine: "cli", managedAiConnection: { provider: "anthropic", method: "api_key" } });
-    await execute(ctx as never);
-    const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
-    const args = calls[0]![3];
-    expect(args[args.indexOf("--setting-sources") + 1]).toBe("user,project");
+  it("makes the selected skill available in the isolated managed Claude user directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
+    try {
+      const source = path.join(root, "source");
+      const configDir = path.join(root, "provider");
+      await mkdir(source); await mkdir(configDir);
+      await writeFile(path.join(source, "SKILL.md"), "---\nname: probe-skill\ndescription: Test skill\n---\nExpected contents\n");
+      vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip"));
+      const ctx = buildContext({ engine: "cli", managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [{ key: "company/probe", runtimeName: "probe-skill", source }],
+        paperclipSkillSync: { desiredSkills: ["company/probe"] } });
+      await execute(ctx as never);
+      expect(await readFile(path.join(configDir, "skills", "probe-skill", "SKILL.md"), "utf8")).toContain("Expected contents");
+      const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[]]>;
+      const args = calls[0]![3];
+      expect(args[args.indexOf("--setting-sources") + 1]).toBe("user");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not overwrite an existing managed skill", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-test-grant-"));
+    try {
+      const source = path.join(root, "source");
+      const configDir = path.join(root, "provider");
+      const existing = path.join(configDir, "skills", "probe-skill");
+      await mkdir(source);
+      await mkdir(existing, { recursive: true });
+      await writeFile(path.join(source, "SKILL.md"), "new");
+      await writeFile(path.join(existing, "SKILL.md"), "existing");
+      const ctx = buildContext({ engine: "cli", managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [{ key: "company/probe", runtimeName: "probe-skill", source }],
+        paperclipSkillSync: { desiredSkills: ["company/probe"] } });
+      await expect(execute(ctx as never)).rejects.toThrow("destination already exists");
+      expect(await readFile(path.join(existing, "SKILL.md"), "utf8")).toBe("existing");
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("refuses to write skills into a non-managed Claude configuration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-unmanaged-test-"));
+    try {
+      const source = path.join(root, "source");
+      const configDir = path.join(root, "provider");
+      await mkdir(source);
+      await mkdir(configDir);
+      await writeFile(path.join(source, "SKILL.md"), "test");
+      const ctx = buildContext({ engine: "cli", managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: configDir },
+        paperclipRuntimeSkills: [{ key: "company/probe", runtimeName: "probe-skill", source }],
+        paperclipSkillSync: { desiredSkills: ["company/probe"] } });
+      await expect(execute(ctx as never)).rejects.toThrow("outside a Paperclip-managed temporary Claude configuration");
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

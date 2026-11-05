@@ -66,6 +66,13 @@ before selection. These labels use existing authorized account metadata, never
 credentials or authentication paths.
 
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
+
+For managed Claude CLI runs, Paperclip copies the agent's selected Paperclip skills
+into the isolated, per-run Claude configuration directory. Claude is still launched
+with `--setting-sources user`, so project settings, hooks and project-local skills
+are not enabled by this mechanism. Existing skill destinations are not overwritten;
+skills containing symbolic links cannot be staged and cause the run to fail. The
+temporary configuration is removed with the managed connection runtime.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
 
@@ -512,13 +519,6 @@ window regains focus. Waiting screens also poll until sign-in verifies. A succes
 check shows the account is signed in; only **Connect** creates or reconnects the grant.
 Claude, Codex, and Grok check only their connection-specific login home. The
 health response selects whether a self-hosted user may sign in.
-
-For local managed Claude CLI runs, Paperclip enables user and project setting
-sources so Claude can discover project skills and the selected Paperclip skills.
-Before launch, it rejects project Claude settings containing environment
-overrides or authentication helpers, and settings it cannot parse. Remote CLI
-runs retain user-only sources because their project-auth checks do not yet
-validate the same settings. ACP runs are unchanged.
 
 Leaving and returning to a local sign-in screen resumes its active attempt. Navigation
 does not delete its credential home. **Start sign-in again**
