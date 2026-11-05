@@ -27,6 +27,20 @@ mod human_input_validation;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 static RECEIPT_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Upper bound on waiting for something the fake provider is expected to do.
+///
+/// Every wait in this file stops as soon as its condition holds, so this
+/// bound only turns a genuine hang into a failure; it is never the expected
+/// latency. It is deliberately generous: CI runs these tests in parallel on
+/// shared runners, and on Windows process spawn, antivirus scanning and
+/// durable-state fsyncs routinely stretch a sub-second exchange past the
+/// five-second bound these waits used to share.
+const EVENT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn event_deadline() -> std::time::Instant {
+    std::time::Instant::now() + EVENT_WAIT_TIMEOUT
+}
+
 fn lock_receipt_limit_test() -> MutexGuard<'static, ()> {
     RECEIPT_LIMIT_TEST_LOCK
         .lock()
@@ -754,7 +768,7 @@ fn retained_and_ack(
 }
 
 fn wait_for_notification(provider: &mut CodexProvider, expected_method: &str) -> Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         match provider.poll().expect("poll provider notification") {
             Some(CodexProviderEvent::Notification { method, params }) => {
@@ -770,7 +784,7 @@ fn wait_for_notification(provider: &mut CodexProvider, expected_method: &str) ->
 }
 
 fn wait_for_provider_error(provider: &mut CodexProvider) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         match provider.poll() {
             Err(error) => return error.to_string(),
@@ -785,7 +799,7 @@ fn wait_for_executor_event(
     executor: &mut impl CommandExecutor,
     expected_event_type: &str,
 ) -> PolledEvent {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let events = poll_and_ack(executor).expect("poll Codex executor event");
         if let Some(event) = events
@@ -800,7 +814,7 @@ fn wait_for_executor_event(
 }
 
 fn wait_for_provider_exit(provider: &mut CodexProvider) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         if matches!(
             provider.poll().expect("poll terminated provider"),
@@ -814,7 +828,7 @@ fn wait_for_provider_exit(provider: &mut CodexProvider) {
 }
 
 fn wait_for_reused_identity_reap(provider: &mut CodexProvider) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         match provider.poll() {
             Err(error) => assert!(
@@ -840,7 +854,7 @@ fn wait_for_reused_identity_reap(provider: &mut CodexProvider) {
 
 fn wait_for_fake_provider_idle(directory: &Path) {
     let state_path = directory.join("fake-state.json");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let active_turn_id = fs::read(&state_path)
             .ok()
@@ -960,7 +974,7 @@ fn wait_for_executor_event_batch(
     executor: &mut CodexCommandExecutor,
     expected_event_type: &str,
 ) -> Vec<PolledEvent> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let mut retained = Vec::new();
     while std::time::Instant::now() < deadline {
         retained.extend(poll_and_ack(executor).expect("poll and retain the entire event batch"));
@@ -995,7 +1009,7 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
         .start_turn("Complete the fake task.", &config.cwd)
         .expect("start provider turn");
     let mut event_types = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         if let Some(CodexProviderEvent::Notification { method, params }) =
             provider.poll().expect("poll provider event")
@@ -1030,7 +1044,7 @@ fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
             .expect("start provider turn");
         let mut completed = false;
         let mut account_notices = 0;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         while std::time::Instant::now() < deadline {
             match provider.poll().expect("poll provider event") {
                 Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
@@ -1155,7 +1169,7 @@ fn helper_tool_requests_do_not_terminate_or_borrow_root_authority() {
         provider
             .start_turn("Hire a persistent teammate.", &config.cwd)
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         let mut completed = false;
         let mut root_tool_delivered = false;
         while std::time::Instant::now() < deadline {
@@ -1222,7 +1236,7 @@ fn codex_dynamic_tool_round_trips_through_the_provider_boundary() {
 
     let mut delivered = false;
     let mut completed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         match provider.poll().expect("poll semantic tool event") {
             Some(CodexProviderEvent::ToolCall {
@@ -1289,7 +1303,7 @@ fn codex_rejects_replay_of_a_completed_tool_call_id_in_the_same_turn() {
         .start_turn("Inspect the fake task once.", &config.cwd)
         .expect("start provider turn");
 
-    let first_call_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let first_call_deadline = event_deadline();
     let first_call =
         std::iter::from_fn(|| (std::time::Instant::now() < first_call_deadline).then_some(()))
             .find_map(|_| match provider.poll().expect("poll first tool call") {
@@ -1313,7 +1327,7 @@ fn codex_rejects_replay_of_a_completed_tool_call_id_in_the_same_turn() {
         })
         .expect("deliver the first semantic result");
 
-    let replay_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let replay_deadline = event_deadline();
     let replay_error =
         std::iter::from_fn(|| (std::time::Instant::now() < replay_deadline).then_some(()))
             .find_map(|_| {
@@ -1423,7 +1437,7 @@ fn codex_completion_survives_failed_pending_request_cancellation() {
         .start_turn("Complete and exit with a tool call pending.", &config.cwd)
         .expect("start provider turn");
 
-    let call_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let call_deadline = event_deadline();
     let mut call = None;
     while std::time::Instant::now() < call_deadline {
         if let Some(CodexProviderEvent::ToolCall {
@@ -1440,7 +1454,7 @@ fn codex_completion_survives_failed_pending_request_cancellation() {
     let call = call.expect("observe the pending semantic tool call");
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let completed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let completed_deadline = event_deadline();
     let mut completed = false;
     while std::time::Instant::now() < completed_deadline {
         completed = matches!(
@@ -1486,7 +1500,7 @@ fn clean_idle_provider_exit_preserves_completed_turn_success() {
     let mut completion_seen = false;
     let mut post_completion_output_seen = false;
     let mut clean_exit = None;
-    let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let exit_deadline = event_deadline();
     while std::time::Instant::now() < exit_deadline {
         match provider.poll().expect("poll completion and clean exit") {
             Some(CodexProviderEvent::Notification { method, .. }) => {
@@ -1550,7 +1564,7 @@ fn clean_provider_exit_does_not_refail_a_completed_turn() {
         .expect("start provider turn");
 
     let mut event_types = Vec::new();
-    let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let exit_deadline = event_deadline();
     while std::time::Instant::now() < exit_deadline {
         event_types.extend(
             poll_and_ack(&mut executor)
@@ -1679,7 +1693,7 @@ fn durable_backend_reaps_before_rotating_full_provider_identity_epochs() {
     assert!(rolled["toolBridge"]["durableRunReceiptLimitReached"].is_null());
 
     let mut event_types = Vec::new();
-    let semantic_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let semantic_deadline = event_deadline();
     while std::time::Instant::now() < semantic_deadline {
         event_types.extend(
             poll_and_ack(&mut recovered)
@@ -1923,7 +1937,7 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
         .expect("start provider turn");
 
     let mut event_types = Vec::new();
-    let first_exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let first_exit_deadline = event_deadline();
     while std::time::Instant::now() < first_exit_deadline {
         event_types.extend(
             poll_and_ack(&mut executor)
@@ -1966,7 +1980,7 @@ fn post_completion_observation_does_not_hide_same_or_resumed_process_failure() {
     // run outcome, while the later idle provider failure remains visible.
     let mut recovered = CodexCommandExecutor::new(&directory);
     let mut recovered_events = Vec::new();
-    let recovered_exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let recovered_exit_deadline = event_deadline();
     while std::time::Instant::now() < recovered_exit_deadline {
         recovered_events
             .extend(poll_and_ack(&mut recovered).expect("poll restored provider after idle crash"));
@@ -2058,7 +2072,7 @@ fn rejected_replacement_turn_start_preserves_result_and_exit_authority() {
         .start_turn("Reject replacement work.", &config.cwd)
         .expect_err("the replacement turn/start returns a definite rejection");
     let mut buffered_notification_seen = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let rejected_start_exit = loop {
         if std::time::Instant::now() >= deadline {
             break None;
@@ -2135,7 +2149,7 @@ fn rejected_replacement_turn_start_does_not_hide_contradictory_turn_evidence() {
         "unexpected duplicate-start error: {duplicate_error}"
     );
     let mut contradictory_turn_seen = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let rejected_start_exit = loop {
         if std::time::Instant::now() >= deadline {
             break None;
@@ -2201,7 +2215,7 @@ fn ambiguous_or_dead_replacement_start_preserves_result_not_exit_authority() {
         provider
             .start_turn("Accept replacement work before failing.", &config.cwd)
             .expect_err("the accepted replacement turn has no valid response");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         let ambiguous_start_exit = (0..)
             .take_while(|_| std::time::Instant::now() < deadline)
             .find_map(|_| {
@@ -2347,7 +2361,7 @@ fn ambiguous_replacement_turn_adopts_one_later_completion_identity() {
 
         let mut replacement_started = false;
         let mut replacement_completed = false;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         let replacement_exit = (0..)
             .take_while(|_| std::time::Instant::now() < deadline)
             .find_map(|_| {
@@ -2438,7 +2452,7 @@ fn ambiguous_replacement_turn_rejects_conflicting_later_identity() {
     );
     assert_eq!(provider.active_provider_turn_id(), Some("provider-turn-2"));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let diagnostic = loop {
         assert!(
             std::time::Instant::now() < deadline,
@@ -2479,7 +2493,7 @@ fn ambiguous_replacement_turn_rejects_an_older_settled_identity() {
         "unexpected older-identity error: {error}"
     );
     assert_eq!(provider.active_provider_turn_id(), None);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let completed_turn_authoritative = (0..)
         .take_while(|_| std::time::Instant::now() < deadline)
         .find_map(|_| {
@@ -2873,7 +2887,7 @@ fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
         .expect_err("accepted replacement response is transport-ambiguous");
 
     let mut replacement_events = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         replacement_events.extend(
             poll_and_ack(&mut executor)
@@ -2929,7 +2943,7 @@ fn accepted_replacement_turn_revokes_prior_authority_before_idle_crash() {
     provider
         .start_turn("Start genuinely new provider work.", &config.cwd)
         .expect("start second provider turn");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let second_exit = loop {
         if std::time::Instant::now() >= deadline {
             break None;
@@ -3645,7 +3659,7 @@ fn durable_backend_routes_a_semantic_tool_result_back_to_codex() {
 
     let mut result_seen = false;
     let mut terminal_seen = false;
-    let completion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let completion_deadline = event_deadline();
     while std::time::Instant::now() < completion_deadline {
         let events = poll_and_ack(&mut executor).expect("poll result and completion");
         result_seen |= events
@@ -3740,7 +3754,7 @@ fn durable_backend_replays_completed_results_without_mutating_the_event_queue() 
     let state_path = directory.join("codex-provider-state.json");
     let state_before_replays = fs::read(&state_path).expect("read state before exact replays");
     let expected_response = r#"{"ok":true,"task":{"id":"task-1"}}"#;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while recorded_tool_responses(&directory).len() < 5 && std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut executor).expect("service completed tool replay");
         assert!(
@@ -4156,7 +4170,7 @@ fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
         .expect("settle the first run's semantic tool call");
 
     let mut turn_completed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut executor).expect("drain the first run");
         turn_completed |= events
@@ -4234,7 +4248,7 @@ fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
             json!({"text": "Attempt to replay the old tool call."}),
         ))
         .expect("start the second provider turn");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let rejection = loop {
         assert!(
             std::time::Instant::now() < deadline,
@@ -4305,7 +4319,7 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
         .expect("start the first turn");
 
     let mut old_usage = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     loop {
         assert!(
             std::time::Instant::now() < deadline,
@@ -4420,7 +4434,7 @@ fn durable_backend_rejects_new_work_in_a_completed_turn_tail() {
         ))
         .expect("start the first turn");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     loop {
         assert!(
             std::time::Instant::now() < deadline,
@@ -4437,7 +4451,7 @@ fn durable_backend_rejects_new_work_in_a_completed_turn_tail() {
     }
     fs::write(&notification_gate, b"release").expect("release the foreign-turn barrier");
     let emitted_gate = notification_gate.with_extension("emitted");
-    let emitted_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let emitted_deadline = event_deadline();
     while !emitted_gate.is_file() {
         assert!(
             std::time::Instant::now() < emitted_deadline,
@@ -4510,7 +4524,7 @@ fn durable_backend_attaches_after_a_settled_resume_usage_snapshot() {
         .expect("start the provider turn");
 
     let mut saw_terminal = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
         saw_terminal |= events
@@ -4673,7 +4687,7 @@ fn durable_backend_attaches_after_a_settled_restore_notice() {
         .expect("start the provider turn");
 
     let mut saw_terminal = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
         saw_terminal |= events
@@ -5027,7 +5041,7 @@ fn durable_stop_does_not_wait_for_a_repeated_interrupt_acknowledgement() {
     assert_eq!(interrupted.result["status"], "interrupt_requested");
     // Mirror the actual producer ordering: the first RPC was acknowledged and
     // the provider has aborted, but the runner has not polled its terminal.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     loop {
         let state: Value =
             serde_json::from_slice(&fs::read(directory.join("fake-state.json")).unwrap()).unwrap();
@@ -5140,7 +5154,7 @@ fn assert_durable_stop_prepares_resumed_provider(ended_before_resume: bool) {
         // The real provider persists completion, but runnerd never polls its
         // terminal notification before losing the process. Do not manufacture
         // or clear the runner's durable active-turn identity in this fixture.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         loop {
             let state: Value = serde_json::from_slice(
                 &fs::read(directory.join("fake-state.json")).expect("read provider-owned state"),
@@ -6119,7 +6133,7 @@ fn receipt_limit_polls_an_authoritative_terminal_with_unacknowledged_events() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let pending = loop {
         let events = recovered
             .poll_events()
@@ -6202,7 +6216,7 @@ fn pending_runtime_request_count_limit_rejects_the_overflowing_request() {
         .interrupt_turn()
         .expect("request the runtime-request flood");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let mut accepted = 0;
     let mut rejected_at_capacity = false;
     while !rejected_at_capacity && std::time::Instant::now() < deadline {
@@ -6274,7 +6288,7 @@ fn receipt_limit_polling_bounds_and_rejects_runtime_request_floods() {
     saturate_provider_tool_receipts(&directory);
 
     let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = event_deadline();
     let mut rejected_at_capacity = false;
     while !rejected_at_capacity && std::time::Instant::now() < deadline {
         let events = recovered
@@ -6574,7 +6588,7 @@ fn structured_question_round_trips_through_the_normalized_backend() {
     let mut question_set = None;
     let mut request_id = None;
     let mut provider_started_events = 0;
-    let question_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let question_deadline = event_deadline();
     while std::time::Instant::now() < question_deadline {
         for event in poll_and_ack(&mut executor).expect("poll question") {
             provider_started_events += usize::from(event.event_type == "turn.started");
@@ -6807,7 +6821,7 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
             .unwrap();
         let mut emitted = Vec::new();
         let mut input_calls = 0;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         while std::time::Instant::now() < deadline {
             let events = poll_and_ack(&mut executor).unwrap();
             for event in &events {
@@ -6828,10 +6842,18 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let emitted_types = emitted
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            emitted_types.contains(&"run.terminal"),
+            "{scenario}: run did not reach run.terminal; observed {emitted_types:?}"
+        );
         let failure = emitted
             .iter()
             .position(|event| event.event_type == "session.failed")
-            .unwrap();
+            .unwrap_or_else(|| panic!("{scenario}: no session.failed in {emitted_types:?}"));
         let turn = emitted
             .iter()
             .position(|event| event.event_type == "turn.completed")
@@ -7065,9 +7087,7 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
             json!({"text": "Read test context."}),
         ))
         .unwrap();
-    // Persisting 300 descendant notifications can exceed five seconds while
-    // the other provider tests contend for disk and CPU on a shared runner.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = event_deadline();
     let mut completed = false;
     let mut children = std::collections::BTreeSet::new();
     while std::time::Instant::now() < deadline && !completed {
@@ -7095,7 +7115,7 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
     drop(first);
 
     let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let mut child_seen = false;
     while std::time::Instant::now() < deadline && !child_seen {
         for event in poll_and_ack(&mut restored).unwrap() {
@@ -7137,7 +7157,7 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
             json!({"text":"Continue bounded child work."}),
         ))
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     let mut capacity_failed = false;
     while std::time::Instant::now() < deadline && !capacity_failed {
         for event in poll_and_ack(&mut bounded).unwrap() {
@@ -7245,7 +7265,7 @@ fn resume_usage_is_a_historical_diagnostic_not_a_warning_or_charge() {
         .expect("start the provider turn");
 
     let mut saw_terminal = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = event_deadline();
     while std::time::Instant::now() < deadline {
         let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
         saw_terminal |= events
@@ -7694,7 +7714,7 @@ fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
                     json!({"text":"Start successor paid work."}),
                 ))
                 .unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = event_deadline();
             loop {
                 assert!(std::time::Instant::now() < deadline);
                 let events = poll_and_ack(&mut executor).unwrap();
@@ -7711,7 +7731,7 @@ fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
             }
         }
         fs::write(&gate, "release").unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = event_deadline();
         let retained = loop {
             assert!(std::time::Instant::now() < deadline);
             let events = if mode == "unsafe" {
