@@ -4730,11 +4730,13 @@ export async function runChildProcess(
       startedAt: string;
     }) => Promise<void>;
     terminalResultCleanup?: TerminalResultCleanupOptions;
+    signal?: AbortSignal;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
+  opts.signal?.throwIfAborted();
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -4769,9 +4771,24 @@ export async function runChildProcess(
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then(async (target) => {
-        const job = process.platform === "win32" && opts.terminalResultCleanup?.windowsProcessTreeGuard && !opts.remoteExecution
-          ? await prepareWindowsTerminalJob(target.command, target.args)
-          : null;
+        if (opts.signal?.aborted) {
+          await target.cleanup?.();
+          opts.signal.throwIfAborted();
+        }
+        let job: Awaited<ReturnType<typeof prepareWindowsTerminalJob>> | null = null;
+        try {
+          if (process.platform === "win32" && opts.terminalResultCleanup?.windowsProcessTreeGuard && !opts.remoteExecution) {
+            job = await prepareWindowsTerminalJob(target.command, target.args);
+          }
+        } catch (error) {
+          await target.cleanup?.();
+          throw error;
+        }
+        if (opts.signal?.aborted) {
+          await job?.settle();
+          await target.cleanup?.();
+          opts.signal.throwIfAborted();
+        }
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
@@ -4815,6 +4832,7 @@ export async function runChildProcess(
         let terminalCleanupForceKilled = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let cancellationKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
 
@@ -4823,6 +4841,20 @@ export async function runChildProcess(
           if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
           terminalCleanupTimer = null;
           terminalCleanupKillTimer = null;
+        };
+
+        const cancelProcess = () => {
+          if (job) job.stop();
+          else signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          cancellationKillTimer = setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+        opts.signal?.addEventListener("abort", cancelProcess, { once: true });
+        if (opts.signal?.aborted) cancelProcess();
+        const clearCancellation = () => {
+          opts.signal?.removeEventListener("abort", cancelProcess);
+          if (cancellationKillTimer) clearTimeout(cancellationKillTimer);
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -4948,6 +4980,7 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearCancellation();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           void job?.settle().catch(() => {});
@@ -4969,6 +5002,7 @@ export async function runChildProcess(
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
+            clearCancellation();
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               let processTreeStopped = false;

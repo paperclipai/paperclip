@@ -871,6 +871,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const passesConfiguredModel = Boolean(
     model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
+  const windowsLocalResume = process.platform === "win32" && !executionTargetIsRemote && Boolean(sessionId);
+  const cancelledBeforeProviderStart = (): AdapterExecutionResult => ({
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorCode: "cancelled",
+    errorMessage: "Claude execution was cancelled before provider startup",
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    resultJson: {
+      executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+    },
+  });
+  const cancelledAfterProviderStop = (): AdapterExecutionResult => ({
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorCode: "cancelled",
+    errorMessage: "Claude execution was cancelled",
+    resultJson: {
+      executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+    },
+  });
+  let attemptSpawned = false;
 
   const buildClaudeArgs = (
     resumeSessionId: string | null,
@@ -924,6 +947,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    attemptSpawned = false;
+    if (windowsLocalResume && ctx.signal?.aborted) throw ctx.signal.reason ?? new Error("Claude execution cancelled");
     await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
     const renderedBootstrapPrompt =
       !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
@@ -1005,17 +1030,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
-      onSpawn,
+      onSpawn: windowsLocalResume
+        ? async (meta) => { attemptSpawned = true; await onSpawn?.(meta); }
+        : onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog: accountingLog,
       runLogTail: paperclipBridge?.runLogTail,
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
-        windowsProcessTreeGuard: Boolean(resumeSessionId),
+        windowsProcessTreeGuard: Boolean(resumeSessionId) || windowsLocalResume,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
       localProcessSandbox,
+      ...(windowsLocalResume
+        ? { signal: ctx.signal }
+        : {}),
     });
     await accountingLog.flush();
 
@@ -1402,7 +1432,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
 
-    const initial = await runAttempt(sessionId ?? null);
+    if (windowsLocalResume) await ctx.onCancellationReady?.();
+    if (windowsLocalResume && ctx.signal?.aborted) return cancelledBeforeProviderStart();
+    let initial: Awaited<ReturnType<typeof runAttempt>>;
+    try {
+      initial = await runAttempt(sessionId ?? null);
+    } catch (error) {
+      if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledBeforeProviderStart();
+      throw error;
+    }
+    if (windowsLocalResume && ctx.signal?.aborted && initial.proc.processTreeStopped === true) {
+      return cancelledAfterProviderStop();
+    }
     const stoppedAfterTerminalResult = initial.proc.terminalResultCleanup?.terminalResultSeen === true;
     const sessionErrorKind =
       sessionId &&
@@ -1412,6 +1453,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (stoppedAfterTerminalResult &&
           !executionTargetIsRemote &&
           initial.parsed?.is_error === true)) &&
+      (!stoppedAfterTerminalResult || initial.parsed?.is_error === true) &&
       initial.parsed
         ? isClaudeUnknownSessionError(initial.parsed)
           ? "unknown"
@@ -1453,7 +1495,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         }
       }
-      const retry = await runAttempt(null);
+      if (windowsLocalResume && ctx.signal?.aborted) return cancelledAfterProviderStop();
+      let retry: Awaited<ReturnType<typeof runAttempt>>;
+      try {
+        retry = await runAttempt(null);
+      } catch (error) {
+        if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledAfterProviderStop();
+        throw error;
+      }
+      if (windowsLocalResume && ctx.signal?.aborted && retry.proc.processTreeStopped === true) {
+        return cancelledAfterProviderStop();
+      }
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 

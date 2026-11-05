@@ -757,7 +757,9 @@ describe("claude remote execution", () => {
     await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
 
     runChildProcess.mockResolvedValueOnce({
-      exitCode: null,
+      // Windows cleanup can produce a nonzero synthetic exit even after the
+      // CLI emitted a successful terminal result.
+      exitCode: process.platform === "win32" ? 1 : null,
       signal: "SIGTERM",
       timedOut: false,
       stdout: JSON.stringify({
@@ -779,6 +781,7 @@ describe("claude remote execution", () => {
         signal: "SIGTERM",
         forceKilled: false,
       },
+      processTreeStopped: true,
     });
 
     await execute({
@@ -812,6 +815,111 @@ describe("claude remote execution", () => {
     const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
     expect(providerCalls).toHaveLength(1);
     expect(providerCalls[0]?.[2]).toContain("--resume");
+  });
+
+  it.skipIf(process.platform !== "win32")("acknowledges Windows cancellation before provider dispatch", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-cancel-before-dispatch-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    const controller = new AbortController();
+    const onSpawn = vi.fn();
+    const result = await execute({
+      runId: "run-claude-cancel-before-dispatch",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId,
+        sessionParams: { sessionId, cwd: workspaceDir },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      config: {
+        model: "claude-opus-5",
+        engine: "cli",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      signal: controller.signal,
+      onCancellationReady: async () => controller.abort(),
+      onSpawn,
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    expect(onSpawn).not.toHaveBeenCalled();
+    const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
+    expect(providerCalls).toHaveLength(0);
+  });
+
+  it.skipIf(process.platform !== "win32")("does not acknowledge cancellation as pre-start after dispatch without stop proof", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-cancel-after-dispatch-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    const controller = new AbortController();
+    runChildProcess.mockImplementationOnce((async (...args: unknown[]) => {
+      const [, , , options] = args as [
+        string,
+        string,
+        string[],
+        { onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void> },
+      ];
+      await options.onSpawn?.({ pid: 123, processGroupId: null, startedAt: new Date().toISOString() });
+      controller.abort();
+      throw new Error("synthetic process failure without stop proof");
+    }) as unknown as typeof runChildProcess);
+
+    await expect(execute({
+      runId: "run-claude-cancel-after-dispatch",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId,
+        sessionParams: { sessionId, cwd: workspaceDir },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      config: {
+        model: "claude-opus-5",
+        engine: "cli",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      signal: controller.signal,
+      onCancellationReady: async () => {},
+      onLog: async () => {},
+    })).rejects.toThrow("synthetic process failure without stop proof");
   });
 
   it("does not retry an unknown resumed session after SSH client cleanup", async () => {
