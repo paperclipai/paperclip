@@ -2111,6 +2111,16 @@ workspace through its verified repair receipt instead of discarding its files.
 
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 
+Continuation projects large successful document, comment, and task-write responses
+as saved-record references. It retains each completed action's run and receipt IDs,
+HTTP outcome, record identity, revision/status metadata, and a digest of the omitted
+response data. The full response stays in the original run receipt. This avoids
+repeating saved document bodies in every new runner command. User messages,
+verified answers, unknown operations, and failed responses keep their existing
+representation. A reference is evidence of completed work, not permission to
+repeat the action; read the saved record or original receipt when its contents
+are needed.
+
 ### Remote runner process evidence
 
 A failed remote health request does not prove that runnerd stopped. Read-only
