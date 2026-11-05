@@ -8,7 +8,8 @@ describe("GitHub tool access failures", () => {
   });
 
   it("does not confuse rate limits, missing resources or another provider with a GitHub access denial", () => {
-    for (const message of ["403 API rate limit exceeded", "404 Not Found", "Repository created successfully", "Bad credentials"])
+    for (const message of ["403 API rate limit exceeded", "404 Not Found", "Repository created successfully", "Bad credentials",
+      "403 ".repeat(10_000), "x".repeat(4000) + "403 Resource not accessible by integration"])
       expect(githubAccessError("github", message)).toBeNull();
     expect(githubAccessError("notion", "403 Resource not accessible by integration")).toBeNull();
   });

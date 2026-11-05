@@ -5,7 +5,7 @@ import type { RequestConfirmationPayload, RequestConfirmationResult } from "@pap
  * use 403), or echo provider response text into the repair instructions. */
 export function githubAccessError(sourceTemplateKey: unknown, message: unknown) {
   if (sourceTemplateKey !== "github" || typeof message !== "string" ||
-      !/\b403\b[^\n]*\bResource not accessible by (?:integration|personal access token)\b/i.test(message)) return null;
+      !/\b403\s+Resource not accessible by (?:integration|personal access token)\b/i.test(message.slice(0, 4000))) return null;
   return { errorCode: "github_access_denied" as const };
 }
 
