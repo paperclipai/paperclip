@@ -9,6 +9,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
+import { reclaimInactiveNativeProviderCache } from "./native-runtime/retained-provider-cache.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease } from "@paperclipai/shared";
@@ -295,8 +297,22 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
               eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, source.remoteWorkspace.id),
             ));
             if (!workspace) throw workspaceSourceBindingFailure("workspace_reference_mismatch");
-            const saved = await saveRemoteWorkspace({ db, workspace, runId: input.runId,
+            const save = () => saveRemoteWorkspace({ db, workspace, runId: input.runId,
               lease: cleanupLease as EnvironmentLease, target, assertOwned: ownership.assertHeld });
+            let saved: Awaited<ReturnType<typeof save>>;
+            try { saved = await save(); }
+            catch (error) {
+              if (!(error instanceof Error) || error.message !== REMOTE_WORKSPACE_SANDBOX_DISK_FULL) throw error;
+              let reclaimed = false;
+              try {
+                reclaimed = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
+                  issueId: input.issueId, runId: input.runId, workspaceId: workspace.id, target,
+                  assertOwned: ownership.assertHeld });
+              } catch { logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed"); }
+              if (!reclaimed) throw error;
+              await ownership.assertHeld();
+              saved = await save();
+            }
             await ownership.assertHeld();
             const [existing] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
               eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.heartbeatRunId, input.runId),
