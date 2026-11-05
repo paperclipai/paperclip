@@ -43,7 +43,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("status-card-evaluation-");
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 30_000);
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); draining = false; errors.length = 0; wakeup.mockReset();
@@ -51,7 +51,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(companies).values({ id: companyId, name: "Status", issuePrefix: `S${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Summarizer", role: "general", status: "idle", adapterType: "process", adapterConfig: {} });
     await instanceSettingsService(db).updateExperimental({ enableStatusCards: true });
-    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+    await Promise.all(Array.from({ length: 4 }, () => db.execute(sql`select pg_sleep(0.01)`)));
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
@@ -373,15 +373,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     // window. A company hint must not make that real deadline wait one second.
     await coordinator!.stop(); coordinator = undefined;
     const dueAt = Date.now() + 500;
+    const actualWakeup = wakeup.getMockImplementation()!;
+    let otherWakeEnteredAt: number | null = null;
+    wakeup.mockImplementation((id, options) => {
+      // Capture dispatch ENTRY before the original mock performs any DB I/O.
+      if (id === other.agentId) otherWakeEnteredAt ??= Date.now();
+      return actualWakeup(id, options);
+    });
     await db.update(statusCards).set({ nextEvalAt: new Date(dueAt), nextEvalReason: "refresh" }).where(eq(statusCards.id, other.id));
     await start(service); await flush();
     await issueService(db).addComment(otherIssue.id, "Another company's coalesced human update", { userId: "board-user" });
     await issueService(db).addComment((await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, originalCompany)))[0]!.id,
       "More changes while another company is due", { userId: "board-user" });
     await flush();
+    const armedBeforeAdvance = coordinator!.nextWakeAt();
+    // A null deadline can mean the due work is already running. Any still
+    // armed deadline must preserve the known earlier obligation.
+    if (armedBeforeAdvance !== null) expect(armedBeforeAdvance).toBeLessThanOrEqual(dueAt);
     await vi.advanceTimersByTimeAsync(500); await flush();
     await vi.waitFor(() => expect(wakeup).toHaveBeenCalledOnce());
-    expect(Date.now()).toBeLessThan(dueAt + 500);
+    expect(otherWakeEnteredAt).not.toBeNull();
+    expect(otherWakeEnteredAt!).toBeLessThan(dueAt + 500);
     expect(wakeup.mock.calls[0]![0]).not.toBe(originalAgent);
     const generated = (await statusCardService(db).getById(other.id))!;
     expect(generated.generatingIssueId).toBeTruthy();
