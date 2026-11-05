@@ -389,8 +389,11 @@ describe("PaperclipControlPlanePort conformance", () => {
         async result() { return null; }, async close() {},
       }; },
     };
+    // The checkpoint budget also covers the ordinary checkpoints before the
+    // terminal. At 100ms a loaded runner could time one of those out first, so
+    // the budget is 1s and the test waits for the timeout to settle the run.
     const options = { backend, controlPlane: port, timeoutMs: 2_000,
-      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 100 } : {}),
+      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 1_000 } : {}),
       runnerInstanceId: runnerId, controlPlaneInstanceId: "park-control",
       input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", binding: {
         companyId: identity.companyId, runId: identity.runId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "park-workspace" },
@@ -414,13 +417,15 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
       expect(triggerConsumed).toBe(true);
       if (mode !== "unscoped terminal") {
-        await new Promise(resolve => setTimeout(resolve, 700));
+        // The pending observer must hold the run open: either for a fixed
+        // interval (settles) or until the checkpoint budget expires.
+        if (mode === "settles") await new Promise(resolve => setTimeout(resolve, 700));
+        else expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 1000ms" } });
         expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
         releaseObserver();
         await observerDone;
         if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
         else {
-          expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
           expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
           const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
             completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });

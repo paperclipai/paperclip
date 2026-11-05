@@ -627,6 +627,15 @@ describe("automatic retained workspace recovery", () => {
     return app;
   }
 
+  // The retry route nudges the worker after its 202 and does not await it.
+  // Tests that change the proof after the receipt must stop that nudge, or it
+  // can admit the Retry before the change lands. They resume explicitly.
+  function receiptOnlyRecoveryApp(actor?: Parameters<typeof boardRecoveryApp>[0]) {
+    const routeHeartbeat = heartbeatService(db);
+    vi.spyOn(routeHeartbeat, "resumeTaskRetry").mockImplementation(async () => undefined as never);
+    return boardRecoveryApp(actor, routeHeartbeat);
+  }
+
   type RecoverySourceLayout = "retained" | "published" | "raw";
 
   async function acceptedRemoteExport(sourceLayout: RecoverySourceLayout = "retained") {
@@ -1425,7 +1434,7 @@ describe("automatic retained workspace recovery", () => {
     "keeps ancestor Retry held when current proof changes: %s", async gate => {
       const f = await recoveredPreparationRetryChain(["warning_reason", "provider_warning", "extra_after_warning"].includes(gate)
         ? "historical_warning" : "inherited_session");
-      const heartbeat = heartbeatService(db), app = boardRecoveryApp();
+      const heartbeat = heartbeatService(db), app = receiptOnlyRecoveryApp();
       const original = readSystemRecovery((await action(f.actionId)).evidence)!;
       const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.failed.id, idempotencyKey: randomUUID() }).expect(202)).body;
@@ -1607,7 +1616,7 @@ describe("automatic retained workspace recovery", () => {
         await db.insert(authUsers).values({ id: actorId, name: "Retry owner", email: `${actorId}@example.invalid`, createdAt: new Date(), updatedAt: new Date() });
         await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: actorId, membershipRole: "owner" });
       }
-      const app = boardRecoveryApp({ userId: actorId, source: gate === "actor_permission_revoked" ? "session" : "local_implicit", companyIds: [f.companyId] });
+      const app = receiptOnlyRecoveryApp({ userId: actorId, source: gate === "actor_permission_revoked" ? "session" : "local_implicit", companyIds: [f.companyId] });
       const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
       if (gate === "delayed_provider_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
