@@ -70,7 +70,6 @@ export function ArtifactPrint({
   return (
     <div
       data-artifact-print
-      data-artifact-front
       className="artifact-print relative shrink-0 overflow-hidden"
       style={{ width: print.width, height: print.height, borderWidth: print.border, ...style }}
     >

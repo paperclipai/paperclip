@@ -287,14 +287,6 @@ Automated: [org chart](../../ui/src/pages/OrgChart.test.tsx) is component eviden
 
 Manual: Inspect a manager and report, change the relationship through the offered controls, and reload both views. Exercise a rejected invalid relationship. Configure a built-in agent and verify it retains its required identity and restrictions.
 
-Agent Overview → Profile exposes Reports to above Direct reports. Use No manager
-or the manager edit control to select/clear a manager; self and descendant choices
-are disabled. Confirm persistence after reload and a visible error on save failure.
-Manager and report avatar chips link to their overviews. During a header rename,
-verify the primary-agent crown remains adjacent as the text grows and shrinks.
-[Reporting manager tests](../../ui/src/pages/agent-detail/AgentReportingManager.test.tsx)
-cover company-scoped saves, reporting-loop exclusions, and save errors.
-
 ### `personal-primary-agent`
 
 Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx)

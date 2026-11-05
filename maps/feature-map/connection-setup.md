@@ -52,9 +52,7 @@ policies use the ordinary Permissions screen. See [connector notes](../../doc/co
 
 Open Apps (`/apps`), choose an app, and connect from its landing page. Select an
 available method and access, then complete setup. Existing connections open
-their details; unfinished ones offer a way to finish setup. Redirect actions keep
-the original page open. If a browser blocks the sign-in window, use the explicit
-new-tab fallback or retry after allowing windows.
+their details; unfinished ones offer a way to finish setup.
 
 ### `mcp-link`
 

@@ -1,9 +1,10 @@
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useQueryView } from "@/components/QueryView";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { slackRegistrationErrorMessage } from "@paperclipai/shared";
+import { bindAccount } from "@/lib/account-scope";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,6 +14,7 @@ import type { OwnSlackAppSetup } from "./OwnSlackAppSetup";
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
 
 export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, onBusy, onSaveExit, autoStart = false, reconnect = false }: ComponentProps<typeof OwnSlackAppSetup> & { autoStart?: boolean; reconnect?: boolean }) {
+  const client = useQueryClient();
   const choices = useQuery({ queryKey: ["slack-managed-workspaces", endpoint.companyId], queryFn: () => chatEndpointsApi.slackSetupOptions(endpoint.companyId) });
   const choicesView = useQueryView(choices);
   const [selectedGrant, setSelectedGrant] = useState<string | null>(null);
@@ -31,6 +33,45 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
   const uncertain = registration?.status === "uncertain";
   const creating = registration?.status === "creating";
   const authorizationWindow = useAuthorizationWindow();
+  useEffect(() => {
+    if (!authorizationRequested || busy) return;
+    let disposed = false;
+    let refreshing = false;
+    const account = bindAccount(client);
+    const refresh = async () => {
+      if (refreshing || !account.isCurrentScope()) return;
+      refreshing = true;
+      try {
+        const [options, saved] = await Promise.all([choices.refetch(), chatEndpointsApi.get(endpoint.id)]);
+        if (disposed || !account.isCurrentScope()) return;
+        if (options.isError) throw options.error;
+        onSaved(saved);
+        setAuthorizationRequested(false);
+        setError(null);
+        authorizationWindow.cancel();
+      } catch (failure) {
+        if (!disposed && account.isCurrentScope()) setError(sanitizedSetupErrorMessage(failure, {}));
+      } finally { refreshing = false; }
+    };
+    const observeReturn = () => {
+      const popup = authorizationWindow.windowRef.current;
+      if (!popup) return;
+      if (popup.closed) { void refresh(); return; }
+      try {
+        const url = new URL(popup.location.href);
+        if (url.origin === window.location.origin && url.pathname.endsWith("/apps/chat/connect")
+          && url.searchParams.get("resume") === endpoint.id) void refresh();
+      } catch { /* The sign-in window is still at the provider. */ }
+    };
+    // Focus also covers the native fallback link, which has no window handle.
+    const onFocus = () => {
+      if (authorizationWindow.windowRef.current) observeReturn();
+      else void refresh();
+    };
+    const timer = window.setInterval(observeReturn, 1_500);
+    window.addEventListener("focus", onFocus);
+    return () => { disposed = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
+  }, [authorizationRequested, busy, client, endpoint.id, choices.refetch, onSaved, authorizationWindow.cancel, authorizationWindow.windowRef]);
   async function run(action: () => Promise<void>) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); onBusy(true); setError(null);

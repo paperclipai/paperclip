@@ -26,7 +26,7 @@ beforeEach(() => {
   api.authorizeSlackManager.mockResolvedValue({ authorizationUrl: "https://slack.com/oauth" });
   navigation.mockImplementation(() => new Promise(() => {}));
 });
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.restoreAllMocks(); });
 async function render(overrides = {}) {
   await act(async () => { root.render(<StrictMode><QueryClientProvider client={client}><ManagedSlackSetup {...props()} {...overrides} /></QueryClientProvider></StrictMode>); });
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
@@ -126,4 +126,32 @@ it("does not silently retry an ambiguous request after refresh of setup options"
   api.provisionManagedSlack.mockRejectedValue(new Error("Request failed"));
   await render(); await render();
   expect(api.provisionManagedSlack).toHaveBeenCalledTimes(1);
+});
+
+it.each(["popup", "fallback"])("continues after manager authorization returns through the %s", async (mode) => {
+  const popup = { closed: false, opener: window, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+  popup.location.assign.mockImplementation((url: string) => { popup.location.href = url; });
+  vi.spyOn(window, "open").mockReturnValue(mode === "popup" ? popup as unknown as Window : null);
+  navigation.mockResolvedValue({ kind: "authorization", url: "https://slack.com/oauth" });
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [] });
+  const onSaved = vi.fn();
+  await render({ onSaved });
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
+
+  if (mode === "popup") {
+    // Returning focus while Slack is still open must not interrupt sign-in.
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(api.get).not.toHaveBeenCalled();
+    expect(popup.close).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/UIP/apps/chat/connect?provider=slack&resume=endpoint`;
+  }
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "grant", workspaceName: "Paperclip" }] });
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+  expect(onSaved).toHaveBeenCalledWith(endpoint);
+  expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+  const button = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Continue")!;
+  await act(async () => button.click());
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
+  expect(api.provisionManagedSlack).toHaveBeenCalledWith("endpoint", expect.objectContaining({ grantId: "grant" }));
 });

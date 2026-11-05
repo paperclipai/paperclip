@@ -205,11 +205,6 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 
 Capability ID: `connection-setup/handoff`.
 
-Human provider redirects open a separate browser tab/window and preserve the setup
-page. Window placement is presentation only; it does not change API grants or
-permit an agent to complete human consent. UI tests cover reservation, blocked
-windows and handoff storage; they do not certify live provider authorization.
-
 Review: `operation-reviewed`.
 
 ### `get-tools-oauth-cloud-connector-enrollment`
