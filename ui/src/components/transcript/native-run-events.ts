@@ -2,6 +2,7 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
 import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
+import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -597,14 +598,18 @@ function fileChangeDiffEntries(
     const change = record(raw);
     const path = text(change?.path);
     if (!change || !path) continue;
-    entries.push({ kind: "diff", ts, changeType: "file_header", text: path, toolUseId });
+    // The producer counted the whole patch; the patch itself may be shortened.
+    const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    entries.push({
+      kind: "diff", ts, changeType: "file_header", text: path, toolUseId,
+      additions: count(change.additions), deletions: count(change.deletions),
+    });
     const diff = text(change.diff) ?? "";
+    const classify = createUnifiedDiffClassifier();
     for (const line of diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff ? diff.split("\n") : []) {
-      if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("diff --git ") || line.startsWith("index ")) continue;
-      if (line.startsWith("@@")) entries.push({ kind: "diff", ts, changeType: "hunk", text: line, toolUseId });
-      else if (line.startsWith("+")) entries.push({ kind: "diff", ts, changeType: "add", text: line.slice(1), toolUseId });
-      else if (line.startsWith("-")) entries.push({ kind: "diff", ts, changeType: "remove", text: line.slice(1), toolUseId });
-      else if (line !== "\\ No newline at end of file") entries.push({ kind: "diff", ts, changeType: "context", text: line.startsWith(" ") ? line.slice(1) : line, toolUseId });
+      const { kind, text: value } = classify(line);
+      if (kind === "skip" || kind === "file") continue;
+      entries.push({ kind: "diff", ts, changeType: kind, text: value, toolUseId });
     }
     if (change.diffTruncated === true) {
       entries.push({ kind: "diff", ts, changeType: "truncation", text: "Diff shortened for display.", toolUseId });

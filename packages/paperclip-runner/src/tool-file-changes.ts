@@ -17,19 +17,38 @@ export interface ToolFileChange {
 }
 
 export const MAX_TOOL_FILE_CHANGES = 32;
-export const MAX_TOOL_FILE_DIFF_CHARS = 32 * 1024;
-/** Patch budget for one edit call, below the sidecar and durable payload bounds. */
-export const MAX_TOOL_CALL_DIFF_CHARS = 48 * 1024;
+/** UTF-8 bytes of one file's patch (also within the schema's 32768-character bound). */
+export const MAX_TOOL_FILE_DIFF_BYTES = 32 * 1024;
+/**
+ * Serialized JSON bytes of all patches in one edit call. The ACPX sidecar frame
+ * is 128 KiB including up to 64 KiB of tool output, so patches stay well below
+ * the remainder; a file over budget keeps its counts and drops only its patch.
+ */
+export const MAX_TOOL_CALL_DIFF_BYTES = 48 * 1024;
+
+function serializedBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value));
+}
 
 function withinCallBudget(files: ToolFileChange[]): ToolFileChange[] {
-  let budget = MAX_TOOL_CALL_DIFF_CHARS;
+  let budget = MAX_TOOL_CALL_DIFF_BYTES;
   return files.map((file) => {
-    const size = file.diff?.length ?? 0;
+    const size = file.diff === null ? 0 : serializedBytes(file.diff);
     if (size > budget) return { ...file, diff: null, diffTruncated: true };
     budget -= size;
     return file;
   });
 }
+
+/** Cut a patch to at most `maxBytes` UTF-8 bytes, at the last whole line. */
+function boundedPatch(diff: string, maxBytes: number): { diff: string; truncated: boolean } {
+  const bytes = Buffer.from(diff, "utf8");
+  if (bytes.length <= maxBytes) return { diff, truncated: false };
+  const prefix = bytes.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD+$/u, "");
+  const cut = prefix.lastIndexOf("\n");
+  return { diff: cut > 0 ? prefix.slice(0, cut) : prefix, truncated: true };
+}
+
 const MAX_LCS_CELLS = 4_000_000;
 
 /** Workspace roots an absolute provider path may be relative to (e.g. a path and its realpath). */
@@ -75,20 +94,19 @@ export function boundedToolFileChange(change: Omit<ToolFileChange, "diffTruncate
   let additions = change.additions ?? 0;
   let deletions = change.deletions ?? 0;
   if (diff !== null && change.additions === undefined && change.deletions === undefined) {
+    // `---`/`+++` are file headers only before a hunk; inside one they are
+    // changed lines such as a removed `-- comment`.
+    let inHunk = false;
     for (const line of diff.split("\n")) {
-      if (line.startsWith("+++ ") || line.startsWith("--- ")) continue;
-      if (line.startsWith("+")) additions += 1;
+      if (line.startsWith("diff --git ")) inHunk = false;
+      else if (line.startsWith("@@")) inHunk = true;
+      else if (!inHunk && (line.startsWith("+++ ") || line.startsWith("--- "))) continue;
+      else if (line.startsWith("+")) additions += 1;
       else if (line.startsWith("-")) deletions += 1;
     }
   }
-  let bounded = diff;
-  let diffTruncated = false;
-  if (bounded !== null && bounded.length > MAX_TOOL_FILE_DIFF_CHARS) {
-    const cut = bounded.lastIndexOf("\n", MAX_TOOL_FILE_DIFF_CHARS);
-    bounded = bounded.slice(0, cut > 0 ? cut : MAX_TOOL_FILE_DIFF_CHARS);
-    diffTruncated = true;
-  }
-  return { ...change, additions, deletions, diff: bounded, diffTruncated };
+  const bounded = diff === null ? null : boundedPatch(diff, MAX_TOOL_FILE_DIFF_BYTES);
+  return { ...change, additions, deletions, diff: bounded?.diff ?? null, diffTruncated: bounded?.truncated ?? false };
 }
 
 function splitLines(value: string): string[] {

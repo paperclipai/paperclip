@@ -2889,6 +2889,9 @@ describe("turn changes assembled from edit rows", () => {
         { kind: "diff", ts: TS, changeType: "remove", text: "b", toolUseId: "e1" },
         { kind: "diff", ts: TS, changeType: "add", text: "c", toolUseId: "e1" },
         { kind: "diff", ts: TS, changeType: "truncation", text: "Diff shortened for display.", toolUseId: "e1" },
+        { kind: "tool_result", ts: TS, toolUseId: "w1", content: "", isError: false },
+        { kind: "tool_result", ts: TS, toolUseId: "e1", content: "", isError: false },
+        { kind: "tool_result", ts: TS, toolUseId: "e2", content: "", isError: false },
       ],
       { runId: "run-edits", running: false },
     );
@@ -2906,5 +2909,33 @@ describe("turn changes assembled from edit rows", () => {
     expect(changes.files[0]).toMatchObject({ path: "price.js", operation: "create", additions: 2, deletions: 0 });
     expect(changes.files[1]).toMatchObject({ path: "other.js", operation: "modify", additions: 1, deletions: 1 });
     expect(changes.files[1].diff).toBe("@@ -4,2 +4,2 @@\n keep\n-old\n+new\n");
+  });
+});
+
+describe("edit diff review fixes", () => {
+  it("leaves failed edits out of the turn card and keeps producer counts for shortened patches", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "ok", input: { path: "big.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "big.js", toolUseId: "ok", additions: 900, deletions: 40 },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -1,1 +1,1 @@", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "a", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "add", text: "b", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "truncation", text: "Diff shortened for display.", toolUseId: "ok" },
+        { kind: "tool_result", ts: TS, toolUseId: "ok", content: "", isError: false },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "bad", input: { path: "never.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "never.js", toolUseId: "bad", additions: 3, deletions: 0 },
+        { kind: "diff", ts: TS, changeType: "add", text: "x", toolUseId: "bad" },
+        { kind: "tool_result", ts: TS, toolUseId: "bad", content: "rejected", isError: true },
+      ],
+      { runId: "run-review", running: false },
+    );
+    expect(items.find((item) => item.kind === "tool" && item.id.endsWith(":ok"))).toMatchObject({
+      diff: { added: 900, removed: 40, truncated: true },
+    });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files.map((file) => file.path)).toEqual(["big.js"]);
+    expect(card.files[0]).toMatchObject({ additions: 900, deletions: 40, diffTruncated: true });
   });
 });

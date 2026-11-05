@@ -14,22 +14,45 @@ function patchLine(line: TaskChatDiffLine): string {
   return ` ${line.text}`;
 }
 
-/** Split one edit row's diff into per-file patches (`file` lines start the next file). */
-function editFiles(tool: TaskChatToolItem): Array<{ path: string; lines: TaskChatDiffLine[] }> {
+interface EditFile {
+  path: string;
+  lines: TaskChatDiffLine[];
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+}
+
+/**
+ * Split one edit row's diff into per-file patches (`file` lines start the next
+ * file). Producer counts, when present, cover patches that were shortened.
+ */
+function editFiles(tool: TaskChatToolItem): EditFile[] {
   const diff = tool.diff;
-  if (!diff?.lines?.length) return [];
-  const files: Array<{ path: string; lines: TaskChatDiffLine[] }> = [];
+  if (!diff?.lines?.length && !diff?.files?.length) return [];
+  const chunks: Array<{ path: string; lines: TaskChatDiffLine[] }> = [];
   let current = { path: diff.path ?? tool.target ?? "", lines: [] as TaskChatDiffLine[] };
-  for (const line of diff.lines) {
+  for (const line of diff.lines ?? []) {
     if (line.kind === "file") {
-      if (current.path) files.push(current);
+      if (current.path) chunks.push(current);
       current = { path: line.text, lines: [] };
     } else {
       current.lines.push(line);
     }
   }
-  if (current.path) files.push(current);
-  return files;
+  if (current.path) chunks.push(current);
+  return chunks.map((chunk, index) => {
+    const reported = diff.files?.[index];
+    const counted = {
+      additions: chunk.lines.filter((line) => line.kind === "add").length,
+      deletions: chunk.lines.filter((line) => line.kind === "remove").length,
+    };
+    return {
+      ...chunk,
+      additions: reported?.additions ?? counted.additions,
+      deletions: reported?.deletions ?? counted.deletions,
+      truncated: reported?.truncated ?? (diff.truncated === true && index === chunks.length - 1),
+    };
+  });
 }
 
 /**
@@ -42,18 +65,19 @@ export function turnChangesFromEditRows(
   runId: string,
   complete: boolean,
 ): TaskChatWorkspaceChangeItem | null {
-  const byPath = new Map<string, { patches: string[]; additions: number; deletions: number; created: boolean }>();
+  const byPath = new Map<string, { patches: string[]; additions: number; deletions: number; created: boolean; truncated: boolean }>();
   for (const item of items) {
-    if (item.kind !== "tool") continue;
+    // A failed or interrupted call may carry the patch it proposed before it
+    // ran; only edits that ran (or are still running) count as changes.
+    if (item.kind !== "tool" || item.status === "failed" || item.status === "interrupted") continue;
     for (const file of editFiles(item)) {
-      const entry = byPath.get(file.path) ?? { patches: [], additions: 0, deletions: 0, created: true };
-      entry.patches.push(file.lines.map(patchLine).join("\n"));
-      for (const line of file.lines) {
-        if (line.kind === "add") entry.additions += 1;
-        if (line.kind === "remove") entry.deletions += 1;
-      }
+      const entry = byPath.get(file.path) ?? { patches: [], additions: 0, deletions: 0, created: true, truncated: false };
+      if (file.lines.length) entry.patches.push(file.lines.map(patchLine).join("\n"));
+      entry.additions += file.additions;
+      entry.deletions += file.deletions;
+      entry.truncated ||= file.truncated;
       // A file is new only when its first edit added lines to nothing.
-      if (entry.patches.length === 1) {
+      if (byPath.has(file.path) === false) {
         const hunks = file.lines.filter((line) => line.kind === "hunk");
         entry.created = hunks.length > 0
           && hunks.every((line) => /^@@ -0,0 /.test(line.text))
@@ -72,7 +96,8 @@ export function turnChangesFromEditRows(
     additions: entry.created ? Math.max(entry.additions - entry.deletions, 0) : entry.additions,
     deletions: entry.created ? 0 : entry.deletions,
     binary: false,
-    diff: `${entry.patches.join("\n")}\n`,
+    diff: entry.patches.length ? `${entry.patches.join("\n")}\n` : null,
+    diffTruncated: entry.truncated,
   }));
   return {
     id: `${runId}:workspace:edits`,

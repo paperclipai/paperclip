@@ -10,21 +10,29 @@ use serde_json::{json, Value};
 use crate::durable::redact_sensitive_text_values;
 
 const MAX_FILE_CHANGES: usize = 32;
-const MAX_FILE_DIFF_CHARS: usize = 32 * 1024;
+/// UTF-8 bytes of one file's patch (also within the schema's 32768-character bound).
+const MAX_FILE_DIFF_BYTES: usize = 32 * 1024;
 const MAX_TURN_FILES: usize = 2_000;
-const MAX_TURN_FILE_DIFF_CHARS: usize = 64 * 1024;
-/// Whole-snapshot patch budget, below the durable display payload bound.
-const MAX_TURN_DIFF_TOTAL_CHARS: usize = 192 * 1024;
+const MAX_TURN_FILE_DIFF_BYTES: usize = 64 * 1024;
+/// Serialized patch bytes in one turn snapshot, below the 256 KiB durable
+/// display payload bound with room for the file metadata.
+const MAX_TURN_DIFF_TOTAL_BYTES: usize = 160 * 1024;
 const MAX_PATH_CHARS: usize = 1_024;
-/// Patch budget for one edit call, below the sidecar and durable payload bounds.
-const MAX_CALL_DIFF_CHARS: usize = 96 * 1024;
+/// Serialized patch bytes for one edit call, below the durable display payload
+/// bound with room for tool output and the other fields.
+const MAX_CALL_DIFF_BYTES: usize = 96 * 1024;
+
+/// Bytes a string takes once serialized as JSON (escapes included).
+fn serialized_len(value: &str) -> usize {
+    serde_json::to_string(value).map_or(usize::MAX, |encoded| encoded.len())
+}
 
 /// Keep whole patches in order until the call budget runs out; later files keep
 /// their counts and report a shortened (absent) patch.
 fn within_call_budget(mut files: Vec<Value>) -> Vec<Value> {
-    let mut budget = MAX_CALL_DIFF_CHARS;
+    let mut budget = MAX_CALL_DIFF_BYTES;
     for file in &mut files {
-        let size = file["diff"].as_str().map_or(0, |diff| diff.chars().count());
+        let size = file["diff"].as_str().map_or(0, serialized_len);
         if size > budget {
             file["diff"] = Value::Null;
             file["diffTruncated"] = Value::Bool(true);
@@ -96,12 +104,16 @@ fn count_changes(diff: &str) -> (u64, u64) {
 }
 
 /// Redact, then bound at a line boundary. Returns the patch and whether it was cut.
-fn bounded_diff(diff: &str, max_chars: usize) -> (String, bool) {
+fn bounded_diff(diff: &str, max_bytes: usize) -> (String, bool) {
     let redacted = redact_sensitive_text_values(diff);
-    if redacted.chars().count() <= max_chars {
+    if redacted.len() <= max_bytes {
         return (redacted, false);
     }
-    let prefix: String = redacted.chars().take(max_chars).collect();
+    let mut end = max_bytes;
+    while !redacted.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = &redacted[..end];
     let cut = prefix.rfind('\n').unwrap_or(prefix.len());
     (prefix[..cut].to_owned(), true)
 }
@@ -133,7 +145,7 @@ fn file_change(
     let (additions, deletions) = diff.map(count_changes).unwrap_or((0, 0));
     let (diff, truncated) = match diff {
         Some(diff) => {
-            let (bounded, truncated) = bounded_diff(diff, MAX_FILE_DIFF_CHARS);
+            let (bounded, truncated) = bounded_diff(diff, MAX_FILE_DIFF_BYTES);
             (Value::String(bounded), truncated)
         }
         None => (Value::Null, false),
@@ -324,7 +336,7 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
         }
         file.lines.push(line.to_owned());
     }
-    let mut budget = MAX_TURN_DIFF_TOTAL_CHARS;
+    let mut budget = MAX_TURN_DIFF_TOTAL_BYTES;
     let projected: Vec<Value> = files
         .into_iter()
         .filter_map(|file| {
@@ -357,13 +369,17 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
                 .collect::<Vec<_>>()
                 .join("\n");
             let (additions, deletions) = count_changes(&body);
-            let diff = if file.binary || body.is_empty() || budget == 0 {
+            let diff = if file.binary || body.is_empty() {
                 Value::Null
             } else {
-                let (bounded, _) =
-                    bounded_diff(&format!("{body}\n"), MAX_TURN_FILE_DIFF_CHARS.min(budget));
-                budget = budget.saturating_sub(bounded.chars().count());
-                Value::String(bounded)
+                let (bounded, _) = bounded_diff(&format!("{body}\n"), MAX_TURN_FILE_DIFF_BYTES);
+                let size = serialized_len(&bounded);
+                if size > budget {
+                    Value::Null
+                } else {
+                    budget -= size;
+                    Value::String(bounded)
+                }
             };
             Some(json!({
                 "path": path,
@@ -456,7 +472,52 @@ mod tests {
         assert_eq!(changes.as_array().unwrap().len(), 1);
         assert_eq!(changes[0]["additions"], 5000);
         assert_eq!(changes[0]["diffTruncated"], true);
-        assert!(changes[0]["diff"].as_str().unwrap().chars().count() <= MAX_FILE_DIFF_CHARS);
+        assert!(changes[0]["diff"].as_str().unwrap().len() <= MAX_FILE_DIFF_BYTES);
+    }
+
+    #[test]
+    fn budgets_serialized_bytes_and_keeps_counts() {
+        let wide = format!(
+            "@@ -0,0 +1,3000 @@\n{}",
+            "+中文内容中文内容\n".repeat(3_000)
+        );
+        let change = |path: &str| {
+            json!({"path": path, "operation": "create", "previousPath": null,
+            "additions": 3000, "deletions": 0, "diff": wide, "diffTruncated": false})
+        };
+        let changes = sanitize_file_changes(Some(&json!([
+            change("a"),
+            change("b"),
+            change("c"),
+            change("d")
+        ])))
+        .unwrap();
+        let total: usize = changes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|file| file["diff"].as_str().map(serialized_len))
+            .sum();
+        assert!(total <= MAX_CALL_DIFF_BYTES);
+        assert!(changes
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|file| file["additions"] == 3000));
+        assert!(changes[3]["diff"].is_null());
+        assert_eq!(changes[3]["diffTruncated"], true);
+    }
+
+    #[test]
+    fn counts_header_like_lines_inside_a_hunk() {
+        assert_eq!(count_changes("@@ -1,2 +1,2 @@\n--- old\n+++ new\n"), (1, 1));
+        let snapshot = codex_turn_diff_snapshot(
+            "t",
+            "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1 +1 @@\n--- old\n+++ new\n",
+            None,
+        );
+        assert_eq!(snapshot["files"][0]["additions"], 1);
+        assert_eq!(snapshot["files"][0]["deletions"], 1);
     }
 
     #[test]

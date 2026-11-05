@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_TOOL_FILE_DIFF_CHARS,
+  MAX_TOOL_CALL_DIFF_BYTES,
+  MAX_TOOL_FILE_DIFF_BYTES,
   toolFileChangesFromAcpContent,
   toolFileChangesFromCodexChanges,
   unifiedHunkFromTexts,
@@ -66,7 +67,7 @@ describe("toolFileChangesFromAcpContent", () => {
     const [change] = toolFileChangesFromAcpContent([{ type: "diff", path: "big.txt", oldText: null, newText }], [], cwd)!;
     expect(change.additions).toBe(4_000);
     expect(change.diffTruncated).toBe(true);
-    expect(change.diff!.length).toBeLessThanOrEqual(MAX_TOOL_FILE_DIFF_CHARS);
+    expect(Buffer.byteLength(change.diff!)).toBeLessThanOrEqual(MAX_TOOL_FILE_DIFF_BYTES);
     expect(change.diff!.endsWith("x")).toBe(true);
   });
 });
@@ -91,5 +92,29 @@ describe("toolFileChangesFromCodexChanges", () => {
       "/work/repo",
     )!;
     expect(change).toMatchObject({ path: "new.js", previousPath: "old.js", operation: "rename" });
+  });
+});
+
+describe("byte budgets and hunk content", () => {
+  it("keeps every file's counts when multibyte patches exceed the call budget", () => {
+    const wide = Array.from({ length: 2_000 }, () => "\u4e2d\u6587\u5185\u5bb9\u4e2d\u6587").join("\n");
+    const changes = toolFileChangesFromAcpContent(
+      [1, 2, 3].map((index) => ({ type: "diff", path: `f${index}.txt`, oldText: null, newText: wide })),
+      [],
+      "/work/repo",
+    )!;
+    expect(changes.map((change) => change.additions)).toEqual([2_000, 2_000, 2_000]);
+    const bytes = changes.reduce((sum, change) => sum + (change.diff === null ? 0 : Buffer.byteLength(JSON.stringify(change.diff))), 0);
+    expect(bytes).toBeLessThanOrEqual(MAX_TOOL_CALL_DIFF_BYTES);
+    expect(changes.some((change) => change.diff === null && change.diffTruncated)).toBe(true);
+    for (const change of changes) expect(change.diff ?? "").not.toContain("\uFFFD");
+  });
+
+  it("counts removed and added lines that look like file headers inside a hunk", () => {
+    const [change] = toolFileChangesFromCodexChanges(
+      [{ path: "q.sql", kind: { type: "update", move_path: null }, diff: "@@ -1,2 +1,2 @@\n--- old comment\n+++ new value\n keep\n" }],
+      "/work/repo",
+    )!;
+    expect(change).toMatchObject({ additions: 1, deletions: 1 });
   });
 });

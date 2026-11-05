@@ -392,7 +392,7 @@ function WorkspaceChangeFileRow({
     () => (file.diff ? parseUnifiedDiffLines(file.diff) : null),
     [file.diff],
   );
-  const expandable = file.binary || Boolean(parsed?.lines.length);
+  const expandable = file.binary || Boolean(parsed?.lines.length) || file.diffTruncated === true;
   return (
     <div className="flex min-w-0 flex-col" data-testid="task-chat-workspace-change-file">
       <button
@@ -429,13 +429,15 @@ function WorkspaceChangeFileRow({
       {open ? (
         file.binary ? (
           <p className="ml-7 mt-1 text-xs text-muted-foreground">Binary file; text diff is unavailable.</p>
-        ) : parsed ? (
+        ) : parsed?.lines.length ? (
           <TaskChatDiffView
             className="ml-7 mt-1"
             lines={parsed.lines}
-            truncated={parsed.truncated}
+            truncated={parsed.truncated || file.diffTruncated === true}
           />
-        ) : null
+        ) : (
+          <p className="ml-7 mt-1 text-xs text-muted-foreground">This patch is too large to show here.</p>
+        )
       ) : null}
     </div>
   );

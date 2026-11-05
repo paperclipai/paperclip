@@ -840,18 +840,30 @@ export function transcriptToTaskChatItems(
             : null;
         if (entry.changeType === "file_header") {
           if (target) {
-            if (target.diff?.lines?.length) {
+            if (target.diff?.lines?.length || target.diff?.files?.length) {
+              target.diff.lines = target.diff.lines ?? [];
               target.diff.lines.push({ kind: "file", text: entry.text });
             } else {
               target.diff = target.diff ?? { added: 0, removed: 0, lines: [] };
               target.diff.path = entry.text;
+            }
+            if (entry.additions != null && entry.deletions != null) {
+              const diff = target.diff!;
+              diff.files = diff.files ?? [];
+              diff.files.push({ path: entry.text, additions: entry.additions, deletions: entry.deletions, truncated: false });
+              diff.added = diff.files.reduce((sum, file) => sum + file.additions, 0);
+              diff.removed = diff.files.reduce((sum, file) => sum + file.deletions, 0);
             }
           }
           resetInline();
           break;
         }
         if (entry.changeType === "truncation") {
-          if (target?.diff) target.diff.truncated = true;
+          if (target?.diff) {
+            target.diff.truncated = true;
+            const file = target.diff.files?.at(-1);
+            if (file) file.truncated = true;
+          }
           resetInline();
           break;
         }
@@ -867,8 +879,11 @@ export function transcriptToTaskChatItems(
           };
           diff.lines = diff.lines ?? [];
           diff.lines.push(line);
-          if (line.kind === "add") diff.added += 1;
-          if (line.kind === "remove") diff.removed += 1;
+          // Producer counts cover the whole patch; count lines only without them.
+          if (!diff.files?.length) {
+            if (line.kind === "add") diff.added += 1;
+            if (line.kind === "remove") diff.removed += 1;
+          }
           target.diff = diff;
         } else {
           items.push({
@@ -921,13 +936,12 @@ export function transcriptToTaskChatItems(
           revision: entry.revision,
           source: entry.source,
           complete: entry.complete,
-          files: entry.files.map((file) => ({
-            ...file,
-            diff:
-              file.diff == null
-                ? null
-                : file.diff.slice(0, PROTOCOL_OUTPUT_MAX),
-          })),
+          files: entry.files.map((file) => {
+            if (file.diff == null || file.diff.length <= PROTOCOL_OUTPUT_MAX) return { ...file };
+            // Keep whole lines so the preview still parses as a patch.
+            const cut = file.diff.lastIndexOf("\n", PROTOCOL_OUTPUT_MAX);
+            return { ...file, diff: file.diff.slice(0, cut > 0 ? cut + 1 : PROTOCOL_OUTPUT_MAX), diffTruncated: true };
+          }),
           totals: entry.totals,
           patchArtifactRef: entry.patchArtifactRef,
         };
