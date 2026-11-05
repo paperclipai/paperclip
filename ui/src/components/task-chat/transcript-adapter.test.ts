@@ -2865,3 +2865,47 @@ describe("prependIssueBrief (PAP-375)", () => {
     expect(prependIssueBrief(items, false)).toBe(items);
   });
 });
+
+describe("harness status notices", () => {
+  const notice = (noticeId: string, payload: Record<string, unknown>): TranscriptEntry => ({
+    kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+    status: payload.severity === "error" ? "failed" : "informational", title: "Provider notice",
+    summary: String(payload.summary ?? ""),
+    payload: { schema: "paperclip.provider.notice.v1", noticeId, scope: "turn", userActionable: false, ...payload },
+  });
+  const read: TranscriptEntry = { kind: "tool_call", ts: TS, toolUseId: "read-1", name: "read_file", input: { path: "a.ts" } };
+  const retry = notice("error:retry:turn-1", {
+    severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 2/5",
+    details: [{ name: "Reason", value: "responseStreamDisconnected" }],
+  });
+
+  it("shows status notices as top-level timeline rows while generic warnings stay hidden", () => {
+    const parsed = transcriptToTaskChatItems([
+      read,
+      notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] }),
+      notice("warning-1", { severity: "warning", category: "warning", recoverable: true, summary: "noise" }),
+    ], { runId: "status", running: true });
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), true);
+    expect(rows.map((row) => row.kind === "protocol" && row.surface === "provider_activity" ? row.id : row.kind)).toHaveLength(2);
+    const chip = rows[1];
+    expect(chip.kind === "protocol" && chip.surface === "provider_activity" && chip.details.find((d) => d.label === "Phase")?.value).toBe("running");
+    expect(JSON.stringify(rows)).not.toContain("noise");
+  });
+
+  it("marks a retry resolved once real work follows, and drops it behind a fatal error", () => {
+    const live = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry], { runId: "r", running: true })), true);
+    expect(live.at(-1)).toMatchObject({ kind: "protocol" });
+    expect(live.at(-1)).not.toHaveProperty("resolved");
+
+    const recovered = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, { ...read, toolUseId: "read-2" }], { runId: "r", running: true })), true);
+    expect(recovered.find((row) => row.kind === "protocol")).toMatchObject({ resolved: true });
+
+    const failed = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([
+      read, retry,
+      notice("error:final:turn-1", { severity: "error", category: "error", recoverable: false, summary: "You've hit your usage limit." }),
+    ], { runId: "r", running: false })), false);
+    const protocols = failed.filter((row) => row.kind === "protocol");
+    expect(protocols).toHaveLength(1);
+    expect(protocols[0]).toMatchObject({ summary: "You've hit your usage limit." });
+  });
+});

@@ -5,6 +5,7 @@
  * thinking → tool → diff → responding while a run is in flight, rather than
  * only showing a response after the turn settles.
  */
+import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatDiff,
@@ -879,7 +880,8 @@ export function transcriptToTaskChatItems(
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.
-        if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
+        if (entry.family === "provider_notice" && !isStatusNoticePayload(entry.payload) &&
+          (entry.payload.userActionable !== true ||
           ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
             .includes(String(entry.payload.category)))) break;
         const key = `provider:${providerActivityKey(entry)}`;
@@ -1782,6 +1784,19 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (
+      item.kind === "protocol" &&
+      item.surface === "provider_activity" &&
+      isStatusNotice(item)
+    ) {
+      // Harness status notices sit between activity as their own chips, so
+      // a retry or compaction is visible without opening a phase.
+      const later = parsed.slice(parsed.indexOf(item) + 1);
+      const retry = statusNoticeCategory(item) === "provider_retry";
+      // A fatal error that ends the retries already tells the whole story.
+      if (retry && later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && isFatalProviderError(next))) continue;
+      current = null;
+      rows.push(retry && later.some(statusNoticeResolvesRetry) ? { ...item, resolved: true } : item);
+    } else if (
       item.kind === "tool" ||
       item.kind === "usage" ||
       item.kind === "thinking" ||
@@ -1800,6 +1815,15 @@ export function buildTurnTimelineRows(
   }
   if (running && current && meaningful.includes(current)) current.active = true;
   return meaningful;
+}
+
+/** Real provider progress after a retry notice shows the retry succeeded. */
+function statusNoticeResolvesRetry(item: TaskChatItem): boolean {
+  if (item.kind === "usage" || item.kind === "status") return false;
+  if (item.kind === "protocol" && item.surface === "provider_activity") {
+    return !isStatusNotice(item);
+  }
+  return true;
 }
 
 /** Segment parsed transcript rows at assistant/request boundaries. */

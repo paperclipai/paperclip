@@ -76,6 +76,46 @@ describe("provider-neutral events", () => {
     })[0].eventType).toBe("provider.notice.recorded");
   });
 
+  it("maps Codex TurnError text, retries and error info into the notice", () => {
+    const [retry] = canonicalProviderEventsFromCodex("error", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      willRetry: true,
+      error: {
+        message: "Reconnecting... 2/5",
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } },
+        additionalDetails: "stream closed before response.completed",
+      },
+    });
+    expect(retry.payload).toMatchObject({
+      severity: "warning",
+      category: "provider_retry",
+      recoverable: true,
+      summary: "Reconnecting... 2/5",
+      details: [
+        { name: "Reason", value: "responseStreamDisconnected" },
+        { name: "HTTP status", value: "502" },
+        { name: "Additional details", value: "stream closed before response.completed" },
+      ],
+    });
+    expect(validatePrpEvent(envelope(retry)).ok).toBe(true);
+
+    const [fatal] = canonicalProviderEventsFromCodex("error", {
+      turnId: "turn-1",
+      willRetry: false,
+      error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null },
+    });
+    expect(fatal.payload).toMatchObject({
+      severity: "error",
+      category: "error",
+      recoverable: false,
+      summary: "You've hit your usage limit.",
+      details: [{ name: "Reason", value: "usageLimitExceeded" }],
+    });
+    expect(fatal.payload.noticeId).not.toBe(retry.payload.noticeId);
+    expect(validatePrpEvent(envelope(fatal)).ok).toBe(true);
+  });
+
   it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
     for (const method of ["configWarning", "deprecationNotice", "warning"]) {
       for (const [params, expected] of [

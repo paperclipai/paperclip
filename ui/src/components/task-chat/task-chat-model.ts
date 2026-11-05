@@ -381,6 +381,8 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** A retry status notice the turn has moved past. */
+  resolved?: boolean;
 }
 
 export interface TaskChatWorkspaceChangeItem {

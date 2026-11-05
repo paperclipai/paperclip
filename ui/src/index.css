@@ -562,6 +562,12 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
+
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker
      card available as an explicit lab alternative. */

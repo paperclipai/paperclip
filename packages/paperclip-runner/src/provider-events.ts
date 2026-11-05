@@ -961,9 +961,9 @@ export function canonicalProviderEventsFromCodex(
       },
     ];
   }
+  if (method === "error") return [codexErrorNotice(params, itemId)];
   if (
     [
-      "error",
       "warning",
       "guardianWarning",
       "deprecationNotice",
@@ -1000,6 +1000,56 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   return [];
+}
+
+/**
+ * Codex app-server `error` notifications carry a `TurnError` under `error`
+ * plus `willRetry`. A retried error is a transient status notice; only a
+ * final error is fatal. Older shapes kept the text at the top level.
+ */
+function codexErrorNotice(
+  params: Record<string, unknown>,
+  itemId: string,
+): CanonicalProviderEvent {
+  const error = record(params.error);
+  const willRetry = params.willRetry === true;
+  const info = error.codexErrorInfo;
+  const infoKind =
+    typeof info === "string"
+      ? info
+      : Object.keys(record(info))[0] ?? "";
+  const httpStatus = integer(record(record(info)[infoKind]).httpStatusCode);
+  const summary = [error.message, params.summary, params.message, params.details]
+    .map((value) => redactCodexDiagnostic(text(value).trim()))
+    .find(Boolean)
+    ?.slice(0, 4000);
+  const details = [
+    ...(infoKind ? [{ name: "Reason", value: infoKind.slice(0, 160) }] : []),
+    ...(httpStatus !== null ? [{ name: "HTTP status", value: String(httpStatus) }] : []),
+    ...(text(error.additionalDetails).trim()
+      ? [{ name: "Additional details", value: redactCodexDiagnostic(text(error.additionalDetails).trim()).slice(0, 4000) }]
+      : []),
+  ];
+  const turnId = text(params.turnId);
+  return {
+    eventType: "provider.notice.recorded",
+    payload: {
+      schema: "paperclip.provider.notice.v1",
+      // Retries within one turn update one chip; the final error is its own row.
+      noticeId: safeId(
+        `error:${willRetry ? "retry" : "final"}:${turnId || text(params.code, "notice")}`,
+        "provider-notice",
+      ),
+      severity: willRetry ? "warning" : "error",
+      category: willRetry ? "provider_retry" : "error",
+      scope: "turn",
+      recoverable: willRetry,
+      userActionable: false,
+      summary: summary || "Provider notice",
+      ...(details.length > 0 ? { details } : {}),
+    },
+    itemId,
+  };
 }
 
 function openCodeToolExitCode(
