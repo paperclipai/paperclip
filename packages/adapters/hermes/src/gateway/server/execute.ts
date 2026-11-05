@@ -1170,10 +1170,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         external_run_id: runId,
         status: extractStatus(finalStatus) ?? "idle_timeout",
+        session_id: createdSessionId,
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
-      sessionParams: { hermesRunId: runId, externalRunId: runId, strategy },
+      sessionId: createdSessionId,
+      sessionParams: {
+        hermesRunId: runId,
+        ...(createdSessionId ? { hermesSessionId: createdSessionId } : {}),
+        externalRunId: runId,
+        strategy,
+      },
       sessionDisplayId: createdSessionId,
     };
   }
@@ -1191,11 +1198,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         run_id: runId,
         external_run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
+        session_id: createdSessionId,
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
+      sessionId: createdSessionId,
       sessionParams: {
         hermesRunId: runId,
+        ...(createdSessionId ? { hermesSessionId: createdSessionId } : {}),
         externalRunId: runId,
         strategy,
       },

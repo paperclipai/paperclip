@@ -733,6 +733,41 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
   });
 
+  it.each([
+    { label: "idle", cfg: { timeoutSec: 60, idleTimeoutSec: 0.05 }, code: "hermes_gateway_idle_timeout" },
+    { label: "hard timeout", cfg: { timeoutSec: 0.05 }, code: "hermes_gateway_timeout" },
+  ])("carries the same public session id on $label results as run_created", async ({ cfg, code }) => {
+    for (const strategy of [undefined, "none"] as const) {
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-x" }), { status: 200 });
+        if (url.endsWith("/events")) return new Promise<Response>(() => {});
+        if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+        if (init?.method === "GET") return new Response(JSON.stringify({ status: "cancelled" }), { status: 200 });
+        return new Response("{}", { status: 200 });
+      }));
+      const logs: Array<Record<string, unknown>> = [];
+      const ctx = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", ...cfg,
+        ...(strategy ? { sessionKeyStrategy: strategy } : {}),
+      });
+      (ctx as any).onEvent = async (e: Record<string, unknown>) => { logs.push(e); };
+      const result = await execute(ctx);
+      expect(result.errorCode).toBe(code);
+      if (strategy === "none") {
+        expect(result.sessionId ?? null).toBeNull();
+        expect(result.sessionDisplayId ?? null).toBeNull();
+        expect(result.resultJson?.session_id ?? null).toBeNull();
+        expect(result.sessionParams).not.toHaveProperty("hermesSessionId");
+      } else {
+        expect(result.sessionId).toMatch(/^hsess-[0-9a-f]{12}$/);
+        expect(result.sessionDisplayId).toBe(result.sessionId);
+        expect(result.resultJson?.session_id).toBe(result.sessionId);
+        expect(result.sessionParams?.hermesSessionId).toBe(result.sessionId);
+      }
+    }
+  });
+
   it("resets the idle timer on every event so a slow but active run completes", async () => {
     const encoder = new TextEncoder();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
