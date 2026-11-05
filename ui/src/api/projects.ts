@@ -56,6 +56,11 @@ export const projectsApi = {
       projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`),
       data,
     ),
+  getClaudeProjectTrust: (projectId: string, workspaceId: string, companyId?: string) =>
+    api.get<{ agentIds: string[] }>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/claude-project-trust`)),
+  setClaudeProjectTrust: (projectId: string, workspaceId: string, agentIds: string[], expectedUpdatedAt: string,
+    expectedSource: Pick<ProjectWorkspace, "sourceType" | "cwd" | "repoUrl" | "repoRef" | "defaultRef" | "remoteProvider" | "remoteWorkspaceRef">, companyId?: string) =>
+    api.put<{ agentIds: string[] }>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}/claude-project-trust`), { agentIds, expectedUpdatedAt, expectedSource }),
   controlWorkspaceRuntimeServices: (
     projectId: string,
     workspaceId: string,
