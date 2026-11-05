@@ -50,6 +50,7 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
+  reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "Inspect the failed run and the sandbox provider; the saved sandbox was kept. Retry the task once the provider can start it." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
