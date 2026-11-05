@@ -18,6 +18,8 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { secretService } from "../services/secrets.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -87,8 +89,8 @@ suite("fixed process key and run-secret HTTP boundary", () => {
     app.use(express.json());
     app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
     app.use("/api", secretRoutes(db));
-    app.use("/api", agentRoutes(db));
-    app.use("/api", issueRoutes(db));
+    app.use("/api", agentRoutes(db, { deploymentMode: "authenticated" }));
+    app.use("/api", issueRoutes(db, createStorageService(createLocalDiskStorageProvider(join(directory, "storage")))));
     app.use(errorHandler);
     const server = app.listen(0, "127.0.0.1");
     try {
@@ -144,7 +146,7 @@ suite("fixed process key and run-secret HTTP boundary", () => {
         assigneeAgentId: receiverId, signals: [{ type: "blind", marker: "[watchdog-blind]" }],
       } } }).where(eq(agents.id, agentId));
       await svc.createBinding({ companyId, secretId: secret.id, targetType: "agent", targetId: agentId,
-        configPath: "access.WATCHDOG_TEST", versionSelector: "1" });
+        configPath: "access.WATCHDOG_TEST", versionSelector: 1 });
       const pinnedCredential = await request(server).post("/api/agents/me/secrets/watchdog_test/value")
         .set("Authorization", `Bearer ${jwt}`).send({});
       expect(pinnedCredential.status).toBe(200);
