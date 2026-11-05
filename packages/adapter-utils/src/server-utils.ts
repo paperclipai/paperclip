@@ -5040,7 +5040,8 @@ export async function runChildProcess(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
-            clearTerminalCleanupTimers();
+            const verifyPosixGroup = process.platform !== "win32" && processGroupId !== null && (cancellationStarted || terminalCleanupStarted);
+            if (!verifyPosixGroup || !terminalCleanupStarted) clearTerminalCleanupTimers();
             clearCancellation(!cancellationStarted || Boolean(job) || process.platform === "win32");
             runningProcesses.delete(runId);
             void logChain.finally(() => {
@@ -5049,7 +5050,7 @@ export async function runChildProcess(
                 .then(async () => {
                   if (job) {
                     processTreeStopped = await job.settle();
-                  } else if (cancellationStarted && process.platform !== "win32" && processGroupId !== null) {
+                  } else if (verifyPosixGroup && processGroupId !== null) {
                     // The direct child may close before descendants in its
                     // detached group. Keep the SIGKILL escalation alive while
                     // waiting for a kernel-level ESRCH receipt for the group.
@@ -5058,6 +5059,7 @@ export async function runChildProcess(
                       Math.max(1, opts.graceSec) * 1_000 + 1_000,
                     );
                     clearCancellation();
+                    clearTerminalCleanupTimers();
                   }
                 })
                 .catch((err) => onLogError(err, runId, "failed to verify process tree stop"))
@@ -5071,10 +5073,10 @@ export async function runChildProcess(
                     stderr,
                     pid: child.pid ?? null,
                     startedAt,
-                    ...(job || treeGuardUnavailable || cancellationStarted ? { processTreeStopped } : {}),
+                    ...(job || treeGuardUnavailable || cancellationStarted || (terminalCleanupStarted && process.platform !== "win32") ? { processTreeStopped } : {}),
                     terminalResultCleanup: terminalCleanupStarted &&
                       (!(job || treeGuardUnavailable) || processTreeStopped) &&
-                      (!cancellationStarted || processTreeStopped)
+                      (!(cancellationStarted || (terminalCleanupStarted && process.platform !== "win32")) || processTreeStopped)
                       ? {
                           kind: "terminal_result_cleanup",
                           stopped: true,

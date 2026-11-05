@@ -1468,7 +1468,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (localResumeCandidate && ctx.signal?.aborted && !attemptSpawned) return cancelledBeforeProviderStart();
       throw error;
     }
-    if (localResumeCandidate && initial.proc.processTreeStopped === false && (windowsLocalResume || ctx.signal?.aborted)) {
+    if (localResumeCandidate && initial.proc.processTreeStopped === false) {
       return holdUnverifiedStop(initial, runtimeSessionId || runtime.sessionId);
     }
     if (localResumeCandidate && ctx.signal?.aborted && initial.proc.processTreeStopped === true) {
@@ -1478,7 +1478,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
-      !(!executionTargetIsRemote && process.platform === "win32" && initial.proc.processTreeStopped !== true) &&
+      !(!executionTargetIsRemote && (process.platform === "win32" || stoppedAfterTerminalResult) && initial.proc.processTreeStopped !== true) &&
       ((initial.proc.exitCode ?? 0) !== 0 ||
         (stoppedAfterTerminalResult &&
           !executionTargetIsRemote &&
@@ -1541,7 +1541,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         throw error;
       }
-      if (localResumeCandidate && retry.proc.processTreeStopped === false && (windowsLocalResume || ctx.signal?.aborted)) {
+      if (localResumeCandidate && retry.proc.processTreeStopped === false) {
         return holdUnverifiedStop(retry, null);
       }
       if (localResumeCandidate && ctx.signal?.aborted && retry.proc.processTreeStopped === true) {

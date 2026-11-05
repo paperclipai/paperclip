@@ -826,6 +826,30 @@ describe("runChildProcess", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")("waits for terminal cleanup to stop the POSIX process group", async () => {
+    let descendantPid = 0;
+    const killSpy = vi.spyOn(process, "kill");
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });",
+      "process.on('SIGTERM', () => process.exit(0));",
+      "child.on('message', () => { child.disconnect(); process.stdout.write(`descendant:${child.pid} TERMINAL\\n`); });",
+      "setInterval(() => {}, 1000);",
+    ].join(" ")], {
+      cwd: process.cwd(), env: {}, timeoutSec: 0, graceSec: 1,
+      onLog: async (_stream, chunk) => { const match = chunk.match(/descendant:(\d+)/); if (match) descendantPid = Number(match[1]); },
+      terminalResultCleanup: { graceMs: 0, hasTerminalResult: ({ stdout }) => stdout.includes("TERMINAL") },
+    });
+    try {
+      expect(descendantPid).toBeGreaterThan(0);
+      expect(killSpy).toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
+      expect(result.processTreeStopped).toBe(true);
+      expect(result.terminalResultCleanup?.stopped).toBe(true);
+    } finally {
+      killSpy.mockRestore();
+      if (descendantPid && isPidAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
+    }
+  });
   it.skipIf(process.platform === "win32")(
     "confirms a cancelled POSIX process group is gone after SIGKILL escalation",
     async () => {
