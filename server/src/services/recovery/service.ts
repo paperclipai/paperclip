@@ -204,6 +204,31 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+
+export const LEGACY_REPAIR_ADMISSION_COOLDOWN_MS = 15 * 60 * 1000;
+const legacyRepairAdmissionRejectedAt = new Map<string, number>();
+function legacyRepairAdmissionKey(issueId: string, fingerprint: string) {
+  return `${issueId}:${fingerprint}`;
+}
+function noteLegacyRepairAdmissionRejected(issueId: string, fingerprint: string, now = Date.now()) {
+  if (legacyRepairAdmissionRejectedAt.size > 10_000) {
+    for (const [key, at] of legacyRepairAdmissionRejectedAt) {
+      if (now - at >= LEGACY_REPAIR_ADMISSION_COOLDOWN_MS) legacyRepairAdmissionRejectedAt.delete(key);
+    }
+  }
+  legacyRepairAdmissionRejectedAt.set(legacyRepairAdmissionKey(issueId, fingerprint), now);
+}
+function isLegacyRepairAdmissionCoolingDown(issueId: string, fingerprint: string, now = Date.now()) {
+  const key = legacyRepairAdmissionKey(issueId, fingerprint);
+  const at = legacyRepairAdmissionRejectedAt.get(key);
+  if (at === undefined) return false;
+  if (now - at < LEGACY_REPAIR_ADMISSION_COOLDOWN_MS) return true;
+  legacyRepairAdmissionRejectedAt.delete(key);
+  return false;
+}
+export function resetLegacyRepairAdmissionCooldownForTests() {
+  legacyRepairAdmissionRejectedAt.clear();
+}
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
   "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
@@ -3934,8 +3959,17 @@ export function recoveryService(
     if (episode) {
       if (!latestRun) return "skipped";
       const decision = await decidePersistedLegacyContinuation(current, latestRun.id, state, episode);
-      if (decision.kind === "skip") return "skipped";
+      if (decision.kind === "skip") {
+        if (decision.reason === "durable_wait" && state.hasDurableWaitingPath) {
+          await resolveDispositionRepairActionAsCovered(
+            current,
+            `durable_path_restored:${state.durablePathReason ?? "unknown"}`,
+          );
+        }
+        return "skipped";
+      }
       state.fingerprint = legacyDispositionFingerprint(current.companyId, current.id, latestRun.agentId, episode.id);
+      if (isLegacyRepairAdmissionCoolingDown(current.id, state.fingerprint)) return "skipped";
     }
     if (state.hasActiveExecutionPath) return "skipped";
     if (state.hasDurableWaitingPath) {
@@ -4035,6 +4069,7 @@ export function recoveryService(
       legacyEpisode: episode,
     });
     if (!scheduled && episode) {
+      noteLegacyRepairAdmissionRejected(current.id, state.fingerprint);
       // Admission can reject a stale snapshot under the issue lock. An empty
       // repair action must not subsequently cause escalation.
       await recoveryActionsSvc.resolveActiveForIssue({

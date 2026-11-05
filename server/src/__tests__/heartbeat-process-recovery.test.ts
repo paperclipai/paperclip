@@ -7696,6 +7696,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  it("treats a cancelled blocker as a durable wait, like wake admission does", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "succeeded",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const cancelledBlockerId = randomUUID();
+    const doneBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: cancelledBlockerId,
+        companyId,
+        title: "Cancelled blocker",
+        status: "cancelled",
+        priority: "medium",
+        issueNumber: 30,
+        identifier: `${issuePrefix}-30`,
+      },
+      {
+        id: doneBlockerId,
+        companyId,
+        title: "Done blocker",
+        status: "done",
+        priority: "medium",
+        issueNumber: 31,
+        identifier: `${issuePrefix}-31`,
+      },
+    ]);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: doneBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const onlyDone = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+    expect(onlyDone.hasDurableWaitingPath).toBe(false);
+    expect(onlyDone.dependencyIssueIds).not.toContain(doneBlockerId);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: cancelledBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const withCancelled = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+    expect(withCancelled).toMatchObject({
+      hasDurableWaitingPath: true,
+      durablePathReason: "blocker",
+    });
+    expect(withCancelled.dependencyIssueIds).toEqual([cancelledBlockerId]);
+    const admission = await issueService(db).listDependencyReadiness(companyId, [issueId]);
+    expect(admission.get(issueId)?.unresolvedBlockerIssueIds).toEqual([cancelledBlockerId]);
+  });
+
   it("folds a persisted disposition-repair action when a current typed wait appears", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
