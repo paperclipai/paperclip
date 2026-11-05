@@ -627,9 +627,6 @@ describe("automatic retained workspace recovery", () => {
     return app;
   }
 
-  // The retry route nudges the worker after its 202 and does not await it.
-  // Tests that change the proof after the receipt must stop that nudge, or it
-  // can admit the Retry before the change lands. They resume explicitly.
   function receiptOnlyRecoveryApp(actor?: Parameters<typeof boardRecoveryApp>[0]) {
     const routeHeartbeat = heartbeatService(db);
     vi.spyOn(routeHeartbeat, "resumeTaskRetry").mockImplementation(async () => undefined as never);
