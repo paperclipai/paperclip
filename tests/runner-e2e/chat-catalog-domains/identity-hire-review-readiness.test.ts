@@ -20,17 +20,18 @@ vi.mock("../api.js", () => ({ pollUntil: async (options: { deadlineAt: number; l
 } }));
 import { hireRevisionIdentityCases } from "./identity-hire-revision.js";
 afterEach(() => { vi.restoreAllMocks(); observations.read.mockReset(); document.body.replaceChildren(); });
-type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean; progress?: boolean; genericReply?: boolean };
+type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean; progress?: boolean; genericReply?: boolean; shortRevision?: boolean };
 function fixture(options: Options = {}) {
   clock.now = 30_000; clock.deadlines.splice(0); vi.spyOn(Date, "now").mockImplementation(() => clock.now);
   vi.spyOn(Element.prototype, "getClientRects").mockImplementation(() => [{ width: 10, height: 10 }] as unknown as DOMRectList);
   let current = "https://fixture.test/ACORN/chats/ceo", clicks = 0;
   const source = "source", approval = "approval", query = "Switch this hiring proposal to a cheaper model and send it back for approval.";
+  const model = options.shortRevision ? "openrouter/deepseek/deepseek-v4.1-flash-1017" : "requested-model";
   const readyAt = options.readyAt ?? 210_000, href = options.href ?? "/approvals/approval";
   const run = { id: "native", companyId: "company", agentId: options.wrongActor ? "other" : "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: source, commentId: options.wrongNativeComment ? "other" : "human" } };
   const comments = [{ id: "human", companyId: "company", issueId: source, authorUserId: "person", body: query },
     ...(options.progress ? [{ id: "progress", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "I am checking this proposal before revising it." }] : []),
-    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: options.genericReply ? "Revised and resubmitted for approval." : "Revised to requested-model, pending proposal." }];
+    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: options.genericReply ? "Revised and resubmitted for approval." : options.shortRevision ? "Revised to `deepseek-v4.1-flash-1017`, pending proposal." : "Revised to requested-model, pending proposal." }];
   function sync() {
     document.body.innerHTML = '<section data-testid="task-chat-thread"><div id="comment-human"></div>' + (options.progress ? '<div id="comment-progress"></div>' : '') + '<div id="comment-' + (options.wrongComment ? "foreign" : "reply") + '"></div></section>';
     if (clock.now >= readyAt) { const a = document.createElement("a"); a.setAttribute("href", href); a.textContent = "pending approval"; document.querySelector('div:last-child')!.append(a); if (options.progress) document.getElementById("comment-progress")!.append(a.cloneNode(true)); }
@@ -39,7 +40,7 @@ function fixture(options: Options = {}) {
   function nodes(list: Element[]): Nodes { return { nodes: list, locator: selector => nodes(list.flatMap(n => Array.from(n.querySelectorAll(selector)))), first: () => nodes(list.slice(0,1)),
     filter: ({has}) => nodes(list.filter(n => has.nodes.some(child => n.contains(child)))),
     evaluateAll: async read => read(list), click: async () => { const a = list[0]; if (!a || !a.hasAttribute("href")) throw Error("Real review link absent"); clicks++; current = new URL(a.getAttribute("href")!, current).href; },
-    text: () => options.wrongModel ? "wrong-model" : "requested-model" }; }
+    text: () => options.wrongModel ? "wrong-model" : model }; }
   const page = { url: () => current, goto: async (url: string) => { current = new URL(url,current).href; },
     locator: (selector: string) => { if (selector === "pre") return nodes([]); if (selector.includes("[id^=")) sync(); return nodes(Array.from(document.querySelectorAll(selector))); },
     getByTestId: (id: string) => nodes(Array.from(document.querySelectorAll('[data-testid="'+id+'"]'))),
@@ -51,11 +52,11 @@ function fixture(options: Options = {}) {
   const ctx = { ...(deadline === "missing" ? {} : { observationDeadlineAt: deadline }), scenario: { query },
     input: { page, fixtures: { company: { id: "company", issuePrefix: "ACORN" }, agent: { id: "ceo" } }, api: { baseURL: "https://fixture.test", get: async (url: string) => {
       if (url === "/api/issues/source/comments?order=asc") return comments;
-      if (url === "/api/approvals/approval") return { id: approval, companyId: "company", status: options.notPending ? "approved" : "pending" };
+      if (url === "/api/approvals/approval") return { id: approval, companyId: "company", status: options.notPending ? "approved" : "pending", payload: { adapterConfig: { model } } };
       throw Error("Unexpected read");
     } } }, issue: () => ({ id: options.foreignSource ? "foreign" : source, conversationState: "waiting" }), refreshIssue: async () => {}, allRuns: async () => [run],
   } as unknown as ChatCatalogContext;
-  return { ctx, state: { originalApproval: { id: approval, companyId: "company" }, humanId: "person", sourceIssueId: source, cheaperModel: "requested-model" }, clicks: () => clicks, url: () => current };
+  return { ctx, state: { originalApproval: { id: approval, companyId: "company" }, humanId: "person", sourceIssueId: source, cheaperModel: model, eligibleModels: [model] }, clicks: () => clicks, url: () => current };
 }
 it("awaits the delayed genuine canonical-reply review link within original300s, clicks and inspects actual pending revised model", async () => {
   const f = fixture(); await hireRevisionIdentityCases[0]!.act!(f.ctx, f.state);
@@ -107,4 +108,11 @@ it("navigates a generic owned approval link without requiring the chat message t
   expect(f.clicks()).toBe(1);
   expect(f.state).toMatchObject({ pendingProposalVisible: true, revisedModelVisible: true,
     revisionHistoryComment: { id: "reply", body: "Revised and resubmitted for approval." } });
+});
+
+it("prefers a catalog-resolved short-ID revision note over an earlier generic owned progress link", async () => {
+  const f = fixture({ readyAt: 30_000, progress: true, shortRevision: true });
+  await hireRevisionIdentityCases[0]!.act!(f.ctx, f.state);
+  expect(f.state).toMatchObject({ revisionHistoryComment: { id: "reply", body: "Revised to `deepseek-v4.1-flash-1017`, pending proposal." },
+    revisionHistoryLink: { commentId: "reply", href: "/approvals/approval" } });
 });

@@ -121,8 +121,10 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
             && [ `/approvals/${id}`, `/${ctx.input.fixtures.company.issuePrefix}/approvals/${id}` ].includes(url.pathname); }
           catch { return false; }
         }) : [];
-        const link = boundLinks.find(row => comments.some(comment => comment.id === row.commentId
-          && comment.body?.includes(String(state.cheaperModel)))) ?? boundLinks[0];
+        const model = (approval.payload.adapterConfig as { model?: unknown } | undefined)?.model;
+        const link = boundLinks.find(row => typeof model === "string" && model === state.cheaperModel
+          && comments.some(comment => comment.id === row.commentId && typeof comment.body === "string"
+            && namesSelectedModel(comment.body, model, state.eligibleModels))) ?? boundLinks[0];
         const comment = link ? comments.find(row => row.id === link.commentId) : undefined;
         return { approval, link, comment };
       },
