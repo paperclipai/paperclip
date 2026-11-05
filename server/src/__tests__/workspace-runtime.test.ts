@@ -1499,7 +1499,13 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       });
     }
 
-    it("is recreated on the task branch", async () => {
+    async function quarantinedCopies(stalePath: string) {
+      const quarantineRoot = path.join(await fs.realpath(path.dirname(stalePath)), ".quarantine");
+      const names = await fs.readdir(quarantineRoot);
+      return names.map((name) => path.join(quarantineRoot, name));
+    }
+
+    it("is recreated on the task branch after its directory is moved aside", async () => {
       const repoRoot = await createTempRepo();
       const stalePath = await createStaleManagedWorktree(repoRoot);
 
@@ -1509,11 +1515,16 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       expect(realized.branchName).toBe(branchName);
       await expect(fs.readFile(path.join(stalePath, "committed.txt"), "utf8")).resolves.toBe("kept\n");
       await expect(fs.access(path.join(stalePath, "uncommitted.txt"))).rejects.toThrow();
+      const [quarantined, ...others] = await quarantinedCopies(stalePath);
+      expect(others).toEqual([]);
+      expect(path.basename(quarantined!)).toMatch(new RegExp(`^${branchName}-`));
+      await expect(fs.readFile(path.join(quarantined!, "uncommitted.txt"), "utf8")).resolves.toBe("lost\n");
+      expect(realized.warnings).toContain(`Moved unregistered worktree directory ${await fs.realpath(stalePath)} to ${quarantined}`);
       const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
       expect(stdout).toContain(await fs.realpath(stalePath));
     });
 
-    it("is removed inside the recorded cleanup operation", async () => {
+    it("is moved aside inside the recorded cleanup operation", async () => {
       const repoRoot = await createTempRepo();
       const stalePath = await createStaleManagedWorktree(repoRoot);
       const { recorder, operations } = createWorkspaceOperationRecorderDouble();
@@ -1521,7 +1532,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       const observingRecorder: WorkspaceOperationRecorder = {
         ...recorder,
         recordOperation: async (input) => {
-          if (input.metadata?.cleanupAction === "remove_unregistered_worktree_directory") {
+          if (input.metadata?.cleanupAction === "quarantine_unregistered_worktree_directory") {
             directoryExistedWhenRecorded.push(await fs.access(path.join(stalePath, "uncommitted.txt")).then(() => true, () => false));
           }
           return recorder.recordOperation(input);
@@ -1531,7 +1542,11 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       await realizeForTask(repoRoot, observingRecorder);
 
       expect(directoryExistedWhenRecorded).toEqual([true]);
-      expect(operations.filter((operation) => operation.metadata?.cleanupAction === "remove_unregistered_worktree_directory")).toHaveLength(1);
+      const [quarantined] = await quarantinedCopies(stalePath);
+      const cleanups = operations.filter((operation) => operation.metadata?.cleanupAction === "quarantine_unregistered_worktree_directory");
+      expect(cleanups).toHaveLength(1);
+      expect(cleanups[0]!.metadata?.quarantinePath).toBe(quarantined);
+      expect(cleanups[0]!.result.system).toBe(`Moved unregistered worktree directory ${await fs.realpath(stalePath)} to ${quarantined}\n`);
     });
 
     it("is never removed when the directory is an unrelated clone", async () => {
@@ -1547,6 +1562,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
 
       await expect(realizeForTask(repoRoot)).rejects.toThrow(/not a reusable git worktree/);
 
+      await expect(fs.access(path.join(path.dirname(clonePath), ".quarantine"))).rejects.toThrow();
       await expect(fs.readFile(path.join(clonePath, "own-history.txt"), "utf8")).resolves.toBe("mine\n");
       const { stdout } = await execFileAsync("git", ["log", "--format=%s"], { cwd: clonePath });
       expect(stdout.trim()).toBe("unrelated history");

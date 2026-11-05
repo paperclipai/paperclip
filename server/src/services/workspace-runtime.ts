@@ -3613,24 +3613,34 @@ export async function realizeExecutionWorkspace(input: {
       && validation.reasonCode === "not_registered"
       && await isLeftoverLinkedWorktreeOf(repoRoot, worktreePath)
     ) {
-      const removeDirectory = () => fs.rm(worktreePath, { recursive: true, force: true });
+      const quarantinePath = path.join(
+        path.dirname(worktreePath),
+        ".quarantine",
+        `${path.basename(worktreePath)}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+      );
+      const moveAside = async () => {
+        await fs.mkdir(path.dirname(quarantinePath), { recursive: true });
+        await fs.rename(worktreePath, quarantinePath);
+      };
+      const message = `Moved unregistered worktree directory ${worktreePath} to ${quarantinePath}`;
       if (input.recorder) {
         await input.recorder.recordOperation({
           phase: "worktree_prepare",
           cwd: repoRoot,
-          metadata: { repoRoot, worktreePath, branchName, cleanupAction: "remove_unregistered_worktree_directory" },
+          metadata: { repoRoot, worktreePath, branchName, quarantinePath, cleanupAction: "quarantine_unregistered_worktree_directory" },
           run: async () => {
-            await removeDirectory();
+            await moveAside();
             return {
               status: "succeeded",
               exitCode: 0,
-              system: `Removed unregistered worktree directory ${worktreePath}\n`,
+              system: `${message}\n`,
             };
           },
         });
       } else {
-        await removeDirectory();
+        await moveAside();
       }
+      baseRefreshWarnings.push(message);
     } else {
       const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
       if (requestedExistingBranch) {
