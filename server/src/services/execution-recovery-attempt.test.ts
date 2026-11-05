@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { accountingForScheduledRetry, executionFailureRetryCount, executionRetryAttemptCount } from "./execution-recovery-attempt.js";
+import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
+import { RUNNER_REVISION_WAIT_RETRY_REASON as DISPATCH_RUNNER_REVISION_WAIT_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 describe("failure attempts across resource waits", () => {
   it("preserves prior failures through subscription waits without trusting unrelated context", () => {
@@ -45,6 +47,9 @@ describe("persisted independent accounting", () => {
 });
 
 describe("Runner update waits", () => {
+  it("uses the same retry reason as run dispatch", () => {
+    expect(RUNNER_REVISION_WAIT_RETRY_REASON).toBe(DISPATCH_RUNNER_REVISION_WAIT_RETRY_REASON);
+  });
   const ledger = (failureRetries: number) => ({ executionRetryAccounting: { version: 1, failureRetries, maxTurnContinuations: 0 } });
   it("never spend the failure retry budget", () => {
     const waited = { scheduledRetryReason: "runner_revision_wait", scheduledRetryAttempt: 9, contextSnapshot: ledger(0) };
