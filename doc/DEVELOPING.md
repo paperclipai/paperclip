@@ -4506,14 +4506,16 @@ PostgreSQL 17 server. Use distinct names ending in `_test`. The test applies nor
 migrations and writes fixtures; it never starts an embedded cluster. Use a fresh
 pair for each attempt, including the full run after bootstrap. Prepare the matching
 service dependencies separately and compile its normal `tsconfig.build.json` with
-Node 22. The recorded local qualification used service source
-`2cb54f904031dcf69a32902cd853b43f74d6f301`; an arbitrary service revision is not an
-interchangeable prerequisite.
+Node 22. The recorded local runtime used service source
+`2cb54f904031dcf69a32902cd853b43f74d6f301`. Current service publication
+`389878364b42dd129835d263f91882c5774d5123` carries that measured helper source through
+its normal upstream merge; the runtime was not repeated on that service merge.
+An arbitrary service revision is not an interchangeable prerequisite.
 
 ```sh
 export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT=/absolute/path/to/matching-service
 export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_NODE=/absolute/path/to/node-v22.23.4/bin/node
-export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA=2cb54f904031dcf69a32902cd853b43f74d6f301
+export PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA=389878364b42dd129835d263f91882c5774d5123
 test "$(git -C "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT" rev-parse HEAD)" = "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_SHA"
 (cd "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_CHECKOUT" && "$PAPERCLIP_SKILL_DEFAULT_CADENCE_CLOUD_NODE" node_modules/typescript/bin/tsc -p tsconfig.build.json)
 export PAPERCLIP_TEST_POSTGRES_ADMIN_URL=postgres://paperclip@127.0.0.1:55448/postgres
