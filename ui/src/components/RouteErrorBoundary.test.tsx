@@ -3,7 +3,7 @@
 import { act, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createChunkLoadRecovery, RELOAD_ABANDONED_MS } from "@/lib/chunk-load-recovery";
+import { createChunkLoadRecovery, RELOAD_ABANDONED_MS, RELOAD_DELAYS_MS } from "@/lib/chunk-load-recovery";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -126,7 +126,10 @@ describe("RouteErrorBoundary", () => {
   });
 
   it("contains a repeated chunk load failure and recovers when navigating back to a task", async () => {
-    window.sessionStorage.setItem("paperclip:chunk-load-reload-at", String(Date.now()));
+    window.sessionStorage.setItem(
+      "paperclip:chunk-load-reload-at",
+      JSON.stringify({ windowStartedAt: Date.now(), attempts: RELOAD_DELAYS_MS.length }),
+    );
     const FailedPage = lazy(async () => { throw new Error("Failed to fetch dynamically imported module"); });
     const root = createRoot(container);
     await act(async () => { root.render(<RouteErrorBoundary><FailedPage /></RouteErrorBoundary>); });

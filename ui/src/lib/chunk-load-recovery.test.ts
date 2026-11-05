@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createChunkLoadRecovery, isChunkLoadError, RELOAD_ABANDONED_MS } from "./chunk-load-recovery";
+import { createChunkLoadRecovery, isChunkLoadError, RELOAD_ABANDONED_MS, RELOAD_DELAYS_MS } from "./chunk-load-recovery";
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -47,15 +47,48 @@ describe("reloadForChunkLoadError", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("defers to the error UI when the fresh page fails again", () => {
+  it("retries a fresh page that fails again, waiting longer each time for the deploy to settle", () => {
+    vi.useFakeTimers();
     const storage = memoryStorage();
     const reload = vi.fn();
     let now = 1_000_000;
     createChunkLoadRecovery({ storage: () => storage, reload, now: () => now }).reloadForChunkLoadError(cssPreloadError);
+    expect(reload).toHaveBeenCalledTimes(1);
 
-    now += 10_000;
-    const freshPage = createChunkLoadRecovery({ storage: () => storage, reload, now: () => now });
-    expect(freshPage.reloadForChunkLoadError(cssPreloadError)).toBe(false);
+    for (const delayMs of RELOAD_DELAYS_MS.slice(1)) {
+      now += 10_000;
+      const freshPage = createChunkLoadRecovery({ storage: () => storage, reload, now: () => now });
+      const reloadsBefore = reload.mock.calls.length;
+      expect(freshPage.reloadForChunkLoadError(cssPreloadError)).toBe(true);
+      vi.advanceTimersByTime(delayMs - 1);
+      expect(reload).toHaveBeenCalledTimes(reloadsBefore);
+      vi.advanceTimersByTime(1);
+      expect(reload).toHaveBeenCalledTimes(reloadsBefore + 1);
+    }
+  });
+
+  it("defers to the error UI once the retries in the guard window are used up", () => {
+    const storage = memoryStorage();
+    const reload = vi.fn();
+    let now = 1_000_000;
+    for (let attempt = 0; attempt < RELOAD_DELAYS_MS.length; attempt += 1) {
+      expect(createChunkLoadRecovery({ storage: () => storage, reload, now: () => now }).reloadForChunkLoadError(cssPreloadError)).toBe(true);
+      now += 10_000;
+    }
+
+    const exhaustedPage = createChunkLoadRecovery({ storage: () => storage, reload, now: () => now });
+    expect(exhaustedPage.reloadForChunkLoadError(cssPreloadError)).toBe(false);
+  });
+
+  it("counts a reload recorded by an older build as the first retry", () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const storage = memoryStorage({ "paperclip:chunk-load-reload-at": "1000000" });
+    const { reloadForChunkLoadError } = createChunkLoadRecovery({ storage: () => storage, reload, now: () => 1_010_000 });
+
+    expect(reloadForChunkLoadError(cssPreloadError)).toBe(true);
+    expect(reload).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(RELOAD_DELAYS_MS[1]!);
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
@@ -101,10 +134,13 @@ describe("reloadForChunkLoadError", () => {
   });
 
   it("ignores an unreadable stored marker", () => {
-    const reload = vi.fn();
-    const storage = memoryStorage({ "paperclip:chunk-load-reload-at": "not-a-time" });
-    const { reloadForChunkLoadError } = createChunkLoadRecovery({ storage: () => storage, reload, now: () => 1_000 });
-    expect(reloadForChunkLoadError(cssPreloadError)).toBe(true);
+    for (const marker of ["not-a-time", "{\"windowStartedAt\":\"soon\"}", "null"]) {
+      const reload = vi.fn();
+      const storage = memoryStorage({ "paperclip:chunk-load-reload-at": marker });
+      const { reloadForChunkLoadError } = createChunkLoadRecovery({ storage: () => storage, reload, now: () => 1_000 });
+      expect(reloadForChunkLoadError(cssPreloadError)).toBe(true);
+      expect(reload).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("never reloads for other errors", () => {
