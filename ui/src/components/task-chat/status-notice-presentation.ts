@@ -114,6 +114,9 @@ export function statusNoticePresentation(
       if (phase === "failed") {
         return { category, icon: AlertTriangle, tone: "warning", label: "Context compaction failed", detail: summary(item), active: false, fatal: false };
       }
+      if (phase === "running" && item.status === "interrupted") {
+        return { category, icon: Layers, tone: "neutral", label: "Compaction stopped", active: false, fatal: false };
+      }
       return phase === "running"
         ? { category, icon: Loader2, tone: "progress", label: "Compacting context", active: true, fatal: false }
         : { category, icon: Layers, tone: "neutral", label: "Context compacted", active: false, fatal: false };

@@ -43,6 +43,9 @@ describe("TaskChatStatusNotice", () => {
   it("shows compaction phases and a model fallback target", () => {
     act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "info", Category: "context_compaction", Phase: "running" })} />));
     expect(container.textContent).toContain("Compacting context…");
+    act(() => root.render(<TaskChatStatusNotice item={{ ...notice({ Severity: "info", Category: "context_compaction", Phase: "running" }), status: "interrupted" }} />));
+    expect(container.textContent).toContain("Compaction stopped");
+    expect(container.querySelector(".animate-spin")).toBeNull();
     act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "warning", Category: "model_fallback", "Fallback model": "claude-sonnet-5-5", Reason: "declined the request" })} />));
     expect(container.textContent).toContain("Fell back to claude-sonnet-5-5");
   });

@@ -2927,6 +2927,14 @@ describe("harness status notices", () => {
     expect(backToBack[0]).toMatchObject({ summary: "Reconnecting... 1/5" });
   });
 
+  it("marks a compaction that never completed as interrupted once the turn ends", () => {
+    const running = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] });
+    const rows = (live: boolean) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, running], { runId: "r", running: live })), live)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows(true)[0]).toMatchObject({ status: "informational" });
+    expect(rows(false)[0]).toMatchObject({ status: "interrupted" });
+  });
+
   it("lets a context.compacted divider replace the completed compaction chip", () => {
     const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
     const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };

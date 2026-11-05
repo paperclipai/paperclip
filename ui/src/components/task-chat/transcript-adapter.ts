@@ -1813,7 +1813,12 @@ export function buildTurnTimelineRows(
         item.details.find((detail) => detail.label === "Phase")?.value === "completed" &&
         later.some(isCompactionDivider)) continue;
       current = null;
-      rows.push(retry && later.some(statusNoticeResolvesRetry) ? { ...item, resolved: true } : item);
+      // A compaction still "running" when the turn has ended was cut short.
+      const stoppedCompaction = !running && statusNoticeCategory(item) === "context_compaction" &&
+        item.details.find((detail) => detail.label === "Phase")?.value === "running";
+      rows.push(retry && later.some(statusNoticeResolvesRetry)
+        ? { ...item, resolved: true }
+        : stoppedCompaction ? { ...item, status: "interrupted" } : item);
     } else if (
       item.kind === "tool" ||
       item.kind === "usage" ||
