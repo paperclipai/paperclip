@@ -74,7 +74,9 @@ unfinished authority transitions remain blocked. Retained event suffixes and
 known terminal cleanup stay under the source authority for reconciliation.
 
 The restricted controller permits snapshots, drain and cleanup; it retains
-semantic inputs without dispatching business tools. Successful live goal and
+semantic inputs without dispatching business tools. Read-only history and
+resume facades require the retained thread identity; the resume facade publishes
+existing state without another provider resume. Successful live goal and
 idle-thread probes precede provider admission. Unsupported or conflicting live
 state fails closed. Existing authenticated `run.attach` releases execution only
 after source obligations settle and authority rotation is durable. Core then

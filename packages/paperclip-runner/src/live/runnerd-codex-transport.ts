@@ -3846,8 +3846,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   ): Promise<Record<string, unknown>> {
     if (this.#closed) throw new Error("PRP Codex transport is closed");
     this.#throwIfFailed();
-    if (this.#sourceReconciliationPending && !["thread/read", "initialize", "collaborationMode/list"].includes(method)) {
-      throw new Error("native_runner_source_attachment_pending");
+    if (this.#sourceReconciliationPending) {
+      if (!["thread/read", "thread/turns/list", "thread/items/list", "thread/resume", "thread/goal/get", "initialize", "collaborationMode/list"].includes(method)) {
+        throw new Error("native_runner_source_attachment_pending");
+      }
+      if ((params.threadId !== undefined || method === "thread/resume")
+        && params.threadId !== this.options.resumeProviderSession?.driverSessionId) {
+        throw new Error("codex_history_identity_mismatch");
+      }
+      if (["thread/resume", "thread/goal/get"].includes(method) && !this.#startupComplete) {
+        throw new Error("native_runner_source_attachment_pending");
+      }
     }
     if (this.#sourceRecoveryIdentity && !["initialize", "collaborationMode/list"].includes(method)) {
       throw new Error("native_runner_source_attachment_pending");
@@ -4085,7 +4094,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       };
     }
     if (method === "thread/goal/get") {
-      const result = await this.#commandResult("session.goal.get", params);
+      const result = await this.#commandResult(this.#sourceReconciliationPending ? "session.snapshot" : "session.goal.get", params);
       return {
         goal: appServerThreadGoal(result.goal, this.#threadId),
       };

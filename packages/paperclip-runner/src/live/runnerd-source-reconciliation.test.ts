@@ -9,19 +9,26 @@ import { expect, it, vi } from "vitest";
 import { createCapabilityRunnerdCodexTransport, type CapabilityRunnerdCodexTransportOptions } from "./runnerd-codex-transport.js";
 import { runnerLaunchRequirementsDigest, runnerProviderLaunchRequirements, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
+import { createNativeSessionBackend } from "../backends/native-backend-factory.js";
+import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { PersistedNativeSession } from "../contracts/native-session-backend.js";
 
 type Bundle = ReturnType<typeof createCapabilityRunnerdCodexTransport>;
 const read = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const absent = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
 const kill = (pid: number | null) => { if (pid) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
 
-async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"]) {
+async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"], nativeSource = false) {
   const root = await mkdtemp(join(tmpdir(), "runner-source-reconciliation-"));
   const home = join(root, "empty-codex-home"); await mkdir(home);
+  const report = join(root, "completion.json");
+  if (nativeSource) await writeFile(report, JSON.stringify({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Completed fake work",
+    completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+    evidence: [], verification: [], attentionRequests: [], artifacts: [] }));
   const identity = { runnerInstanceId: "runner-source", environmentLeaseId: "lease-source", runId: "run-source", normalizedSessionId: "session-source", turnId: "turn-source", itemId: "item-source" };
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(root, "--call-log", join(root, "calls"), "--record-process-start", "--durable-turn-ids"),
+    codexArgs: fakeCodexArgs(root, "--call-log", join(root, "calls"), "--record-process-start", "--durable-turn-ids", ...(nativeSource ? ["--terminal-result-file", report] : [])),
     stateDirectory: root, sourceCodexHome: home, prpIdentity: identity,
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 3_000,
     ...(registration ? { controlPlaneRegistration: registration } : {}),
@@ -46,11 +53,34 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
     for (const bundle of bundles.reverse()) { await bundle.transport.close().catch(() => undefined); const evidence = bundle.evidence(); kill(evidence.runnerPid); kill(evidence.codexPid); }
     await rm(root, { recursive: true, force: true });
   };
+  const nativeIdentity = { companyId: "company", agentId: "agent", issueId: "issue", runId: identity.runId, sessionId: identity.normalizedSessionId };
+  const execution: NativeExecutionInput = { schema: "paperclip.native-execution-input.v1",
+    binding: { companyId: nativeIdentity.companyId, agentId: nativeIdentity.agentId, issueId: nativeIdentity.issueId,
+      runId: identity.runId, executionWorkspaceId: "workspace" },
+    task: { identifier: "TASK-1", title: "Complete fake work", description: null, prompt: "Complete fake work", workMode: "standard" },
+    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    session: { normalizedSessionId: identity.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1 },
+    provider: { kind: "codex", model: null, approvalPolicy: "never" },
+    completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.completion-contract.v1",
+      contract: { revision: "1", objective: "Complete fake work", criteria: [{ id: "objective", requirement: "Complete fake work" }] } }, interactionResponses: [], credentialBindings: [] };
   try {
-    const opened = await first.transport.request("thread/start", { cwd: root, dynamicTools: [] });
-    const originalThread = opened.thread as { id: string; sessionId: string };
-    const thread = { id: originalThread.id, sessionId: originalThread.sessionId };
-    await complete(first, "Complete before abrupt loss."); await settled();
+    let nativeSnapshot: PersistedNativeSession | undefined;
+    let thread: { id: string; sessionId: string };
+    if (nativeSource) {
+      const session = await createNativeSessionBackend(execution, { codexTransportFactory: () => first.transport,
+        environment: { PAPERCLIP_WORKSPACE_CWD: root }, dynamicTools: [] }).openSession({ identity: nativeIdentity, workingDirectory: root });
+      await session.startTurn({ message: { role: "user", text: "Complete before abrupt loss." } });
+      for await (const event of session.events()) if (event.eventType === "turn.completed") break;
+      nativeSnapshot = await session.snapshot();
+      expect(nativeSnapshot.terminal?.runTerminalState).toBe("succeeded");
+      thread = { id: nativeSnapshot.sessionId, sessionId: nativeSnapshot.providerSessionId! };
+    } else {
+      const opened = await first.transport.request("thread/start", { cwd: root, dynamicTools: [] });
+      const originalThread = opened.thread as { id: string; sessionId: string };
+      thread = { id: originalThread.id, sessionId: originalThread.sessionId };
+      await complete(first, "Complete before abrupt loss.");
+    }
+    await settled();
     const evidence = first.evidence();
     await first.detachControllerForRestart();
     expect(absent(evidence.runnerPid!)).toBe(false); expect(absent(evidence.codexPid!)).toBe(false);
@@ -61,9 +91,37 @@ async function sourceFixture(registration?: CapabilityRunnerdCodexTransportOptio
       const bundle = createCapabilityRunnerdCodexTransport({ ...options, recoveryPurpose: "source_reconcile", resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId }, onRecoveryAccountingEvent: async () => {}, ...overrides });
       bundles.push(bundle); return bundle;
     };
-    return { root, options, identity, thread, runnerFile, providerFile, coreFile, calls, complete, settled, recover, dispose };
+    return { root, options, identity, thread, runnerFile, providerFile, coreFile, calls, complete, settled, recover, dispose, nativeIdentity, execution, nativeSnapshot };
   } catch (error) { await dispose(); throw error; }
 }
+
+it("recovers the real native backend before attaching the next run", async () => {
+  const f = await sourceFixture(undefined, true);
+  try {
+    expect(f.nativeSnapshot!.sessionId).toBe(f.thread.id);
+    const source = f.recover();
+    await expect(source.transport.request("thread/resume", { threadId: f.thread.id })).rejects.toThrow("source_attachment_pending");
+    await expect(source.transport.request("thread/read", { threadId: "foreign-thread" })).rejects.toThrow("history_identity_mismatch");
+    const recovered = await createNativeSessionBackend(f.execution, { codexTransportFactory: () => source.transport,
+      environment: { PAPERCLIP_WORKSPACE_CWD: f.root }, dynamicTools: [] }).recoverSession!(f.nativeSnapshot!, { signal: new AbortController().signal });
+    expect(recovered.recovered).toBe(true);
+    expect(await f.calls("turn/start")).toBe(1); expect(await f.calls("thread/resume")).toBe(1);
+    const before = source.evidence();
+    await expect(source.transport.request("thread/resume", { threadId: "foreign-thread" })).rejects.toThrow("history_identity_mismatch");
+    await expect(source.transport.request("thread/turns/list", { threadId: "foreign-thread" })).rejects.toThrow("history_identity_mismatch");
+    await expect(recovered.session!.startTurn({ message: { role: "user", text: "Not yet authorized" } })).rejects.toThrow();
+    expect(await f.calls("turn/start")).toBe(1);
+    await recovered.session!.attachRun!({ identity: { ...f.nativeIdentity, runId: "run-target" } });
+    expect(source.evidence().runnerPid).toBe(before.runnerPid);
+    await recovered.session!.startTurn({ message: { role: "user", text: "Continue under the next run." } });
+    for await (const event of recovered.session!.events()) if (event.eventType === "turn.completed") break;
+    await f.settled();
+    expect((await recovered.session!.snapshot()).sessionId).toBe(f.thread.id);
+    expect(await f.calls("turn/start")).toBe(2); expect(await f.calls("process-start")).toBe(2);
+    expect(await f.calls("thread/resume")).toBe(1);
+    await recovered.session!.close({ reason: "test complete" });
+  } finally { await f.dispose(); }
+}, 30_000);
 
 it.each(["attach", "prepared-attach", "suspend"] as const)("reconciles killed source then uses ordinary %s without a cold receipt", async mode => {
   const fixture = await sourceFixture();
