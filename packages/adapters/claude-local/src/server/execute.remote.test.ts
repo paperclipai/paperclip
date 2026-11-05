@@ -868,6 +868,38 @@ describe("claude remote execution", () => {
     expect(providerCalls).toHaveLength(0);
   });
 
+  it.skipIf(process.platform !== "win32")("holds an otherwise successful Windows resume when process-tree stop is unverified", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-unverified-stop-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0, signal: null, timedOut: false,
+      stdout: JSON.stringify({ type: "result", session_id: sessionId, subtype: "success", is_error: false, result: "done" }),
+      stderr: "", pid: 123, startedAt: new Date().toISOString(), processTreeStopped: false,
+    });
+    const collect = vi.fn(async () => {});
+    const result = await execute({
+      runId: "run-claude-unverified-stop",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId, sessionParams: { sessionId, cwd: workspaceDir }, sessionDisplayId: sessionId, taskKey: null },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir } },
+      context: { ...createPromptContextFixture(), paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      onProviderStopped: collect,
+      onLog: async () => {},
+    });
+    expect(result.errorCode).toBe("provider_stop_unconfirmed");
+    expect(result.errorMessage).toMatch(/could not be verified/i);
+    expect(result.sessionId).toBeUndefined();
+    expect(result.sessionParams).toBeUndefined();
+    expect(result.clearSession).toBe(false);
+    expect(collect).not.toHaveBeenCalled();
+  });
+
   it.skipIf(process.platform !== "win32")("does not acknowledge cancellation as pre-start after dispatch without stop proof", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-cancel-after-dispatch-"));
     cleanupDirs.push(rootDir);

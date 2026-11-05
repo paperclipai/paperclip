@@ -1364,6 +1364,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const holdUnverifiedStop = (
+    attempt: Parameters<typeof toAdapterResult>[0],
+    fallbackSessionId: string | null,
+  ): AdapterExecutionResult => {
+    const result = toAdapterResult(attempt, { fallbackSessionId });
+    return {
+      ...result,
+      errorCode: "provider_stop_unconfirmed",
+      errorFamily: null,
+      retryNotBefore: null,
+      errorMessage: "Claude finished, but its process tree could not be verified as stopped; its instruction changes remain pending collection.",
+      resultJson: { ...result.resultJson, providerStopUnconfirmed: true },
+      sessionId: undefined,
+      sessionParams: undefined,
+      sessionDisplayId: undefined,
+      clearSession: false,
+    };
+  };
+
   try {
     const minimumCliVersion = passesConfiguredModel && claudeCommandLooksLike(command, "claude")
       ? minimumClaudeCliVersionForModel(model)
@@ -1448,6 +1467,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledBeforeProviderStart();
       throw error;
     }
+    if (windowsLocalResume && initial.proc.processTreeStopped === false) {
+      return holdUnverifiedStop(initial, runtimeSessionId || runtime.sessionId);
+    }
     if (windowsLocalResume && ctx.signal?.aborted && initial.proc.processTreeStopped === true) {
       return cancelledAfterProviderStop();
     }
@@ -1509,6 +1531,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } catch (error) {
         if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledAfterProviderStop();
         throw error;
+      }
+      if (windowsLocalResume && retry.proc.processTreeStopped === false) {
+        return holdUnverifiedStop(retry, null);
       }
       if (windowsLocalResume && ctx.signal?.aborted && retry.proc.processTreeStopped === true) {
         return cancelledAfterProviderStop();
