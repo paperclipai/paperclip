@@ -30,6 +30,7 @@ import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.j
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
+import { configuredEnvironment } from "../../configured-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -2429,6 +2430,7 @@ async function startRuntime(input: {
     arguments: unknown;
   }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
+  const taskEnvironment = configuredEnvironment(input.options.environment);
   const port = await reservePort();
   const password = randomBytes(32).toString("base64url");
   const username = "paperclip";
@@ -2475,6 +2477,7 @@ async function startRuntime(input: {
   const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
+    ...Object.values(taskEnvironment),
     password,
     authHeader,
     bridge.secret,
@@ -3126,7 +3129,7 @@ function sanitizedEnvironment(
   const candidate = source ?? process.env;
   for (const key of allowed)
     if (candidate[key] !== undefined) result[key] = candidate[key];
-  return { ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
+  return { ...result, ...configuredEnvironment(source), ...githubCredentialEnvironment(source ?? {}), ...overrides };
 }
 
 function sanitizedEnvironmentKeys(): string[] {

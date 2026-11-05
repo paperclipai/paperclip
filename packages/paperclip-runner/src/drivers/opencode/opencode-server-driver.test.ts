@@ -30,6 +30,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { createCodexTaskEnvelope } from "../../contracts/codex.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../../configured-environment.js";
 import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import {
@@ -153,6 +154,79 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("forwards configured bindings to the provider shell and redacts their values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-configured-env-"));
+    roots.push(root);
+    const bindings = { PROBE_PLAIN: "fixture-plain-binding", PROBE_SECRET: "fixture-resolved-binding" };
+    const command = join(root, "probe-opencode.mjs");
+    await writeFile(command, [
+      "#!/usr/bin/env node",
+      'import { execFileSync } from "node:child_process";',
+      'import { writeFile } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      'const lengths = execFileSync("/bin/sh", ["-c", \'printf "%s,%s" "${#PROBE_PLAIN}" "${#PROBE_SECRET}"\'], { encoding: "utf8" });',
+      'await writeFile(join(process.env.XDG_DATA_HOME, "shell-probe.txt"), lengths);',
+      'process.stderr.write(`plain binding: ${process.env.PROBE_PLAIN}\\nresolved binding: ${process.env.PROBE_SECRET}\\n`);',
+      `await import(${JSON.stringify(fixture)});`,
+    ].join("\n"), { mode: 0o755 });
+    const diagnostics: string[] = [];
+    const tracePath = join(root, "provider-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        PATH: process.env.PATH,
+        ...configuredEnvironmentProjection(bindings),
+        DATABASE_URL: "unbound-host-database",
+        PAPERCLIP_API_KEY: "controller-key",
+        NODE_OPTIONS: "--require=/untrusted/bootstrap.js",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+      },
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    const session = await driver.openSession({ runId: "bindings", normalizedSessionId: "bindings", workingDirectory: root });
+    let persisted = "";
+    try {
+      expect(await readFile(join(root, "bindings", "data", "shell-probe.txt"), "utf8"))
+        .toBe(`${bindings.PROBE_PLAIN.length},${bindings.PROBE_SECRET.length}`);
+      const child = JSON.parse(await readFile(join(root, "bindings", "data", "fake-environment.json"), "utf8"));
+      expect(child.keys).toEqual(expect.arrayContaining(Object.keys(bindings)));
+      for (const key of ["DATABASE_URL", "PAPERCLIP_API_KEY", "NODE_OPTIONS"]) expect(child.keys).not.toContain(key);
+      persisted = JSON.stringify(await session.snapshot())
+        + await readFile(join(root, "bindings", "config", "opencode", "opencode.json"), "utf8");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+    persisted += await readFile(tracePath, "utf8");
+    expect(diagnostics.join("\n")).toContain("plain binding: [REDACTED]");
+    expect(diagnostics.join("\n")).toContain("resolved binding: [REDACTED]");
+    for (const value of Object.values(bindings)) {
+      expect(diagnostics.join("\n")).not.toContain(value);
+      expect(persisted).not.toContain(value);
+    }
+  });
+
+  it.each([false, true])("ignores an ambient configured-environment projection (explicit environment: %s)", async explicit => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-ambient-env-"));
+    roots.push(root);
+    vi.stubEnv(CONFIGURED_ENVIRONMENT_KEYS, '["PROBE_SECRET"]');
+    vi.stubEnv("PROBE_SECRET", "ambient-binding-must-not-cross");
+    try {
+      const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        ...(explicit ? { environment: { PATH: process.env.PATH } } : {}) });
+      const session = await driver.openSession({ runId: "ambient", normalizedSessionId: "ambient", workingDirectory: root });
+      try {
+        const child = JSON.parse(await readFile(join(root, "ambient", "data", "fake-environment.json"), "utf8"));
+        expect(child.keys).not.toContain("PROBE_SECRET");
+        expect(child.keys).not.toContain(CONFIGURED_ENVIRONMENT_KEYS);
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
