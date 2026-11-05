@@ -10353,6 +10353,24 @@ async function executePaperclipNativeSessionWithinScope(
                   await startup.cancellationSettled;
                   // If startup exceeded the caller's deadline, its late handle
                   // must still be cancelled instead of escaping the Stop fence.
+                  // The caller left its durable run Stop pending; acknowledge it
+                  // against this exact published handle so the run settles as an
+                  // operator cancellation rather than a provider failure.
+                  try {
+                    const [stopRun] = await input.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+                      eq(heartbeatRuns.id, input.execution.binding.runId),
+                      eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+                    )).limit(1);
+                    const pendingStop = record(record(stopRun?.resultJson).nativeCancellation);
+                    if (pendingStop.scope === "run" && pendingStop.dispatchState === "pending") {
+                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup", { db: input.db, scope: "run" });
+                    }
+                  } catch (error) {
+                    // Best effort: the in-memory Stop below still fences this
+                    // handle; the intent stays pending for cancellation recovery.
+                    logger.warn({ runId: input.execution.binding.runId, err: error },
+                      "Late native startup Stop could not acknowledge its durable intent");
+                  }
                   await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup");
                   throw new Error("native_finalization_missing: session returned no semantic result");
                 }

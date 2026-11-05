@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, PluginEnvironmentRunnerIngressError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, PluginEnvironmentRunnerIngressError, PluginEnvironmentStopError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
@@ -2520,6 +2520,34 @@ async function closeDaytonaDuplexChannelsForLease(providerLeaseId: string): Prom
   await Promise.allSettled(matches.map(closeDaytonaDuplexChannel));
 }
 
+const STOP_RECOVERY_TIMEOUT_SECONDS = 20;
+const STOPPABLE_AFTER_RECOVERY_STATES: ReadonlySet<string> = new Set(["started", "stopped", "archived"]);
+
+function erroredAfterRecovery(sandbox: Sandbox): PluginEnvironmentStopError {
+  return new PluginEnvironmentStopError(sandbox.recoverable === false ? "resource_unrecoverable" : "recovery_failed");
+}
+
+async function refreshedSandbox(sandbox: Sandbox, timeoutMs: number): Promise<boolean> {
+  try {
+    await withLivenessTimeout("sandbox.refreshData", timeoutMs, () => sandbox.refreshData());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoverSandboxForStop(sandbox: Sandbox, timeoutSeconds: number, readTimeoutMs: number): Promise<void> {
+  if (sandbox.recoverable !== true) throw new PluginEnvironmentStopError("resource_unrecoverable");
+  try {
+    await withLivenessTimeout("sandbox.recover", timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS,
+      () => sandbox.recover(timeoutSeconds));
+  } catch {
+    if (!await refreshedSandbox(sandbox, readTimeoutMs)) throw new PluginEnvironmentStopError("recovery_incomplete");
+  }
+  if (sandbox.state === "error") throw erroredAfterRecovery(sandbox);
+  if (!STOPPABLE_AFTER_RECOVERY_STATES.has(sandbox.state ?? "")) throw new PluginEnvironmentStopError("recovery_incomplete");
+}
+
 async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt> {
   if (!params.providerLeaseId) throw new Error("Daytona stop requires an exact sandbox identity");
   const config = parseDriverConfig(params.config);
@@ -2539,10 +2567,20 @@ async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<P
     await withLivenessTimeout("sandbox.setAutoDeleteInterval", deadline, () => sandbox.setAutoDeleteInterval(-1));
     await withLivenessTimeout("sandbox.refreshData", deadline, () => sandbox.refreshData());
     if (sandbox.autoDeleteInterval !== -1) throw new Error("Daytona retention policy was not confirmed");
+    const stopSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
+    const recovering = sandbox.state === "error";
+    if (recovering) await recoverSandboxForStop(sandbox, Math.min(stopSeconds, STOP_RECOVERY_TIMEOUT_SECONDS), deadline);
     // An archive already has no live process and retains its filesystem.
     // Daytona rejects Stop in this state; leave the confirmed archive cold.
     if (sandbox.state !== "stopped" && sandbox.state !== "archived") {
-      await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(Math.min(toTimeoutSeconds(config.timeoutMs), 30)));
+      try {
+        await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(stopSeconds));
+      } catch (error) {
+        if (recovering && await refreshedSandbox(sandbox, deadline) && sandbox.state === "error") {
+          throw erroredAfterRecovery(sandbox);
+        }
+        throw error;
+      }
     }
     sandboxHandleSessionStore.clear(scope);
     await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
