@@ -34,8 +34,8 @@ export function assertChatFlowRunCount(input: {
 }) {
   const completion = needsChatCompletionProof(input.suiteId, input.task.id, input.profileId, input.environmentId)
     ? verifyChatCompletion(input.runs, input.completionEvidence) : undefined;
-  expect(matchesRunCount(input.task, completion?.ordinaryProviderRuns ?? input.runs.length),
-    completion ? "Declared ordinary provider-run bounds plus one proved completion turn" : "Declared total provider-run bounds").toBe(true);
+  expect(matchesRunCount(input.task, completion?.totalProviderRuns ?? input.runs.length),
+    completion ? "Declared total provider-run bounds with one proved completion turn" : "Declared total provider-run bounds").toBe(true);
   if (input.suiteId !== "hiring-templates") return;
   const accounting = gradeHiringTemplateTurns({
     evidence: input.hiringEvidence ? { ...input.hiringEvidence, runs: input.runs } : undefined,
@@ -1133,7 +1133,7 @@ export async function runChatFlow(input: ChatFlowInput) {
         projects,
       });
     }
-    await idle(minimumRunCount(execution.task) + (completionAccounting ? 1 : 0), completionAccounting);
+    await idle(minimumRunCount(execution.task), completionAccounting);
     if (execution.suite.id === "hiring-templates") {
       // Refresh the whole consistent evidence generation for the final guard.
       hiringEvidence = await refreshHiringEvidence!();

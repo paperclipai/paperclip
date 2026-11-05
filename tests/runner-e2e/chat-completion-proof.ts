@@ -38,8 +38,8 @@ const completionItemKinds = new Set([
 ]);
 
 /** One required delivery is real paid work, not a row to hide from accounting.
- * Only these three isolated native journeys add this independently proved turn.
- * Their existing ordinary-turn bound is checked separately by the caller.
+ * Only these three isolated native journeys use this independent proof.
+ * The catalog total includes this one turn; the caller keeps that bound exact.
  */
 export function verifyChatCompletion(runs: readonly Row[], evidence: ChatCompletionEvidence | undefined) {
   requireProof(evidence, "evidence_missing");

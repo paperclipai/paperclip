@@ -2,19 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { assertChatFlowRunCount, collectChatRunEvidence, retryChatCompletionObservation } from "../../../tests/runner-e2e/chat-flow.js";
 import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "../../../tests/runner-e2e/chat-completion-proof.js";
 import { pollUntil } from "../../../tests/runner-e2e/api.js";
+import { chatTasks } from "../../../tests/runner-e2e/chat-cases.js";
 
 // Shape and ordering from run 41915965118's three retained failing journeys.
 // The ordinary turns keep their existing bound; the one real completion turn
 // must prove its own child, delivery, native tools, reply and rendered link.
-function completionRecording(id = "multi-repository", expectedRunCount = 2) {
+function completionRecording(id = "multi-repository", ordinaryRunCount = 2) {
+  const task = chatTasks.find(task => task.id === id);
+  if (!task) throw new Error("Completion recording must bind an actual catalog task");
   const companyId = "company", agentId = "agent", sourceId = "chat", childId = "child";
   const completedAt = "2026-11-04T21:35:52.000Z";
   const issue = { id: sourceId, companyId, conversationAgentId: agentId, conversationSessionGeneration: 0 };
   const child = { id: childId, companyId, assigneeAgentId: agentId, status: "done", completedAt, identifier: "RUN-2" };
-  const ordinary = Array.from({ length: expectedRunCount }, (_, index) => ({
+  const ordinary = Array.from({ length: ordinaryRunCount }, (_, index) => ({
     id: `ordinary-${index}`, companyId, agentId, status: "succeeded", runtimeMode: "native",
-    issueId: index === expectedRunCount - 1 ? childId : sourceId, nativeIssueId: index === expectedRunCount - 1 ? childId : sourceId,
-    contextSnapshot: { issueId: index === expectedRunCount - 1 ? childId : sourceId },
+    issueId: index === ordinaryRunCount - 1 ? childId : sourceId, nativeIssueId: index === ordinaryRunCount - 1 ? childId : sourceId,
+    contextSnapshot: { issueId: index === ordinaryRunCount - 1 ? childId : sourceId },
     startedAt: "2026-11-04T21:35:00.000Z", processStartedAt: "2026-11-04T21:35:01.000Z",
     finishedAt: "2026-11-04T21:35:51.000Z",
     nativeSessionId: `native-${index}`, usageJson: { accountingReceiptReady: true, outputTokens: 10 },
@@ -42,7 +45,7 @@ function completionRecording(id = "multi-repository", expectedRunCount = 2) {
   }));
   const runs = [...ordinary, notification];
   return { suiteId: "agent-chat", profileId: "runner-codex", environmentId: "local", notification,
-    task: { id, expectedRunCount }, runs,
+    task: { ...task }, runs,
     completionEvidence: { companyId, agentId, companyPrefix: "RUN", baseURL: "http://fixture.invalid", issue, child,
       tasks: [child], comments, runEvidence: [{ runId: notification.id, events,
         workspaceOperations: [] as Array<Record<string, unknown>> }],
@@ -141,6 +144,8 @@ describe("delegated chat completion provider accounting", () => {
     it(`accounts for the required verified notification after ${id}`, () => {
       const input = completionRecording(id, bound);
       const original = JSON.stringify(input);
+      expect(input.task.expectedRunCount).toBe(bound + 1);
+      expect(input.task.minimumExpectedRunCount).toBeUndefined();
       expect(() => assertChatFlowRunCount(input)).not.toThrow();
       expect(verifyChatCompletion(input.runs, input.completionEvidence)).toMatchObject({ ordinaryProviderRuns: bound,
         totalProviderRuns: bound + 1, allRunIds: input.runs.map(r => r.id), notificationRunId: input.notification.id });
@@ -191,15 +196,16 @@ describe("delegated chat completion provider accounting", () => {
 
   it("keeps the existing ordinary-turn count exact", () => {
     const missing = completionRecording(); missing.runs.splice(0, 1);
-    expect(() => assertChatFlowRunCount(missing)).toThrow(/Declared ordinary provider-run bounds/);
+    expect(() => assertChatFlowRunCount(missing)).toThrow(/Declared total provider-run bounds/);
     const extra = completionRecording(); extra.runs.splice(0, 0, { ...extra.runs[0]!, id: "extra-ordinary" });
-    expect(() => assertChatFlowRunCount(extra)).toThrow(/Declared ordinary provider-run bounds/);
+    expect(() => assertChatFlowRunCount(extra)).toThrow(/Declared total provider-run bounds/);
   });
 
   it("keeps every other case, profile and environment on its original total bound", () => {
     for (const patch of [{ task: { id: "create-backlog", expectedRunCount: 2 } },
       { profileId: "runner-opencode" }, { environmentId: "daytona" }, { suiteId: "other-suite" }]) {
       const input = { ...completionRecording(), ...patch };
+      input.runs.push({ ...input.runs[0]!, id: "extra-run" });
       expect(() => assertChatFlowRunCount(input)).toThrow(/Declared total provider-run bounds/);
     }
     expect(needsChatCompletionProof("agent-chat", undefined, "runner-codex", "local")).toBe(false);
