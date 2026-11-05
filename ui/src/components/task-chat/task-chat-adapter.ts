@@ -12,6 +12,7 @@ import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import { formatDateTime } from "@/lib/utils";
 import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
@@ -49,12 +50,12 @@ function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
   return "agent";
 }
 
-/** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
+/** Shared bubble-footer date and time format — also used by the description bubble (PAP-375). */
 export function formatTaskChatTimestamp(value: unknown): string | undefined {
   if (!value) return undefined;
   const d = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(d.getTime())) return undefined;
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return formatDateTime(d);
 }
 
 /** Keep every comment footer on the same compact, user-visible timestamp. */
