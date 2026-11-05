@@ -884,7 +884,11 @@ export function transcriptToTaskChatItems(
           (entry.payload.userActionable !== true ||
           ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
             .includes(String(entry.payload.category)))) break;
-        const key = `provider:${providerActivityKey(entry)}`;
+        // Each retry keeps its own position, so work between two retries in
+        // one turn cannot make the later retry look recovered.
+        const key = entry.family === "provider_notice" && entry.payload.category === "provider_retry"
+          ? `provider:${providerActivityKey(entry)}:${i}`
+          : `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
         if (existingIndex == null) {
@@ -1794,6 +1798,11 @@ export function buildTurnTimelineRows(
       const retry = statusNoticeCategory(item) === "provider_retry";
       // A fatal error that ends the retries already tells the whole story.
       if (retry && later.some((next) => next.kind === "protocol" && next.surface === "provider_activity" && isFatalProviderError(next))) continue;
+      // Consecutive retries with no work between them show only the latest.
+      const nextSignal = later.find((next) => statusNoticeResolvesRetry(next) ||
+        (next.kind === "protocol" && next.surface === "provider_activity" && statusNoticeCategory(next) === "provider_retry"));
+      if (retry && nextSignal?.kind === "protocol" && nextSignal.surface === "provider_activity" &&
+        statusNoticeCategory(nextSignal) === "provider_retry") continue;
       // A completed compaction with a canonical context.compacted divider
       // after it is shown by that divider alone.
       if (statusNoticeCategory(item) === "context_compaction" &&

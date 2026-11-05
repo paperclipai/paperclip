@@ -47,6 +47,15 @@ describe("TaskChatStatusNotice", () => {
     expect(container.textContent).toContain("Fell back to claude-sonnet-5-5");
   });
 
+  it("shows the full fallback explanation when the chip is expanded", () => {
+    const full = "claude-opus-5-5 declined this request (cyber); retried with claude-sonnet-5-5. The session will continue on claude-sonnet-5-5.";
+    act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "warning", Category: "model_fallback", "Fallback model": "claude-sonnet-5-5", Reason: "declined the request (cyber)" }, full)} />));
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    act(() => button!.click());
+    expect(container.textContent).toContain(full);
+  });
+
   it("does not treat a recoverable error notice from the live adapter as fatal", () => {
     act(() => root.render(<TaskChatStatusNotice item={notice({ Severity: "error", Category: "error", Recoverable: "Yes" }, "transient")} />));
     expect(container.querySelector("[role=alert]")).toBeNull();

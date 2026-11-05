@@ -34,6 +34,9 @@ export function TaskChatStatusNotice({
   if (!presentation) return null;
   const Icon = presentation.icon;
   const extra = item.details.filter((entry) => !HIDDEN_DETAILS.has(entry.label) && entry.value !== presentation.detail);
+  // The chip may show a short reason; keep the provider's full message on expand.
+  const fullSummary = item.summary?.trim() || item.details.find((entry) => entry.label === "Summary")?.value;
+  const expandedText = fullSummary && fullSummary !== presentation.detail ? fullSummary : presentation.detail;
 
   if (presentation.fatal) {
     return (
@@ -53,7 +56,7 @@ export function TaskChatStatusNotice({
     );
   }
 
-  const expandable = extra.length > 0 || (presentation.detail?.length ?? 0) > 80;
+  const expandable = extra.length > 0 || (presentation.detail?.length ?? 0) > 80 || expandedText !== presentation.detail;
   const chip = (
     <>
       <Icon
@@ -93,7 +96,7 @@ export function TaskChatStatusNotice({
       )}
       {expandable && open ? (
         <div id={detailId} className="ml-3 flex min-w-0 flex-col gap-1 border-l border-border pl-3 text-xs text-muted-foreground">
-          {presentation.detail ? <p className="whitespace-pre-wrap break-words text-foreground">{presentation.detail}</p> : null}
+          {expandedText ? <p className="whitespace-pre-wrap break-words text-foreground">{expandedText}</p> : null}
           <DetailList details={extra} />
         </div>
       ) : null}

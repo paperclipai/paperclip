@@ -2909,6 +2909,24 @@ describe("harness status notices", () => {
     expect(protocols[0]).toMatchObject({ summary: "You've hit your usage limit." });
   });
 
+  it("keeps a later retry active after work between retries, and collapses back-to-back retries", () => {
+    const retry2 = notice("error:retry:turn-1", {
+      severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 1/5",
+    });
+    const work: TranscriptEntry = { ...read, toolUseId: "read-2" };
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, work, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[1]).not.toHaveProperty("resolved");
+    const backToBack = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(backToBack).toHaveLength(1);
+    expect(backToBack[0]).toMatchObject({ summary: "Reconnecting... 1/5" });
+  });
+
   it("lets a context.compacted divider replace the completed compaction chip", () => {
     const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
     const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };
