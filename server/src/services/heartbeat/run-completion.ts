@@ -836,6 +836,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             await hasChatRunOwnedProviderInteraction(db, { companyId: livenessRun.companyId, issueId, runId: livenessRun.id })),
           conversationTurnFinished: isConversation(issueContext) && livenessRun.status === "succeeded"
             && persistedResultJson?.finalizationReasonCode === "conversation_turn_finished",
+          nativeConversationFinalResponse: livenessRun.runtimeMode === "native" && isConversation(issueContext),
           existingComment: existingRunComment,
           finalAgentMessage,
           preferFinalResponseOverExistingComment:

@@ -983,6 +983,8 @@ async function recoverCommittedNativeChatResponseInScope(
         terminal.runTerminalState === "succeeded" &&
         terminal.turnTerminalState === "completed" &&
         ((result.reportedWorkDisposition === "done" && terminal.reportedWorkDisposition === "done") ||
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded"
+            && !await hasChatRunOwnedProviderInteraction(tx, input)) ||
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
@@ -996,7 +998,9 @@ async function recoverCommittedNativeChatResponseInScope(
               sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
-            sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+            currentConversation
+              ? inArray(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}'`, ["final", "unknown"])
+              : sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
           )).orderBy(desc(heartbeatRunEvents.seq)).limit(200);
         const finalAgentMessage = selectHeartbeatRunFinalAgentMessage({
           candidates: rows.flatMap((row) => {
@@ -1013,6 +1017,9 @@ async function recoverCommittedNativeChatResponseInScope(
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
+          nativeConversationFinalResponse: conversation,
+          conversationTurnFinished: currentConversation,
+          interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });
