@@ -62,16 +62,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await selection(await agent(null))).toEqual([genericPluginId]);
   });
 
-  it("matches a sandbox provider that requires an agent through its provider key", async () => {
+  it("keeps selecting a sandbox provider that requires an agent for all agents", async () => {
     const providerId = randomUUID(), sandboxId = randomUUID(), providerKey = `provider-${providerId.slice(0, 8)}`;
     await db.insert(plugins).values({ id: providerId, pluginKey: providerId, packageName: "provider", version: "1.0.0", status: "ready",
       manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
         environmentDrivers: [{ driverKey: providerKey, kind: "sandbox_provider", requiresAgent: true }] } as never });
     await db.insert(environments).values({ id: sandboxId, name: `Sandbox ${sandboxId}`, driver: "sandbox", status: "active", config: { provider: providerKey } });
     expect(await selection(await agent(sandboxId))).toEqual([providerId]);
-    expect(await selection(await agent(otherEnvironmentId))).toEqual([]);
+    expect(await selection(await agent(otherEnvironmentId))).toEqual([providerId]);
     const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
-    await expect(agentConfiguration(db).update(id, { defaultEnvironmentId: sandboxId })).rejects.toThrow("Pause the agent");
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: sandboxId });
+    expect((await current(id)).defaultEnvironmentId).toBe(sandboxId);
   });
 
   it("refuses an environment change that gives active agents an unprepared plugin", async () => {

@@ -191,10 +191,11 @@ A disabled or removed plugin cannot silently release an existing requirement.
 Restore that plugin to complete the operation.
 A later plugin installation does not change an existing selection.
 
-A plugin with an environment driver or sandbox provider that declares
-`requiresAgent: true` is selected only for an agent on that environment. The host uses the agent's default
-environment, or the instance default when the agent has none. A plugin with no such
-driver is selected for all agents.
+A plugin with an environment driver that declares `requiresAgent: true` is
+selected only for an agent on that environment. The host uses the agent's default
+environment, or the instance default when the agent has none. Other lifecycle
+plugins are selected for all agents, including a sandbox provider that declares
+`requiresAgent: true`.
 
 When an agent moves to such an environment, the host adds the plugin at the next
 `preparing` or `resuming` step. An agent in `ready` cannot move to it until it is

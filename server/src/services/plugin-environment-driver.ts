@@ -1,5 +1,5 @@
 import { agents, plugins, type Db } from "@paperclipai/db";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { conflict } from "../errors.js";
 import type {
   EnvironmentProbeResult,
@@ -39,28 +39,20 @@ type AgentEnvironmentPlugin = {
 };
 
 export function pluginHasAgentEnvironments(plugin: AgentEnvironmentPlugin) {
-  return plugin.manifestJson.environmentDrivers?.some(driver => driver.requiresAgent === true) ?? false;
+  const drivers = plugin.manifestJson.environmentDrivers?.filter(driver => driver.requiresAgent === true) ?? [];
+  return drivers.length > 0 && drivers.every(driver => driver.kind !== "sandbox_provider");
 }
 
 export function pluginServesAgentEnvironment(plugin: AgentEnvironmentPlugin, environment: AgentEnvironmentRef | null | undefined) {
-  const config = environment?.config;
-  return plugin.manifestJson.environmentDrivers?.some(driver => {
-    if (driver.requiresAgent !== true) return false;
-    if (driver.kind === "sandbox_provider") return environment?.driver === "sandbox" && config?.provider === driver.driverKey;
-    return environment?.driver === "plugin" && config?.pluginKey === plugin.pluginKey && config?.driverKey === driver.driverKey;
-  }) ?? false;
+  if (environment?.driver !== "plugin" || environment.config?.pluginKey !== plugin.pluginKey) return false;
+  return plugin.manifestJson.environmentDrivers?.some(driver => driver.requiresAgent === true && driver.kind !== "sandbox_provider"
+    && driver.driverKey === environment.config?.driverKey) ?? false;
 }
 
 export async function pluginForAgentEnvironment(db: Db, environment: AgentEnvironmentRef) {
-  const config = environment.config;
-  if (environment.driver === "plugin" && typeof config?.pluginKey === "string") {
-    const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
-    return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
-  }
-  if (environment.driver !== "sandbox" || typeof config?.provider !== "string") return null;
-  const [plugin] = await db.select().from(plugins)
-    .where(sql`${plugins.manifestJson} @> ${JSON.stringify({ environmentDrivers: [{ driverKey: config.provider, kind: "sandbox_provider" }] })}::jsonb`)
-    .orderBy(asc(plugins.installOrder)).limit(1);
+  const pluginKey = environment.config?.pluginKey;
+  if (environment.driver !== "plugin" || typeof pluginKey !== "string") return null;
+  const plugin = await pluginRegistryService(db).getByKey(pluginKey);
   return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
 }
 
