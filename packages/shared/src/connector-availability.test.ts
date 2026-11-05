@@ -56,8 +56,10 @@ describe("native connectors that need a customer-created OAuth app", () => {
   });
 
   it("does not flag connectors with a managed, dynamic-registration, or credential path", () => {
+    // Asana declares a Paperclip Cloud managed method, so it is never flagged,
+    // even while that method's broker profile is unavailable.
     const asana = getConnectableAppDefinition("asana")!;
-    expect(nativeConnectorRequiresCustomerOAuthApp(asana, {})).toBe(true);
+    expect(nativeConnectorRequiresCustomerOAuthApp(asana, {})).toBe(false);
     expect(nativeConnectorRequiresCustomerOAuthApp({ ...asana, ownershipAvailability: {
       platform_shared: true, platform_provisioned: false, customer: true, dcr: true,
     } }, {})).toBe(false);

@@ -429,6 +429,19 @@ const support = await getEmbeddedPostgresTestSupport();
           await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
         }
       });
+      it("does not offer native Slack setup beside another app's native match", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, "Find Notion and Slack tools");
+        const services = result.results.map((item) => item.service);
+        expect(services).toEqual(expect.arrayContaining(["notion", "via:composio:slack"]));
+        expect(services).not.toContain("slack");
+      });
+      it("keeps native connectors that declare a Paperclip Cloud managed method", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, "asana");
+        expect(result.results[0]).toMatchObject({ service: "asana" });
+        expect(result.providerQuestion).toBeUndefined();
+      });
       it("keeps native Slack for a company that already saved a Slack connection", async () => {
         await resetQuestions();
         await seedProvider("slack", "slack_send_message");

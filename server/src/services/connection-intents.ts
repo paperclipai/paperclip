@@ -486,7 +486,6 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
-      if (definition && !matching.length && await yieldsToAggregators(definition)) yieldingServices.add(service);
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
         const authorized = grants.some((grant) => grant.status === "active" && (
@@ -501,6 +500,7 @@ export function connectionIntentService(db: Db) {
       const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
+      if (definition && !matching.length && yieldsToAggregators(definition)) yieldingServices.add(service);
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
@@ -532,6 +532,14 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
+    // A yielded native service is not offered for new setup when an aggregator
+    // route can serve it; without such a route it remains the fallback.
+    for (const service of yieldingServices) {
+      const candidate = candidates.find(({ item }) => item.service === service);
+      const routes = candidate ? await aggregatorAlternatives(service, candidate.item.name, findAggregatorService(service)) : [];
+      if (routes.length) candidates.splice(candidates.indexOf(candidate!), 1);
+      else yieldingServices.delete(service);
+    }
     const publicMatches = searchAggregatorServices(preparedQuery);
     const bestMatches = publicMatches.filter(match => Math.floor(match.nameScore / 100) === Math.floor((publicMatches[0]?.nameScore ?? 0) / 100));
     const namedPublicService = findAggregatorService(serviceQuery, publicMatches);
@@ -559,8 +567,7 @@ export function connectionIntentService(db: Db) {
     // Native preference applies to the same app or equally strong name matches.
     // A typo match such as Notion must not hide the distinctly named app Motion.
     const exact = candidates.filter(({ item, nameScore }) => ((nameScore >= 200 && Math.floor(nameScore / 100) >= bestExternalTier) || item.service === publicService?.slug)
-      && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length))
-      && !yieldingServices.has(item.service));
+      && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
     const ranked = () => candidates.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
