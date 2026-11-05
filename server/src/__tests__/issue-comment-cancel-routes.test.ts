@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   removeComment: vi.fn(),
   tombstoneComment: vi.fn(),
+  scrubCommentActivitySnippets: vi.fn(async () => 1),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -168,7 +169,7 @@ function describeResponse(res: request.Response) {
   return JSON.stringify({ body: res.body, errorContext: lastErrorContext });
 }
 
-function makeIssue() {
+function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -178,6 +179,7 @@ function makeIssue() {
     executionRunId: "run-1",
     identifier: "PAP-1353",
     title: "Queued cancel",
+    ...overrides,
   };
 }
 
@@ -243,6 +245,7 @@ describe("issue comment cancel routes", () => {
   beforeEach(() => {
     lastErrorContext = undefined;
     vi.clearAllMocks();
+    allowIssueMutation(false);
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());
@@ -469,6 +472,150 @@ describe("issue comment cancel routes", () => {
       expect.objectContaining({ afterTombstone: expect.any(Function) }),
     );
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  function allowIssueMutation(allowed = true) {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      action,
+      allowed: action === "issue:read" || (action === "issue:mutate" && allowed),
+      reason: "allow_default",
+      explanation: "Fixture task is open",
+    }));
+  }
+
+  it("rejects a board user that the issue:mutate decision denies", async () => {
+    allowIssueMutation(false);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+  });
+
+  it("lets a board user delete an agent-authored comment and records the board source", async () => {
+    allowIssueMutation();
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(mockIssueService.tombstoneComment).toHaveBeenCalledTimes(1);
+    const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
+    expect(deletedActivity?.details).toEqual(expect.objectContaining({
+      source: "board_delete",
+      deletedByUserId: "local-board",
+    }));
+  });
+
+  it("rejects a board user that is not the owner of an agent chat", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      conversationAgentId: "22222222-2222-4222-8222-222222222222",
+      conversationUserId: "another-user",
+    }));
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+  });
+
+  it("scrubs snippets when the comment is already tombstoned", async () => {
+    allowIssueMutation();
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+        body: "",
+        deletedAt: new Date("2026-04-11T14:59:00.000Z"),
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+    expect(mockIssueService.scrubCommentActivitySnippets).toHaveBeenCalledWith(
+      "company-1",
+      "11111111-1111-4111-8111-111111111111",
+      ["comment-1"],
+    );
+  });
+
+  it("scrubs snippets of annotation comments removed with the comment", async () => {
+    allowIssueMutation();
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+    mockDocumentAnnotationService.cleanupForIssueCommentDeletion.mockResolvedValue({
+      deletedCommentIds: ["annotation-comment-1"],
+      resolvedThreadIds: [],
+    });
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(mockIssueService.scrubCommentActivitySnippets).toHaveBeenCalledWith(
+      "company-1",
+      "11111111-1111-4111-8111-111111111111",
+      ["annotation-comment-1"],
+      "tx",
+    );
+  });
+
+  it("rejects a board user that deletes a queued agent comment", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorAgentId: "33333333-3333-4333-8333-333333333333",
+        authorUserId: null,
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only the comment author can cancel queued comments");
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 
   it("rejects deleting another actor's normal comment", async () => {

@@ -1907,6 +1907,108 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("offers delete for an agent-authored comment", async () => {
+    const root = createRoot(container);
+    const onDeleteComment = vi.fn(async () => {});
+
+    await act(async () => {
+      renderIssueThread(root, {
+        comments: [
+          {
+            id: "comment-agent-delete",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            body: "Agent output to remove",
+            authorType: "agent" as const,
+            presentation: null,
+            metadata: null,
+            createdAt: new Date("2026-04-06T12:00:00.000Z"),
+            updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+          },
+        ],
+        currentUserId: "user-board",
+        onDeleteComment,
+        canDeleteAgentComments: true,
+        showComposer: false,
+      });
+    });
+
+    const trigger = container.querySelector("button[aria-label='More actions']");
+    expect(trigger).toBeTruthy();
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+
+    const menuItem = Array.from(document.body.querySelectorAll("[role='menuitem']"))
+      .find((item) => item.textContent === "Delete comment");
+    expect(menuItem).toBeTruthy();
+    await act(async () => {
+      menuItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Delete agent comment?");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDeleteComment).toHaveBeenCalledWith("comment-agent-delete");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it.each([
+    ["the viewer cannot delete", { authorAgentId: "agent-1" }, false],
+    ["the agent author is only derived", { authorAgentId: null, authorUserId: "local-board", derivedAuthorAgentId: "agent-1" }, true],
+  ])("hides delete on an agent comment when %s", async (_label, authorFields, canDeleteAgentComments) => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderIssueThread(root, {
+        comments: [
+          {
+            id: "comment-agent-hidden",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorUserId: null,
+            body: "Agent output",
+            authorType: "agent" as const,
+            presentation: null,
+            metadata: null,
+            createdAt: new Date("2026-04-06T12:00:00.000Z"),
+            updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            ...authorFields,
+          },
+        ],
+        currentUserId: "user-board",
+        onDeleteComment: async () => {},
+        canDeleteAgentComments,
+        showComposer: false,
+      });
+    });
+
+    const trigger = container.querySelector("button[aria-label='More actions']");
+    expect(trigger).toBeTruthy();
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+
+    const items = Array.from(document.body.querySelectorAll("[role='menuitem']"));
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((item) => item.textContent === "Delete comment")).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders deleted comments as tombstones without the original body", () => {
     const root = createRoot(container);
 

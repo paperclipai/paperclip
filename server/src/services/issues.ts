@@ -6872,6 +6872,29 @@ async function lockIssueForCommentMutation(tx: DbTransaction, commentId: string)
 }
 
 export function issueService(db: Db) {
+  async function scrubCommentActivitySnippets(
+    companyId: string,
+    issueId: string,
+    commentIds: string[],
+    dbOrTx: any = db,
+  ) {
+    if (commentIds.length === 0) return 0;
+    const scrubbed = await dbOrTx
+      .update(activityLog)
+      .set({ details: sql`${activityLog.details} - 'bodySnippet'` })
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          inArray(sql`${activityLog.details} ->> 'commentId'`, commentIds),
+          sql`${activityLog.details} ->> 'bodySnippet' IS NOT NULL`,
+        ),
+      )
+      .returning({ id: activityLog.id });
+    return scrubbed.length;
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
@@ -12936,6 +12959,8 @@ export function issueService(db: Db) {
       });
     },
 
+    scrubCommentActivitySnippets,
+
     tombstoneComment: async (
       commentId: string,
       actor: {
@@ -12991,6 +13016,8 @@ export function issueService(db: Db) {
           .update(issues)
           .set({ updatedAt: now })
           .where(eq(issues.id, comment.issueId));
+
+        await scrubCommentActivitySnippets(comment.companyId, comment.issueId, [comment.id], tx);
 
         const redacted = redactIssueComment(
           comment,
