@@ -10,7 +10,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
-  budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
+  budgetReservations, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
   caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -25,6 +25,19 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   )).limit(1);
   if (retainedHandoff) throw conflict("Saved case handoff history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
     code: "agent_case_history_retained",
+  });
+  // Cost and finance events keep NO ACTION foreign keys to both the agent and its
+  // heartbeat runs. That accounting history must be kept, so refuse the purge
+  // before any mutations instead of failing on a foreign key violation later.
+  const agentRunIds = sql`(select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`;
+  const [retainedCost] = await tx.select({ id: costEvents.id }).from(costEvents).where(and(
+    eq(costEvents.companyId, companyId), or(eq(costEvents.agentId, id), sql`${costEvents.heartbeatRunId} in ${agentRunIds}`),
+  )).limit(1);
+  const [retainedFinance] = retainedCost ? [] : await tx.select({ id: financeEvents.id }).from(financeEvents).where(and(
+    eq(financeEvents.companyId, companyId), or(eq(financeEvents.agentId, id), sql`${financeEvents.heartbeatRunId} in ${agentRunIds}`),
+  )).limit(1);
+  if (retainedCost || retainedFinance) throw conflict("Recorded cost history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
+    code: "agent_accounting_history_retained",
   });
   const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
     eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
