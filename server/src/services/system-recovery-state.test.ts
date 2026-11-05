@@ -32,6 +32,16 @@ describe("durable system recovery budget", () => {
     expect(failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
       { now: 0, retryAfterAt: 31 * 60_000 }).state).toBe("exhausted");
   });
+  it("keeps a closed-label failure cause through serialization and drops anything else", () => {
+    const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
+    const failed = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "sandbox_not_running", code: "ECONNRESET", status: 503 } });
+    expect(readSystemRecovery(JSON.parse(JSON.stringify({ systemRecovery: failed })))?.failure)
+      .toMatchObject({ code: "provider_unavailable", cause: { label: "sandbox_not_running", code: "ECONNRESET", status: 503 } });
+    const unsafe = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "/home/daytona/secret", code: null, status: null } });
+    expect(unsafe.failure).not.toHaveProperty("cause");
+  });
   it("reconciles a recorded attempt after restart without spending another retry", () => {
     const running = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const restarted = readSystemRecovery(JSON.parse(JSON.stringify({ systemRecovery: running })))!;
