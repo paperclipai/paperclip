@@ -377,7 +377,17 @@ function listGuidanceFiles(rootDir = repoRoot): string[] {
   ).split("\0"));
 
   function walk(absDir: string, relDir: string): void {
-    for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = readdirSync(absDir, { withFileTypes: true });
+    } catch (error) {
+      // Other tests create and remove temporary plugin packages under the
+      // repository tree. If one disappears between enumeration and descent,
+      // it is not authored guidance and should not fail this scan.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
@@ -450,12 +460,33 @@ function scanText(relPath: string, source: string): string[] {
   return offenders;
 }
 
-function scanForOffenders(): string[] {
+function scanGuidanceFiles(
+  files: string[],
+  readGuidanceFile: (relPath: string) => string,
+  trackedFiles: ReadonlySet<string>,
+): string[] {
   const offenders: string[] = [];
-  for (const relPath of listGuidanceFiles()) {
-    offenders.push(...scanText(relPath, read(relPath)));
+  for (const relPath of files) {
+    try {
+      offenders.push(...scanText(relPath, readGuidanceFile(relPath)));
+    } catch (error) {
+      // Temporary untracked fixtures can disappear after the tree walk. A
+      // tracked file disappearing is a repository integrity failure and must
+      // still fail closed.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !trackedFiles.has(relPath)) continue;
+      throw error;
+    }
   }
   return offenders;
+}
+
+function scanForOffenders(): string[] {
+  const trackedFiles = new Set(execFileSync(
+    "git",
+    ["ls-files", "--cached", "-z"],
+    { cwd: repoRoot, encoding: "utf8" },
+  ).split("\0"));
+  return scanGuidanceFiles(listGuidanceFiles(), read, trackedFiles);
 }
 
 // A line that recommends the broken `pnpm exec paperclipai` form. A warning line
@@ -553,6 +584,30 @@ describe("paperclipai CLI invocation safety", () => {
       for (const name of files) {
         expect(scanText(name, readFileSync(path.join(root, name), "utf8"))).toHaveLength(1);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores vanished untracked guidance but still fails when a tracked file disappears", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-race-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      const trackedPath = "tracked.md";
+      const trackedAbsPath = path.join(root, trackedPath);
+      writeFileSync(trackedAbsPath, "pnpm paperclipai issue get issue-1\n");
+      execFileSync("git", ["add", trackedPath], { cwd: root });
+      rmSync(trackedAbsPath);
+
+      const readFixture = (relPath: string) => readFileSync(path.join(root, relPath), "utf8");
+      expect(() => scanGuidanceFiles([trackedPath], readFixture, new Set([trackedPath]))).toThrow();
+
+      const untrackedPath = "temporary-plugin/package.json";
+      const untrackedAbsPath = path.join(root, untrackedPath);
+      mkdirSync(path.dirname(untrackedAbsPath), { recursive: true });
+      writeFileSync(untrackedAbsPath, "{}");
+      rmSync(untrackedAbsPath);
+      expect(scanGuidanceFiles([untrackedPath], readFixture, new Set())).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

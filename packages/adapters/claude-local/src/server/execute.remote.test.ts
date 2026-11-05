@@ -12,6 +12,7 @@ const {
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  probeClaudeTranscript,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]): Promise<RunProcessResult> => ({
     exitCode: 0,
@@ -41,6 +42,7 @@ const {
     },
     stop: async () => {},
   })),
+  probeClaudeTranscript: vi.fn<(...args: Parameters<typeof import("./transcript-probe.js").probeClaudeTranscript>) => Promise<boolean | null>>(),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -77,6 +79,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+vi.mock("./transcript-probe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./transcript-probe.js")>();
+  return { ...actual, probeClaudeTranscript: probeClaudeTranscript.mockImplementation(actual.probeClaudeTranscript) };
+});
+
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
@@ -93,6 +100,7 @@ describe("claude remote execution", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     resetClaudeCliCapabilitiesCacheForTests();
     while (cleanupDirs.length > 0) {
@@ -100,6 +108,71 @@ describe("claude remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it.each(["linux", "win32"] as const)("acknowledges local resume cancellation during a transcript miss before provider dispatch (%s)", async (platform) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-cancel-transcript-miss-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    const controller = new AbortController();
+    let finishProbe!: (value: boolean | null) => void;
+    let probeEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { probeEntered = resolve; });
+    probeClaudeTranscript.mockImplementationOnce(() => new Promise((resolve) => { finishProbe = resolve; probeEntered(); }));
+    const onCancellationReady = vi.fn(async () => {});
+    const onSpawn = vi.fn();
+
+    const executing = execute({
+      runId: `run-claude-cancel-transcript-miss-${platform}`,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId,
+        sessionParams: { sessionId, cwd: workspaceDir },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      config: {
+        model: "claude-opus-5",
+        engine: "cli",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir },
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      signal: controller.signal,
+      onCancellationReady,
+      onSpawn,
+      onLog: async () => {},
+    });
+
+    await entered;
+    expect(onCancellationReady).toHaveBeenCalledTimes(1);
+    controller.abort();
+    finishProbe(false);
+    const result = await executing;
+    expect(probeClaudeTranscript).toHaveBeenCalledTimes(1);
+    expect(onCancellationReady).toHaveBeenCalledTimes(1);
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    expect(onSpawn).not.toHaveBeenCalled();
+    const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
+    expect(providerCalls).toHaveLength(0);
   });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
@@ -866,6 +939,110 @@ describe("claude remote execution", () => {
     expect(onSpawn).not.toHaveBeenCalled();
     const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
     expect(providerCalls).toHaveLength(0);
+  });
+
+  it("acknowledges a dispatched POSIX resume cancellation after the process tree stops", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-posix-resume-stop-confirmed-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    const controller = new AbortController();
+    const collectInstructions = vi.fn(async () => {});
+    probeClaudeTranscript.mockResolvedValueOnce(true);
+    runChildProcess.mockImplementationOnce((async (...args: unknown[]) => {
+      const [, , , options] = args as [string, string, string[], {
+        onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+      }];
+      const startedAt = new Date().toISOString();
+      await options.onSpawn?.({ pid: 123, processGroupId: 123, startedAt });
+      controller.abort();
+      return {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        stdout: JSON.stringify({ type: "result", session_id: sessionId, subtype: "success", is_error: false, result: "done" }),
+        stderr: "",
+        pid: 123,
+        startedAt,
+        processTreeStopped: true,
+      };
+    }) as unknown as typeof runChildProcess);
+
+    const result = await execute({
+      runId: "run-claude-posix-resume-stop-confirmed",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId, sessionParams: { sessionId, cwd: workspaceDir }, sessionDisplayId: sessionId, taskKey: null },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir } },
+      context: { ...createPromptContextFixture(), paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      signal: controller.signal,
+      onProviderStopped: collectInstructions,
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(collectInstructions).toHaveBeenCalledTimes(1);
+    const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
+    expect(providerCalls).toHaveLength(1);
+    expect(providerCalls[0]?.[2]).toContain("--resume");
+  });
+
+  it("does not collect instructions after a dispatched POSIX resume cancellation without stop proof", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-posix-resume-stop-unconfirmed-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const configDir = path.join(rootDir, "config");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    await writeLocalClaudeTranscript(configDir, workspaceDir, sessionId);
+
+    const controller = new AbortController();
+    const collectInstructions = vi.fn(async () => {});
+    probeClaudeTranscript.mockResolvedValueOnce(true);
+    runChildProcess.mockImplementationOnce((async (...args: unknown[]) => {
+      const [, , , options] = args as [string, string, string[], {
+        onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+      }];
+      const startedAt = new Date().toISOString();
+      await options.onSpawn?.({ pid: 123, processGroupId: 123, startedAt });
+      controller.abort();
+      return {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        stdout: JSON.stringify({ type: "result", session_id: sessionId, subtype: "success", is_error: false, result: "done" }),
+        stderr: "",
+        pid: 123,
+        startedAt,
+        processTreeStopped: false,
+      };
+    }) as unknown as typeof runChildProcess);
+
+    const result = await execute({
+      runId: "run-claude-posix-resume-stop-unconfirmed",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId, sessionParams: { sessionId, cwd: workspaceDir }, sessionDisplayId: sessionId, taskKey: null },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", env: { ANTHROPIC_API_KEY: "fixture-anthropic-key", CLAUDE_CONFIG_DIR: configDir } },
+      context: { ...createPromptContextFixture(), paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      signal: controller.signal,
+      onProviderStopped: collectInstructions,
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("provider_stop_unconfirmed");
+    expect(result.resultJson?.providerStopUnconfirmed).toBe(true);
+    expect(collectInstructions).not.toHaveBeenCalled();
+    const providerCalls = runChildProcess.mock.calls.filter((call) => !(call[2] as string[]).includes("--version"));
+    expect(providerCalls).toHaveLength(1);
+    expect(providerCalls[0]?.[2]).toContain("--resume");
   });
 
   it.skipIf(process.platform !== "win32")("holds an otherwise successful Windows resume when process-tree stop is unverified", async () => {

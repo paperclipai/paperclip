@@ -124,6 +124,27 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+function isProcessGroupAlive(processGroupId: number): boolean {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    // ESRCH is the only positive evidence that the entire group is gone. EPERM
+    // and other inspection failures remain unconfirmed.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    if (!isProcessGroupAlive(processGroupId)) return true;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
+  }
+}
+
 // Exported so the direct-child fallback branch can be unit-tested directly.
 export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
@@ -4828,7 +4849,9 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
-          cancellationSignal: job ? opts.signal : undefined,
+          cancellationSignal: job || (process.platform !== "win32" && processGroupId !== null)
+            ? opts.signal
+            : undefined,
         });
 
         let timedOut = false;
@@ -4842,6 +4865,7 @@ export async function runChildProcess(
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let cancellationKillTimer: NodeJS.Timeout | null = null;
+        let cancellationStarted = false;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
 
@@ -4853,6 +4877,9 @@ export async function runChildProcess(
         };
 
         const cancelProcess = () => {
+          if (cancellationStarted) return;
+          cancellationStarted = true;
+          clearTerminalCleanupTimers();
           if (job) job.stop();
           else signalRunningProcess({ child, processGroupId }, "SIGTERM");
           cancellationKillTimer = setTimeout(() => {
@@ -4861,9 +4888,12 @@ export async function runChildProcess(
         };
         opts.signal?.addEventListener("abort", cancelProcess, { once: true });
         if (opts.signal?.aborted) cancelProcess();
-        const clearCancellation = () => {
+        const clearCancellation = (clearKillTimer = true) => {
           opts.signal?.removeEventListener("abort", cancelProcess);
-          if (cancellationKillTimer) clearTimeout(cancellationKillTimer);
+          if (clearKillTimer) {
+            if (cancellationKillTimer) clearTimeout(cancellationKillTimer);
+            cancellationKillTimer = null;
+          }
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -5011,13 +5041,26 @@ export async function runChildProcess(
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
-            clearCancellation();
+            clearCancellation(!cancellationStarted || Boolean(job) || process.platform === "win32");
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               let processTreeStopped = false;
               void Promise.resolve()
-                .then(async () => { if (job) processTreeStopped = await job.settle(); })
-                .catch((err) => onLogError(err, runId, "failed to verify Windows process job"))
+                .then(async () => {
+                  if (job) {
+                    processTreeStopped = await job.settle();
+                  } else if (cancellationStarted && process.platform !== "win32" && processGroupId !== null) {
+                    // The direct child may close before descendants in its
+                    // detached group. Keep the SIGKILL escalation alive while
+                    // waiting for a kernel-level ESRCH receipt for the group.
+                    processTreeStopped = await waitForProcessGroupExit(
+                      processGroupId,
+                      Math.max(1, opts.graceSec) * 1_000 + 1_000,
+                    );
+                    clearCancellation();
+                  }
+                })
+                .catch((err) => onLogError(err, runId, "failed to verify process tree stop"))
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({
@@ -5028,8 +5071,10 @@ export async function runChildProcess(
                     stderr,
                     pid: child.pid ?? null,
                     startedAt,
-                    ...(job || treeGuardUnavailable ? { processTreeStopped } : {}),
-                    terminalResultCleanup: terminalCleanupStarted && (!(job || treeGuardUnavailable) || processTreeStopped)
+                    ...(job || treeGuardUnavailable || cancellationStarted ? { processTreeStopped } : {}),
+                    terminalResultCleanup: terminalCleanupStarted &&
+                      (!(job || treeGuardUnavailable) || processTreeStopped) &&
+                      (!cancellationStarted || processTreeStopped)
                       ? {
                           kind: "terminal_result_cleanup",
                           stopped: true,

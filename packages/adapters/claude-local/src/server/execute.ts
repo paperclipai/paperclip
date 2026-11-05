@@ -805,6 +805,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Refreshing tools does not invalidate the saved conversation.
     hasMatchingSessionCwd &&
     hasMatchingExecutionTarget;
+  const localResumeCandidate = canResumeSession && !executionTargetIsRemote;
+  if (localResumeCandidate) await ctx.onCancellationReady?.();
   let sessionId = canResumeSession ? runtimeSessionId : null;
   const localClaudeEnv = { ...process.env, ...env };
   const localClaudeConfigDir = resolveTranscriptConfigDir(localClaudeEnv, effectiveExecutionCwd);
@@ -878,7 +880,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const passesConfiguredModel = Boolean(
     model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
-  const windowsLocalResume = process.platform === "win32" && !executionTargetIsRemote && Boolean(sessionId);
+  const windowsLocalResume = process.platform === "win32" && localResumeCandidate;
   const cancelledBeforeProviderStart = (): AdapterExecutionResult => ({
     exitCode: null,
     signal: null,
@@ -955,7 +957,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     attemptSpawned = false;
-    if (windowsLocalResume && ctx.signal?.aborted) throw ctx.signal.reason ?? new Error("Claude execution cancelled");
+    if (localResumeCandidate && ctx.signal?.aborted) throw ctx.signal.reason ?? new Error("Claude execution cancelled");
     await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
     const renderedBootstrapPrompt =
       !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
@@ -1037,7 +1039,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
-      onSpawn: windowsLocalResume
+      onSpawn: localResumeCandidate
         ? async (meta) => { attemptSpawned = true; await onSpawn?.(meta); }
         : onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
@@ -1050,7 +1052,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
       localProcessSandbox,
-      ...(windowsLocalResume
+      ...(localResumeCandidate
         ? { signal: ctx.signal }
         : {}),
     });
@@ -1458,19 +1460,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
 
-    if (windowsLocalResume) await ctx.onCancellationReady?.();
-    if (windowsLocalResume && ctx.signal?.aborted) return cancelledBeforeProviderStart();
+    if (localResumeCandidate && ctx.signal?.aborted) return cancelledBeforeProviderStart();
     let initial: Awaited<ReturnType<typeof runAttempt>>;
     try {
       initial = await runAttempt(sessionId ?? null);
     } catch (error) {
-      if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledBeforeProviderStart();
+      if (localResumeCandidate && ctx.signal?.aborted && !attemptSpawned) return cancelledBeforeProviderStart();
       throw error;
     }
-    if (windowsLocalResume && initial.proc.processTreeStopped === false) {
+    if (localResumeCandidate && initial.proc.processTreeStopped === false && (windowsLocalResume || ctx.signal?.aborted)) {
       return holdUnverifiedStop(initial, runtimeSessionId || runtime.sessionId);
     }
-    if (windowsLocalResume && ctx.signal?.aborted && initial.proc.processTreeStopped === true) {
+    if (localResumeCandidate && ctx.signal?.aborted && initial.proc.processTreeStopped === true) {
       return cancelledAfterProviderStop();
     }
     const stoppedAfterTerminalResult = initial.proc.terminalResultCleanup?.terminalResultSeen === true;
@@ -1524,18 +1525,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         }
       }
-      if (windowsLocalResume && ctx.signal?.aborted) return cancelledAfterProviderStop();
+      if (localResumeCandidate && ctx.signal?.aborted) {
+        return initial.proc.processTreeStopped === true
+          ? cancelledAfterProviderStop()
+          : holdUnverifiedStop(initial, runtimeSessionId || runtime.sessionId);
+      }
       let retry: Awaited<ReturnType<typeof runAttempt>>;
       try {
         retry = await runAttempt(null);
       } catch (error) {
-        if (windowsLocalResume && ctx.signal?.aborted && !attemptSpawned) return cancelledAfterProviderStop();
+        if (localResumeCandidate && ctx.signal?.aborted && !attemptSpawned) {
+          return initial.proc.processTreeStopped === true
+            ? cancelledAfterProviderStop()
+            : holdUnverifiedStop(initial, runtimeSessionId || runtime.sessionId);
+        }
         throw error;
       }
-      if (windowsLocalResume && retry.proc.processTreeStopped === false) {
+      if (localResumeCandidate && retry.proc.processTreeStopped === false && (windowsLocalResume || ctx.signal?.aborted)) {
         return holdUnverifiedStop(retry, null);
       }
-      if (windowsLocalResume && ctx.signal?.aborted && retry.proc.processTreeStopped === true) {
+      if (localResumeCandidate && ctx.signal?.aborted && retry.proc.processTreeStopped === true) {
         return cancelledAfterProviderStop();
       }
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
