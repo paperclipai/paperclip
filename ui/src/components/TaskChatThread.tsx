@@ -1763,10 +1763,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             (comment) => comment.id === sourcePresentationCommentId,
           )?.body ?? null)
         : null;
+      // A yielded wait is not an answer, but prose the agent wrote before it
+      // yielded (explaining the question card it posted, say) is. It streamed
+      // into view live, so the settled turn keeps it in place.
+      const sourceYieldedResponse =
+        sourceIsPaperclipRunner && sourceYielded && !sourceHasPresentationComment
+          ? paperclipRunnerFinalResponse(parsedSource, {
+              runId: source.id,
+              agentName: meta?.agentName,
+              allowFallback: false,
+              yielded: true,
+              waitSummary: acceptedSummary,
+            })
+          : undefined;
       const sourceHasNativeResponse =
         sourceIsPaperclipRunner &&
-        !sourceYielded &&
-        (sourceHasPresentationComment ||
+        (Boolean(sourceYieldedResponse) || !sourceYielded) &&
+        (sourceHasPresentationComment || Boolean(sourceYieldedResponse) ||
           Boolean(acceptedSummary) ||
           entries.some(
             (entry) =>
@@ -2068,7 +2081,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         };
       });
       const sourceResponseText =
-        sourceIsPaperclipRunner && !sourceYielded
+        sourceIsPaperclipRunner && sourceYielded
+          ? sourceYieldedResponse?.text
+          : sourceIsPaperclipRunner
           ? (sourcePresentationText ??
             paperclipRunnerFinalResponse(parsedSource, {
               runId: source.id,
@@ -2094,8 +2109,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         const { segment, parsed } = projected;
         if (segment.entries.length === 0) continue;
         const finalResponse =
-          sourceIsPaperclipRunner &&
-          !sourceYielded &&
+          sourceIsPaperclipRunner && sourceYielded
+            ? segmentIndex === lastPopulatedSegmentIndex
+              ? sourceYieldedResponse
+              : undefined
+            : sourceIsPaperclipRunner &&
           !sourceHasPresentationComment
             ? sourceAcceptedResponseWake
               ? // A steering anchor may split acceptance from its terminal.
@@ -3383,6 +3401,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       suppressFinal={
                                         suppressPaperclipRunnerTailFinal
                                       }
+                                      waitSummary={acceptedSemanticResultSummary(
+                                        tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
+                                      )}
                                       continuedAfterSteering={
                                         paperclipRunnerTail &&
                                         tailTimelineAnchors.length > 0

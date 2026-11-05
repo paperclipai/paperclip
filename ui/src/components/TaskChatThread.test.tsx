@@ -3094,6 +3094,156 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
   });
 
+  it("keeps a streamed interview reply visible after its run yields to a question card", () => {
+    // Mirrors a staging onboarding interview: the first-task agent streams a
+    // user-facing reply, posts an interview question card, and settles with
+    // reportedWorkDisposition "yielded". The reply must not vanish on settle.
+    const runId = "interview-run";
+    const reply =
+      "I've posted a question card on this task that asks four things. When you answer, I'll save a written plan.";
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date("2026-08-25T18:00:00Z"),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `interview-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" || eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: `2026-08-25T18:00:${String(seq).padStart(2, "0")}Z`,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Waiting for user answers on the interview question card.",
+      continuation: {
+        kind: "response_wake",
+        idempotencyKey: "first-task-interview-wait-v1",
+      },
+      completionClaim: { objectiveSatisfied: false, remainingWork: [] },
+      attentionRequests: [],
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const streamed = event(2, "item.delta", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final" },
+    });
+    const completed = event(3, "item.completed", {
+      kind: "agentMessage",
+      channel: "final",
+      text: reply,
+      item: { id: "reply", type: "agentMessage", channel: "final", text: reply },
+    });
+    const question = {
+      ...questionInteraction(
+        "interview-questions",
+        "What does your organization do?",
+        "2026-08-25T18:00:04.000Z",
+      ),
+      sourceRunId: runId,
+    } as IssueThreadInteraction;
+    const linkedRun = (status: "running" | "succeeded") => ({
+      runId,
+      runtimeMode: "native" as const,
+      status,
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "paperclip_runner",
+      createdAt: "2026-08-25T18:00:00Z",
+      startedAt: "2026-08-25T18:00:00Z",
+      finishedAt: status === "running" ? null : "2026-08-25T18:00:30Z",
+      resultJson: status === "running" ? null : { nativeResult: result },
+    });
+
+    // 1. Live: the reply streams in and is visible.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 2. Still live: the question card the reply describes lands first.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([streamed, completed]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: { ...nativeRunningRun(), id: runId },
+      linkedRuns: [linkedRun("running")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+
+    // 3. Settled: the run yielded to the question card it posted.
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([
+        streamed,
+        completed,
+        event(4, "run.result.proposed", result),
+        event(5, "run.result.accepted", { result }),
+        event(6, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: "yielded",
+        }),
+      ]),
+    );
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [question],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
+  });
+
   it("keeps a yielded question turn out of the final-response slot", () => {
     nativeTranscriptState.transcriptByRun.set("native-question", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Preparing the verification question.", "progress"),
