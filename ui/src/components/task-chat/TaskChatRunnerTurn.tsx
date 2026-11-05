@@ -12,6 +12,7 @@ import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatShimmerScope, useTaskChatShimmer } from "./TaskChatShimmer";
@@ -282,6 +283,8 @@ export function TaskChatRunnerTurn({
                       : "task-chat-plan-preview"
                   }
                 />
+              ) : row.kind === "subagent_group" ? (
+                <TaskChatSubagentTree subagents={row.subagents} />
               ) : row.kind === "protocol" ? (
                 <TaskChatProtocolCard
                   item={row}

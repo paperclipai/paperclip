@@ -2085,6 +2085,16 @@ export const providerEventSchema = {
             "null"
           ],
           "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parentItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -2241,6 +2251,12 @@ export const providerEventSchema = {
                 "$ref": "#/$defs/nullableShortText"
               },
               "activitySummary": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "prompt": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "result": {
                 "$ref": "#/$defs/nullableShortText"
               }
             },
