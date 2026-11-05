@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
-import { createObjectByteJournal, ObjectJournalConflictError } from "./object-byte-journal.js";
+import {
+  createObjectByteJournal,
+  ObjectJournalBusyError,
+  ObjectJournalConflictError,
+} from "./object-byte-journal.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
   const chunks: Buffer[] = [];
@@ -228,6 +232,63 @@ describe("object byte journal", () => {
     s.objects.set(data[0], Buffer.from("oops"));
     await expect(a.readRange(writer.head, 0, 4)).rejects.toThrow("integrity");
     await expect(a.readRange(writer.head, 0, 4, AbortSignal.abort())).rejects.toThrow();
+  });
+  it("sheds only interactive reads under saturated object IO and never a writer", async () => {
+    const s = storage(),
+      a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/busy" });
+    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    writer = await a.append(writer, Buffer.from("data"));
+    const get = s.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    s.provider.getObject = async (input) => {
+      await gate;
+      return get(input);
+    };
+    const reader = createObjectByteJournal({
+      provider: s.provider,
+      prefix: "c/r/busy",
+      readPriority: "interactive",
+    });
+    // 8 active plus 32 waiting fills the interactive class.
+    const reads = Array.from({ length: 40 }, () => reader.head());
+    await expect(reader.head()).rejects.toBeInstanceOf(ObjectJournalBusyError);
+    const other = createObjectByteJournal({ provider: s.provider, prefix: "c/r/writer" });
+    const claimed = other.claim({ expectedOwner: null, assertAuthority: authority });
+    open();
+    const otherWriter = await other.append(await claimed, Buffer.from("more"));
+    expect(otherWriter.head.end).toBe(4);
+    expect((await Promise.all(reads)).every((snapshot) => snapshot?.head.end === 4)).toBe(true);
+  });
+  it("releases a queued read's place when its caller aborts", async () => {
+    const s = storage(),
+      a = createObjectByteJournal({ provider: s.provider, prefix: "c/r/abort" });
+    let writer = await a.claim({ expectedOwner: null, assertAuthority: authority });
+    writer = await a.append(writer, Buffer.from("data"));
+    const get = s.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    s.provider.getObject = async (input) => {
+      await gate;
+      return get(input);
+    };
+    const reader = createObjectByteJournal({
+      provider: s.provider,
+      prefix: "c/r/abort",
+      readPriority: "interactive",
+    });
+    const reads = Array.from({ length: 39 }, () => reader.head());
+    const controller = new AbortController();
+    const cancelled = reader.head(controller.signal);
+    controller.abort(new Error("client_disconnected"));
+    await expect(cancelled).rejects.toThrow("client_disconnected");
+    const replacement = reader.head();
+    open();
+    expect((await Promise.all([...reads, replacement])).every((snapshot) => snapshot?.head.end === 4)).toBe(true);
   });
   it("retains a deletion tombstone and denies a subsequent claim", async () => {
     const s = storage(),
