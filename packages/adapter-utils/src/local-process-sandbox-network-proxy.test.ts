@@ -29,16 +29,16 @@ const MODULE_UNDER_TEST = fileURLToPath(new URL("./local-process-sandbox.ts", im
 
 const HARNESS_SOURCE = String.raw`
 // Spawned by local-process-sandbox-network-proxy.test.ts.
-// argv[2] = absolute path of local-process-sandbox.ts, argv[3] = scenario.
+// argv[2] = absolute path of local-process-sandbox.ts, argv[3] = scenario,
+// argv[4] = workspace directory owned and removed by the parent test.
 import http from "node:http";
 import net from "node:net";
 import { writeSync } from "node:fs";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 const MODULE_PATH = process.argv[2];
 const SCENARIO = process.argv[3];
+const WORKSPACE = process.argv[4];
 const TUNNEL_DROPS = 50; // 25 mid-stream + 25 before the proxy answered
 const ABORTED_POSTS = 50;
 
@@ -98,9 +98,13 @@ function startStreamingTarget() {
 function startSlowPostTarget() {
   return new Promise((resolveTarget, rejectTarget) => {
     let live = 0;
+    let uploadsReached = 0;
     const server = http.createServer((request, response) => {
       let received = 0;
-      request.on("data", (chunk) => { received += chunk.length; });
+      request.on("data", (chunk) => {
+        if (received === 0) uploadsReached += 1;
+        received += chunk.length;
+      });
       request.on("end", () => response.end("ok\n"));
     });
     server.on("connection", (socket) => {
@@ -112,6 +116,7 @@ function startSlowPostTarget() {
     server.listen(0, "127.0.0.1", () => resolveTarget({
       port: server.address().port,
       liveCount: () => live,
+      uploadsReached: () => uploadsReached,
       close: () => new Promise((resolve) => server.close(() => resolve())),
     }));
   });
@@ -158,26 +163,23 @@ function tunnelDrop(socketPath, hostPort, { earlyDestroyMs = 0, readBytes = 256 
   });
 }
 
-// Aborts one POST mid-body through the plain-HTTP proxy branch.
-function abortedPost(socketPath, targetUrl) {
-  return new Promise((resolve) => {
-    const request = http.request({
-      socketPath,
-      method: "POST",
-      path: targetUrl,
-      headers: { "content-length": String(4 * 1024 * 1024) },
-    }, (response) => {
-      response.resume();
-      response.on("end", () => resolve());
-      response.on("error", () => resolve());
-    });
-    request.on("error", () => resolve());
-    request.write(Buffer.alloc(64 * 1024));
-    setTimeout(() => {
-      request.destroy();
-      setTimeout(resolve, 25);
-    }, 30);
-  });
+// Aborts one POST through the plain-HTTP proxy branch once the target has seen
+// part of its body. Resolves to whether the partial body reached the target.
+async function abortedPost(socketPath, targetUrl, target) {
+  const expectedUploads = target.uploadsReached() + 1;
+  const request = silence(http.request({
+    socketPath,
+    method: "POST",
+    path: targetUrl,
+    headers: { "content-length": String(4 * 1024 * 1024) },
+  }, (response) => {
+    silence(response).resume();
+  }));
+  request.write(Buffer.alloc(64 * 1024));
+  const reached = await waitFor(() => target.uploadsReached() >= expectedUploads, { everyMs: 5 });
+  request.destroy();
+  await settle(25);
+  return reached;
 }
 
 async function waitFor(predicate, { timeoutMs = 10_000, everyMs = 100 } = {}) {
@@ -196,9 +198,8 @@ if (typeof startNetworkAllowlistProxy !== "function") {
   report({ ok: false, error: "startNetworkAllowlistProxy is not exported from the module under test" });
 }
 
-const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-proxy-harness-"));
 try {
-  const proxySocket = path.join(workspace, "proxy.sock");
+  const proxySocket = path.join(WORKSPACE, "proxy.sock");
 
   if (SCENARIO === "connect-drop") {
     const target = await startStreamingTarget();
@@ -242,12 +243,14 @@ try {
     const proxy = await startNetworkAllowlistProxy(["127.0.0.1:" + target.port], [], proxySocket);
     try {
       for (let i = 0; i < ABORTED_POSTS; i += 1) {
-        await abortedPost(proxySocket, "http://127.0.0.1:" + target.port + "/upload");
+        const reached = await abortedPost(proxySocket, "http://127.0.0.1:" + target.port + "/upload", target);
+        if (!reached) break;
       }
       const drained = await waitFor(() => target.liveCount() === 0);
       report({
-        ok: drained,
+        ok: drained && target.uploadsReached() === ABORTED_POSTS,
         aborted: ABORTED_POSTS,
+        uploadsReached: target.uploadsReached(),
         upstreamLeaked: target.liveCount(),
       });
     } finally {
@@ -268,6 +271,7 @@ interface HarnessResult {
   dropped?: number;
   denied?: number;
   aborted?: number;
+  uploadsReached?: number;
   upstreamLeaked?: number;
   probeEstablished?: boolean;
 }
@@ -281,12 +285,12 @@ async function runHarnessScenario(tempDir: string, scenario: string): Promise<{
   const harnessPath = path.join(tempDir, "network-proxy-harness.mjs");
   await writeFile(harnessPath, HARNESS_SOURCE, { mode: 0o600 });
   try {
-    const { stdout } = await execFileAsync(process.execPath, [harnessPath, MODULE_UNDER_TEST, scenario], {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [harnessPath, MODULE_UNDER_TEST, scenario, tempDir], {
       timeout: 120_000,
       maxBuffer: 8 * 1024 * 1024,
       killSignal: "SIGKILL",
     });
-    return { exitCode: 0, signal: null, stderrTail: "", result: parseResultLine(stdout) };
+    return { exitCode: 0, signal: null, stderrTail: stderr.slice(-2_000), result: parseResultLine(stdout) };
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & {
       code?: number | string;
@@ -356,6 +360,7 @@ describe.skipIf(process.platform === "win32")("local process sandbox network all
     expect(run.exitCode, `harness exited with ${run.exitCode}, stderr: ${run.stderrTail}`).toBe(0);
     expect(run.result?.ok).toBe(true);
     expect(run.result?.aborted).toBe(50);
+    expect(run.result?.uploadsReached).toBe(50);
     expect(run.result?.upstreamLeaked).toBe(0);
   });
 });
