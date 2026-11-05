@@ -582,6 +582,21 @@ function providerActivityPresentation(
   };
 }
 
+function finiteCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Context-window occupancy carried on a usage item, when the provider reported it. */
+export function contextUsageFromUsagePayload(
+  value: unknown,
+): { usedTokens: number; windowTokens: number } | null {
+  const context = record(record(value)?.context);
+  const usedTokens = finiteCount(context?.usedTokens);
+  const windowTokens = finiteCount(context?.windowTokens);
+  if (usedTokens === null || windowTokens === null || windowTokens < 1) return null;
+  return { usedTokens, windowTokens };
+}
+
 /**
  * Activity families that render as dedicated task-chat cards. They keep the
  * full canonical payload (sources, models, durations) instead of collapsing
@@ -955,6 +970,12 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   }
 
   const itemIdentityById = new Map<string, ItemIdentity>();
+  // Context occupancy rides on usage items. A compaction divider takes its
+  // "before" size from the last report and its "after" size from the next.
+  let latestContextUsedTokens: number | null = null;
+  let awaitingPostCompaction: Record<string, unknown> | null = null;
+  let lastCompaction: Record<string, unknown> | null = null;
+  let usageSinceLastCompaction = false;
   const proposalMarkdownById = new Map<string, string>();
   const completedProposalIds = new Set<string>();
   for (const event of orderedEvents) {
@@ -978,6 +999,47 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       itemIdentityById.set(itemId, itemIdentity);
     }
     const itemKind = itemIdentity.kind;
+
+    if (event.eventType === "item.completed" && payload.kind === "usage") {
+      const context = contextUsageFromUsagePayload(payload.usage);
+      if (context) {
+        usageSinceLastCompaction = true;
+        if (awaitingPostCompaction && context.usedTokens < (latestContextUsedTokens ?? Infinity)) {
+          awaitingPostCompaction.postTokens = context.usedTokens;
+          awaitingPostCompaction = null;
+        }
+        latestContextUsedTokens = context.usedTokens;
+      }
+    }
+
+    if (event.eventType === "context.compacted" && payload.schema === "paperclip.context.compacted.v1") {
+      // A provider can report the same compaction twice (item start and end)
+      // with no usage between them. Later compactions always follow usage.
+      if (
+        lastCompaction
+        && lastCompaction.compactionId === payload.compactionId
+        && !usageSinceLastCompaction
+      ) continue;
+      usageSinceLastCompaction = false;
+      const compaction: Record<string, unknown> = {
+        ...payload,
+        preTokens: finiteCount(payload.preTokens) ?? latestContextUsedTokens,
+        postTokens: finiteCount(payload.postTokens),
+      };
+      if (compaction.postTokens === null) awaitingPostCompaction = compaction;
+      lastCompaction = compaction;
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "context",
+        eventType: event.eventType,
+        status: "completed",
+        title: "Context compacted",
+        summary: "Context compacted",
+        payload: compaction,
+      });
+      continue;
+    }
 
     if (event.eventType === "item.delta" && isAssistantItemKind(itemKind)) {
       const value = normalizedItemText(payload);

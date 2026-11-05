@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
-import { paperclipRunnerFinalResponse, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
+import { buildTurnTimelineRows, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -1297,6 +1297,87 @@ describe("nativeRunEventsToTranscript", () => {
         reportedWorkDisposition: "done",
       }),
     ])).toEqual([]);
+  });
+});
+
+describe("context compaction", () => {
+  function usage(seq: number, usedTokens: number) {
+    return itemEvent(seq, "item.completed", `turn-1:usage:${seq}`, {
+      kind: "usage",
+      usage: { total: { inputTokens: 1 }, context: { usedTokens, windowTokens: 258_400 } },
+    });
+  }
+
+  it("sizes a compaction from the usage reported before and after it", () => {
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 229_500),
+      event(2, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-1",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+      usage(3, 38_200),
+    ]);
+    const compaction = transcript.find((entry) => entry.kind === "provider_activity");
+    expect(compaction).toMatchObject({
+      eventType: "context.compacted",
+      payload: { preTokens: 229_500, postTokens: 38_200 },
+    });
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"variant":"context_compacted"');
+    expect(flat).toContain("230k → 38k tokens");
+    // The live runner turn keeps the divider as its own timeline row.
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(items), true);
+    expect(rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "marker", variant: "context_compacted" })]),
+    );
+  });
+
+  it("keeps every compaction in a run even when the provider reuses its id", () => {
+    const compacted = (seq: number) => event(seq, "context.compacted", {
+      schema: "paperclip.context.compacted.v1",
+      compactionId: "thread-1",
+      reason: "provider",
+      preTokens: null,
+      postTokens: null,
+      sameSession: true,
+    });
+    const transcript = nativeRunEventsToTranscript([
+      usage(1, 230_000),
+      compacted(2),
+      compacted(3),
+      usage(4, 40_000),
+      usage(5, 235_000),
+      compacted(6),
+      usage(7, 36_000),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Codex", running: false });
+    const markers = items.filter((item) => item.kind === "marker" && item.variant === "context_compacted");
+    expect(markers.map((item) => item.kind === "marker" ? item.detail : null)).toEqual([
+      "230k → 40k tokens",
+      "235k → 36k tokens",
+    ]);
+  });
+
+  it("keeps the divider when the provider reports no sizes", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "context.compacted", {
+        schema: "paperclip.context.compacted.v1",
+        compactionId: "compaction-2",
+        reason: "provider",
+        preTokens: null,
+        postTokens: null,
+        sameSession: true,
+      }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, agentName: "Claude", running: false });
+    const flat = JSON.stringify(items);
+    expect(flat).toContain('"label":"Context compacted"');
+    expect(flat).not.toContain("tokens");
   });
 });
 

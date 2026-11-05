@@ -832,6 +832,44 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
+/// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
+/// Codex sizes the live context by the most recent request's total tokens.
+pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let window = usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)?;
+    let last = usage.get("last")?;
+    let used = last
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let input = last.get("inputTokens").and_then(Value::as_u64)?;
+            Some(
+                input.saturating_add(
+                    last.get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        })?;
+    Some(json!({"usedTokens": used, "windowTokens": window}))
+}
+
+/// Context-window occupancy from an ACP `usage_update` (`used` of `size`).
+fn acpx_context_usage(payload: &Value) -> Option<Value> {
+    let window = payload
+        .get("size")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some(json!({"usedTokens": used.round() as u64, "windowTokens": window.round() as u64}))
+}
+
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
 fn provider_performance_spans(params: &Value) -> Vec<Value> {
@@ -1508,7 +1546,10 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
-    match kind {
+    let compaction = matches!(kind, AcpxRuntimeEventKind::ProviderNotice)
+        .then(|| acpx_compaction_notice_completed(payload, turn_id))
+        .flatten();
+    let mut events = match kind {
         AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -1583,6 +1624,48 @@ pub fn normalize_acpx_runtime_event(
             true,
         )],
         AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    };
+    events.extend(compaction);
+    events
+}
+
+/// A completed `context_compaction` notice (the sidecar's form of Claude's
+/// compaction banner) also marks a context compaction.
+fn acpx_compaction_notice_completed(
+    payload: &Value,
+    turn_id: &str,
+) -> Option<NormalizedProviderEvent> {
+    if string(payload.get("category")) != "context_compaction" {
+        return None;
+    }
+    let completed = payload
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .any(|detail| {
+            string(detail.get("name")) == "Phase" && string(detail.get("value")) == "completed"
+        });
+    if !completed {
+        return None;
+    }
+    Some(acpx_context_compacted(&stable_id(
+        &format!("{turn_id}:{}", string(payload.get("noticeKey"))),
+        "acpx-compaction",
+    )))
+}
+
+fn acpx_context_compacted(compaction_id: &str) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "context.compacted".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": compaction_id,
+            "reason": "provider",
+            "preTokens": Value::Null,
+            "postTokens": Value::Null,
+            "sameSession": true,
+        }),
     }
 }
 
@@ -1733,7 +1816,7 @@ fn normalize_acpx_status(
             "requests": 1,
             "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        let usage = NormalizedProviderEvent {
+        let mut usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1749,6 +1832,9 @@ fn normalize_acpx_status(
                 "runDelta": run_delta,
             }),
         };
+        if let Some(context) = acpx_context_usage(payload) {
+            usage.payload["context"] = context;
+        }
         // Claude forwards its SDK rate_limit_event on usage_update; the
         // sidecar passes only the sanitized `rateLimit` fields.
         let rate_limits = payload.get("rateLimit").and_then(|info| {
@@ -2296,6 +2382,86 @@ mod tests {
             0.001
         );
         assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn acpx_usage_carries_context_window_occupancy() {
+        let usage = normalize_acpx_status(
+            &json!({"tag": "usage_update", "used": 34076, "size": 200000}),
+            "item",
+            "turn-1",
+            1,
+        );
+        assert_eq!(
+            usage[0].payload["context"],
+            json!({"usedTokens": 34076, "windowTokens": 200000})
+        );
+        for missing in [
+            json!({"tag": "usage_update", "used": 10}),
+            json!({"tag": "usage_update", "used": 10, "size": 0}),
+        ] {
+            let usage = normalize_acpx_status(&missing, "item", "turn-1", 1);
+            assert!(usage[0].payload.get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_context_usage_reads_last_request_and_model_window() {
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "total": {"inputTokens": 76682, "outputTokens": 1089},
+                "last": {"inputTokens": 26000, "outputTokens": 672, "totalTokens": 26672},
+                "modelContextWindow": 258400,
+            }})),
+            Some(json!({"usedTokens": 26672, "windowTokens": 258400}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20}, "modelContextWindow": 1000,
+            }})),
+            Some(json!({"usedTokens": 120, "windowTokens": 1000}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 5}}})),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_banner_text_alone_is_not_a_compaction() {
+        // The sidecar turns Claude's banner into a `context_compaction`
+        // notice; only that notice marks the compaction, so it is counted once.
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "\n\nCompacting completed."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "item.delta");
+    }
+
+    #[test]
+    fn completed_compaction_notice_emits_context_compacted() {
+        let notice = |phase: &str| {
+            normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ProviderNotice,
+                &json!({"severity": "info", "category": "context_compaction",
+                    "summary": "Compacting context", "noticeKey": "compaction-1",
+                    "details": [{"name": "Phase", "value": phase}]}),
+                None,
+                "fallback",
+                "turn-1",
+                0,
+            )
+        };
+        assert_eq!(notice("running").len(), 1);
+        let completed = notice("completed");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[1].event_type, "context.compacted");
+        assert_eq!(completed[1].payload["compactionId"], "turn-1:compaction-1");
     }
 
     #[test]

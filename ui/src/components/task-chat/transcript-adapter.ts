@@ -8,6 +8,7 @@
 import { foldApprovedAutoReviews } from "./fold-auto-reviews";
 import { isFatalProviderError, isStatusNotice, isStatusNoticePayload, statusNoticeCategory } from "./status-notice-presentation";
 import type { TranscriptEntry } from "@/adapters";
+import { formatContextTokens } from "@/lib/context-tokens";
 import { turnChangesFromEditRows } from "./turn-file-changes";
 import type {
   TaskChatDiff,
@@ -24,6 +25,7 @@ import type {
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
   TaskChatRuntimeRequestItem,
+  TaskChatMarkerItem,
   TaskChatSubagent,
   TaskChatSubagentGroupItem,
 } from "./task-chat-model";
@@ -131,6 +133,30 @@ export function flattenSelfTalk(text: string): string {
     .replace(/__/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** "Context compacted · 230k → 38k tokens" divider for a provider compaction. */
+export function contextCompactedMarker(
+  entry: Extract<TranscriptEntry, { kind: "provider_activity" }>,
+  id: string,
+): TaskChatMarkerItem {
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const pre = count(entry.payload.preTokens);
+  const post = count(entry.payload.postTokens);
+  const detail = pre !== null && post !== null
+    ? `${formatContextTokens(pre)} → ${formatContextTokens(post)} tokens`
+    : pre !== null
+      ? `from ${formatContextTokens(pre)} tokens`
+      : undefined;
+  return {
+    id,
+    kind: "marker",
+    variant: "context_compacted",
+    label: "Context compacted",
+    ...(detail ? { detail } : {}),
+    createdAtIso: entry.ts,
+  };
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" | "hunk" {
@@ -979,6 +1005,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        if (entry.eventType === "context.compacted") {
+          // One entry per compaction; producers may reuse a thread-scoped id.
+          items.push(contextCompactedMarker(entry, `${runId}:compaction:${String(entry.payload.compactionId ?? "")}:${i}`));
+          resetInline();
+          break;
+        }
         // Use producer classification, including the legacy generic Codex
         // categories, never message-text matching. The run transcript still
         // retains these diagnostics.
@@ -1369,7 +1401,7 @@ export function paperclipRunnerActivityItems(
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
-        return item.variant === "interrupted";
+        return item.variant === "interrupted" || item.variant === "context_compacted";
       case "protocol":
         // Completion is already represented by task state and the final answer.
         // Keep its event in the inspector, but omit it from feed rows and counts.
@@ -2059,6 +2091,10 @@ export function buildTurnTimelineRows(
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
+      current = null;
+      rows.push(item);
+    } else if (item.kind === "marker" && item.variant === "context_compacted") {
+      // A compaction divides the turn, so it closes the current phase.
       current = null;
       rows.push(item);
     } else if (
