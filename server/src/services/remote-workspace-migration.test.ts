@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
-  executionWorkspaceRuntimeLeases, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
+  executionWorkspaceRuntimeLeases, executionWorkspaces, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -150,6 +150,43 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]).toEqual(run);
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).not.toBeNull();
+  });
+  it.each(["stranded_assigned_issue", "configuration_validation", "missing_disposition"])("preserves a task-only %s warning through offline file migration", async kind => {
+    const f = await seed();
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind, cause: kind, fingerprint: randomUUID(), nextAction: "Keep the existing task warning", evidence: { latestRunStatus: "failed" } }).returning();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_recovery_unresolved");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(action);
+    const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "task-warning.pcws"), targetDir = path.join(root, "restored-task-warning");
+    await fs.rm(f.cwd, { recursive: true });
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it.each(["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock", "export-cause", "unknown-kind"])("retains unresolved file or execution recovery as an offline blocker (%s)", async mode => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: mode === "unknown-kind" ? "future_recovery" : "configuration_validation",
+      cause: mode === "export-cause" ? "native_workspace_sync_out_unrecoverable" : "configuration_incomplete",
+      fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery", evidence: mode === "export-cause" || mode === "unknown-kind" ? {}
+        : { [mode]: mode === "systemRecovery" ? { state: "running" } : { schema: "unverified" } } });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("rechecks a task warning that becomes file recovery during upload", async () => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: randomUUID(), nextAction: "Repair configuration" }).returning();
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(issueRecoveryActions).set({ evidence: { historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1" } } })
+        .where(eq(issueRecoveryActions.id, action!.id)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).rejects.toThrow("workspace_recovery_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
   it("detects overlapping folders reached through symlinked parent directories", async () => {
     const f = await seed(), alias = path.join(root, "alias"); await fs.symlink(root, alias);

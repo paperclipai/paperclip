@@ -202,13 +202,22 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   )).limit(1);
   if (service) reasons.push("workspace_runtime_service_unsettled");
   const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
-  const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+  const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, kind: issueRecoveryActions.kind,
+    cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, workspace.companyId), inArray(issueRecoveryActions.sourceIssueId, recoveryIssueIds),
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
   )) : [];
-  if (recoveries.some(recovery => !input.writersStopped
-    || !legacyRecoverySources.some(source => source.runId === recovery.evidence?.runId)
-    || (recovery.evidence?.systemRecovery as { state?: unknown } | undefined)?.state === "running")) reasons.push("workspace_recovery_unresolved");
+  if (recoveries.some(recovery => {
+    if (!input.writersStopped || object(recovery.evidence?.systemRecovery).state === "running") return true;
+    if (legacyRecoverySources.some(source => source.runId === recovery.evidence?.runId)) return false;
+    // These warnings govern task disposition, not file authority. Keep them
+    // unchanged while the offline owner saves the workspace. Unknown recovery
+    // kinds and any declared file source still require explicit preservation.
+    return !["stranded_assigned_issue", "configuration_validation", "missing_disposition"].includes(recovery.kind)
+      || ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(recovery.cause)
+      || ["workspaceRestoreRecovery", "workspaceRecovery", "historicalWorkspaceSource", "systemRecovery", "nativeFailureBlock"]
+        .some(key => recovery.evidence?.[key] != null);
+  })) reasons.push("workspace_recovery_unresolved");
   const repositories = await db.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, workspace.companyId),
     eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id)));
   if (repositories.some(repository => repository.state !== "ready")) reasons.push("repository_preparation_unresolved");

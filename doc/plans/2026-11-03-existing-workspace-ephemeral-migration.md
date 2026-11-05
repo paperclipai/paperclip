@@ -205,3 +205,12 @@ and rejection at the archive limit before any object or row is published. This
 finite offline operation adds no idle background work. A resumed rehearsal can
 measure the fix but cannot replace fresh full-image migration and empty-home
 recovery proof.
+
+During offline migration, known task-only assignment, configuration and
+disposition warnings can remain unchanged while the owner saves local files.
+They do not certify file recovery and are not resolved by migration. An active
+system recovery, native execution failure marker, declared workspace recovery
+source, export-failure cause or unknown recovery kind retains the existing
+blocker unless the importer already records that exact legacy recovery source.
+Live migration keeps its recovery exclusion. Recheck recovery evidence before
+publishing the saved workspace.
