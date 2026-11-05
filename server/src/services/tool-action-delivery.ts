@@ -19,6 +19,7 @@ import {
   toolActionRequests,
   toolInvocations,
   toolActionDeliveries,
+  toolConnections,
   type Db,
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
@@ -123,6 +124,7 @@ export function toolActionDeliveryService(
           request: toolActionRequests,
           invocation: toolInvocations,
           interaction: issueThreadInteractions,
+          connectionMethodKey: sql<string | null>`coalesce(${toolConnections.config}->>'connectionMethodKey', ${toolConnections.transportConfig}->>'connectionMethodKey')`,
         })
         .from(toolActionDeliveries)
         .innerJoin(
@@ -152,6 +154,11 @@ export function toolActionDeliveryService(
             eq(issueThreadInteractions.issueId, issue.id),
           ),
         )
+        .leftJoin(toolConnections, and(
+          eq(toolConnections.id, toolInvocations.connectionId),
+          eq(toolConnections.companyId, source.companyId),
+          or(isNull(toolInvocations.applicationId), eq(toolConnections.applicationId, toolInvocations.applicationId)),
+        ))
         .where(
           and(
             eq(toolActionDeliveries.companyId, source.companyId),
@@ -217,7 +224,7 @@ export function toolActionDeliveryService(
         // result reference for omitted or shortened results; never replay calls.
         const inlineOutcomes = outcomes.slice(0, 8);
         const toolActions = inlineOutcomes.map(
-          ({ request, invocation, interaction }) => {
+          ({ request, invocation, interaction, connectionMethodKey }) => {
             const result = interaction.result as {
               reason?: string;
               toolAction?: { resultSummary?: string; errorMessage?: string; errorCode?: string | null };
@@ -231,7 +238,7 @@ export function toolActionDeliveryService(
                       request.status === "cancelled"
                     ? "The review is no longer available. Do not execute the stored request. Explain the recorded outcome before requesting another review."
                     : (result?.toolAction?.errorCode ?? invocation.errorCode) === "github_access_denied"
-                      ? githubAccessDeniedInstructions(invocation.toolName)
+                      ? githubAccessDeniedInstructions(invocation.toolName, connectionMethodKey)
                       : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
             return {
               toolName: invocation.toolName.slice(0, 256),

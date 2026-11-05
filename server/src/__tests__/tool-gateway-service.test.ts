@@ -2043,7 +2043,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(consumed.status).toBe("executed");
   });
 
-  it("tells the agent how to recover when GitHub denies an approved repository create (BUG-10)", async () => {
+  it.each(["managed", "mcp-key", "foreign"])("tells the agent how to recover when GitHub denies an approved repository create with %s access", async method => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
     const wakeup = vi.fn(async (agentId: string, input: any) => {
@@ -2059,8 +2059,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
     // Record the outcome staging saw: GitHub's integration 403 on the approved
     // create_repository call, classified as github_access_denied.
     const denied = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const connectionCompany = method === "foreign" ? (await createRunFixture(db)).company : company;
+    const { connection } = await createRemoteMcpToolFixture(db, connectionCompany.id);
+    await db.update(toolConnections).set({ config: { ...connection.config,
+      connectionMethodKey: method === "foreign" ? "managed" : method } }).where(eq(toolConnections.id, connection.id));
     await db.update(toolActionRequests).set({ status: "failed" }).where(eq(toolActionRequests.id, request.id));
     await db.update(toolInvocations).set({
+      connectionId: connection.id, applicationId: connection.applicationId,
       status: "failed", toolName: "mcp.app-gallery-github-connection:create-repository",
       errorCode: "github_access_denied", errorMessage: denied,
     }).where(eq(toolInvocations.id, request.invocationId));
@@ -2077,8 +2082,17 @@ describeEmbeddedPostgres("tool gateway service", () => {
     // Retrying or re-approving hits the same GitHub refusal.
     expect(instructions).toMatch(/do not retry/i);
     // Concrete next step the agent can relay to the user.
-    expect(instructions).toContain("github.com/new");
-    expect(instructions).toMatch(/Refresh access/);
+    if (method === "managed") {
+      expect(instructions).toContain("github.com/new");
+      expect(instructions).toMatch(/Refresh access/);
+    } else if (method === "mcp-key") {
+      expect(instructions).toMatch(/token.*permissions/i);
+      expect(instructions).toMatch(/replace.*token/i);
+      expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+    } else {
+      expect(instructions).toMatch(/authentication method/);
+      expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+    }
     expect(payload.paperclipAgentMessage.text).toContain(instructions);
     // Provider text stays in the untrusted result, not in trusted instructions.
     expect(instructions).not.toContain("Resource not accessible");

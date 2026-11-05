@@ -138,9 +138,12 @@ account and repository there. The original provider error remains in the action'
 error details and diagnostic record. Paperclip does not replay the write or hide
 other working tools. Saved GitHub approval errors receive the same presentation.
 The agent's continuation wake carries server-written next steps and tells it
-not to retry the same call. For `create_repository`, the agent asks the user to
-create the repository on GitHub, give the App access, and select **Refresh
-access**, then continues with that repository. GitHub's text stays in the
+not to retry the same call. For an App connection's `create_repository`, the agent
+asks the user to create the repository on GitHub, give the App access, and select
+**Refresh access**, then continues with that repository. Token connections ask
+the user to check token permissions and repository selection, then update or
+replace that token. If the method is unavailable, the agent asks the user to
+check the connection's authentication method. GitHub's text stays in the
 untrusted result.
 
 OAuth completion verifies `/user`, every page of `/user/installations`, and every

@@ -34,13 +34,23 @@ describe("GitHub tool access failures", () => {
 
   it("gives repository-create recovery steps for both GitHub tool name spellings", () => {
     for (const toolName of ["mcp.github:create-repository", "mcp.github:create_repository"]) {
-      const text = githubAccessDeniedInstructions(toolName);
+      const text = githubAccessDeniedInstructions(toolName, "managed");
       expect(text).toMatch(/Do not retry/);
       expect(text).toContain("https://github.com/new");
       expect(text).toContain("Refresh access");
     }
-    const other = githubAccessDeniedInstructions("mcp.github:create_issue");
+    const other = githubAccessDeniedInstructions("mcp.github:create_issue", "managed");
     expect(other).toMatch(/Do not retry/);
     expect(other).not.toContain("github.com/new");
+  });
+
+  it("gives token and unknown connections their own repair steps", () => {
+    const token = githubAccessDeniedInstructions("mcp.github:create_repository", "mcp-key");
+    expect(token).toMatch(/token.*permissions/i);
+    expect(token).toMatch(/replace.*token/i);
+    expect(token).not.toMatch(/GitHub App|Refresh access|github\.com\/new/);
+    const unknown = githubAccessDeniedInstructions("mcp.github:create_repository");
+    expect(unknown).toMatch(/authentication method/);
+    expect(unknown).not.toMatch(/GitHub App|Refresh access/);
   });
 });

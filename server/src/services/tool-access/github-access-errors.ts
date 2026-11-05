@@ -22,9 +22,15 @@ export function projectGitHubActionResult(sourceTemplateKey: unknown, result: Re
 /** Trusted, server-authored next steps for the agent after GitHub denied an
  * approved action. Retrying cannot help: the permission lives on GitHub. The
  * provider text stays in the untrusted result, never in these instructions. */
-export function githubAccessDeniedInstructions(toolName: string): string {
+export function githubAccessDeniedInstructions(toolName: string, connectionMethodKey: unknown = null): string {
   const operation = (toolName.split(":").pop() ?? "").trim().toLowerCase().replace(/-/g, "_");
   const base = "GitHub denied this approved action because the Paperclip GitHub connection cannot access the requested account or repository. Do not retry or request approval for the same call; it will fail the same way.";
+  if (connectionMethodKey === "mcp-key") {
+    return `${base} Ask the user to check the personal access token's resource owner, repository selection and required permissions in GitHub. They must update or replace the token on the GitHub connection's Permissions page. Continue after they confirm the access change.`;
+  }
+  if (connectionMethodKey !== "managed") {
+    return `${base} Ask the user to open the GitHub connection's Permissions page and check its connected account, authentication method and requested repository access. Continue after they repair that connection.`;
+  }
   if (operation === "create_repository") {
     return `${base} Tell the user that Paperclip cannot create this repository with the current GitHub access. Ask them to create the repository at https://github.com/new, give the Paperclip GitHub App access to it, and select Refresh access on the GitHub connection's Permissions page. Then continue with that existing repository.`;
   }
