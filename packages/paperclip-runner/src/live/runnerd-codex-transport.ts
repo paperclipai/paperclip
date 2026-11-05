@@ -4339,7 +4339,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           );
       if (this.options.prepareLaunch && !staged) {
         const priorProvider = record(runAttachTemplate.provider);
-        const priorRequirements = new RunnerLaunchPreparationStore(this.#root).load(prior)?.requirements;
+        const sourceRequirements = this.#sourceReconciliationPending ? this.options.sourceReconciliationLaunch?.requirements : undefined;
+        const priorRequirements = new RunnerLaunchPreparationStore(this.#root).load(prior)?.requirements
+          ?? (sourceRequirements && recoveryIdentityMatches(sourceRequirements.identity, prior) ? sourceRequirements : undefined);
         await this.#prepareOwnedProvider(runAttachTemplate, desired,
           currentRunGrant ? currentRunGrant.runtimeContext : priorRequirements?.runtimeContext
             ?? priorProvider.runtimeContext as NativeRuntimeContextSnapshot | null,

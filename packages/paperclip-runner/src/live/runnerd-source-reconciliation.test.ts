@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import { expect, it, vi } from "vitest";
 import { createCapabilityRunnerdCodexTransport, type CapabilityRunnerdCodexTransportOptions } from "./runnerd-codex-transport.js";
-import { runnerLaunchRequirementsDigest, runnerProviderLaunchRequirements, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, runnerProviderLaunchRequirements, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 import { createNativeSessionBackend } from "../backends/native-backend-factory.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
@@ -191,8 +191,11 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
       permissions: provider.readOnly ? "paperclip-runner-workspace-read-only" : "paperclip-runner-workspace-only",
       conversationMode: provider.conversationMode,
       config: { include_collaboration_mode_instructions: provider.includeCollaborationModeInstructions !== false },
-    }, null, provider.instructions ?? "");
-    const prepare = vi.fn(async (input: RunnerProviderLaunchRequirements) => ({ configurationId: input.identity.runId === fixture.identity.runId ? "new-source-incarnation" : "target-configuration", requirementsDigest: runnerLaunchRequirementsDigest(input), provider }));
+    }, null, "You are a Paperclip agent.");
+    const prepare = vi.fn(async (input: RunnerProviderLaunchRequirements) => ({ configurationId: input.identity.runId === fixture.identity.runId ? "new-source-incarnation" : "target-configuration", requirementsDigest: runnerLaunchRequirementsDigest(input),
+      provider: createRunnerProviderLaunch(input, { options: fixture.options, root: fixture.root, cwd: provider.cwd,
+        codexHome: join(fixture.root, "codex-home"), codexCommand: fakeCodex, providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "" }) }));
+    expect((await prepare(requirements)).provider).toEqual(provider); prepare.mockClear();
     const binary = fixture.options.runnerBinary;
     const sourceOptions: Partial<CapabilityRunnerdCodexTransportOptions> = { sourceRecoveryVersion: 1,
       sourceReconciliationLaunch: { requirements }, prepareLaunch: prepare,
@@ -242,6 +245,7 @@ it.each(["launch", "adopt", "adopt-denied"] as const)("prepares a cacheless sour
     }
     const target = { ...fixture.identity, runId: "prepared-target", turnId: "prepared-turn", itemId: "prepared-item" };
     await resumed.transport.attachRun!(target);
+    expect(prepare.mock.calls.at(-1)?.[0].instructions).toBe(requirements.instructions);
     expect((await read(fixture.coreFile)).preparedLaunchConfigurations).toContainEqual({ identity: target, configurationId: "target-configuration" });
     expect((await read(join(fixture.root, "launch-preparation.json"))).entries).toContainEqual(expect.objectContaining({ prepared: expect.objectContaining({ configurationId: "target-configuration" }) }));
     await fixture.complete(resumed, "Continue after source preparation."); await fixture.settled();
