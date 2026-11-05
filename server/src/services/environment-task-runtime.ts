@@ -9,6 +9,7 @@ import { settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writ
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult,
+  environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES,
   type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -453,7 +454,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         eq(environmentLeases.providerLeaseId, taskId), sql`${environmentLeases.metadata}->>'runnerTaskExecutionStopped' = 'true'`));
     }
     return parsed;
-  } catch {
+  } catch (error) {
+    const diagnostic = operation.kind === "submit" && operation.resumeFrom ? readEnvironmentTaskErrorDiagnostic(error) : null;
+    if (diagnostic) throw new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "Plugin Runner source state unavailable",
+      data: environmentTaskErrorData({ status: diagnostic.httpStatus, code: diagnostic.errorCode, reason: diagnostic.reason }),
+    });
     // Worker errors and schema diagnostics can contain request credentials.
     throw new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
   }
