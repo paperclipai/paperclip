@@ -3,7 +3,7 @@ import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   authUsers,
@@ -400,6 +400,48 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(result.results[0]?.service).toBe("jira");
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("connection_request");
+    });
+    // BUG-06: on Paperclip Cloud, the native Slack tool path requires a customer-created
+    // Slack OAuth app and managed Slack chat setup is behind the Chat connectors opt-in.
+    // Agents must offer the one-click aggregator routes instead of that card.
+    describe("Slack on Paperclip Cloud", () => {
+      const slackQuery = "Slack (team updates / notifications)";
+      beforeAll(() => { vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "cloud-test-token"); });
+      afterAll(() => { vi.unstubAllEnvs(); });
+      it("offers aggregator Slack routes while native Slack only supports a customer-created OAuth app", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, slackQuery);
+        expect(result.results.map((item) => item.service)).toEqual([
+          "via:composio:slack",
+          "via:arcade:slack",
+          "via:zapier:slack",
+        ]);
+        expect(result.providerQuestion?.prompt).toContain("Slack");
+      });
+      it("keeps native Slack when Chat connectors provide its own setup path", async () => {
+        await resetQuestions();
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+        try {
+          const result = await connectionIntentService(db).search(claims, slackQuery);
+          expect(result.results[0]).toMatchObject({ service: "slack", state: "available" });
+          expect(result.providerQuestion).toBeUndefined();
+        } finally {
+          await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+        }
+      });
+      it("keeps native Slack for a company that already saved a Slack connection", async () => {
+        await resetQuestions();
+        await seedProvider("slack", "slack_send_message");
+        const result = await connectionIntentService(db).search(claims, slackQuery);
+        expect(result.results[0]).toMatchObject({ service: "slack" });
+        expect(result.providerQuestion).toBeUndefined();
+      });
+    });
+    it("keeps native Slack on self-hosted instances, where operators register their own Slack app", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, "Slack (team updates / notifications)");
+      expect(result.results[0]).toMatchObject({ service: "slack", state: "available" });
+      expect(result.providerQuestion).toBeUndefined();
     });
     it("returns ranked verified routes and does not create questions or connections during search", async () => {
       await resetQuestions();

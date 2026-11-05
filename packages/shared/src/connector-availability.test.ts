@@ -37,3 +37,13 @@ describe("connector availability", () => {
     }
   });
 });
+
+describe("Slack tool connection guidance", () => {
+  // BUG-06: Slack's MCP server has no dynamic client registration, so this method needs a
+  // customer-created Slack app. Its guidance must say so and link to Slack's app settings.
+  it("describes the customer-created Slack app honestly and links to Slack app settings", () => {
+    const method = getConnectableAppDefinition("slack")!.methods.find((candidate) => candidate.key === "mcp-oauth")!;
+    expect(method.whenToUse).not.toMatch(/quickest/i);
+    expect(method.consoleLinks?.register).toBe("https://api.slack.com/apps");
+  });
+});

@@ -233,10 +233,11 @@ describe("Connectors landing page", () => {
     vi.clearAllMocks();
   });
 
-  async function renderBrowse(allCatalog = true) {
+  async function renderBrowse(allCatalog = true, options: { cloud?: boolean } = {}) {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    if (options.cloud) client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -677,6 +678,50 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="context7"]')).toBeNull();
     expect(container.querySelectorAll('[data-app-slug="hubspot"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-app-slug="hubspot"] button[aria-label*="third-party"]')).toHaveLength(2);
+  });
+
+  // BUG-06: on Paperclip Cloud, Slack's built-in tool method needs a customer-created OAuth
+  // app and, without the Chat connectors opt-in, there is no managed Slack path. Connect
+  // must offer the aggregators' one-click sign-in instead of the "needs its own OAuth app" form.
+  it("offers aggregator Slack sign-in on Cloud while the built-in Slack connector needs a customer OAuth app", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack"), getAppStoreDefinition("notion")] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Connect through Composio or Arcade.");
+    await clickButton("Connect", rows[0]!);
+    expect(navigateMock).not.toHaveBeenCalledWith("/apps/connect?source=slack");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Which service would you like to use?");
+  });
+
+  it.each([
+    ["Chat connectors offer its setup path", { enableChatConnectors: true }, true],
+    ["the instance is self-hosted", {}, false],
+  ])("keeps the built-in Slack connector when %s", async (_label, experimental, cloud) => {
+    experimentalMock.mockResolvedValue(experimental);
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    await renderBrowse(true, { cloud });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
+  it("keeps a saved built-in Slack connection on its native row on Cloud", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "slack-app", name: "Slack", metadata: { sourceTemplateKey: "slack" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "slack-app", name: "Team Slack", transport: "mcp_remote", config: { sourceTemplateKey: "slack" } })] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Team Slack");
   });
 
   it("paginates the catalog while keeping installed connectors above every page and resets on search", async () => {
