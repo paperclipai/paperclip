@@ -3038,6 +3038,18 @@ Older packs without the declaration retain content verification until the image
 is updated. Selected ACPX agent profile checks remain in force.
 Daytona detects gzip/zstd headers and skips redundant transport compression.
 
+### Daytona duplex close receipts
+
+Lease teardown removes duplex routes from command admission before it closes
+their transports. The provider retains up to 4096 route/session bindings and
+their close promises, so a later host close joins the same cleanup and returns
+the original binding. These records grant no write, stop, or open authority.
+Unknown or evicted routes cannot supply a session acknowledgement. A pending
+close still waits; an unconfirmed close still retires the worker through the
+existing host guard. The acknowledgement identifies the channel. Provider stop
+receipts and unresolved external-work checks still determine process termination.
+No command is replayed or worker restarted by this mechanism.
+
 ### Remote GitHub launcher staging
 
 Managed GitHub launchers stage their nine text files in one bounded control

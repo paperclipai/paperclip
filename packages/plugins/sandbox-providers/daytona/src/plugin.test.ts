@@ -40,6 +40,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
+import * as duplexCommands from "./duplex-command-stream.js";
 
 describe("Daytona read-only resource inspection", () => {
   const params = { driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
@@ -729,6 +730,8 @@ describe("Daytona sandbox provider plugin", () => {
       });
       expect(killed).toBeGreaterThanOrEqual(1);
       expect(disconnected).toBe(1);
+      await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: "route-1" }))
+        .resolves.toEqual({ hostRouteId: "route-1", workerSessionId });
 
       // The channel entry is gone, so a later write is a no-op and reaches no
       // process.
@@ -744,6 +747,94 @@ describe("Daytona sandbox provider plugin", () => {
       await blocked;
       restore();
     }
+  });
+
+  describe("retired duplex ownership", () => {
+    async function fixture() {
+      const params = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { apiKey: "fixture-key", image: "fixture-image", timeoutMs: 3_000, livenessTimeoutMs: 1_000, reuseLease: true } };
+      const pty = { waitForConnection: vi.fn(async () => {}), sendInput: vi.fn(async () => {}),
+        wait: vi.fn(() => new Promise<{ exitCode: number }>(() => {})),
+        kill: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) };
+      const sandbox = createMockSandbox();
+      const createPty = vi.fn(async () => pty);
+      Object.assign(sandbox.process, { createPty });
+      mockCreate.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentAcquireLease!({ ...params, runId: "run-1" });
+      const opening = { driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+        providerLeaseId: sandbox.id, command: ["fixture-bridge"] };
+      return { params: { ...params, providerLeaseId: sandbox.id }, opening, pty, createPty };
+    }
+
+    it("joins pending teardown for concurrent closes while all channel authority stays revoked", async () => {
+      const f = await fixture();
+      const opened = await plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: "pending-route" });
+      let finishKill!: () => void, enteredKill!: () => void;
+      const entered = new Promise<void>(resolve => { enteredKill = resolve; });
+      const killing = new Promise<void>(resolve => { finishKill = resolve; });
+      f.pty.kill.mockImplementation(async () => { enteredKill(); await killing; });
+      const requests: Promise<unknown>[] = [];
+      try {
+        requests.push(plugin.definition.onEnvironmentReleaseLease!(f.params));
+        await entered;
+        let replies = 0;
+        for (let index = 0; index < 2; index++) requests.push(plugin.definition.onDuplexChannelClose!({ hostRouteId: opened.hostRouteId })
+          .then(value => { replies++; return value; }));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(replies).toBe(0);
+        expect(f.pty.kill).toHaveBeenCalledTimes(1);
+        expect(f.pty.disconnect).not.toHaveBeenCalled();
+        await plugin.definition.onDuplexChannelWrite!({ ...opened, data: Buffer.from("closed").toString("base64") });
+        await plugin.definition.onDuplexChannelStop!(opened);
+        expect(f.pty.sendInput).toHaveBeenCalledTimes(1);
+        expect(f.pty.kill).toHaveBeenCalledTimes(1);
+        await expect(plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: opened.hostRouteId }))
+          .rejects.toThrow("already been used");
+        expect(f.createPty).toHaveBeenCalledTimes(1);
+        finishKill();
+        const result = await Promise.all(requests);
+        expect(result.slice(1)).toEqual([opened, opened]);
+        await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: opened.hostRouteId })).resolves.toEqual(opened);
+        expect(f.pty.kill).toHaveBeenCalledTimes(1);
+        expect(f.pty.disconnect).toHaveBeenCalledTimes(1);
+        await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: "unknown-route", workerSessionId: opened.workerSessionId } as never))
+          .resolves.toEqual({ hostRouteId: "unknown-route" });
+      } finally { finishKill(); await Promise.allSettled(requests); }
+    });
+
+    it("does not turn a rejected retired close into an acknowledgement", async () => {
+      const f = await fixture();
+      const close = vi.fn().mockRejectedValue(new Error("fixture closure remains unknown"));
+      const restore = vi.spyOn(duplexCommands, "openDaytonaDuplexChannelSession").mockResolvedValueOnce({
+        onData() {}, write: vi.fn(), kill: vi.fn(), wait: () => new Promise(() => {}), close,
+      });
+      try {
+        const opened = await plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: "failed-route" });
+        await plugin.definition.onEnvironmentReleaseLease!(f.params);
+        await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: opened.hostRouteId }))
+          .rejects.toThrow("fixture closure remains unknown");
+        expect(close).toHaveBeenCalledTimes(1);
+        await expect(plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: opened.hostRouteId }))
+          .rejects.toThrow("already been used");
+      } finally { restore.mockRestore(); }
+    });
+
+    it("bounds retained acknowledgements and never echoes a supplied session id for evicted routes", async () => {
+      const f = await fixture();
+      const first = await plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: "oldest-route" });
+      await plugin.definition.onDuplexChannelClose!({ hostRouteId: first.hostRouteId });
+      let latest = first;
+      for (let index = 0; index < 4_096; index++) {
+        latest = await plugin.definition.onDuplexChannelOpen!({ ...f.opening, hostRouteId: `bounded-route-${index}` });
+        await plugin.definition.onDuplexChannelClose!({ hostRouteId: latest.hostRouteId });
+      }
+      await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: first.hostRouteId, workerSessionId: first.workerSessionId } as never))
+        .resolves.toEqual({ hostRouteId: first.hostRouteId });
+      await expect(plugin.definition.onDuplexChannelClose!({ hostRouteId: latest.hostRouteId, workerSessionId: "forged-session" } as never))
+        .resolves.toEqual(latest);
+      expect(f.pty.kill).toHaveBeenCalledTimes(4_097);
+      expect(f.pty.disconnect).toHaveBeenCalledTimes(4_097);
+    });
   });
 
   it("normalizes config and validates the API key fallback", async () => {
