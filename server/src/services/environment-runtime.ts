@@ -1,4 +1,5 @@
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
+import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { createOwnedSandbox, recoverSandboxCreations, recoverableTaskCreation } from "./sandbox-creation-operations.js";
@@ -706,26 +707,7 @@ export interface EnvironmentRuntimeDriver {
   flushDeferredOrphanCleanups?(): Promise<{ recovered: number; pending: number }>;
 }
 
-/** A reusable sandbox could not be resumed, but has not been proven lost. */
-export class ReusableSandboxResumeError extends Error {
-  readonly provider: string;
-  readonly providerLeaseId: string;
-
-  constructor(input: {
-    provider: string;
-    providerLeaseId: string;
-    cause?: unknown;
-  }) {
-    super(
-      `Reusable sandbox lease "${input.providerLeaseId}" could not be resumed; ` +
-        "the lease was preserved and no replacement was created.",
-      input.cause === undefined ? undefined : { cause: input.cause },
-    );
-    this.name = "ReusableSandboxResumeError";
-    this.provider = input.provider;
-    this.providerLeaseId = input.providerLeaseId;
-  }
-}
+export { ReusableSandboxResumeError };
 
 export class RunnerHarnessBackupUnavailableError extends Error {
   readonly providerLeaseId: string;

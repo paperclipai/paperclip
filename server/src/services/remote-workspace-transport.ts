@@ -104,18 +104,33 @@ function noteProviderRefusal(operation: RemoteWorkspaceOperation, error: unknown
 function remoteWorkspaceProviderRefusalCause(operation: RemoteWorkspaceOperation, error: unknown): string | null {
   // Archive-safety and Git-metadata refusals have their own exact diagnostics.
   if (["restore_unsafe_archive", "restore_invalid_metadata"].includes(classifyWorkspaceRestoreFailure(error))) return null;
+  const { label, code } = sandboxProviderFailureLabel(error);
+  return `remote_workspace_operation_failed: operation=${operation} transport=${label}${code ? ` code=${code}` : ""}`;
+}
+
+/**
+ * Name a sandbox provider failure by a closed label, an errno-style code, and
+ * an HTTP-style status. Provider text can carry sandbox paths or identifiers,
+ * so it only selects the label and is never copied into the result.
+ */
+export function sandboxProviderFailureLabel(error: unknown): { label: string; code: string | null; status: number | null } {
   const texts: string[] = [];
   let code: string | null = null;
+  let status: number | null = null;
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
     if (cause instanceof Error) texts.push(cause.message);
     else if (typeof cause === "string") texts.push(cause);
     const candidate = (cause as { code?: unknown }).code;
     if (!code && typeof candidate === "string" && /^[A-Z][A-Z0-9_]{1,31}$/.test(candidate)) code = candidate;
+    for (const key of ["status", "statusCode"] as const) {
+      const value = (cause as Record<string, unknown>)[key];
+      if (status === null && Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599) status = value as number;
+    }
   }
   const text = texts.join("\n");
   const label = TRANSPORT_FAILURE_LABELS.find(([pattern]) => pattern.test(text) || (code !== null && pattern.test(code)))?.[1]
     ?? "provider_error";
-  return `remote_workspace_operation_failed: operation=${operation} transport=${label}${code ? ` code=${code}` : ""}`;
+  return { label, code, status };
 }
 
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,

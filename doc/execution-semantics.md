@@ -1011,6 +1011,17 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+A preserved reusable sandbox that the provider refuses to resume before provider
+dispatch uses the same bounded bootstrap budget (`reusable_sandbox_resume_failed`).
+A common cause is a follow-up that arrives while the provider is auto-stopping an
+idle sandbox. The retry inherits the source wake, so a reply is delivered once,
+and it resumes the same recorded lease. A refusal is not proof that the sandbox is
+lost, so the retry never destroys it or creates a replacement. Only an explicit
+provider not-found or a workspace identity mismatch with a verified backup permits
+replacement. The run records the refusal by closed labels only (cause label, HTTP
+status, errno-style code), never by provider text. On exhaustion, the task gets a
+specific recovery notice, and generic recovery does not grant another budget.
+
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
 Earlier unpublished directories and their receipts stay intact. Repeating the

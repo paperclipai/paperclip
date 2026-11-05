@@ -3804,7 +3804,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentResumeLease") {
-          throw new Error("stale sandbox");
+          throw Object.assign(new Error("stale sandbox /home/daytona/private-path"), { status: 409 });
         }
         if (method === "environmentDestroyLease") {
           return undefined;
@@ -3840,7 +3840,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           id: executionWorkspaceId,
           mode: "shared_workspace",
         },
-      })).rejects.toThrow("the lease was preserved and no replacement was created");
+      })).rejects.toThrow(
+        // The provider refusal is named by closed labels; its text stays off the record.
+        /could not be resumed \(cause=provider_error status=409\); the lease was preserved and no replacement was created\.$/,
+      );
     } finally {
       now.mockRestore();
     }
