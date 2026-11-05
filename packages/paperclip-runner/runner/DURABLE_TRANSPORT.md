@@ -1,14 +1,20 @@
 # Durable PRP transport
 
-This layer gives `paperclip-runnerd` a provider-neutral PRP v1 transport. The
-Paperclip server invokes durable mode only for a selected, flag-enabled
-`paperclip_runner` agent or recovery of its persisted native run. Codex is the
-only installed provider; other providers remain unavailable.
+Core uses durable PRP v1 for a selected, flag-enabled `paperclip_runner`
+agent or recovery of its persisted run. On a fresh launch or restart,
+`paperclip-runnerd` selects durable mode from its connection arguments.
+
+- With `--connect-url <url>`, the Runner dials Core.
+- With `--listen-address 0.0.0.0 --listen-path /api/runner/v1/connect/<run-id>`,
+  the Runner listens for Core. `--listen-port` defaults to `43127`.
+
+Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
+Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
 ## Trust boundary
 
-- The runner accepts only `ws://` destinations whose complete DNS result is
-  loopback. Resolution happens once and reconnects reuse the pinned addresses.
+- For outbound `ws://`, every resolved address must be loopback. The Runner
+  resolves the destination once and reuses the pinned addresses on reconnect.
 - A bootstrap ticket is read from `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`, removed
   from the environment immediately, and never sent over the socket. Both peers
   prove possession through HMAC-SHA-256.
@@ -63,48 +69,41 @@ the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the
 P0 reserve is an explicit unrecoverable condition.
 
-## Current boundary
+## Recovering Codex between turns
 
-`recoveryIntegrityVersion: 1` in build metadata attests ordinary Codex
-recovery integrity checks. There is no separate native recovery mode;
-`--source-reconcile` is rejected. Recovered dormant provider state with no
-uncertain effectful command must still be dormant after restoration. An
-unexpected live turn or active goal fails closed. After reading the goal, the
-Runner checks goal updates received while waiting for the final thread read.
-Accepted updates stay queued for ordinary event delivery. Same-run active recovery and
-indeterminate command replay retain their existing behavior. Prepared
-state retains its existing no-restore behavior during reads and cleanup. It is
-not a candidate for new completed-predecessor admission; existing prepared
-cleanup and ordinary continuation remain available.
+Suppose run A finishes a turn, its Runner exits, and run B wants to continue
+the conversation. Core uses ordinary recovery for A, then attaches B with
+authenticated `run.attach`. If the original process is alive, its owner can
+verify and adopt it instead.
 
-A process owner may reconcile a completed predecessor under its exact six-field
-authority before ordinary authenticated `run.attach`. The selected execution
-driver's `sourceRecoveryVersion: 1` attests stopped ownership and strict dormant
-prelaunch admission; binary integrity metadata alone does not provide that proof.
-The authenticated `authorityRunId` remains the current controller owner while
-retained events and accounting stay attributed to the predecessor. Existing
-retain-only controls prevent business dispatch and fresh work until attachment,
-authentication and checkpoint persistence complete. History reads require the
-retained thread identity; the resume facade publishes existing state without
-another provider resume.
+**Is A idle?** Before launch, the host driver (`sourceRecoveryVersion: 1`)
+checks that A’s process stopped and its saved session was idle. After launch,
+the Runner (`recoveryIntegrityVersion: 1`) verifies that Codex restored an idle
+session when no command effect is uncertain. It reads the goal, then the
+thread. An unexpected turn or active goal blocks recovery, even if the goal
+changes during the thread read. Accepted updates stay queued for delivery.
 
-If controller-local preparation is absent, `recoveryLaunch: { requirements }`
-supplies frozen source facts to a fresh authorized preparation. It neither
-replaces the ordinary source configuration nor populates its cache. It requires
-exact source identity, a preparer and an authenticated `authorityRunId`. Same-run
-recovery supplies that same run ID. The owner must remain available through the
-transport's lifetime; losing it blocks command admission and semantic dispatch.
-The immutable recorded launch policy carries through later warm attachment.
-Explicit target settings must be effectively compatible under the provider
-factory's defaults; authenticated context and instruction grants retain their
-existing precedence and compatibility checks.
+Active runs use same-run recovery. Indeterminate commands follow the replay
+rules above. A prepared session can continue normally, but this handoff
+requires a completed turn. Reads and cleanup leave a prepared provider unopened.
 
-Recovered interrupted attachment releases its source dispatch hold after the
-fresh target snapshot and checkpoint persist and the recovery-completion callback succeeds.
-Callback or checkpoint failure keeps that completion gate available for retry.
-Cancellation cleanup remains retain-only.
+**Who owns the session?** Core matches A’s Runner instance, environment lease,
+run, normalized session, turn and item. History reads require A’s thread. A
+resume request returns saved state without asking Codex to resume twice. Retained events and usage
+belong to A. The authenticated `authorityRunId` identifies the current owner
+(A for same-run recovery). Losing that owner blocks new commands and dispatch.
 
-A process owner may use the same data to
-adopt its verified existing incarnation without spawning another process. These
-checks do not establish vendor restore inertness, rollout fsync or physical
-process retirement; paired provider qualification remains necessary.
+If Core loses its cached preparation, the preparer uses A’s frozen
+`recoveryLaunch.requirements`, exact identity and authenticated owner. It
+leaves A’s configuration in place and the cache empty. B inherits A’s recorded
+launch policy on later attachments. Explicit settings must agree after
+provider defaults are applied. Authenticated context and instruction grants
+keep their usual precedence and compatibility checks.
+
+**When can B start work?** After authenticated attachment, Core persists B’s
+fresh snapshot and checkpoint and runs any recovery callback. B can then
+start work. If a write or callback fails, Core can retry the handoff.
+Cancellation cleanup only settles retained work.
+
+Live qualification still needs to verify that restoring a provider starts no
+work, deployed storage honors fsync, and the old process has exited.
