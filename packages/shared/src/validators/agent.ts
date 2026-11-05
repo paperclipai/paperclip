@@ -276,7 +276,7 @@ export const wakeAgentSchema = z.object({
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
 export const resetAgentSessionSchema = z.object({
-  taskKey: z.string().min(1).optional().nullable(),
+  taskKey: z.string().trim().min(1).optional().nullable(),
 });
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
