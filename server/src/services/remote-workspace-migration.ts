@@ -110,15 +110,15 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       or ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId' = ${workspace.id})`,
   )).limit(1);
   if (run) reasons.push("active_execution");
-  const unexported = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+  const referencedRuns = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
     issueId: heartbeatRuns.nativeIssueId, controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
     reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, workspace.companyId),
     sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId' = ${workspace.id}`,
-    sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'`,
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' in ('prepared', 'finalized')`,
   ));
   const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
-  for (const run of unexported.sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const run of referencedRuns.filter(run => object(run.reference).state === "prepared").sort((a, b) => a.id.localeCompare(b.id))) {
     const reference = readNativeWorkspaceSyncReference(run.reference);
     const [owner] = await db.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner,
       leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, resultId: nativeRunFinalizations.resultId })
@@ -203,7 +203,11 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     ) : undefined),
   )).limit(1);
   if (service) reasons.push("workspace_runtime_service_unsettled");
-  const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
+  // A descendant task can use this workspace without becoming its source task.
+  // Discover holds from the exact recorded workspace references as well; the
+  // recovery owner still validates their task relationship and source binding.
+  const recoveryIssueIds = [...new Set([workspace.sourceIssueId, ...referencedRuns.map(run => run.issueId),
+    ...legacyRecoverySources.map(source => source.issueId)].filter((id): id is string => Boolean(id)))];
   const recoveries = recoveryIssueIds.length ? await db.select({ id: issueRecoveryActions.id, sourceIssueId: issueRecoveryActions.sourceIssueId,
     status: issueRecoveryActions.status, updatedAt: issueRecoveryActions.updatedAt, kind: issueRecoveryActions.kind,
     cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
