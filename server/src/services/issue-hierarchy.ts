@@ -66,6 +66,20 @@ export function placeTaskParent(chain: ParentChainRow[], policy: IssueParentDept
   };
 }
 
+/**
+ * Callers authorize the parent they request. When depth placement moves a task
+ * above that parent, the ancestor is written only if the caller also authorized
+ * it and says so with `expectedParentId` (the routes and the runner do). Other
+ * callers get standalone work instead: no structural parent, never an edge
+ * under an ancestor nobody checked.
+ */
+export function confirmPlacement(placement: ParentPlacement, expectedParentId: string | null | undefined): ParentPlacement {
+  if (expectedParentId !== undefined || !placement.adjustment?.applied || placement.effectiveParentId === null) {
+    return placement;
+  }
+  return { effectiveParentId: null, adjustment: { ...placement.adjustment, effectiveParent: null } };
+}
+
 /** Loads a requested parent's ancestor chain in one recursive query. Empty when it does not exist. */
 export async function loadParentChain(
   db: Pick<Db, "execute">,

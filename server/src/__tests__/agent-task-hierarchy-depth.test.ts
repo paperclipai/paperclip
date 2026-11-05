@@ -78,9 +78,11 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     const { companyId } = await seedCompany();
     const { rootId, childId, rootIdentifier, childIdentifier } = await seedTree(companyId);
 
+    // expectedParentId: the route authorized the placed ancestor.
     const created = await issueService(db).create(companyId, {
       title: "Follow-up from the child",
       parentId: childId,
+      expectedParentId: rootId,
     });
 
     expect(created.parentId).toBe(rootId);
@@ -143,7 +145,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     const { rootId, childId } = await seedTree(companyId);
     const grandchildId = await seedIssue(companyId, { parentId: childId });
 
-    const created = await issueService(db).create(companyId, { title: "Under legacy grandchild", parentId: grandchildId });
+    const created = await issueService(db).create(companyId, { title: "Under legacy grandchild", parentId: grandchildId, expectedParentId: rootId });
 
     expect(created.parentId).toBe(rootId);
     expect(created.originIssueId).toBe(grandchildId);
@@ -157,6 +159,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     const { issue, parentBlockerAdded } = await issueService(db).createChild(childId, {
       title: "Blocking follow-up",
       blockParentUntilDone: true,
+      expectedParentId: rootId,
     });
 
     expect(issue.parentId).toBe(rootId);
@@ -187,7 +190,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     let deepestId = rootId;
     for (let level = 1; level < 70; level += 1) deepestId = await seedIssue(companyId, { parentId: deepestId });
 
-    const created = await issueService(db).create(companyId, { title: "From the 70th level", parentId: deepestId });
+    const created = await issueService(db).create(companyId, { title: "From the 70th level", parentId: deepestId, expectedParentId: rootId });
 
     expect(created.parentId).toBe(rootId);
     expect(created.originIssueId).toBe(deepestId);
@@ -319,6 +322,27 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(created.originIssueId).toBe(runTaskId);
   });
 
+  it("makes unconfirmed placements standalone instead of writing under an unchecked ancestor", async () => {
+    const { companyId } = await seedCompany();
+    const { childId } = await seedTree(companyId);
+
+    // Internal callers authorize only the parent they request.
+    const created = await issueService(db).create(companyId, { title: "Internal follow-up", parentId: childId });
+    expect(created.parentId).toBeNull();
+    expect(created.privacyParentIssueId).toBe(childId);
+    expect(created.originIssueId).toBe(childId);
+    expect(created.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: true, effectiveParent: null });
+
+    const { issue } = await issueService(db).createChild(childId, { title: "Internal child helper" });
+    expect(issue.parentId).toBeNull();
+
+    const movingId = await seedIssue(companyId);
+    const moved = await issueService(db).update(movingId, { parentId: childId, title: "Renamed anyway" });
+    expect(moved?.parentId).toBeNull();
+    expect(moved?.title).toBe("Renamed anyway");
+    expect(moved?.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: false });
+  });
+
   describe("moves", () => {
     it("keeps the requested private parent as the privacy source of a placed move", async () => {
       const { companyId } = await seedCompany();
@@ -327,7 +351,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       await seedIssue(companyId, { id: privateChildId, parentId: rootId, visibility: "private", privacyRootIssueId: privateChildId });
       const movingId = await seedIssue(companyId);
 
-      const updated = await issueService(db).update(movingId, { parentId: privateChildId });
+      const updated = await issueService(db).update(movingId, { parentId: privateChildId, expectedParentId: rootId });
 
       expect(updated?.parentId).toBe(rootId);
       expect(updated?.privacyParentIssueId).toBe(privateChildId);
@@ -349,7 +373,7 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       const { rootId, childId } = await seedTree(companyId);
       const movingId = await seedIssue(companyId);
 
-      const updated = await issueService(db).update(movingId, { parentId: childId });
+      const updated = await issueService(db).update(movingId, { parentId: childId, expectedParentId: rootId });
 
       expect(updated?.parentId).toBe(rootId);
       expect(updated?.parentAdjusted).toMatchObject({ reason: "max_agent_depth", applied: true });

@@ -1,3 +1,4 @@
+import { resolveNewTaskParent } from "./issue-hierarchy.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -4370,8 +4371,18 @@ export function issueThreadInteractionService(
             } } : {}),
           } satisfies Parameters<ReturnType<typeof issueService>["createChild"]>[1];
           const service = issueService(tx as unknown as Db);
+          // A nested suggestion may be placed beside its suggested parent, under
+          // that parent's own requested parent. The accept scope authorized that
+          // parent, so confirm the placement only when it lands exactly there.
+          const nestedUnder = task.parentClientKey ? createdByClientKey.get(task.parentClientKey) : undefined;
+          const placement = parentIssueId && nestedUnder
+            ? await resolveNewTaskParent(tx as unknown as Db, issue.companyId, parentIssueId, "flatten")
+            : null;
+          const confirmedParent = placement && placement.effectiveParentId === nestedUnder?.parentIssueId
+            ? { expectedParentId: placement.effectiveParentId }
+            : {};
           const createdIssue = parentIssueId
-            ? (await service.createChild(parentIssueId, createInput)).issue
+            ? (await service.createChild(parentIssueId, { ...createInput, ...confirmedParent })).issue
             : await service.create(issue.companyId, createInput);
 
           const parentIdentifier =

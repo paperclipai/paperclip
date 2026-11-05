@@ -57,6 +57,7 @@ import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type { IssueParentAdjustment } from "@paperclipai/shared";
 import {
+  confirmPlacement,
   planIssueParentChange,
   resolveNewTaskParent,
   withParentAdjustment,
@@ -9730,8 +9731,9 @@ export function issueService(db: Db) {
 
       // Under the agent depth limit a child of a child lands beside it; count
       // the requester's own fan-out either way.
-      const { effectiveParentId } = await resolveNewTaskParent(
-        db, parent.companyId, parent.id, data.parentDepthPolicy ?? "flatten",
+      const { effectiveParentId } = confirmPlacement(
+        await resolveNewTaskParent(db, parent.companyId, parent.id, data.parentDepthPolicy ?? "flatten"),
+        data.expectedParentId,
       );
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
@@ -10292,7 +10294,10 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
-        const parentResolution = await resolveNewTaskParent(tx, companyId, requestedParentId, parentDepthPolicy);
+        const parentResolution = confirmPlacement(
+          await resolveNewTaskParent(tx, companyId, requestedParentId, parentDepthPolicy),
+          expectedParentId,
+        );
         if (expectedParentId !== undefined && parentResolution.effectiveParentId !== expectedParentId) {
           throw conflict("The task tree changed while this task was checked. Read the tasks again and retry.", {
             code: "issue_parent_placement_changed",
@@ -11259,7 +11264,12 @@ export function issueService(db: Db) {
       if (data.parentId && data.parentId !== existing.parentId) {
         // A skipped move drops only `parentId`; the rest of the patch applies.
         const requestedParentId = data.parentId;
-        const plan = await planIssueParentChange(dbOrTx, existing, requestedParentId, data.parentDepthPolicy ?? "flatten");
+        let plan = await planIssueParentChange(dbOrTx, existing, requestedParentId, data.parentDepthPolicy ?? "flatten");
+        // A placement above the requested parent needs the caller's confirmed
+        // authorization (expectedParentId); otherwise only the move is skipped.
+        if (plan.adjustment?.applied && plan.parentId !== null && data.expectedParentId === undefined) {
+          plan = { parentId: undefined, adjustment: { ...plan.adjustment, applied: false, effectiveParent: null } };
+        }
         const plannedParentId = plan.parentId === undefined ? existing.parentId : plan.parentId;
         if (data.expectedParentId !== undefined && plannedParentId !== data.expectedParentId) {
           throw conflict("The task tree changed while this move was checked. Read the tasks again and retry.", {
