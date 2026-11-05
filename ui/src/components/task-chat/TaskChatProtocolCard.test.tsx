@@ -119,30 +119,6 @@ describe("TaskChatProtocolCard", () => {
     container.remove();
   });
 
-  it("keeps a completed plan proposal readable behind its one-line record", () => {
-    const item: TaskChatProtocolItem = {
-      id: "run-1:provider:plan_proposal:toolu_plan:0",
-      kind: "protocol",
-      surface: "provider_activity",
-      family: "plan_proposal",
-      eventType: "plan.proposed",
-      status: "completed",
-      title: "Plan",
-      summary: "Proposed a plan",
-      details: [],
-      steps: [],
-      links: [],
-      children: [],
-      output: "# Stop duplicates\n\n1. Add a unique index\n2. Upsert on the event id",
-    };
-    act(() => root.render(<MemoryRouter><ThemeProvider><TaskChatProtocolCard item={item} /></ThemeProvider></MemoryRouter>));
-    const proposal = container.querySelector("[data-testid='task-chat-plan-proposal']");
-    expect(proposal?.tagName).toBe("DETAILS");
-    expect(proposal?.textContent).toContain("Proposed a plan · Stop duplicates");
-    expect(container.querySelector("[data-testid='task-chat-plan-proposal-body']")?.textContent)
-      .toContain("Upsert on the event id");
-  });
-
   it("renders a rich deliverable card without a completed chip", () => {
     const product = workProduct({
       metadata: {

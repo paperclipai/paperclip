@@ -280,7 +280,7 @@ function PlanProposalCard({ item }: { item: TaskChatProviderActivityItem }) {
       </summary>
       {item.output ? (
         <div className="mt-1 rounded-md border border-border bg-muted/25 px-4 py-3 text-sm" data-testid="task-chat-plan-proposal-body">
-          <MarkdownBody>{item.output}</MarkdownBody>
+          <MarkdownBody mediaMode="reference">{item.output}</MarkdownBody>
         </div>
       ) : null}
     </details>
