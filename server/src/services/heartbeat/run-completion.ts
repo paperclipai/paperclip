@@ -12,7 +12,7 @@ import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTr
 import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
-import { findPluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -41,7 +41,7 @@ import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publi
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -1539,7 +1539,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             });
           }
         } else if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
-          await (isTransientWorkspacePreparationCode(livenessRun.errorCode)
+          // An accepted interaction keeps its own continuation retry, which
+          // carries the interaction and escalates on exhaustion.
+          const interactionOwnsRetry = livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+            && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
+          await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {

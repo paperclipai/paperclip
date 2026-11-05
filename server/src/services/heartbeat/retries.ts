@@ -342,7 +342,8 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   if (
     run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
     run.errorCode === "process_lost" ||
-    run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE
+    run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE ||
+    run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
   ) {
     return true;
   }

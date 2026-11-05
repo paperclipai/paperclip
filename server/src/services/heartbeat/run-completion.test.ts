@@ -966,6 +966,19 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
+  it("routes a lease acquisition refused by a stopped provider worker through bounded bootstrap recovery", async () => {
+    const f = await fixture();
+    const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: null,
+      message: 'Sandbox provider "daytona" is installed via plugin "paperclip.daytona-sandbox-provider", but its worker is not running.' });
+    const wrapped = new EnvironmentRunError("lease_acquire_failed",
+      `Failed to acquire lease for environment "Paperclip Computer" (sandbox): ${refusal.message}`, { cause: refusal });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(wrapped));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "plugin_worker_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
   it.each(["retried", "exhausted", "refused", "started", "in progress"] as const)("names a %s saved workspace restore failure and leaves recovery", async scenario => {
     const f = await fixture();
     const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Parent task", status: scenario === "in progress" ? "in_progress" : "blocked",

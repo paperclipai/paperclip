@@ -3501,7 +3501,9 @@ export function createPluginWorkerHandle(
       if (!childProcess?.stdin?.writable) {
         onWorkerSettled?.();
         reject(
-          new PluginWorkerUnavailableError({ pluginId, workerStatus: status,
+          // The status can still read "running" while the child's stdin is
+          // closed, so no status is reported for this refusal.
+          new PluginWorkerUnavailableError({ pluginId, workerStatus: null,
             message: `Cannot call "${method}" — worker for "${pluginId}" is not running` }),
         );
         return;
