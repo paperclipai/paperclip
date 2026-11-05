@@ -2659,6 +2659,52 @@ mod tests {
     }
 
     #[test]
+    fn governance_display_records_survive_the_durable_writer_unchanged() {
+        use super::*;
+        let review = crate::governance_events::codex_safety_review_payload(
+            "item/autoApprovalReview/completed",
+            &json!({
+                "reviewId": "review-1",
+                "targetItemId": "exec-1",
+                "decisionSource": "agent",
+                "review": {"status": "approved", "riskLevel": "low", "userAuthorization": "high", "rationale": "Generated output."},
+                "action": {"type": "command", "source": "shell", "command": "rm -rf build", "cwd": "/work"},
+            }),
+        );
+        let hook = crate::governance_events::codex_hook_payload(
+            "hook/completed",
+            &json!({"run": {
+                "id": "pre-tool-use:0:/x/config.toml", "eventName": "preToolUse", "executionMode": "sync",
+                "scope": "turn", "sourcePath": "/x/config.toml", "source": "user", "status": "blocked",
+                "startedAt": 1, "durationMs": 41, "entries": [{"kind": "feedback", "text": "Append-only."}],
+            }}),
+        );
+        for (event_type, payload) in [
+            ("safety.review.completed", review),
+            ("hook.completed", hook),
+        ] {
+            // Native Codex records also carry the provider label.
+            let mut labelled = payload.clone();
+            labelled["provider"] = json!("codex");
+            for candidate in [payload, labelled] {
+                let preserved = preserve_bounded_display_content(
+                    event_type,
+                    &candidate,
+                    sanitize_value(&candidate),
+                )
+                .unwrap_or_else(|error| panic!("{event_type} was rejected: {error:?}"));
+                assert_eq!(
+                    preserved, candidate,
+                    "{event_type} changed in the durable writer"
+                );
+                assert!(!durable_semantics_changed_by_sanitization(
+                    &candidate, &preserved
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn identity_delta_redaction_buffers_every_split_and_never_serializes_pending_material() {
         use super::*;
         let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIExamplePrivateMaterial\n-----END PRIVATE KEY-----\n";

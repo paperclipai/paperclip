@@ -1213,6 +1213,26 @@ pub fn normalize_codex_notification_in(
                 ),
             }),
         ),
+        "hook/started" | "hook/completed" => push(
+            &mut events,
+            if method == "hook/started" {
+                "hook.started"
+            } else {
+                "hook.completed"
+            },
+            EventPriority::P2,
+            crate::governance_events::codex_hook_payload(method, params),
+        ),
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => push(
+            &mut events,
+            if method.ends_with("started") {
+                "safety.review.started"
+            } else {
+                "safety.review.completed"
+            },
+            EventPriority::P1,
+            crate::governance_events::codex_safety_review_payload(method, params),
+        ),
         "item/agentMessage/delta" => push(
             &mut events,
             "item.delta",
@@ -1713,7 +1733,7 @@ fn normalize_acpx_status(
             "requests": 1,
             "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        return vec![NormalizedProviderEvent {
+        let usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1728,7 +1748,25 @@ fn normalize_acpx_status(
                 "runDeltaAvailable": run_delta_available,
                 "runDelta": run_delta,
             }),
-        }];
+        };
+        // Claude forwards its SDK rate_limit_event on usage_update; the
+        // sidecar passes only the sanitized `rateLimit` fields.
+        let rate_limits = payload.get("rateLimit").and_then(|info| {
+            crate::provider_rate_limits::claude_rate_limit_snapshot(
+                info,
+                &crate::provider_rate_limits::now_iso(),
+            )
+        });
+        return match rate_limits {
+            Some(snapshot) => vec![
+                usage,
+                crate::provider_rate_limits::rate_limit_notice(
+                    &snapshot,
+                    &stable_id(&format!("{item_id}:rate-limits"), "acpx-rate-limits"),
+                ),
+            ],
+            None => vec![usage],
+        };
     }
     if tag == "current_mode_update" {
         let status = string(payload.get("text"));

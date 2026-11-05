@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use paperclip_runner_core::durable::{
     AcpxLaunchProfile, Command, CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig,
-    OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    OpenCodeLaunchProfile, QualifiedLaunchArtifact, PROVIDER_STATE_INCOMPATIBLE,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
@@ -2220,6 +2220,7 @@ fn cursor_cloud_durable_recovery_rejects_a_changed_proxy_profile_without_rewriti
         assert!(error
             .to_string()
             .contains("Cursor Cloud runner launch profile changed across durable recovery"));
+        assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     }
     assert_eq!(fs::read(&state_path).unwrap(), saved);
     fs::remove_dir_all(directory).unwrap();
@@ -2311,6 +2312,7 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(error.classification(), Some(PROVIDER_STATE_INCOMPATIBLE));
     let second_error = recovered
         .execute(&command(
             3,
@@ -2321,6 +2323,10 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
     assert!(second_error
         .to_string()
         .contains("launch profile changed across durable recovery"));
+    assert_eq!(
+        second_error.classification(),
+        Some(PROVIDER_STATE_INCOMPATIBLE)
+    );
     assert_eq!(fs::read(&state_path).unwrap(), state_before_recovery);
 
     let shutdown_error = recovered

@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { preservedAccountRuntimeState } from "../agent-provider-rate-limits.js";
 import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
 import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
@@ -1940,7 +1941,7 @@ export function createHeartbeatRunState(db: Db) {
     ) => {
       const agent = await getAgent(agentId);
       if (!agent) throw notFound("Agent not found");
-      await ensureRuntimeState(agent);
+      const runtimeBefore = await ensureRuntimeState(agent);
       const taskKey = readNonEmptyString(opts?.taskKey);
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
@@ -1959,7 +1960,8 @@ export function createHeartbeatRunState(db: Db) {
         updatedAt: new Date(),
       };
       if (!taskKey) {
-        runtimePatch.stateJson = {};
+        // Provider rate limits describe the account, not the session.
+        runtimePatch.stateJson = preservedAccountRuntimeState(runtimeBefore.stateJson);
       }
 
       const updated = await db

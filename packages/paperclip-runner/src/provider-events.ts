@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
+import { claudeHookCanonicalEvent, codexHookPayload, codexSafetyReviewPayload } from "./governance-events.js";
 import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
 import {
   toolFileChangesFromAcpContent,
@@ -1274,25 +1275,13 @@ export function canonicalProviderEventsFromCodex(
     ];
   }
   if (method === "hook/started" || method === "hook/completed") {
-    const run = record(params.run);
+    const payload = codexHookPayload(method, params.run, text(params.turnId));
     return [
       {
         eventType:
           method === "hook/started" ? "hook.started" : "hook.completed",
-        payload: {
-          schema: "paperclip.hook.v1",
-          hookId: safeId(text(run.id), "hook"),
-          event: text(run.eventName, "unknown"),
-          scope: text(run.scope, "provider"),
-          status:
-            method === "hook/started"
-              ? "running"
-              : text(run.status, "completed"),
-          blocking: run.executionMode === "blocking",
-          durationMs: integer(run.durationMs),
-          summary: text(run.statusMessage) || null,
-        },
-        itemId: safeId(text(run.id), "hook"),
+        payload,
+        itemId: String(payload.hookId),
       },
     ];
   }
@@ -1321,20 +1310,14 @@ export function canonicalProviderEventsFromCodex(
     method === "item/autoApprovalReview/started" ||
     method === "item/autoApprovalReview/completed"
   ) {
+    const payload = codexSafetyReviewPayload(method, params);
     return [
       {
         eventType: method.endsWith("started")
           ? "safety.review.started"
           : "safety.review.completed",
-        payload: {
-          schema: "paperclip.safety.review.v1",
-          reviewId: safeId(text(params.reviewId), "safety-review"),
-          targetExecutionId: text(params.targetItemId) || null,
-          status: method.endsWith("started") ? "running" : "completed",
-          decision: method.endsWith("started") ? "pending" : "unknown",
-          summary: null,
-        },
-        itemId: safeId(text(params.reviewId), "safety-review"),
+        payload,
+        itemId: String(payload.reviewId),
       },
     ];
   }
@@ -1748,6 +1731,8 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       },
     ];
   }
+  const claudeHook = claudeHookCanonicalEvent(event);
+  if (claudeHook) return [claudeHook];
   if (event.type === "status" && event.tag === "current_mode_update") {
     const statusText = text(event.text);
     const state = /review|plan/i.test(statusText) ? "entered" : "exited";

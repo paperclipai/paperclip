@@ -21,6 +21,21 @@ import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js"
 
 const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
+/** The exact source the restore recorder can retain. A released reusable lease
+ * qualifies only with a confirmed stop-and-retain receipt and the remote
+ * workspace binding proof. Native-sync descriptors have no such proof here. */
+async function cancelledWorkspaceSource(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">) {
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    cancelledWorkspaceSourceLease(),
+  ));
+  for (const lease of leases) {
+    if (lease.status !== "released" || lease.leasePolicy === "ephemeral") return lease;
+    if (run.runnerProfileJson?.nativeWorkspaceSync == null && hasConfirmedSandboxStopAndRetain(lease)
+      && await preparedRemoteWorkspaceSource(db, lease)) return lease;
+  }
+  return null;
+}
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
   const remote = remoteWorkspaceRunReferenceSchema.safeParse(profile?.remoteWorkspace);
@@ -215,7 +230,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
   for (const candidate of candidates) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
-    if (run && hasAcknowledgedNativeRunStopRequest(run)) {
+    if (run && hasAcknowledgedNativeRunStopRequest(run) && await cancelledWorkspaceSource(db, run)) {
       try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
@@ -277,11 +292,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
     if (finalization?.resultId) return null;
     if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
       return { ...entry, dueAt: Date.now() + 30_000 };
-    const [source] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      cancelledWorkspaceSourceLease(),
-    )).limit(1);
-    if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
+    if (await cancelledWorkspaceSource(db, run)) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
     const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();

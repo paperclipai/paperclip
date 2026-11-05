@@ -1108,16 +1108,17 @@ describe("nativeRunEventsToTranscript", () => {
 
   it("leaves families owned by other surfaces on the generic activity path", () => {
     expect(nativeRunEventsToTranscript([
-      event(1, "hook.completed", {
-        schema: "paperclip.hook.v1",
-        hookId: "hook-1",
-        event: "PreToolUse",
-        status: "completed",
-        summary: "lint hook",
+      event(1, "memory.citation.referenced", {
+        schema: "paperclip.memory.citation.v1",
+        citationId: "citation-1",
+        messageItemId: "message-1",
+        label: "Decision log",
+        available: false,
+        reference: null,
       }),
     ])).toEqual([
-      expect.objectContaining({ kind: "tool_call", toolUseId: "hook:hook-1" }),
-      expect.objectContaining({ kind: "tool_result", toolUseId: "hook:hook-1" }),
+      expect.objectContaining({ kind: "tool_call", toolUseId: "memory:citation-1" }),
+      expect.objectContaining({ kind: "tool_result", toolUseId: "memory:citation-1" }),
     ]);
   });
 
