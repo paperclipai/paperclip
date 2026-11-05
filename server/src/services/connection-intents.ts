@@ -125,6 +125,17 @@ function availableToolConnectionMethods(
   );
 }
 
+// Large enough for first-party catalogs such as GitHub's; aggregator catalogs
+// stay bounded and still report their total.
+const MAX_SCOPED_REQUEST_TOOL_NAMES = 100;
+
+/** Tells an agent outside a connection's grant how to request scoped access to it. */
+function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<{ toolName: string }>) {
+  const names = [...new Set(catalog.map(tool => tool.toolName))].sort();
+  const listed = names.slice(0, MAX_SCOPED_REQUEST_TOOL_NAMES);
+  return `Call connection_request again with connectionId ${JSON.stringify(connectionId)} and toolNames set to only the exact names this task needs. Available indexed tool names (first ${listed.length} of ${names.length}): ${JSON.stringify(listed)}. No access was granted.`;
+}
+
 export function connectionIntentService(db: Db) {
   const interactions = issueThreadInteractionService(db);
   const access = toolAccessService(db);
@@ -810,9 +821,16 @@ export function connectionIntentService(db: Db) {
         }
         const effective = await access.getEffectiveToolAssignmentsForAgent(context.run.companyId, context.agent.id);
         const installed = effective.installedConnections.some(item => item.id === connection.id);
-        const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
+        // Without toolNames the agent is asking whether it can use the service at all.
+        // Existing scoped access answers that; only named tools can request more.
+        const missing = !installed || (options.toolNames
+          ? tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id))
+          : !effective.allowedTools.some(allowed => allowed.connectionId === connection.id));
         if (missing && tools.length && tools.every(tool => Boolean(tool))) {
-          if (tools.length > 20) throw unprocessable("Specify the tools needed for this task (up to 20)");
+          // Without this guidance an agent outside the original grant (for example,
+          // one hired before GitHub was connected) cannot discover what to request
+          // and reports the company's connection as unavailable.
+          if (tools.length > 20) throw unprocessable(`Specify the tools needed for this task (up to 20). ${scopedToolRequestGuidance(connection.id, catalog)}`);
           accessRequest = {
             connectionId: connection.id, connectionName: connection.name,
             tools: tools.map(tool => ({ catalogEntryId: tool!.id, toolName: tool!.toolName, versionHash: tool!.versionHash,
