@@ -508,6 +508,13 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
             )?;
             let title = bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
             bounded_optional_text(payload, "status", 100, "runtime tool status")?;
+            // Display lineage only: the delegation (subagent) call that made this one.
+            bounded_optional_text(
+                payload,
+                "parentToolCallId",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+                "runtime tool parent",
+            )?;
             if let Some(locations) = optional_array(payload, "locations", "runtime tool locations")?
             {
                 if locations.len() > 2_000 {

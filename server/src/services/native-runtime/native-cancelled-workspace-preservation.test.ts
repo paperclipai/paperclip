@@ -10,6 +10,9 @@ import { requestWorkspaceRecovery } from "../workspace-recovery.js";
 import { inspectWorkspaceRecoverySource } from "../workspace-recovery-source.js";
 import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
   registerCancelledWorkspacePreservationWork } from "./native-failed-workspace-recovery.js";
+import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
+import { readRemoteWorkspaceWriterHold } from "../remote-workspace-writer-hold.js";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 
 (recoveryPostgresSupport.supported ? describe : describe.skip)("lifecycle-cancelled workspace preservation", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -157,6 +160,79 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
       expect(worker.nextWakeAt()).toBeNull();
     } finally { await worker.stop(); }
   }, 120_000);
+
+  // A warm (reusable) run that ends without success stops its sandbox and keeps
+  // the lease `released` under its reusable policy. Reassignment Stop reaches
+  // that state with the workspace still dirty and bound to the stopped writer.
+  async function stopReusableSource(f: Awaited<ReturnType<typeof seed>>) {
+    const [reusable] = await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" })
+      .where(eq(environmentLeases.id, f.leaseId)).returning();
+    const stopping = (await prepareSandboxStopAndRetain(db, reusable))!;
+    const stopped = (await settleStopOnlyCleanup(db, stopping, {
+      attemptId: String(stopping.metadata!.pendingCleanupAttemptId),
+      receipt: { providerLeaseId: f.reference.providerLeaseId, state: "stopped" },
+    }))!;
+    expect(stopped).toMatchObject({ status: "released", leasePolicy: "reuse_by_environment", cleanupStatus: "success" });
+    return stopped;
+  }
+
+  it.each(["worker", "startup-scan"] as const)("preserves a reassignment-stopped writer's files from its stopped reusable sandbox (%s)", async kind => {
+    const f = await seed();
+    const resultJson = { ...f.run.resultJson, reassignmentStopRequested: true };
+    await db.update(heartbeatRuns).set({ errorCode: "issue_reassigned", resultJson }).where(eq(heartbeatRuns.id, f.runId));
+    const stopped = await stopReusableSource(f);
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      if (kind === "startup-scan") await preserveCancelledNativeWorkspaces(db);
+      else await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(retained.resultJson).toMatchObject({ ...resultJson, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } });
+      expect(retained).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned", finishedAt: f.run.finishedAt });
+      // The stop receipt and reusable policy stay exactly as the release left them.
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(stopped);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect(action).toMatchObject({ ownerType: "board", evidence: { runId: f.runId,
+        automaticRecovery: { replay: "blocked" }, workspaceRestoreRecovery: { leaseIds: [f.leaseId] } } });
+      expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, actionId: action.id })).sources).toHaveLength(1);
+      // Preservation records the save obligation only. The stopped writer keeps
+      // the workspace until the saved files are published; nothing replays it.
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(await readRemoteWorkspaceWriterHold(db, { companyId: f.companyId,
+        authority: readRemoteWorkspaceAuthority(workspace.metadata)! })).toMatchObject({ kind: "held", writer: { runId: f.runId, ended: true } });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect(worker.nextWakeAt()).toBeNull();
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  it.each(["unconfirmed-stop", "writer-released", "workspace-saved"] as const)("does not retain a reusable source (%s)", async kind => {
+    const f = await seed();
+    let released: typeof environmentLeases.$inferSelect;
+    if (kind === "unconfirmed-stop") {
+      [released] = await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment", status: "released",
+        cleanupStatus: "success", releasedAt: new Date() }).where(eq(environmentLeases.id, f.leaseId)).returning();
+    } else {
+      released = await stopReusableSource(f);
+      // The workspace moved on: another writer owns it, or the writer's save already published.
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      const authority = readRemoteWorkspaceAuthority(workspace.metadata)!;
+      await db.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: kind === "writer-released"
+        ? { ...authority, writerRunId: randomUUID() } : { ...authority, writerRunId: null, dirty: false } } })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+    }
+    const before = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0];
+    await preserveCancelledNativeWorkspaces(db);
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try { await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready; }
+    finally { await worker.stop(); }
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(before);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(released);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
+  });
 
   it.each(["pending", "missing-dispatch", "invalid-dispatch", "foreign-company", "foreign-issue", "foreign-run", "turn-scope",
     "empty-intent-audit", "missing-ack-audit", "empty-ack-audit", "live-owner", "live-controller", "accepted-result",

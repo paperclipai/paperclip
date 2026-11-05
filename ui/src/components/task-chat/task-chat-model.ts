@@ -237,6 +237,8 @@ export interface TaskChatToolItem {
   durationMs?: number | null;
   /** Why the harness or a policy refused to run the tool. */
   blockedReason?: string;
+  /** Execution id of the delegation (subagent) that made this call. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -389,6 +391,13 @@ export interface TaskChatProtocolChild {
   status: string;
   metadata?: string;
   summary?: string;
+  /** Subagent type the provider dispatched (`Explore`, `general-purpose`). */
+  role?: string;
+  model?: string;
+  /** Latest provider progress summary while the child runs. */
+  progress?: string;
+  prompt?: string;
+  result?: string;
 }
 
 export interface TaskChatProviderActivityItem {
@@ -408,10 +417,48 @@ export interface TaskChatProviderActivityItem {
   outputTruncated?: boolean;
   /** Index of the latest provider event coalesced into this activity. */
   transcriptIndex?: number;
+  /** Provider activity identity, e.g. the delegation id for a subagent. */
+  activityId?: string;
+  /** Delegation (subagent) execution that made this tool call. */
+  parentToolUseId?: string;
+  /** First and latest provider event times coalesced into this activity. */
+  startedAtMs?: number;
+  updatedAtMs?: number;
   /** A retry status notice the turn has moved past. */
   resolved?: boolean;
   /** When the provider first reported this activity (ISO timestamp). */
   startedAt?: string;
+}
+
+export type TaskChatSubagentStatus = "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * A delegated subagent (Claude Agent/Task call, Codex or Cursor child) with
+ * the tool rows it made, nested under the parent turn.
+ */
+export interface TaskChatSubagent {
+  id: string;
+  /** Subagent type the provider dispatched, e.g. `Explore` or `general-purpose`. */
+  agentType: string;
+  /** Short task description the parent wrote for the child. */
+  description: string;
+  prompt?: string;
+  model?: string;
+  status: TaskChatSubagentStatus;
+  /** Latest provider progress summary (Claude `agentProgressSummaries`). */
+  progressSummary?: string;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+  /** Child tool/thinking rows, in order. */
+  activity: TaskChatActivityPhaseItem["items"];
+  result?: string;
+}
+
+/** Subagents dispatched together; one renders as a card, several as a tree. */
+export interface TaskChatSubagentGroupItem {
+  id: string;
+  kind: "subagent_group";
+  subagents: TaskChatSubagent[];
 }
 
 export interface TaskChatWorkspaceChangeItem {
@@ -531,6 +578,7 @@ export type TaskChatProtocolItem =
 
 /** Items a turn can group — everything except another turn. */
 export type TaskChatTurnChildItem =
+  | TaskChatSubagentGroupItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem
@@ -646,6 +694,7 @@ export type TaskChatItem =
   | TaskChatPlanDocumentItem
   | TaskChatTurnItem
   | TaskChatBriefItem
+  | TaskChatSubagentGroupItem
   | TaskChatProtocolItem;
 
 /** Latest lifecycle state wins for each request; terminal entries suppress stale pending cards. */

@@ -728,6 +728,14 @@ function fileChangeDiffEntries(
 
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
+  // A subagent's spawning call also arrives as a tool lifecycle on some
+  // transports. Its delegation card owns it, so the tool row is hidden.
+  const delegationIds = new Set<string>();
+  for (const event of events) {
+    if (!event.eventType.startsWith("delegation.")) continue;
+    const id = text(record(record(record(event.payload)?.prpEvent)?.payload)?.delegationId);
+    if (id) delegationIds.add(id);
+  }
   const startedToolIds = new Set<string>();
   const toolSignatures = new Map<string, string>();
   const completedToolIds = new Set<string>();
@@ -1024,6 +1032,33 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // A delegation carries its children (subagent type, prompt, progress,
+    // result) to the task-chat subagent card, so keep the full snapshot.
+    if (
+      event.eventType.startsWith("delegation.")
+      && payload.schema === "paperclip.delegation.v1"
+      && text(payload.delegationId)
+    ) {
+      const status = text(payload.status);
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "delegation",
+        eventType: event.eventType,
+        status: status === "failed"
+          ? "failed"
+          : status === "interrupted"
+            ? "interrupted"
+            : status === "completed" || status === "closed"
+              ? "completed"
+              : "running",
+        title: "Subagent",
+        summary: "Subagent",
+        payload,
+      });
+      continue;
+    }
+
     const cardActivity = cardProviderActivityEntry(event, payload, ts);
     if (cardActivity) {
       entries.push(cardActivity);
@@ -1070,9 +1105,10 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     ) {
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
-      if (!executionId) continue;
+      if (!executionId || delegationIds.has(executionId)) continue;
       const nativeToolItem = nativeToolItemsById.get(executionId);
       const presentation = toolPresentation(payload, nativeToolItem);
+      const parentToolUseId = text(payload.parentItemId);
       const detail = toolExecutionDetail(payload);
       // Providers refine a call as its input streams in ("Terminal" becomes
       // "node --test") and report the outcome at the end. Re-emit the call
@@ -1097,6 +1133,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
             : presentation.input,
           toolUseId: executionId,
           detail,
+          ...(parentToolUseId ? { parentToolUseId } : {}),
         });
         if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
       }

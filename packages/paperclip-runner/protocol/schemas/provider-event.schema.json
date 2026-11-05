@@ -66,6 +66,7 @@
         "outputBytes": { "type": "integer", "minimum": 0 },
         "outputTruncated": { "type": "boolean" },
         "outputDigest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+        "parentItemId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
         "fileChanges": {
           "description": "Files changed by this one edit call, each with a bounded patch. Paths are workspace-relative.",
           "type": "array",
@@ -111,7 +112,7 @@
         "delegationId": { "$ref": "#/$defs/id" },
         "action": { "enum": ["spawn", "message", "resume", "wait", "close"] },
         "status": { "enum": ["running", "waiting", "completed", "failed", "interrupted", "closed"] },
-        "children": { "type": "array", "maxItems": 64, "items": { "type": "object", "required": ["childId", "role", "model", "status", "summary", "activitySummary"], "properties": { "childId": { "$ref": "#/$defs/id" }, "role": { "type": ["string", "null"], "maxLength": 160 }, "model": { "type": ["string", "null"], "maxLength": 240 }, "status": { "enum": ["running", "waiting", "completed", "failed", "interrupted", "closed"] }, "summary": { "$ref": "#/$defs/nullableShortText" }, "activitySummary": { "$ref": "#/$defs/nullableShortText" } }, "additionalProperties": false } }
+        "children": { "type": "array", "maxItems": 64, "items": { "type": "object", "required": ["childId", "role", "model", "status", "summary", "activitySummary"], "properties": { "childId": { "$ref": "#/$defs/id" }, "role": { "type": ["string", "null"], "maxLength": 160 }, "model": { "type": ["string", "null"], "maxLength": 240 }, "status": { "enum": ["running", "waiting", "completed", "failed", "interrupted", "closed"] }, "summary": { "$ref": "#/$defs/nullableShortText" }, "activitySummary": { "$ref": "#/$defs/nullableShortText" }, "prompt": { "$ref": "#/$defs/nullableShortText" }, "result": { "$ref": "#/$defs/nullableShortText" } }, "additionalProperties": false } }
       },
       "additionalProperties": false
     },
