@@ -104,7 +104,7 @@ function authorSkillAssignmentScoped(o: SkillsObservation, skill: CompanySkillDe
 }
 function claimsGlobalSkillAssignment(reply: string): boolean {
   const claims = /\b(?:enabled|assigned|activated|attached)\s+(?:it|the skill|this skill)?\s*(?:(?:for|to)\s+)?(?:all|every|everyone)\b/gi;
-  return [...reply.matchAll(claims)].some(match => !/\b(?:not|never|didn't|haven't|hasn't)\b[^,;.!?]{0,35}$/i.test(reply.slice(0, match.index)));
+  return [...reply.matchAll(claims)].some(match => !/\b(?:not|never|didn't|haven't|hasn't)\s+(?:(?:been|ever|yet|automatically)\s+){0,2}$/i.test(reply.slice(0, match.index)));
 }
 export function gradeIntegratorSkills(value: unknown) {
   const c = checks(); const o = skillsObservation(value);
