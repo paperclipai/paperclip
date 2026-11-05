@@ -439,10 +439,6 @@ export async function prepareAcpxRuntimeSandbox(input: {
       `${JSON.stringify({
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
-        // Current Claude models default thinking display to "omitted", which
-        // streams signature-only thinking with no text. Ask for the provider's
-        // summarized thinking so reasoning reaches the task chat.
-        showThinkingSummaries: true,
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
         ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
           ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
