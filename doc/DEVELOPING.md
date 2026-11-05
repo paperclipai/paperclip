@@ -4567,3 +4567,5 @@ Cached agents retain only safe adapter display fields and an empty runtime confi
 A restored task shows its header and properties while uncached history is still loading. History is not persisted, and its normal placeholder remains until reads recover. The header stays visible across recovery.
 
 Query-cache cleanup snapshots storage keys before deletion because native storage can reorder them as records are removed. Flush cleanup affects only its owning account and yields if another account becomes active.
+
+Run `pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/disconnect-resilience.spec.ts` for the built-UI outage regressions. The suite uses fresh isolated local data, 20-second API interceptions, and a controlled sign-out session response. It covers retained tasks, comment and document recovery, queued-comment reloads, cached settings/sidebar/task reads, legacy Inbox reloads, real error status handling and sign-out clearing across several company records. The existing CI e2e shards discover it automatically. A real hosted restart or deploy remains a separate acceptance check.
