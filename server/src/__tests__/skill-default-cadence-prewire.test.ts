@@ -8,7 +8,10 @@ import { expect, it } from 'vitest';
 
 const guard = fileURLToPath(new URL('../../../scripts/fixtures/skill-default-cadence-network-guard.cjs', import.meta.url));
 const launcher = fileURLToPath(new URL('../../../scripts/test-skill-default-cadence.mjs', import.meta.url));
-it('the actual Vitest worker is preloaded with its own PID before fixture execution', () => {
+const prewireRequested = Object.hasOwn(process.env, 'PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG')
+  || process.env.PAPERCLIP_MAINTENANCE_PG0_CONTROLS === '1'
+  || process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_ACCEPTANCE === '1';
+it.skipIf(!prewireRequested)('the actual Vitest worker is preloaded with its own PID before fixture execution', () => {
   const guardState = (globalThis as any)[Symbol.for('paperclip.skill.default-cadence.prewire')];
   expect(guardState).toBeDefined();
   const observed = guardState.stats();
