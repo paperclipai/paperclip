@@ -1,15 +1,35 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const enabled = process.env.PAPERCLIP_TEST_REAL_CLAUDE_ACP === "1";
 
 describe.skipIf(!enabled)("real Claude ACP project settings", () => {
-  it.each([["1", false, false], ["0", true, false], ["1", false, true]])("uses trust mode %s (hook: %s, Runner isolated: %s)", async (userOnly, hookExpected, runnerIsolated) => {
+  it.each([["1", false], ["0", true]])("applies the same boundary to ACP settings discovery for mode %s", async (userOnly, projectExpected) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-acp-settings-test-"));
+    try {
+      const cwd = path.join(root, "workspace"); const home = path.join(root, "home"); const config = path.join(root, "config");
+      await mkdir(path.join(cwd, ".claude"), { recursive: true }); await mkdir(home); await mkdir(config);
+      await writeFile(path.join(cwd, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(project-secret)"] } }));
+      const settingsModule = pathToFileURL(createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/settings.js")).href;
+      const script = `import { SettingsManager } from ${JSON.stringify(settingsModule)}; const m = new SettingsManager(${JSON.stringify(cwd)}); try { await m.initialize(); console.log(JSON.stringify(m.getSettings())); } finally { m.dispose(); }`;
+      const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+        cwd, encoding: "utf8", timeout: 20000, env: {
+          PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+          HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: config,
+          PAPERCLIP_LEGACY_CLAUDE_USER_ONLY: userOnly, PAPERCLIP_ACPX_ISOLATED_CONTEXT: "0",
+        },
+      });
+      expect(output.includes("Read(project-secret)")).toBe(projectExpected);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 30000);
+
+  it.each([["1", false, false, true], ["0", true, false, true], ["1", false, true, false], ["1", false, false, false]])("uses trust mode %s (hook: %s, Runner isolated: %s, user opted in: %s)", async (userOnly, hookExpected, runnerIsolated, includeUser) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-acp-test-"));
     const cwd = path.join(root, "workspace");
     const home = path.join(root, "home");
@@ -49,6 +69,7 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
         PAPERCLIP_LEGACY_CLAUDE_SETTINGS: JSON.stringify({ permissions: { defaultMode: "default" },
           ...(runnerIsolated ? { hooks: { SessionStart: [{ hooks: [{ type: "command", command: `node "${hook}"` }] }] } } : {}) }),
         ...(runnerIsolated ? { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" } : {}),
+        ...(includeUser ? { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" } : {}),
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CI: "1",
       } });
       try {
@@ -84,7 +105,7 @@ describe.skipIf(!enabled)("real Claude ACP project settings", () => {
             await new Promise((resolve) => setTimeout(resolve, 500));
           }
           expect(hookRan).toBe(hookExpected);
-          expect(userHookRan).toBe(true);
+          expect(userHookRan).toBe(includeUser || runnerIsolated);
         } finally { if (timeout) clearTimeout(timeout); }
       } finally {
         const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));

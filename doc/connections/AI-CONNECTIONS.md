@@ -80,9 +80,10 @@ make selected skills discoverable on SSH.
 
 The legacy ACP adapter materializes selected skills separately and supplies their
 paths in its prompt. For managed local runs with no grant, the bundled provider
-uses only user settings and receives Paperclip's required permissions directly;
+excludes project and local settings and receives Paperclip's required permissions directly;
 custom providers are rejected because their source isolation cannot be verified.
-A granted local run loads user, project, and local ACP settings. The grant
+A granted local run loads project and local ACP settings. User settings are loaded
+only when previously opted in with `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1`. The grant
 does not apply to remote execution, Runner, or separate worktrees. In particular,
 remote legacy ACP retains its existing project/local loading behavior; the absence
 of a grant does not disable it. Runner's isolated ACPX mode uses its own provider

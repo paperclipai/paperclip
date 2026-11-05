@@ -26,7 +26,7 @@ export function ClaudeProjectTrust({ companyId, projectId, workspace, disabled, 
   });
   return <Card className="block space-y-3 p-5">
     <h2 className="text-lg font-semibold">Claude project settings</h2>
-    <p className="text-sm text-muted-foreground">Allow selected agents to load this workspace's Claude project settings, including skills and hooks. Hooks can execute commands with the agent's access. Changing the workspace source removes this trust.</p>
+    <p className="text-sm text-muted-foreground">Allow selected agents to load this workspace's Claude project settings, including skills, permissions, environment and hooks. Hooks can execute commands with the agent's access, and environment settings can affect the model connection. Grant trust only when you trust the workspace contents and the agent. Changing the workspace source removes this trust.</p>
     <p className="text-sm text-muted-foreground">Applies to managed Claude CLI and legacy ACP runs using this exact local workspace. Remote environments, Runner, and worktrees are not covered. Changes apply to subsequent runs.</p>
     {trust.isError || agents.isError ? <p className="text-sm text-destructive">Could not load Claude trust settings or agents.</p> : null}
     {agents.data?.filter((agent) => agent.adapterType === "claude_local").map((agent) =>

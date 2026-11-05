@@ -34,9 +34,9 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..2d0972362440769625bf3a5e0e1cdc1c
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
              ...(settings && { settings }),
-+            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "0" && { settingSources: ["user", "project", "local"] }),
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "0" && { settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user", "project", "local"] : ["project", "local"] }),
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1" && {
-+                settingSources: ["user"],
++                settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user"] : [],
 +                settings: {
 +                    ...(typeof settings === "object" && settings ? settings : {}),
 +                    ...JSON.parse(process.env.PAPERCLIP_LEGACY_CLAUDE_SETTINGS || "{}"),
@@ -76,10 +76,12 @@ diff --git a/dist/settings.js b/dist/settings.js
 index fff1f038c7233faac01575765b16ca47d52cf3e6..2d98307133ee2b3ac39589a5aabad56a7b99db4f 100644
 --- a/dist/settings.js
 +++ b/dist/settings.js
-@@ -88,6 +88,12 @@ export class SettingsManager {
+@@ -88,6 +88,13 @@ export class SettingsManager {
      async loadAllSettings() {
          try {
-             const resolved = await resolveSettings({ cwd: this.cwd });
+-            const resolved = await resolveSettings({ cwd: this.cwd });
++            const isolateLegacyProject = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_LEGACY_CLAUDE_USER_ONLY === "1";
++            const resolved = await resolveSettings({ cwd: this.cwd, ...(isolateLegacyProject && { settingSources: process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === "1" ? ["user"] : [] }) });
 +            const userPath = resolved.sources.find((entry) => entry.source === "user")?.path;
 +            for (const entry of resolved.sources) {
 +                if (userPath && entry.source === "project" && entry.path === userPath) {
