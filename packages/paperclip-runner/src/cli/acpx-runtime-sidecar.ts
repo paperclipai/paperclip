@@ -3,6 +3,7 @@ import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banner
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
+import { sidecarToolDetail } from "./acpx-tool-detail-redaction.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
@@ -29,8 +30,9 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxToolDetailFromRuntimeEvent, acpxToolInputPath, boundedAcpMeta, canonicalProviderEventsFromAcpxRuntimeEvent, type AcpRuntimeEventShape, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { acpxOpaqueToolItemId, createClaudeSubagentLineageTracker } from "../claude-subagent-lineage.js";
+import { claudeHookCanonicalEvent } from "../governance-events.js";
 import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { createKimiMessageProjection, type KimiProjectedMessageEvent } from "../drivers/acpx/kimi-message-boundary.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -692,8 +694,15 @@ async function pumpTurn(
       : null;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
+      // Claude hook lifecycle rides on session_info_update `_meta`; publish it
+      // as schema-validated display activity rather than a raw status event.
+      const hook = claudeHookCanonicalEvent(event);
+      if (hook) {
+        try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
+        continue;
+      }
       const sanitized = sanitizeRuntimeEvent(
-        normalizeMessage(normalizeToolEvent(boundRuntimeEventForNormalization(event))),
+        normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
       );
       const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
         ? trackSubagents({
@@ -1053,6 +1062,25 @@ type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
   paperclipFileChanges: ToolFileChange[] | null;
 };
 
+/**
+ * Read tool facts (native name, command, exit, refusal reason) from the raw
+ * update before rawInput is dropped, and attest a file-path argument as a
+ * workspace-relative location when the provider sent no location.
+ */
+function withSidecarToolDetail(raw: AcpRuntimeEvent, bounded: AcpRuntimeEvent): AcpRuntimeEvent {
+  if (raw.type !== "tool_call" || bounded.type !== "tool_call") return bounded;
+  const detail = acpxToolDetailFromRuntimeEvent(raw);
+  const inputPath = bounded.locations?.length ? undefined : acpxToolInputPath(raw);
+  const locations = inputPath
+    ? safeAcpxLocations([{ path: inputPath }], openParams?.workingDirectory, bounded.kind, bounded.title)
+    : undefined;
+  return {
+    ...bounded,
+    ...(locations?.length ? { locations } : {}),
+    paperclipToolDetail: detail,
+  } as AcpRuntimeEvent;
+}
+
 /** Re-key a single-child delegation event to the Rust tool identity. */
 function withDelegationIdentity(
   event: ReturnType<typeof canonicalProviderEventsFromAcpxRuntimeEvent>[number],
@@ -1146,6 +1174,7 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
       used: safeNonNegativeNumber(event.used),
       size: safeNonNegativeNumber(event.size),
       ...safeUsage(event.cost, event.breakdown),
+      ...safeRateLimit(event),
     });
   }
   if (event.type === "tool_call") {
@@ -1212,6 +1241,7 @@ function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent> & 
         ...(boundedTool.paperclipBoundedTool === true
           ? boundedTool.paperclipOutput
           : safeOutput(event.rawOutput)),
+        ...sidecarToolDetail(record(event).paperclipToolDetail),
         ...(boundedTool.paperclipBoundedTool === true && boundedTool.paperclipFileChanges
           ? { fileChanges: boundedTool.paperclipFileChanges }
           : {}),
@@ -1277,6 +1307,28 @@ function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
     },
     32 * 1024,
   );
+}
+
+/**
+ * Claude forwards its SDK `rate_limit_event` as
+ * `usage_update._meta["_claude/rateLimit"]`. Pass only the window fields the
+ * rate-limit normalizer reads; billing and overage details stay behind.
+ */
+function safeRateLimit(event: unknown): Record<string, unknown> {
+  const raw = record(event);
+  if (raw.tag !== "usage_update") return {};
+  const info = record(record(raw._meta)["_claude/rateLimit"]);
+  if (Object.keys(info).length === 0) return {};
+  const status = ["allowed", "allowed_warning", "rejected"].includes(String(info.status)) ? info.status : null;
+  const rateLimitType = typeof info.rateLimitType === "string" && /^[a-z0-9_]{1,64}$/.test(info.rateLimitType)
+    ? info.rateLimitType
+    : null;
+  const utilization = typeof info.utilization === "number" && Number.isFinite(info.utilization) && info.utilization >= 0
+    ? Math.min(info.utilization, 10)
+    : null;
+  const resetsAt = safeNonNegativeNumber(info.resetsAt);
+  if (status === null && utilization === null) return {};
+  return { rateLimit: { status, rateLimitType, utilization, resetsAt } };
 }
 
 function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {
