@@ -266,7 +266,10 @@ export function truthfulTeamPartial(
       )
     );
   });
-  return reported && !falseFull;
+  const subjects = [skill.slug, skill.slug.replaceAll("-", " "), skill.name]
+    .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const currentRecovery = new RegExp("(?:\\b(?:" + subjects + ")[*_`]*|^(?:it|(?:this|that) skill))\\s+(?:skill\\s+)?(?:is|has been)\\s+(?:(?:now|already|currently)\\s+)?(?:installed|available|resolved|recovered)\\b", "i");
+  return reported && !falseFull && !namedTeamSkillClauses(reply, skill, true).some(clause => currentRecovery.test(clause));
 }
 export function gradeTeamConditions(
   o: ExternalObservation,
