@@ -382,10 +382,6 @@ runs the real reconciler with a valid saved yield from `result_accepted`,
 `workspace_finalizing`, and `retryable_failure`. It verifies physical fencing
 before verified stop, automatic and operator recovery, successful export and commitment, hold resolution,
 unchanged saved results, retained approval/monitor waits, and no new provider wake.
-The [queued answer wake suite](../../server/src/services/native-runtime/native-workspace-queued-wake-recovery.test.ts)
-runs automatic and operator recovery while the assignee's never-started answer wake
-waits behind the saved run. Started wakes, recovery-action wakes and other agents'
-runs still prevent takeover.
 These local regressions do not prove a deployment platform stopped a foreign writer.
 
 Manual: reproduce an exhausted disposable action. Click once, verify pending
