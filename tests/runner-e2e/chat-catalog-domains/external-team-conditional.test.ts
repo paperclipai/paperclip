@@ -268,3 +268,12 @@ it("rejects a later same-skill current recovery claim while saved state still sh
   o.phaseReplies[0]!.body = "The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. The other three required skills installed.";
   expect(gradeTeamConditions(o, "initial").passed).toBe(true);
 });
+
+it("rejects named verb-object installation claims but keeps genuine noninstallation and other-skill success", () => {
+ const o=valid();
+ const start="The existing CTO was preserved and the imported role is CTO 2. Launch Checklist's slug is occupied. ";
+ o.phaseReplies[0]!.body=start+"We installed Launch Checklist under another slug.";
+ expect(gradeTeamConditions(o,"initial").passed).toBe(false);
+ o.phaseReplies[0]!.body=start+"We have not installed Launch Checklist. The other three required skills installed.";
+ expect(gradeTeamConditions(o,"initial").passed).toBe(true);
+});
