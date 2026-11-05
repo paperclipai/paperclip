@@ -202,9 +202,11 @@ retries only retained due intent and reconstructs it after restart, including
 removal for archived endpoints after credential cleanup. Confirmation replaces
 only the same current intent and generation; a completed remote call with a
 lost response remains pending. Current authorization errors retain visible
-attention debt instead of claiming registration succeeded. Each owner pass admits
-one due enrollment operation before normal event draining, then schedules only
-the earliest retained responsibility. Rollback leaves no committed intent to run.
+attention debt instead of claiming registration succeeded. Event draining and
+acknowledgments run before enrollment reconciliation. The owner then admits one
+due enrollment operation and schedules the earliest retained responsibility.
+A busy credential lease or enrollment failure retains a bounded retry without
+aborting that event drain. Rollback leaves no committed intent to run.
 
 Retirement sends the original responsible subject and the exact instance,
 company, endpoint, public ID, connection and monotonic generation. Cloud can
@@ -218,6 +220,17 @@ attention if that identity becomes unavailable. Unsupported capability or disabl
 new enrollment retains bounded retry responsibility; a closed generation or
 identity conflict requires attention. Current authorized confirmation is required
 before clearing the exact pending intent.
+
+Ordinary redeploys retain the same stack identity. To move enrollment to another
+stack, first confirm retirement under the old stack's authority, with no pending
+old intent. Then explicitly reconfigure under the new authorized stack at a newer
+runtime generation. The old stored identity remains until the new broker receipt
+matches the current intent and generation. An environment change cannot transfer
+live responsibility. Unavailable old authority remains visible attention.
+
+A missing or disabled signing credential also requires attention. Enrollment does
+not retry it as a broker outage. Incoming receipts retain typed attention before
+SDK admission; uncertain authentication does not acknowledge the receipt.
 
 Only authenticated `event_callback` messages use this durable lane. The sealed
 queue retains original bytes, signature, timestamp and acceptance time. The app
