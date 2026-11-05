@@ -250,3 +250,10 @@ complete eligibility receipt. Qualification starts from the saved pristine
 database, records the separate preparation phase, and then proves the normal
 bundled offline entry and empty-home restoration. Preparation alone cannot pass
 enrollment or active-agent release acceptance.
+
+The online preparation command loads the configured app key before copying. It
+requires a valid existing key and retains that key in its process environment
+so a missing file cannot create a replacement during publication. Its database
+connections have five-second lock waits and 30-second statement and idle
+transaction limits. Cancellation closes the command's clients and has a
+ten-second process-exit fallback for a dependency that does not settle.
