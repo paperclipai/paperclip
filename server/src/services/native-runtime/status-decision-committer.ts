@@ -1540,13 +1540,17 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "release_checkout") {
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
+    // Release only this run's own locks. A successor can claim execution
+    // without changing statusVersion, so a preserve decision committed after
+    // that claim must not clear it. Each SET reads the pre-update row.
+    const ownsExecution = sql`${issues.executionRunId} = ${input.runId}::uuid`;
     const [released] = await input.tx
       .update(issues)
       .set({
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
+        checkoutRunId: sql`case when ${issues.checkoutRunId} = ${input.runId}::uuid then null else ${issues.checkoutRunId} end`,
+        executionRunId: sql`case when ${ownsExecution} then null else ${issues.executionRunId} end`,
+        executionAgentNameKey: sql`case when ${ownsExecution} then null else ${issues.executionAgentNameKey} end`,
+        executionLockedAt: sql`case when ${ownsExecution} then null else ${issues.executionLockedAt} end`,
         updatedAt: new Date(),
       })
       .where(
@@ -1555,13 +1559,20 @@ async function materializeDecisionEffect(input: {
           eq(issues.companyId, input.companyId),
         ),
       )
-      .returning({ id: issues.id });
+      .returning({
+        id: issues.id,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      });
     if (!released) throw new Error("native_checkout_not_released");
     return {
       effectKind: effect.kind,
       targetType: "issue_checkout",
       targetId: released.id,
-      payload: { checkoutRunId: null, executionRunId: null },
+      payload: {
+        checkoutRunId: released.checkoutRunId,
+        executionRunId: released.executionRunId,
+      },
     };
   }
   if (effect.kind === "record_recovery") {
