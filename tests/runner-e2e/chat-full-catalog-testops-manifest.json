@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "a7a1059149853462ccbe34b92021d14b8e5c7f9b",
+  "targetSha": "2ec214914cdaa11148ab2527d2203303f1485e2f",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -1809,7 +1809,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "a7a1059149853462ccbe34b92021d14b8e5c7f9b",
+        "targetSha": "2ec214914cdaa11148ab2527d2203303f1485e2f",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "c88df15f509b2ac8638af826647a97d45f16bd1f"
       }
