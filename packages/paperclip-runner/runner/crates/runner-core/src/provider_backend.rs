@@ -1102,6 +1102,15 @@ fn normalize_codex_goal(value: &Value, working_now: bool) -> Option<SessionGoalS
     })
 }
 
+fn codex_goal_is_dormant(value: &Value) -> bool {
+    [value.get("workingNow"), value.pointer("/goal/workingNow")]
+        .into_iter()
+        .flatten()
+        .all(|working| working.as_bool() == Some(false))
+        && (value.get("goal") == Some(&Value::Null)
+            || normalize_codex_goal(value, false).is_some_and(|goal| goal.status != "active"))
+}
+
 fn goal_event_payload(
     goal: Option<&SessionGoalSnapshot>,
     capability: Option<&SessionGoalCapability>,
@@ -2338,28 +2347,18 @@ impl CodexCommandExecutor {
                         "dormant recovery goal probe failed: {error}"
                     ))
                 })?;
-                let goal = normalize_codex_goal(
-                    &live_goal,
-                    live_goal.get("workingNow").and_then(Value::as_bool) == Some(true)
-                        || live_goal
-                            .pointer("/goal/workingNow")
-                            .and_then(Value::as_bool)
-                            == Some(true),
-                );
-                if goal
-                    .as_ref()
-                    .is_some_and(|goal| goal.status == "active" || goal.working_now)
-                    || (live_goal.get("goal") != Some(&Value::Null) && goal.is_none())
-                {
+                if !codex_goal_is_dormant(&live_goal) {
                     return Err(DurableRunnerError::invalid(
                         "saved dormant Codex session resumed an active or unknown goal",
                     ));
                 }
-                let live_thread = provider.read_thread().map_err(|error| {
-                    DurableRunnerError::invalid(format!(
-                        "dormant recovery thread probe failed: {error}"
-                    ))
-                })?;
+                let live_thread = provider
+                    .read_thread_after_recovery_goal(codex_goal_is_dormant)
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "dormant recovery thread probe failed: {error}"
+                        ))
+                    })?;
                 if live_thread
                     .pointer("/thread/status/type")
                     .and_then(Value::as_str)

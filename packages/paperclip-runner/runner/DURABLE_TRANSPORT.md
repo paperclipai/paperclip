@@ -69,7 +69,9 @@ P0 reserve is an explicit unrecoverable condition.
 recovery integrity checks. There is no separate native recovery mode;
 `--source-reconcile` is rejected. Recovered dormant provider state with no
 uncertain effectful command must still be dormant after restoration. An
-unexpected live turn or active goal fails closed. Same-run active recovery and
+unexpected live turn or active goal fails closed. After reading the goal, the
+Runner checks goal updates received while waiting for the final thread read.
+Accepted updates stay queued for ordinary event delivery. Same-run active recovery and
 indeterminate command replay retain their existing behavior. Prepared
 state retains its existing no-restore behavior during reads and cleanup. It is
 not a candidate for new completed-predecessor admission; existing prepared

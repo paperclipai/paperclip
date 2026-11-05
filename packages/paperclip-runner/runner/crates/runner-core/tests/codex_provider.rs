@@ -77,9 +77,25 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
 }
 
 fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+    dormant_source_fixture_with_switches(directory, &[])
+}
+
+fn dormant_source_fixture_with_switches(
+    directory: &Path,
+    switches: &[&str],
+) -> (DurableRunnerConfig, Value) {
+    let mut switches_with_defaults = vec!["--record-process-start", "--durable-turn-ids"];
+    switches_with_defaults.extend_from_slice(switches);
     let config = durable_config(directory);
     let mut executor = CodexCommandExecutor::with_runner_config(directory, &config);
-    executor.execute(&command("prepare-source", 1, "run.prepare", json!({"provider":provider_config(directory, &["--record-process-start", "--durable-turn-ids"])}))).unwrap();
+    executor
+        .execute(&command(
+            "prepare-source",
+            1,
+            "run.prepare",
+            json!({"provider":provider_config(directory, &switches_with_defaults)}),
+        ))
+        .unwrap();
     executor
         .execute(&command("open-source", 2, "session.open", json!({})))
         .unwrap();
@@ -161,6 +177,78 @@ fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
         drop(recovered);
         fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[test]
+fn dormant_recovery_rejects_goal_activation_during_the_final_thread_read() {
+    let directory = temporary_directory("dormant-goal-during-read");
+    let trigger = directory.join("activate-goal");
+    let (config, _) = dormant_source_fixture_with_switches(
+        &directory,
+        &["--goal-on-thread-read-file", trigger.to_str().unwrap()],
+    );
+    fs::write(&trigger, b"active").unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    recovered.observe_recovery_state(&runner).unwrap();
+    let result = recovered.execute(&command("snapshot", 1, "session.snapshot", json!({})));
+    assert_eq!(call_count(&directory, "late-goal-on-thread-read"), 1);
+    let error = result.expect_err("late goal activation must refuse dormant recovery");
+    assert!(error.to_string().contains("saved dormant Codex"), "{error}");
+    let state: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["startupAttempt"]["directChildExitObserved"], true);
+    #[cfg(unix)]
+    assert!(
+        !std::process::Command::new("kill")
+            .args([
+                "-0",
+                &state["startupAttempt"]["processId"]
+                    .as_u64()
+                    .unwrap()
+                    .to_string()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "provider must be reaped before refusal returns"
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn dormant_recovery_delivers_a_paused_goal_observed_during_the_final_thread_read() {
+    let directory = temporary_directory("paused-goal-during-read");
+    let trigger = directory.join("paused-goal");
+    let (config, _) = dormant_source_fixture_with_switches(
+        &directory,
+        &["--goal-on-thread-read-file", trigger.to_str().unwrap()],
+    );
+    fs::write(&trigger, b"paused").unwrap();
+    let runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    recovered.observe_recovery_state(&runner).unwrap();
+    recovered
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .unwrap();
+    assert_eq!(call_count(&directory, "late-goal-on-thread-read"), 1);
+    let update = wait_for_executor_event(&mut recovered, "session.goal.updated");
+    assert_eq!(update.payload["goal"]["status"], "paused");
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -694,7 +782,7 @@ fn wait_for_provider_error(provider: &mut CodexProvider) -> String {
 }
 
 fn wait_for_executor_event(
-    executor: &mut CodexCommandExecutor,
+    executor: &mut impl CommandExecutor,
     expected_event_type: &str,
 ) -> PolledEvent {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
