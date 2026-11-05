@@ -531,6 +531,10 @@ impl AcpxProviderSession {
         self.transport.request(command, payload)
     }
 
+    pub(crate) fn buffered_event_count(&self) -> usize {
+        self.transport.buffered_events().len()
+    }
+
     pub fn start_turn(
         &mut self,
         turn_id: &str,

@@ -144,6 +144,11 @@ that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
 
+Before replacing an idle ACPX sidecar, ordinary next-turn and attachment
+admission retain its already-buffered read events under their source authority.
+The existing warm-quiesce snapshot exposes that ACK debt before attachment.
+The deliberate sidecar replacement and persistent session identity are unchanged.
+
 ## Host park eligibility
 
 `CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only

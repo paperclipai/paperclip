@@ -1439,6 +1439,7 @@ impl AcpxCommandExecutor {
             None
         };
         let tool_set = authorized_tool_set(payload)?;
+        self.retain_buffered_provider_events()?;
         let state = self
             .state
             .as_ref()
@@ -1731,6 +1732,14 @@ impl AcpxCommandExecutor {
         }
         if self.session.is_none() {
             return Err(DurableRunnerError::invalid("ACPX session is not open"));
+        }
+        // Retain the old sidecar's read tail before its MCP receipt epoch changes.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state().has_settled_turns())
+        {
+            self.retain_buffered_provider_events()?;
         }
         let (provider_process_will_be_replaced, previous_process_id) = self
             .session
@@ -2294,7 +2303,24 @@ impl AcpxCommandExecutor {
         {
             return Ok(());
         }
-        for _ in 0..MAX_EVENTS_PER_POLL {
+        self.poll_provider_events(MAX_EVENTS_PER_POLL)
+    }
+
+    fn retain_buffered_provider_events(&mut self) -> Result<(), DurableRunnerError> {
+        loop {
+            let count = self
+                .session
+                .as_ref()
+                .map_or(0, AcpxProviderSession::buffered_event_count);
+            if count == 0 {
+                return Ok(());
+            }
+            self.poll_provider_events(count.min(MAX_EVENTS_PER_POLL))?;
+        }
+    }
+
+    fn poll_provider_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+        for _ in 0..count {
             let events = self
                 .session
                 .as_mut()
@@ -2543,7 +2569,12 @@ impl CommandExecutor for AcpxCommandExecutor {
             {
                 self.snapshot_live_requests()
             }
-            "session.snapshot" => self.snapshot(),
+            "session.snapshot" => {
+                if command.payload.get("quiesceForWarmAttach") == Some(&Value::Bool(true)) {
+                    self.retain_buffered_provider_events()?;
+                }
+                self.snapshot()
+            }
             "session.close" | "session.destroy" => self.close_session(&command.command_type),
             "runner.suspend" => self.suspend(),
             "runner.shutdown" => {
