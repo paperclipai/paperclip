@@ -1017,9 +1017,13 @@ A TestOps-triggered job uses its requested selection. Targeted selections retain
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
 The report job creates a closed projection of case identities, checks, numeric
-usage and statuses. For controlled mode this happens inside the existing
-private-history boundary; raw attempts, controller evidence and chat reports
-remain there. Only the closed Allure results and receipt cross into the final
+usage and statuses. For controlled mode, `runner-protocol-testops.mjs export-runs`
+reads sanitized structured score/artifact records inside the existing
+private-history boundary. It binds the original grade, complete checks,
+attempt, model, provider and driver before it can emit a pass. Raw attempts,
+controller evidence and canonical chat reports remain private. Controlled
+reporting never invokes the public viewer; legacy publication keeps that path.
+Only the closed Allure results and receipt cross into the final
 protected reporting job. It checks source and attempt identity, uploads one result
 per selected case, and verifies the saved case and status bindings. Missing
 execution/report evidence becomes a broken result. A passing campaign row

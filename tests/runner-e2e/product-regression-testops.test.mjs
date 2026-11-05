@@ -270,3 +270,23 @@ test('workflow keeps reporting credentials and trusted code outside candidate/pr
   assert.match(reportingJob, /Finish the original TestOps job run\n\s+if: always\(\)/);
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf('\njobs:')), /workflow_call:/);
 });
+
+test('ordinary campaigns still run cells when the TestOps selection job is skipped', async () => {
+  const { parse } = await import('yaml');
+  const { jobs } = parse(await readFile(new URL('../../.github/workflows/runner-full-stack-e2e.yml', import.meta.url), 'utf8'));
+  const needs = name => [jobs[name].needs ?? []].flat();
+  const descends = name => needs(name).some(parent => parent === 'testops_selection' || descends(parent));
+  // GitHub's implicit success() also fails on a skipped ancestor, so any job
+  // below the optional selection must use a status function and then require
+  // each real dependency result itself.
+  const below = Object.keys(jobs).filter(descends);
+  assert.ok(below.includes('test') && below.includes('daytona_image'));
+  for (const name of below) {
+    const condition = String(jobs[name].if ?? '');
+    assert.match(condition, /always\(\)|!cancelled\(\)/, `${name} needs an explicit status function`);
+    if (condition.includes('always()') || name === 'catalog') continue;
+    for (const parent of needs(name).filter(parent => !['authorize', 'target_lock'].includes(parent))) {
+      assert.match(condition, new RegExp(`needs\\.${parent}\\.result == 'success'`), `${name} must still require ${parent}`);
+    }
+  }
+});

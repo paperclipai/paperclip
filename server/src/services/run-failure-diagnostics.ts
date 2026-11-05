@@ -3,6 +3,7 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
+import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
@@ -327,6 +328,9 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (leaseLoss.deadlineLateMs !== undefined) execution.controllerLeaseDeadlineLateMs = leaseLoss.deadlineLateMs;
     if (leaseLoss.renewalCount !== undefined) execution.controllerLeaseRenewalCount = leaseLoss.renewalCount;
   }
+  const reviewedChatDenial = run.errorCode === "setup_failed"
+    ? readReviewedChatBindingDenialReason(read(result, "reviewedChatBinding")) : null;
+  if (reviewedChatDenial) execution.reviewedChatBindingDenialReason = reviewedChatDenial;
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",

@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
-import { companies, createDb, companySecrets, projects, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -54,6 +57,76 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
+  async function withManagedPlugin(enabledCompanies: string[], run: () => Promise<void>) {
+    const root = await mkdtemp(path.join(tmpdir(), "delivery-managed-"));
+    await mkdir(path.join(root, "sandbox-providers/daytona"), { recursive: true });
+    vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] }, enabledCompanies: { daytona: enabledCompanies } } }));
+    try { await run(); }
+    finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  }
+  it("delivers to a managed plugin with no config row and a stale saved path only in the companies the document enables", async () => {
+    const unlistedCompanyId = randomUUID(), disabledCompanyId = randomUUID(), absentCompanyId = randomUUID();
+    await withManagedPlugin([companyId, disabledCompanyId, absentCompanyId], async () => {
+      const managedId = randomUUID(), ungrantedId = randomUUID();
+      const manifestJson = { resourceLifecycle: ["project"], capabilities: ["events.subscribe"] } as never;
+      await db.insert(companies).values([
+        { id: unlistedCompanyId, name: "Unlisted company", issuePrefix: `O${unlistedCompanyId.slice(0, 6)}` },
+        { id: disabledCompanyId, name: "Disabled company", issuePrefix: `D${disabledCompanyId.slice(0, 6)}` },
+      ]);
+      await db.insert(plugins).values([
+        { id: managedId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath: "/old/image/plugins/daytona", manifestJson },
+        { id: ungrantedId, pluginKey: ungrantedId, packageName: "ungranted", version: "1.0.0", status: "ready", manifestJson },
+      ]);
+      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: disabledCompanyId, enabled: false });
+      const resourceId = await event();
+      await db.transaction(async tx => {
+        await recordResourceCreationEvent(tx as unknown as Db, unlistedCompanyId, "project", randomUUID());
+        await recordResourceCreationEvent(tx as unknown as Db, disabledCompanyId, "project", randomUUID());
+      });
+      const d = delivery();
+      await d.run();
+      const delivered = (id: string) => d.call.mock.calls.filter(([plugin]) => plugin === id).map(([, , input]) => input.resourceId);
+      expect(delivered(managedId)).toEqual([resourceId]);
+      expect(delivered(ungrantedId)).toEqual([]);
+      expect(delivered(pluginId)).toEqual([resourceId]);
+      d.worker.dispose();
+    });
+  });
+  it("listens for a managed plugin with no config row until its last enabled company disables it", async () => {
+    await withManagedPlugin([companyId], async () => {
+      await db.delete(plugins);
+      const managedId = randomUUID();
+      await db.insert(plugins).values({ id: managedId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready",
+        manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+      const subscription = { unlisten: vi.fn(), state: {} };
+      vi.mocked(db.$client.listen).mockResolvedValueOnce(subscription as never);
+      const d = delivery();
+      await d.worker.ready;
+      expect(db.$client.listen).toHaveBeenCalledWith("paperclip_plugin_lifecycle", expect.any(Function), expect.any(Function));
+      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId, enabled: false });
+      d.applied();
+      await vi.waitFor(() => expect(subscription.unlisten).toHaveBeenCalledTimes(1));
+      d.worker.dispose();
+    });
+  });
+  it("does not listen for a managed plugin that the document enables for no company", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "delivery-managed-"));
+    await mkdir(path.join(root, "sandbox-providers/daytona"), { recursive: true });
+    vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+    try {
+      await db.delete(plugins);
+      await db.insert(plugins).values({ id: randomUUID(), pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready",
+        manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+      const d = delivery();
+      await d.worker.ready;
+      expect(db.$client.listen).not.toHaveBeenCalled();
+      d.worker.dispose();
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it("delivers project events to a storage provider only for projects attached to it", async () => {
     await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "workspaces.manage"], workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } } as never }).where(eq(plugins.id, pluginId));
     const [core] = await db.insert(projects).values({ companyId, name: "Core project" }).returning();
@@ -138,6 +211,76 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1);
     } finally { release(); worker.dispose(); await coordinator.stop(); }
   });
+  describe("agent runtime events", () => {
+    const runtimeManifest = (capabilities: string[]) => ({ resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe", ...capabilities] }) as never;
+    async function agent(name: string, requiredPluginIds: string[] | null) {
+      const [row] = await db.insert(agents).values({ companyId, name, adapterType: "process" }).returning({ id: agents.id });
+      await db.update(agents).set({ lifecycleRequiredPluginIds: requiredPluginIds }).where(eq(agents.id, row.id));
+      return row.id;
+    }
+    const delivered = (d: ReturnType<typeof delivery>) => new Set(d.call.mock.calls.map(c => c[2].resourceId));
+    async function drain(d: ReturnType<typeof delivery>) {
+      do { await d.run(); } while (await d.pending());
+    }
+
+    it("delivers only the agents a lifecycle plugin owns and acknowledges the rest", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const owned = await agent("Owned", [pluginId]);
+      await agent("Other plugin", [randomUUID()]);
+      await agent("No plugins", []);
+      await agent("Not selected", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([owned]));
+        expect(await pluginLifecycleInbox(db, pluginId).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("delivers a new event after an agent selects the plugin and reaches ready", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Later owned", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(d.call).not.toHaveBeenCalled();
+        await db.update(agents).set({ lifecycleState: "preparing", lifecycleRequiredPluginIds: [pluginId] }).where(eq(agents.id, id));
+        await db.update(agents).set({ lifecycleState: "ready" }).where(eq(agents.id, id));
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([id]));
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("delivers a deleted agent's event to a lifecycle plugin", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Removed", [pluginId]);
+      await db.delete(agents).where(eq(agents.id, id));
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(d.call.mock.calls.at(-1)?.[2]).toMatchObject({ resourceId: id, action: "delete" });
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("keeps delivering to a subscriber that does not manage agent lifecycles", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest([]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Observed", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([id]));
+      } finally {
+        d.worker.dispose();
+      }
+    });
+  });
+
   it("drains creation before transitions, recovers acknowledgments across dispatcher replacement, and ignores agent events", async () => {
     const id = await event(); await event(id, "update"); await event(id, "delete");
     await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", randomUUID()));

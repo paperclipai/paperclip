@@ -15,6 +15,7 @@ import { agentWakeupRequests, agents, companies, completionContracts, createDb, 
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { nativeRunProjectionWork } from "../services/native-runtime/native-run-projection-work.js";
 import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
+import { NATIVE_RUN_FAILED_UNEXPLAINED } from "../services/native-runtime/native-run-failure-explanation.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "../services/native-runtime/native-run-finalizer.js";
 import * as statusCommitter from "../services/native-runtime/status-decision-committer.js";
@@ -429,6 +430,25 @@ describe("committed native run projection lifecycle", () => {
     await coordinator!.stop(); await start(); await flush(); await quiet();
     expect((await read(binding.runId)).executionStatusDeliveryId).toBe(settled.executionStatusDeliveryId);
     expect(emitAgentTaskRun).toHaveBeenCalledTimes(1);
+  });
+  it("explains a failed accepted result when the finalizer projects the run", async () => {
+    const binding = await accepted("failed");
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const run = await read(binding.runId);
+    expect(run).toMatchObject({ status: "failed", errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode, error: NATIVE_RUN_FAILED_UNEXPLAINED.error });
+  });
+  it.each([
+    ["no recorded cause", null, null, NATIVE_RUN_FAILED_UNEXPLAINED.errorCode, NATIVE_RUN_FAILED_UNEXPLAINED.error],
+    ["an empty error", "adapter_failed", "  ", "adapter_failed", NATIVE_RUN_FAILED_UNEXPLAINED.error],
+    ["a recorded cause", "adapter_failed", "Adapter exited 1", "adapter_failed", "Adapter exited 1"],
+  ])("explains a failed accepted result in committed recovery projection with %s", async (_label, errorCode, error, expectedCode, expectedError) => {
+    const binding = await accepted("failed");
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    await db.update(heartbeatRuns).set({ errorCode, error }).where(eq(heartbeatRuns.id, binding.runId));
+    const run = await read(binding.runId);
+    expect(run.status).toBe("running");
+    await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
+    expect(await read(binding.runId)).toMatchObject({ status: "failed", errorCode: expectedCode, error: expectedError });
   });
   it("ignores routine company-only finalization hints and still repairs a committed run", async () => {
     await start(); await flush(); await quiet();

@@ -38,6 +38,7 @@ import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
 
 type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 
@@ -45,6 +46,7 @@ type SessionOpenStatus = "failed" | "rejected" | "indeterminate";
 function sessionOpenFailure(options: {
   status?: SessionOpenStatus;
   providerFailure?: Record<string, unknown>;
+  classification?: string;
 } = {}) {
   const status = options.status ?? "failed";
   const result = {
@@ -52,7 +54,7 @@ function sessionOpenFailure(options: {
       code: "command_execution_failed",
       message: options.providerFailure
         ? "Provider request failed"
-        : "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)",
+        : `failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=${options.classification ?? "session_ensure_failed"})`,
       ...(options.providerFailure ? { providerFailure: options.providerFailure } : {}),
     },
     status,
@@ -475,6 +477,53 @@ describe("native provider startup retry", () => {
     expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(secondHigh + 5_000);
     expect(state.issue.status).toBe("in_progress");
   });
+
+  it.each(["grok_model_mismatch", "requested_model_unsupported"])(
+    "stops at a session.open %s rejection with a choose-model action instead of a doomed retry",
+    async (classification) => {
+      const seeded = await seedRun(await createAgent());
+      await failStartup(seeded, sessionOpenFailure({ classification }));
+
+      const state = await read(seeded);
+      // No automatic same-run bootstrap retry: the selected model cannot start.
+      expect(state.coordinator).toMatchObject({
+        phase: "terminal_failure",
+        recoveryState: "blocked",
+        failureCode: "native_provider_model_rejected",
+        attempt: 1,
+        nextAttemptAt: null,
+        failureDetail: expect.objectContaining({
+          originalFailureCode: "native_provider_model_rejected",
+          providerSessionEstablished: false,
+          providerEventsExist: false,
+          checkpointExists: false,
+        }),
+      });
+      expect(String(state.coordinator.failureDetail?.nextAction)).toContain("Choose a supported model");
+      expect(state.run).toMatchObject({ status: "failed", errorCode: "native_provider_model_rejected" });
+      expect(state.issue.status).toBe("blocked");
+      expect(state.issue.executionRunId).toBeNull();
+      // A named, durable board action owns the next step.
+      expect(state.action).toMatchObject({
+        status: "active",
+        ownerType: "board",
+        cause: "native_provider_model_rejected",
+        returnOwnerAgentId: seeded.agentId,
+        wakePolicy: null,
+      });
+      expect(state.action!.nextAction).toContain("Choose a supported model");
+      // The no-replay settler must not fold this owned action into a silent hold.
+      await settleUnrecoverableExecutions(db);
+      expect((await read(seeded)).action).toMatchObject({ id: state.action!.id, status: "active" });
+      expect(await claimNativeSessionResumptions({
+        db,
+        runnerInstanceId: "startup-retry-test",
+        runIds: [seeded.runId],
+        now: new Date(Date.now() + 60 * 60_000),
+        deferIneligible: false,
+      })).toEqual([]);
+    },
+  );
 
   it("blocks with a clear reason once the bounded startup budget is exhausted", async () => {
     const seeded = await seedRun(await createAgent());

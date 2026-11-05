@@ -406,6 +406,15 @@ test('TestOps receives only a closed projection created inside the report bounda
   assert.equal(admits(false, true, false), false);
   assert.match(report, /environment:.*runner-e2e-private-history/u);
   assert.match(report, /Create the closed TestOps projection inside the report boundary[\s\S]*runner-protocol-testops\.mjs export/u);
+  const publicGrid = report.slice(report.indexOf('      - name: Render the same canonical grid'), report.indexOf('      - name: Create the closed TestOps projection'));
+  assert.match(publicGrid, /if: needs\.authorize\.outputs\.accounting_mode == 'legacy'/u);
+  assert.doesNotMatch(publicGrid, /testops_enabled|env -u|unset /u);
+  const sanitize = report.slice(report.indexOf('      - name: Project safe run records'), report.indexOf('      - name: Render the same canonical grid'));
+  assert.match(sanitize, /accounting_mode == 'legacy' \|\| needs\.authorize\.outputs\.testops_enabled == 'true'/u);
+  assert.match(sanitize, /runner-protocol-eval-campaign\.mjs sanitize/u);
+  const projection = workflowShell(report, 'Create the closed TestOps projection inside the report boundary');
+  assert.match(projection, /controlled\)[\s\S]*export-runs[\s\S]*campaign\.json runner-protocol-merged\/public-runs/u);
+  assert.match(projection, /legacy\)[\s\S]*export \\[\s\S]*runner-protocol-merged\/public-report/u);
   assert.match(report, /Transfer only the closed TestOps results and receipt[\s\S]*path: runner-protocol-testops-projection\//u);
   assert.match(publisher, /name: runner-protocol-testops-projection-/u);
   assert.doesNotMatch(publisher, /runner-protocol-eval-public-|runner-protocol-merged|private-history|AWS_ACCESS_KEY_ID|BRAINTRUST_API_KEY/u);

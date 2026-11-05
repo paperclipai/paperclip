@@ -539,7 +539,7 @@ describe("Agents", () => {
     const row = findAgentRow(container, "Paperclip Engineer With A Much Longer Display Name");
     expect(row).not.toBeNull();
     expect(row?.querySelector(".sm\\:hidden")).toBeNull();
-    expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
+    expect(row?.closest("tr")?.textContent).toContain("idle");
 
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
@@ -910,10 +910,10 @@ describe("Agents", () => {
     const checkbox = container.querySelector<HTMLButtonElement>('[aria-label="Select Alpha"]');
     expect(checkbox).not.toBeNull();
     await act(async () => { checkbox!.click(); });
-    expect(container.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
-    expect(container.textContent).toContain("Edit connection & model");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
+    expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("Edit connection & model");
     expect(mockRouterState.navigate).not.toHaveBeenCalled();
-    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Harness", "Connection", "Default model"]);
+    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Status", "Harness", "Connection", "Default model"]);
   });
 
   it.each([
@@ -996,7 +996,7 @@ describe("Agents", () => {
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     expect(row?.classList.contains("opacity-50")).toBe(false);
-    expect(row?.querySelector(".sm\\:hidden")?.textContent).toContain("paused");
+    expect(row?.closest("tr")?.textContent).toContain("paused");
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {
