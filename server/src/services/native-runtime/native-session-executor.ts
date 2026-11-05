@@ -1616,9 +1616,10 @@ export async function synchronizeCompletedProviderPlan(input: {
     input.event.eventType === "plan.updated" &&
     input.event.payload.complete === true;
   if (!proposal && !(completedChecklist && planMode)) return null;
-  const planningContext = planMode
-    ? input.execution.planningContext
-    : null;
+  const planningContext =
+    "executionMode" in input.execution && input.execution.executionMode === "plan"
+      ? input.execution.planningContext
+      : null;
   if (planMode && !planningContext) return null;
   const baseRevisionId = planningContext
     ? planningContext.baseRevisionId
