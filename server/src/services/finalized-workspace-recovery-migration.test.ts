@@ -162,6 +162,23 @@ describe.skipIf(!support.supported)("finalized workspace recovery preservation",
     await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
     expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).toBe(operationId);
   });
+  it("does not treat one old copyback as repair of several declared allocations", async () => {
+    const f = await fixture(true), otherLeaseId = randomUUID();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.reference.leaseId));
+    await db.insert(environmentLeases).values({ ...lease, id: otherLeaseId, providerLeaseId: randomUUID() });
+    await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence,
+      systemRecovery: { ...createSystemRecovery(f.runId), state: "complete" },
+      workspaceRecovery: { ...(f.action.evidence.workspaceRecovery as object), status: "recovered" },
+      historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: f.runId,
+        leaseIds: [f.reference.leaseId, otherLeaseId] },
+    } }).where(eq(issueRecoveryActions.id, f.action.id));
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_recovery", status: "succeeded", metadata: {
+        recoveryActionId: f.action.id, leaseId: f.reference.leaseId, providerLeaseId: f.reference.providerLeaseId,
+        descriptorSha256: f.reference.descriptorSha256, finalHostSha256: f.reference.finalHostSha256 } });
+    await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
+    expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).toBeNull();
+  });
   it("requires the exact receipt and leaves ordinary finalized references alone", async () => {
     const f = await fixture(true);
     expect(await readMigratedLegacyWorkspaceSource(db, { ...f, reference: f.reference })).toBeNull();

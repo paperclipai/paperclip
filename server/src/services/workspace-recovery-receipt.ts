@@ -108,7 +108,7 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
       if (receiptId) return receiptId;
       // A completed legacy copyback is still a valid receipt after its host
       // files move. Migration must not erase that independent recovery proof.
-      if (reference?.state !== "finalized") return null;
+      if (reference?.state !== "finalized" || allocations.length !== 1 || allocations[0].leaseId !== reference.leaseId) return null;
     }
   }
   if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;
