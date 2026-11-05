@@ -21,14 +21,17 @@ function websiteChecklistChecks(markdown: string): boolean[] {
   const mobileWaiver = (text: string) => {
     const clauses = text.split(/[.!?;\n]+/);
     const affirmative = clauses.some(clause => mobileRequirements.every(pattern => pattern.test(clause))
-      && !/\b(?:don't|do not|never|avoid|need not|skip|omit|ignore|optional|not required)\b/i.test(clause));
+      && !/\b(?:don't|do not|never|avoid|no need to|need not|skip|omit|ignore|optional|not required)\b/i.test(clause));
     return /\b(?:skip|omit|ignore|need not|not required|optional)\b/i.test(text)
-      || clauses.some(clause => [...clause.matchAll(/\b(?:don't|do not|never|avoid)\s+/gi)].some(negation => {
+      || clauses.some(clause => [...clause.matchAll(/\b(?:don't|do not|never|avoid|no need to)\s+/gi)].some(negation => {
         const action = clause.slice(negation.index + negation[0].length).trimStart();
         const target = /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.exec(action);
         const overflow = /\boverflow(?:ing)?\b/i.exec(action);
         const restriction = /\b(?:on|with|using|against)\s+(.+)$/i.exec(action)?.[1];
-        const qualified = !!restriction && !/\b(?:375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
+        const qualified = !!restriction
+          && /\b(?:cached|stale|outdated|previous|old|archived)\b/i.test(restriction)
+          && /\b(?:build|version|snapshot|artifact|bundle)\b/i.test(restriction)
+          && !/\b(?:any|all|every|current|live|selected|375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
         return !!target && (!overflow || target.index < overflow.index) && !(affirmative && qualified);
       }));
   };
