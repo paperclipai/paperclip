@@ -410,6 +410,11 @@ export function TaskChatQueuedMessages({
         onDragEnd={(event) => void handleDragEnd(event)}
       >
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+          {/* Bounded so a long queue scrolls here instead of covering the conversation. */}
+          <div
+            className="max-h-40 overflow-y-auto overscroll-contain"
+            data-testid="task-chat-queued-messages-list"
+          >
           {entries.map((entry) => {
             const action =
               pending?.commentId === entry.comment.id ? pending.action : null;
@@ -436,6 +441,7 @@ export function TaskChatQueuedMessages({
               />
             );
           })}
+          </div>
         </SortableContext>
       </DndContext>
       {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message}</p> : null}
