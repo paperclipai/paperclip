@@ -111,7 +111,9 @@ describePostgres("plugin run configuration through adapter dispatch", () => {
     prepare.mockRejectedValue(new Error("classifier unavailable"));
     const { finished, input } = await run(f);
     expect(input?.config).toMatchObject({ model: "agent-model", modelReasoningEffort: "high" });
-    expect(finished.contextSnapshot?.pluginRunConfiguration).toBeUndefined();
+    expect(finished.contextSnapshot?.pluginRunConfiguration).toEqual({ runId: finished.id, adapterConfig: {}, decisions: [] });
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, finished.id), eq(heartbeatRunEvents.eventType, "plugin_run_configuration")));
+    expect(events).toHaveLength(0);
   });
 
   it("does not call a plugin that is disabled for the company", async () => {

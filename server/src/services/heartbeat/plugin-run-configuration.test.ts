@@ -84,6 +84,19 @@ describe("plugin run configuration", () => {
     expect(appendRunEvent).not.toHaveBeenCalled();
   });
 
+  it("reuses an empty recorded decision without calling plugins again", async () => {
+    const { manager, call } = workers({ a: () => ({ adapterConfig: { model: "other-model" } }) });
+    const run = { id: "run", companyId: "company", invocationSource: "assignment", scheduledRetryAttempt: 0 } as Parameters<typeof applyPluginRunConfiguration>[1]["run"];
+    const appendRunEvent = vi.fn();
+    const recorded = await applyPluginRunConfiguration({} as Db, {
+      run, agent: { id: "agent", companyId: "company", adapterType: "claude_local" }, config: {}, issue: null, issueOverrides: null,
+      context: { pluginRunConfiguration: { runId: "run", adapterConfig: {}, decisions: [] } },
+    }, { workerManager: manager as PluginWorkerManager, appendRunEvent });
+    expect(recorded).toBeNull();
+    expect(call).not.toHaveBeenCalled();
+    expect(appendRunEvent).not.toHaveBeenCalled();
+  });
+
   it("lets per-issue overrides win over the plugin decision", () => {
     expect(applyPluginRunAdapterConfig({ adapterConfig: { model: "operator-model", cwd: "/work" }, useProjectWorkspace: true }, { model: "small-model", effort: "low" }))
       .toEqual({ adapterConfig: { model: "operator-model", effort: "low", cwd: "/work" }, useProjectWorkspace: true });

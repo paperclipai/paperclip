@@ -144,12 +144,12 @@ export async function applyPluginRunConfiguration(
     issueOverrides: pickPluginRunAdapterConfig(input.issueOverrides?.adapterConfig ?? null),
   });
   const adapterConfig = mergePluginRunDecisions(decisions);
-  if (Object.keys(adapterConfig).length === 0) return input.issueOverrides;
   const configuration: PluginRunConfiguration = { runId: run.id, adapterConfig, decisions };
   context.pluginRunConfiguration = configuration;
   await db.update(heartbeatRuns)
     .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ pluginRunConfiguration: configuration })}::jsonb` })
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId)));
+  if (Object.keys(adapterConfig).length === 0) return input.issueOverrides;
   await services.appendRunEvent(run, {
     eventType: "plugin_run_configuration", stream: "system", level: "info",
     message: "Plugin set run configuration",

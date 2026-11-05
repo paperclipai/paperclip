@@ -728,8 +728,9 @@ for the run before preparation. The payload contains `adapterConfig` (the merged
 allowlisted keys), `decisions` (the plugin key, its allowlisted keys and its
 optional reason, in install order) and `overriddenByIssue` (the keys that the
 operator's per-issue overrides keep). The payload contains no issue text and no
-credentials. The heartbeat writes no event when no plugin sets a value, and a
-recovered run that reuses the recorded result writes no second event. The event
+credentials. The heartbeat writes no event when no plugin sets a value, but it
+still records the empty result in the run context snapshot. A recovered run that
+reuses the recorded result calls no plugin and writes no second event. The event
 stays in the instance run log and creates no Telemetry or OpenTelemetry export.
 
 ## Managed Agent File Save Receipts

@@ -722,10 +722,11 @@ Rules:
 - Per-issue overrides that an operator sets on the issue win over the plugin.
 - The host does not call the hook for agents that use an AI connection router.
   The router owns model and effort for those agents.
-- The host records the merged result in the run context snapshot and writes a
-  `plugin_run_configuration` run-log event. A recovered run reuses the recorded
-  result and does not call the plugin again. A retry is a new run and calls the
-  plugin again, with a higher retry attempt.
+- The host records the merged result in the run context snapshot, also when the
+  result is empty. It writes a `plugin_run_configuration` run-log event only when
+  a plugin sets a value. A recovered run reuses the recorded result and does not
+  call the plugin again. A retry is a new run and calls the plugin again, with a
+  higher retry attempt.
 - The adapter decides whether a key applies. An adapter ignores keys that it does
   not read.
 
