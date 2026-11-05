@@ -10,7 +10,7 @@ const transitionOnly = process.argv.includes('--instance-transition-only');
 const normalOwnerOnly = process.argv.includes('--normal-owner-only');
 const server = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
-const guard = path.join(server, 'src/services/chat-channels/slack/cloud-test-prewire.cjs');
+const guard = path.join(server, 'src/__tests__/helpers/slack-cloud/prewire.cjs');
 const names = ['PAPERCLIP_SLACK_TEST_DATABASE_URL', 'SLACK_EVENT_TEST_DATABASE_URL'];
 const urls = names.map(name => {
   if (!process.env[name]) throw new Error(`Set ${name} to an owned dedicated PostgreSQL test database`);

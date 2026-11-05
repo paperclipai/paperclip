@@ -1,4 +1,4 @@
-import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "./cloud-test-transport.js";
+import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "../../../__tests__/helpers/slack-cloud/transport.js";
 import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -183,7 +183,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     const markerPath = path.join(secretDirectory, "normal-process-marker.json");
     const markerText = `slack-domain-once-${id}`;
     await db.update(agents).set({ adapterConfig: { command: process.execPath, cwd: secretDirectory,
-      args: ["--require", fileURLToPath(new URL("./cloud-test-prewire.cjs", import.meta.url)), "-e", `if(process.env.SLACK_GATE_GUARD_PID!==String(process.pid))throw Error("child prewire guard missing");require("node:fs").writeFileSync(${JSON.stringify(markerPath)},JSON.stringify({pid:process.pid,runId:process.env.PAPERCLIP_RUN_ID,marker:${JSON.stringify(markerText)}}),{flag:"ax"});console.log(${JSON.stringify(markerText)});`],
+      args: ["--require", fileURLToPath(new URL("../../../__tests__/helpers/slack-cloud/prewire.cjs", import.meta.url)), "-e", `if(process.env.SLACK_GATE_GUARD_PID!==String(process.pid))throw Error("child prewire guard missing");require("node:fs").writeFileSync(${JSON.stringify(markerPath)},JSON.stringify({pid:process.pid,runId:process.env.PAPERCLIP_RUN_ID,marker:${JSON.stringify(markerText)}}),{flag:"ax"});console.log(${JSON.stringify(markerText)});`],
       timeoutSec: 10, graceSec: 1 } }).where(eq(agents.id, agentId));
     const vault = secretService(db), refs: ToolCredentialSecretRef[] = [];
     for (const [key, value] of Object.entries({ botToken: "xoxb-fixture", signingSecret })) {

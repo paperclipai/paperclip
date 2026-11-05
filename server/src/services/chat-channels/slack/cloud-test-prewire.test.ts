@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
-const guard = fileURLToPath(new URL("./cloud-test-prewire.cjs", import.meta.url));
+const guard = fileURLToPath(new URL("../../../__tests__/helpers/slack-cloud/prewire.cjs", import.meta.url));
 const launcher = fileURLToPath(new URL("../../../../scripts/test-slack-cloud-postgres.mjs", import.meta.url));
 const cleanEnv = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, NODE_OPTIONS: "" });
 

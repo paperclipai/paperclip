@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import type { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
 import type { createChatCredentials } from "../credentials.js";
 import type { EndpointRow, InternalSetupState } from "../runtime-types.js";
-import { receiveSlackCloudEvent, type CurrentSlackCloudBinding, type SlackCloudEvent } from "./cloud-event.js";
+import { SlackCloudReceiptError, receiveSlackCloudEvent, type CurrentSlackCloudBinding, type SlackCloudEvent } from "./cloud-event.js";
 
 import { resolveSlackCloudSigningSecret } from "./cloud-signing-secret.js";
 
@@ -30,10 +30,10 @@ export function createSlackCloudEventIngress(db: Db, options: {
 }) {
   return registerSlackCloudEventIngress(db, async event => {
     const value = event.payload.slackEvent;
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Slack Cloud receipt");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new SlackCloudReceiptError("invalid_receipt", "invalid");
     const packet = value as Record<string, unknown>;
     if (typeof packet.endpointId !== "string" || !/^[a-f0-9-]{36}$/i.test(packet.endpointId))
-      throw new Error("Invalid Slack Cloud endpoint");
+      throw new SlackCloudReceiptError("invalid_receipt", "invalid");
     const [initial] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, packet.endpointId)).limit(1);
     if (!initial || initial.provider !== "slack" || ["archived", "paused", "revoked"].includes(initial.status)) return;
     const binding = await options.withCredentialMutationLease(initial, async (lease): Promise<CurrentSlackCloudBinding | null> => {

@@ -18,7 +18,7 @@ import { registerGitHubConnectionEventWork } from "../../github-connection-work.
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../../paperclip-cloud-connector.js";
 import { secretService } from "../../secrets.js";
 import type { InternalSetupState } from "../runtime-types.js";
-import { guardSlackFixtureNetwork } from "./cloud-test-transport.js";
+import { guardSlackFixtureNetwork } from "../../../__tests__/helpers/slack-cloud/transport.js";
 
 const appUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SLACK_TEST_DATABASE_URL");
 const cloudUrl = resolveExternalTestDatabaseUrl("SLACK_EVENT_TEST_DATABASE_URL");

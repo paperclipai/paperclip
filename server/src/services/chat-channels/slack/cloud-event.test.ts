@@ -1,4 +1,4 @@
-import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "./cloud-test-transport.js";
+import { guardSlackFixtureNetwork, stubSlackFixtureTransport } from "../../../__tests__/helpers/slack-cloud/transport.js";
 import { createHmac, createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { verifySlackSignature } from "@chat-adapter/slack/webhook";

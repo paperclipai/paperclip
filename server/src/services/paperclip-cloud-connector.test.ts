@@ -701,10 +701,10 @@ function seal(
   recipientPublicKey: KeyObject,
   purpose: "initial" | "access" | "events",
   configValue: PaperclipCloudConnectorConfig,
-  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES | "slack.manager" | "github.bot" | "github.code",
+  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES | "slack.manager" | "slack.events.v1" | "github.bot" | "github.code",
 ) {
-  const provider = profile.startsWith("github.") ? "github" : profile === "slack.manager" ? "slack" : "google";
-  const scopes = provider === "github" ? [] : profile === "slack.manager" ? SLACK_MANAGER_SCOPES : GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile as keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES].scopes;
+  const provider = profile.startsWith("github.") ? "github" : profile.startsWith("slack.") ? "slack" : "google";
+  const scopes = provider === "github" || profile === "slack.events.v1" ? [] : profile === "slack.manager" ? SLACK_MANAGER_SCOPES : GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile as keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES].scopes;
   const ephemeral = generateKeyPairSync("x25519");
   const ephemeralJwk = ephemeral.publicKey.export({ format: "jwk" }) as { x: string };
   const recipientJwk = recipientPublicKey.export({ format: "jwk" }) as { x: string };
@@ -795,5 +795,68 @@ describe("dedicated App gateway delivery", () => {
     expect(result?.events.map(event => event.id)).toEqual(["healthy", "legacy"]);
     expect(result?.events[0]?.payload.githubApp).toEqual(packet);
     expect(JSON.stringify(result)).not.toContain('"ct"');
+  });
+});
+
+
+describe("sealed Slack event connector transport", () => {
+  it("opens a Slack event through the normal outer lease without exposing ciphertext or changing callback bytes", async () => {
+    const keys = config();
+    const createdAt = "2026-11-05T10:00:00.000Z";
+    const bindingId = `slack-event:${"a".repeat(64)}`;
+    const packet = { version: 1, instanceId, environment: "staging", bindingId, acceptedAt: createdAt,
+      rawBody: Buffer.from('{ "event_id": "EvFixture", "text": "original bytes" }').toString("base64"),
+      timestamp: "1793872800", signature: `v0=${"b".repeat(64)}` };
+    const inner = seal(packet, keys.sealPublicKey, "events", keys.config, "slack.events.v1");
+    const outer = seal({ v: 1, instanceId, environment: "staging", leaseId: "lease-slack", events: [
+      { id: "receipt-slack", provider: "slack", event: "event_callback", createdAt, installationId: bindingId,
+        bindingIds: [bindingId], payload: { slackEvent: { bindingId, sealed: inner } } },
+    ] }, keys.sealPublicKey, "events", keys.config, "github.code");
+    const connector = createPaperclipCloudConnector({ config: keys.config,
+      request: vi.fn(async () => Response.json({ leaseId: "lease-slack", sealed: outer })) as typeof fetch });
+    const result = await connector.leaseEvents({ subject, companyId });
+    expect(result?.failedEventIds).toBeUndefined();
+    expect(result?.events).toHaveLength(1);
+    expect(result?.events[0]?.payload.slackEvent).toEqual(packet);
+    expect(JSON.stringify(inner)).not.toContain("original bytes");
+    expect(JSON.stringify(result)).not.toContain('"ct"');
+  });
+
+  it.each(["binding", "acceptedAt", "instance", "environment", "key", "profile"] as const)(
+    "isolates an invalid inner Slack %s while retaining a healthy sibling", async failure => {
+      const keys = config();
+      const createdAt = "2026-11-05T10:00:00.000Z";
+      const bindingId = `slack-event:${"a".repeat(64)}`;
+      const packet = { version: 1, instanceId, environment: "staging", bindingId, acceptedAt: createdAt, rawBody: "e30=" };
+      const changed = { ...packet, ...(failure === "binding" ? { bindingId: "other" } : {}),
+        ...(failure === "acceptedAt" ? { acceptedAt: "2026-11-05T10:00:00.001Z" } : {}),
+        ...(failure === "instance" ? { instanceId: "foreign" } : {}),
+        ...(failure === "environment" ? { environment: "production" } : {}) };
+      const event = (id: string, inner: unknown) => ({ id, provider: "slack", event: "event_callback", createdAt,
+        installationId: bindingId, bindingIds: [bindingId], payload: { slackEvent: { bindingId, sealed: inner } } });
+      const bad = seal(changed, failure === "key" ? config().sealPublicKey : keys.sealPublicKey, "events", keys.config,
+        failure === "profile" ? "slack.manager" : "slack.events.v1");
+      const outer = seal({ v: 1, instanceId, environment: "staging", leaseId: "lease-slack", events: [
+        event("bad", bad), event("healthy", seal(packet, keys.sealPublicKey, "events", keys.config, "slack.events.v1")),
+      ] }, keys.sealPublicKey, "events", keys.config, "github.code");
+      const connector = createPaperclipCloudConnector({ config: keys.config,
+        request: vi.fn(async () => Response.json({ leaseId: "lease-slack", sealed: outer })) as typeof fetch });
+      await expect(connector.leaseEvents({ subject, companyId })).resolves.toMatchObject({
+        leaseId: "lease-slack", failedEventIds: ["bad"], events: [{ id: "healthy", payload: { slackEvent: packet } }],
+      });
+    });
+
+  it.each([true, false])("selects the matching signed Slack operation receipt (active=%s)", async active => {
+    const keys = config();
+    const enrollment = { active, endpointId: "endpoint", runtimeGeneration: 7 };
+    const enrolled = { version: 1, bindingId: "enrolled" }, retired = { version: 1, runtimeGeneration: 7 };
+    const request = vi.fn(async () => Response.json({ enrollment: enrolled, retirement: retired }));
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    await expect(connector.slackEventEnrollment({ subject, companyId, enrollment })).resolves.toEqual(active ? enrolled : retired);
+    expect(request).toHaveBeenCalledOnce();
+    const [url, init] = request.mock.calls[0] as unknown as [string | URL, RequestInit];
+    expect(new URL(String(url)).pathname).toBe("/v1/connector/slack-events");
+    expect(typeof init.body).toBe("string");
+    expect(JSON.parse(String(init.body))).toMatchObject({ enrollment: JSON.stringify(enrollment) });
   });
 });

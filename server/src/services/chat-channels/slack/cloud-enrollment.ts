@@ -7,6 +7,7 @@ import type { createChatCredentials } from "../credentials.js";
 import type { InternalSetupState } from "../runtime-types.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { logger } from "../../../middleware/logger.js";
+import { HttpError } from "../../../errors.js";
 
 import { resolveSlackCloudSigningSecret } from "./cloud-signing-secret.js";
 import { SlackCloudReceiptError } from "./cloud-event.js";
@@ -24,6 +25,10 @@ export function registerSlackCloudEnrollmentOwner(db: Db, owner: Owner) {
   return () => { if (owners.get(db) === owner) owners.delete(db); };
 }
 
+function slackCloudEnrollmentIsActive(endpoint: { status: string }, connection: { status: string; enabled: boolean }) {
+  return ["active", "verifying", "attention"].includes(endpoint.status) && connection.status === "active" && connection.enabled;
+}
+
 export async function stageSlackCloudEnrollmentIntent(db: Db, endpointId: string, actorUserId: string | null | undefined) {
   let config: ReturnType<typeof paperclipCloudConnectorConfigFromEnv>;
   try { config = paperclipCloudConnectorConfigFromEnv(); } catch { config = null; }
@@ -33,7 +38,7 @@ export async function stageSlackCloudEnrollmentIntent(db: Db, endpointId: string
   if (!current || current.endpoint.provider !== "slack") return;
   const endpoint = current.endpoint, setup = endpoint.setup as InternalSetupState;
   const generation = Number(setup.runtimeGeneration ?? 0);
-  const active = ["active", "verifying", "attention"].includes(endpoint.status) && current.connection.status === "active" && current.connection.enabled;
+  const active = slackCloudEnrollmentIsActive(endpoint, current.connection);
   const custodyInstance = setup.slackCloudIntent?.instanceId ?? setup.slackCloudInstanceId;
   const custodySubject = setup.slackCloudIntent?.subject ?? setup.slackCloudSubject;
   const oldRetired = !setup.slackCloudIntent && setup.slackCloudInstanceId
@@ -91,7 +96,36 @@ export async function reconcilePendingSlackCloudEnrollments(db: Db, now: Date): 
     let due = deadline(intent);
     if (!Number.isFinite(due)) continue;
     if (due <= now.getTime()) {
-      if (owner) await owner(endpoint.id);
+      if (owner) {
+        try { await owner(endpoint.id); }
+        catch (error) {
+          if (error instanceof HttpError && error.status === 409 && error.details && typeof error.details === "object"
+            && "code" in error.details && error.details.code === "chat_endpoint_credentials_busy") {
+            try {
+              if (intent.companyId === endpoint.companyId && intent.endpointId === endpoint.id
+                && intent.publicId === endpoint.publicId && intent.connectionId === endpoint.connectionId
+                && intent.runtimeGeneration === Number((endpoint.setup as InternalSetupState).runtimeGeneration ?? 0)) {
+                await db.transaction(async tx => {
+                  const sameIntent = and(eq(chatEndpoints.id, endpoint.id), eq(chatEndpoints.companyId, intent.companyId),
+                    eq(chatEndpoints.provider, "slack"), eq(chatEndpoints.publicId, intent.publicId), eq(chatEndpoints.connectionId, intent.connectionId),
+                    sql`${chatEndpoints.setup}->'runtimeGeneration' = ${JSON.stringify(intent.runtimeGeneration)}::jsonb`,
+                    sql`${chatEndpoints.setup}->'slackCloudIntent' = ${JSON.stringify(intent)}::jsonb`);
+                  const [owned] = await tx.select({ id: chatEndpoints.id }).from(chatEndpoints).where(sameIntent).for("update").limit(1);
+                  if (!owned) return;
+                  await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
+                  const retry = { ...intent, attempts: Math.min(intent.attempts + 1, 1_000_000), failureCode: "credential_lease_busy",
+                    nextAttemptAt: new Date(Date.now() + Math.min(300_000, 5_000 * 2 ** Math.min(intent.attempts, 6))).toISOString() };
+                  const updated = await tx.update(chatEndpoints).set({
+                    setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudIntent}', ${JSON.stringify(retry)}::jsonb)`,
+                  }).where(sameIntent).returning({ id: chatEndpoints.id });
+                  if (updated.length !== 1) throw new Error("Slack enrollment busy retry custody changed");
+                });
+              }
+            } catch (retryError) { throw new AggregateError([error, retryError], "Slack enrollment busy retry persistence failed"); }
+          }
+          throw error;
+        }
+      }
       else logger.warn({ endpointId: endpoint.id, reason: "slack_enrollment_owner_not_ready" }, "Slack enrollment responsibility retained");
       const [updated] = await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)).limit(1);
       const retained = (updated?.setup as InternalSetupState | undefined)?.slackCloudIntent;
@@ -122,7 +156,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
     if (!config || !intent) return;
     const identity = { companyId: intent.companyId, endpointId: intent.endpointId, publicId: intent.publicId,
       connectionId: intent.connectionId, runtimeGeneration: intent.runtimeGeneration };
-    const active = ["active", "verifying", "attention"].includes(endpoint.status) && current.connection.status === "active" && current.connection.enabled;
+    const active = slackCloudEnrollmentIsActive(endpoint, current.connection);
     if (identity.companyId !== endpoint.companyId || identity.endpointId !== endpoint.id || identity.publicId !== endpoint.publicId
       || identity.connectionId !== endpoint.connectionId || identity.runtimeGeneration !== options.runtimeGeneration(setup) || intent.active !== active) {
       await db.transaction(async tx => {

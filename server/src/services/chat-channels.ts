@@ -3421,7 +3421,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     await withCredentialMutationLease(record.endpoint, lease => slackCloudEnrollment(endpointId, undefined, lease));
   });
   const { configure, configureWithCredentialLease, runtimeConfig } = createChatConfiguration(db, {
-    onConfigurationCommitted: stageSlackCloudEnrollmentIntent,
+    stageConfigurationEffects: stageSlackCloudEnrollmentIntent,
     endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime,
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,

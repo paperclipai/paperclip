@@ -100,7 +100,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   githubWizard: Pick<ReturnType<typeof createGitHubAppSetup>["githubWizard"], "repairCloud">;
   nativeBotIdentityClaimBarrier?: () => Promise<void>;
   allowLocalVoiceBoard?: boolean;
-  onConfigurationCommitted?: (transaction: Db, endpointId: string, actorUserId: string | null | undefined) => Promise<void>;
+  stageConfigurationEffects?: (transaction: Db, endpointId: string, actorUserId: string | null | undefined) => Promise<void>;
 };
 export function createChatConfiguration(db: Db, options: ChatConfigurationOptions) {
   const { endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime, nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict, legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials, persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory, reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor, runtimeContextForRecord, stageTelegramMaintenance, processTelegramMaintenance, recordTelegramStopSubscription, fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, isSupportedTelegramWebhookBaseUrl } = options;
@@ -173,24 +173,14 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     actorUserId?: string | null,
     managementContext?: ConnectionManagementContext,
   ) {
-    return configureWithCredentialLeaseImpl(endpointId, input, credentialLease, actorUserId, managementContext);
-  }
-
-  async function configureWithCredentialLeaseImpl(
-    endpointId: string,
-    input: ConfigureChatEndpointInput,
-    credentialLease: CredentialMutationLeaseGuard,
-    actorUserId?: string | null,
-    managementContext?: ConnectionManagementContext,
-  ) {
     await managementContext?.reauthorize();
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     const endpoint = record.endpoint;
     const mutate = <T>(work: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) => db.transaction(async tx => {
       const result = await work(tx);
-      if (endpoint.provider === "slack" && options.onConfigurationCommitted) {
-        await options.onConfigurationCommitted(tx as unknown as Db, endpointId, actorUserId);
+      if (endpoint.provider === "slack" && options.stageConfigurationEffects) {
+        await options.stageConfigurationEffects(tx as unknown as Db, endpointId, actorUserId);
         await credentialLease.assertOwned(tx);
       }
       return result;

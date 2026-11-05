@@ -38,7 +38,7 @@ export function guardSlackFixtureNetwork(options: { requirePreload?: boolean } =
   return { assertQuiet: () => {
     expect(blocked).toEqual([]);
     if (prewire) expect(prewire.stats().unexpectedAttempts).toEqual([]);
-    const stats = prewire?.stats ?? (process as typeof process & { __sleep2ChatNetworkStats?: () => unknown }).__sleep2ChatNetworkStats;
+    const stats = prewire?.stats;
     if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1") {
       expect(stats).toBeTypeOf("function");
       console.info(JSON.stringify({ slackFixtureWorkerPid: process.pid, networkStats: stats!() }));
