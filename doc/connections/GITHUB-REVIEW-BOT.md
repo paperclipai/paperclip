@@ -200,6 +200,15 @@ and submits the reviewed commit, findings, rationale, and coverage. Paperclip
 validates the result and computes the **Paperclip Review** check. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
 
+Finding categories come from the repository's review policy. Both manual and
+automatic review instructions list the configured categories. `begin_review`
+returns `findingCategories` from the assessment's saved policy snapshot; use
+these exact values in `findings[].category`. Metadata also includes
+`reviewPolicy.findingCategories`. The discovery schema describes this dynamic
+constraint rather than imposing a global enum. Unknown categories remain invalid;
+the error lists the accepted values. If no category applies, put the finding in
+the summary. An empty category list permits no structured findings.
+
 `submit_review.summary` contains the review body: the change, findings, and
 verdict. `rationale` adds evidence for the score and remaining risk without
 repeating the summary. Paperclip renders the bot-name/score heading and the

@@ -49,7 +49,11 @@ export function bindHeartbeatRunnerHomeMode(config: Record<string, unknown>, per
   const saved = parseObject(persistedExecution);
   if (Object.keys(saved).length === 0) return config;
   // Execution schemas before v7 always used isolated homes.
-  return { ...config, homeMode: saved.homeMode ?? "isolated" };
+  const homeMode = saved.homeMode ?? "isolated";
+  // Omission already means isolated. Recovery must not add a fingerprinted
+  // configuration property merely to restate that unchanged default.
+  if (homeMode === "isolated" && config.homeMode === undefined) return config;
+  return { ...config, homeMode };
 }
 
 export interface HeartbeatExecutionConfigurationInput {

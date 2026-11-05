@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { AssistantConnection, AssistantConnectionCard } from "./AssistantConnection";
 const mocks = vi.hoisted(() => ({ setup: vi.fn(), connections: vi.fn(), revoke: vi.fn(), breadcrumbs: vi.fn(), copy: vi.fn() }));
 vi.mock("@/hooks/usePrefersReducedMotion", () => ({ usePrefersReducedMotion: () => true }));
@@ -42,11 +43,11 @@ describe("assistant setup from Connections", () => {
   it("surfaces catalog status failures and recovers without claiming there are no connections", async () => {
     mocks.connections.mockRejectedValue(new Error("offline"));
     await render(<AssistantConnectionCard onNavigate={vi.fn()} />);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t load your connection status");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load your connection status");
     expect(container.querySelector('[aria-label="Set up Assistant Connection (MCP)"]')).toBeNull();
     expect(container.querySelector('[data-connected]')).toBeNull();
     mocks.connections.mockResolvedValue([grant]);
-    await act(async () => Array.from(container.querySelectorAll('button')).find(b => b.textContent === "Try again")!.click());
+    await act(async () => Array.from(container.querySelectorAll('button')).find(b => b.textContent === "Retry")!.click());
     await flush();
     expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
@@ -157,10 +158,57 @@ describe("assistant setup from Connections", () => {
   it("shows a recoverable error instead of pretending setup succeeded", async () => {
     mocks.setup.mockRejectedValue(new Error("offline"));
     await render();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t load assistant setup");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load assistant setup");
     mocks.setup.mockResolvedValue({ enabled: true, serverUrl: "https://canonical.example/mcp/paperclip" });
-    await act(async () => Array.from(container.querySelectorAll('button')).find(b => b.textContent === "Try again")!.click());
+    await act(async () => Array.from(container.querySelectorAll('button')).find(b => b.textContent === "Retry")!.click());
     await flush();
     expect(container.textContent).toContain("opencode mcp auth paperclip");
+  });
+  it("keeps the card's loaded connection status through a transient refetch failure", async () => {
+    mocks.connections.mockResolvedValue([grant]);
+    await render(<AssistantConnectionCard onNavigate={vi.fn()} />);
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
+    mocks.connections.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["mcp-connections"] }); });
+    await flush();
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
+    expect(container.querySelector('[data-connected]')?.getAttribute("data-connected")).toBe("true");
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+  it("keeps connected assistants listed when the page's refetch fails transiently", async () => {
+    mocks.connections.mockResolvedValue([grant]);
+    await render();
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+    mocks.connections.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["mcp-connections"] }); });
+    await flush();
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+    expect(container.querySelector('[aria-label="Revoke Dotta’s OpenCode connection"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("No assistants connected");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+  it("shows readable copy and a Retry when the connection list fails for real", async () => {
+    mocks.connections.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    await render();
+    const errorView = container.querySelector('[data-query-view="error"]');
+    expect(errorView?.textContent).toContain("Couldn't load your connections");
+    expect(container.textContent).not.toContain("No assistants connected");
+    mocks.connections.mockResolvedValue([grant]);
+    await act(async () => Array.from(errorView!.querySelectorAll("button")).find(b => b.textContent === "Retry")!.click());
+    await flush();
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+  });
+  it.each([
+    [401, "Sign in to connect an assistant."],
+    [404, "Assistant connections need an authenticated instance with a public HTTPS URL."],
+  ])("explains a %s setup response with instance-specific copy", async (status, copy) => {
+    mocks.setup.mockRejectedValue(new ApiError("Request failed", status, { error: "Request failed" }));
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(copy);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

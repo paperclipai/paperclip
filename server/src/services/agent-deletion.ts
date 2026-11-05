@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -12,8 +14,12 @@ import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeup
   caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { deleteAgentAdmissionHistory } from "../modules/execution-admission/index.js";
 
 export async function deleteAgentDependencies(tx: Db, companyId: string, id: string) {
+  // Lifecycle callers use READ COMMITTED. Fence admissions before inspecting
+  // holds, so the next statement sees any admission that committed while waiting.
+  await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, id))).for("update");
   const [retainedHandoff] = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
     eq(caseHandoffs.companyId, companyId), or(eq(caseHandoffs.fromAgentId, id), eq(caseHandoffs.toAgentId, id)),
   )).limit(1);
@@ -34,10 +40,19 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   if (classifierHold) throw conflict("Wait for active prompt injection checks or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_prompt_injection_accounting_pending",
   });
+  const [fastResponseHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
+    eq(budgetReservations.state, "held"), sql`${budgetReservations.fastResponseRequestId} is not null`,
+  )).limit(1);
+  if (fastResponseHold) throw conflict("Wait for active fast responses or resolve their unknown charges in Costs before deleting this agent", {
+    code: "agent_fast_response_accounting_pending",
+  });
+  await notifyAttentionRetentionWork(tx, { companyId });
   await notifyExternalConversationSettlement(tx, { companyId });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyStatusCardIssueChange(tx, companyId);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)
@@ -59,6 +74,11 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyInstructionCollection(tx, { companyId: companyId });
   await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
   await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
+  if ((await deleteAgentAdmissionHistory(tx, { companyId, agentId: id })).kind === "unsettled") {
+    throw conflict("Wait for this agent's admitted task executions to settle before deleting it", {
+      code: "agent_execution_admission_pending",
+    });
+  }
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

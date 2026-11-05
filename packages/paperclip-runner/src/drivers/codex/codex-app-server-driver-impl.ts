@@ -1,4 +1,5 @@
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
+import { codexProviderFailure } from "./provider-failure.js";
 import { writeManagedCodexObservability, redactObservabilityDiagnostic } from "../agent-observability.js";
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
@@ -19,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -358,6 +359,10 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (input.signal?.aborted) input.signal.throwIfAborted();
+      if (error instanceof CodexRpcError && (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND) {
+        const providerFailure = codexProviderFailure(error, "startup", this.#options.environment);
+        if (providerFailure) Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
+      }
       throw error;
     } finally {
       cancellation.detach();
@@ -672,7 +677,12 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
-      return { recovered: false, reason: redactCodexDiagnostic(String(error)) };
+      const failureClass = runnerRecoveryFailureClass(error);
+      return {
+        recovered: false,
+        reason: redactCodexDiagnostic(String(error)),
+        ...(failureClass ? { failureClass } : {}),
+      };
     } finally {
       cancellation.detach();
     }
@@ -989,6 +999,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       dynamicTools: this.#providerDynamicTools(),
       skillInputs: this.#options.skillInputs,
       reasoningEffort: this.#options.reasoningEffort,
+      diagnosticEnvironment: this.#options.environment,
       dynamicToolHandler: this.#options.dynamicToolHandler,
       completionFeedback: this.#options.completionFeedback,
     });

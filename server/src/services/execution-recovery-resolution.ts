@@ -1,3 +1,4 @@
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
@@ -6,7 +7,8 @@ import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { canonicalExecutionUuid } from "./execution-identity.js";
-import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
@@ -546,7 +548,7 @@ export async function settleUnrecoverableExecutions(
             companyId: run.companyId, issueId: task.id, runId: run.id,
           }).limit(1).for("update");
           if (!hold) return;
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
             resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
@@ -596,6 +598,7 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, task.id, task.companyId);
           const [projected] = await tx
             .update(issues)
             .set({
@@ -610,8 +613,7 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
           }
-          if (task.status !== "blocked" && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
-              run.errorCode === "server_shutdown_interrupted" && claimedAdapterType(run) === "paperclip_runner") {
+          if (task.status !== "blocked" && isInterruptedNativePreparationCandidate(run)) {
             nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
         }
@@ -654,7 +656,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })

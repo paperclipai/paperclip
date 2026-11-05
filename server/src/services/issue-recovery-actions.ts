@@ -1,3 +1,5 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -114,19 +116,27 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
 }
 
 function isUniqueRecoveryActionConflict(error: unknown) {
-  const maybe = error as { code?: string; constraint?: string; message?: string } | null;
-  return Boolean(
-    maybe &&
-      maybe.code === "23505" &&
-      (
+  const seen = new Set<unknown>();
+  let candidate = error;
+  // Drizzle wraps the driver error in cause. Only this specific uniqueness
+  // conflict can reuse the existing bounded source-scoped upsert retry.
+  for (let depth = 0; depth < 8 && candidate && typeof candidate === "object"; depth++) {
+    if (seen.has(candidate)) break;
+    seen.add(candidate);
+    const maybe = candidate as { code?: string; constraint?: string; constraint_name?: string; message?: string; cause?: unknown };
+    if (maybe.code === "23505" && (
         maybe.constraint === "issue_recovery_actions_active_source_uq" ||
         maybe.constraint === "issue_recovery_actions_active_fingerprint_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_source_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_fingerprint_uq" ||
         typeof maybe.message === "string" && (
           maybe.message.includes("issue_recovery_actions_active_source_uq") ||
           maybe.message.includes("issue_recovery_actions_active_fingerprint_uq")
         )
-      ),
-  );
+      )) return true;
+    candidate = maybe.cause;
+  }
+  return false;
 }
 
 export function issueRecoveryActionService(db: DbOrTransaction) {
@@ -322,6 +332,8 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
   ): Promise<IssueRecoveryAction> {
     try {
       const created = await db.transaction(async (tx) => {
+        await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
+        await notifyIssueRecovery(tx, { companyId: input.companyId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
@@ -392,7 +404,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], tx => tx.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
             .where(and(eq(issueRecoveryActions.id, existing.id),
               inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning());
+              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning(), { companyId: input.companyId });
           if (updated) return toReadModel(updated);
         }
         return existing;
@@ -413,6 +425,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           Math.min(nextAttemptCount, effectiveMaxAttempts),
         );
         const [exhausted] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
+          await notifyIssueRecovery(tx, { companyId: input.companyId });
           await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
           if ((!input.preserveExistingOwner && existing.cause !== input.cause)
             || (input.evidence?.runId !== undefined && input.evidence.runId !== existing.evidence?.runId)) {
@@ -467,13 +480,14 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
               ),
             )
             .returning();
-        });
+        }, { companyId: input.companyId });
         if (!exhausted) {
           return retryUpsertSourceScoped(input, retryCount);
         }
         return toReadModel(exhausted);
       }
       const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
+        await notifyIssueRecovery(tx, { companyId: input.companyId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         if ((!input.preserveExistingOwner && existing.cause !== input.cause)
           || (input.evidence?.runId !== undefined && input.evidence.runId !== existing.evidence?.runId)) {
@@ -539,7 +553,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
             ),
           )
           .returning();
-      });
+      }, { companyId: input.companyId });
       if (!updated) {
         return retryUpsertSourceScoped(input, retryCount);
       }
@@ -548,13 +562,14 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
 
     try {
       const [created] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
+        await notifyIssueRecovery(tx, { companyId: input.companyId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         return tx
           .insert(issueRecoveryActions)
           .values(buildInsertValues(input, ownerType, now))
           .returning();
-      });
+      }, { companyId: input.companyId });
       return toReadModel(created!);
     } catch (error) {
       if (!isUniqueRecoveryActionConflict(error)) throw error;
@@ -595,6 +610,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       const pending = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
         .where(and(...predicates)).limit(1);
       if (!pending.length) return [];
+      await notifyIssueRecovery(tx, { companyId: input.companyId });
       await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       return tx
@@ -608,7 +624,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
         })
         .where(and(...predicates))
         .returning();
-    });
+    }, { companyId: input.companyId });
 
     return updated ? toReadModel(updated) : null;
   }

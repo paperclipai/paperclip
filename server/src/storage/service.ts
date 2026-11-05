@@ -151,7 +151,8 @@ export function createStorageService(provider: StorageProvider): StorageService 
 
     async deleteObject(companyId: string, objectKey: string, options) {
       ensureCompanyPrefix(companyId, objectKey);
-      await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal }));
+      await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal,
+        ...(options?.allVersions ? { allVersions: true } : {}) }));
     },
   };
 }

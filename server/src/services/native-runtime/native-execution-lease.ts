@@ -1,12 +1,52 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
-import { livenessDb, nativeRunFinalizations } from "@paperclipai/db";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 
 export const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
+
+/** Preparation can perform provider I/O only under its current recovery claim. */
+export async function assertNativeSessionPreparationAuthority(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string | undefined;
+  controllerGeneration?: number; providerAttempt?: number;
+}) {
+  if (!input.leaseOwner) throw new Error("native_session_lease_lost");
+  const controller = await currentNativeControllerIdentity();
+  const [owned] = await input.db.select({ runId: nativeRunFinalizations.runId })
+    .from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running"),
+      eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.controllerBootId, controller.bootId), eq(nativeRunFinalizations.controllerPid, controller.pid),
+      eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+      gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+      ...(input.controllerGeneration === undefined ? [] : [eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration)]),
+      ...(input.providerAttempt === undefined ? [] : [eq(nativeRunFinalizations.attempt, input.providerAttempt)]),
+    )).limit(1);
+  if (!owned) throw new Error("native_session_lease_lost");
+}
+
+/**
+ * Preparation failed after a fresh claim and before any provider turn. Release
+ * only this exact claim, so ordinary failure settlement can retain the source
+ * as it does for failures before the claim. Any other owner or a result keeps it.
+ */
+export async function releaseUnstartedNativeExecutionClaim(input: {
+  db: Db; runId: string; companyId: string; issueId: string; leaseOwner: string; attempt: number;
+}): Promise<boolean> {
+  const released = await input.db.update(nativeRunFinalizations)
+    .set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+    .where(and(eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.companyId, input.companyId),
+      eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.attempt, input.attempt), eq(nativeRunFinalizations.phase, "observed"),
+      isNull(nativeRunFinalizations.resultId)))
+    .returning({ runId: nativeRunFinalizations.runId });
+  return released.length > 0;
+}
 
 export async function renewNativeSessionExecutionLease(input: {
   db: Db;
@@ -53,6 +93,7 @@ async function renewNativeSessionExecutionLeaseDeadline(
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
     confirmedDeadline = performance.now() + leaseTtlMs;
+    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,
@@ -84,9 +125,10 @@ type RenewalInput = {
   db: Db; runId: string; companyId: string; issueId: string;
   leaseOwner: string; attempt: number; controller: NativeControllerIdentity;
   remote?: boolean;
+  confirmedDeadline?: number;
   onLost: () => Promise<unknown>;
 };
-export interface NativeExecutionLeaseRenewal { stop(): Promise<void>; }
+export interface NativeExecutionLeaseRenewal { stop(): Promise<void>; remainingMs(): number; }
 
 // Preparation and execution share one renewal timer. Each caller releases its
 // own reference; the final release drains any SQL already in flight.
@@ -94,6 +136,7 @@ const renewals = new WeakMap<Db, Map<string, {
   input: RenewalInput; references: number; timer: ReturnType<typeof setInterval>;
   pending: Promise<void>; busy: boolean; lost: Error | null;
   deadline: ReturnType<typeof setTimeout>; loss: Promise<unknown>;
+  confirmedDeadline: number;
 }>>();
 
 export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): NativeExecutionLeaseRenewal {
@@ -131,6 +174,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
           // or recreate a timer after the final caller has stopped.
           if (state!.lost || state!.references === 0) return;
           clearTimeout(state!.deadline);
+          state!.confirmedDeadline = confirmedDeadline;
           state!.deadline = deadline(confirmedDeadline - performance.now());
         })
         .catch((error: unknown) => {
@@ -144,13 +188,14 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     };
     const timer = setInterval(renew, input.remote ? REMOTE_CONTROLLER_LEASE_MS / 3 : NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS);
     timer.unref?.();
+    const confirmedDeadline = input.confirmedDeadline ?? performance.now() + ttlMs;
     state = { input, references: 1, timer, pending: Promise.resolve(), busy: false, lost: null,
-      deadline: deadline(ttlMs), loss: Promise.resolve() };
+      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve() };
     owners.set(input.leaseOwner, state);
   }
   const owned = state;
   let stopped = false;
-  return { stop: async () => {
+  return { remainingMs: () => owned.lost ? 0 : Math.max(0, owned.confirmedDeadline - performance.now()), stop: async () => {
     if (!stopped) {
       stopped = true;
       if (--owned.references === 0) {

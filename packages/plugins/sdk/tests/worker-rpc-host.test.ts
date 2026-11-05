@@ -23,6 +23,7 @@ import {
   type PluginInvocationContext,
 } from "../src/protocol.js";
 import { isWorkerEntrypoint, startWorkerRpcHost } from "../src/worker-rpc-host.js";
+import { PluginEnvironmentStopError, readEnvironmentStopFailure } from "../src/environment-stop-error.js";
 
 describe("isWorkerEntrypoint", () => {
   const tempRoots: string[] = [];
@@ -355,6 +356,7 @@ describe("worker configChanged cross-tenant guard", () => {
             reject(
               Object.assign(new Error(response.error.message), {
                 code: response.error.code,
+                data: response.error.data,
               }),
             );
             return;
@@ -415,6 +417,21 @@ describe("worker configChanged cross-tenant guard", () => {
       else await expect(stopped).rejects.toThrow();
       expect(stops).toBe(supported ? 1 : 0);
       expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
+
+  it.each([true, false])("forwards only a typed stop failure to the host: %s", async typed => {
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentStopLease() {
+        throw typed ? new PluginEnvironmentStopError("resource_unrecoverable") : new Error("private provider detail");
+      },
+    }));
+    try {
+      await worker.initialize();
+      const error = await worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company",
+        environmentId: "environment", providerLeaseId: "allocation", config: {} }).catch((caught: unknown) => caught);
+      expect(readEnvironmentStopFailure(error)).toEqual(typed ? { reason: "resource_unrecoverable", terminal: true } : null);
+      expect(JSON.stringify((error as { data?: unknown }).data ?? null)).not.toContain("private");
     } finally { worker.stop(); }
   });
 

@@ -1,9 +1,10 @@
-import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -12,11 +13,12 @@ import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeR
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
-const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync"] as const;
+const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace", "legacyWorkspaceRecoveryMigration", "finalizedWorkspaceRecoveryMigration"] as const;
 const blockerContextColumn = sql<Record<string, unknown> | null>`case
   when ${heartbeatRuns.contextSnapshot} is null then null else (
     select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
@@ -66,6 +68,7 @@ const blockerRunFields = {
 };
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
+  if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
   const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
     OR EXISTS (SELECT 1 FROM ${environmentLeases}
@@ -97,6 +100,17 @@ export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
+    sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
+      select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`)}
+        and ${issueRecoveryActions.sourceIssueId} = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        and (${heartbeatRuns.issueId} is null or ${heartbeatRuns.issueId} = ${issueRecoveryActions.sourceIssueId})
+        and ${neverStartedDispatchCancellationPredicate()}
+        and ${heartbeatRuns.errorCode} <> 'issue_continuation_waiting_on_review'
+        and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+        and coalesce(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
+    ))`,
     or(unreconciledNativeExportPredicate(), and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -112,6 +126,45 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
+/**
+ * A file-preservation hold binds a newer task owner only until automatic
+ * recovery saved the stopped run's files. That owner's turn is a fresh
+ * assignment, not a replay: the stopped run's unknown outcomes stay with its
+ * own agent, which keeps the hold. The proof is the durable completed-recovery
+ * receipt bound to this action, so later reuse of the workspace by the new
+ * owner (new epoch, writer or snapshot) cannot re-arm the hold.
+ */
+export function restoreHoldReleasedForCurrentOwnerPredicate() {
+  const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
+  const operationIds = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+    then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end`;
+  // JSON reads are NULL for other holds. Callers negate this predicate, so it
+  // must be strictly true or false: NOT NULL would hide unrelated blockers.
+  return sql`coalesce((${and(
+    sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+    sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
+    sql`exists (select 1 from ${heartbeatRuns} stopped
+      join ${issues} task on task.company_id = stopped.company_id and task.id = ${issueRecoveryActions.sourceIssueId}
+      where stopped.company_id = ${issueRecoveryActions.companyId}
+        and stopped.id::text = ${sourceRunId}
+        and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
+        and stopped.finished_at is not null
+        and task.assignee_agent_id is not null
+        and task.assignee_agent_id <> stopped.agent_id
+        and not coalesce(task.status = 'in_review'
+          and task.execution_state->>'status' = 'pending'
+          and task.execution_state->'currentParticipant'->>'type' = 'agent'
+          and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))`,
+    completedWorkspaceRecoveryCondition(sourceRunId),
+    // Copyback put the files back into the task workspace that the new owner
+    // reuses. A snapshot-only save needs an explicit fresh-workspace request
+    // to attach it, so that hold stays until such a request or a repair.
+    sql`not exists (select 1 from jsonb_array_elements_text(${operationIds}) saved(id)
+      join ${workspaceOperations} op on op.id::text = saved.id
+      where op.company_id = ${issueRecoveryActions.companyId} and op.phase <> 'workspace_recovery')`,
+  )}), false)`;
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
@@ -125,6 +178,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
+    not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(
       unreconciledNativeExportPredicate(),
       sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
@@ -152,6 +206,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
+    not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;

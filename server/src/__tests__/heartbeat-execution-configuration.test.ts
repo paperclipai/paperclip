@@ -2,19 +2,20 @@ import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { createHash, randomUUID } from "node:crypto";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
-import { access, chmod, mkdir, readdir, readFile, mkdtemp, rm, stat } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { HttpError } from "../errors.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration, type HeartbeatExecutionConfigurationInput } from "../services/heartbeat/execution-configuration.js";
-import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
+import { aiConnectionBindingSchema, type Environment } from "@paperclipai/shared";
 import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -24,6 +25,12 @@ import * as assignedMcp from "../services/native-runtime/assigned-mcp-tools.js";
 import * as sentry from "../sentry.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
+import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "../services/heartbeat/environment-selection.js";
+import { environmentService } from "../services/environments.js";
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { buildExecutionWorkspaceAdapterConfig } from "../services/execution-workspace-policy.js";
+import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
+import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -35,6 +42,44 @@ const skillFailures = vi.hoisted(() => new Map<string, string>());
 const skillWaits = vi.hoisted(() => new Map<string, () => Promise<void>>());
 
 describe("Runner home mode during recovery preparation", () => {
+  const fingerprint = (effectiveAdapterConfig: Record<string, unknown>) => buildEffectiveRunSessionConfigMetadata({
+    adapterType: "paperclip_runner", effectiveAdapterConfig, agentRuntimeConfig: {}, issueOverrides: null,
+    workspaceConfig: {}, environment: null, environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: [],
+  });
+  it.each([
+    { schema: "paperclip.native-execution-input.v5" },
+    { schema: "paperclip.native-execution-input.v7", homeMode: "isolated" },
+  ])("preserves the implicit isolated fingerprint through recovery and the next run: %j", async saved => {
+    const config = { provider: "codex", model: "fixture-model" };
+    // This is the effective configuration shape built by preparation, including
+    // its optional property when no explicit home mode was configured.
+    const prepare = (input: unknown) => ({ ...config, homeMode: bindHeartbeatRunnerHomeMode(config, input).homeMode });
+    const fresh = await fingerprint(prepare(null));
+    const recovered = await fingerprint(prepare(saved));
+    const next = await fingerprint(prepare(null));
+    expect(recovered.fingerprint).toBe(fresh.fingerprint);
+    expect(next.fingerprint).toBe(recovered.fingerprint);
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: config.model,
+      taskSessionParams: { __paperclipConfiguredModel: config.model, __paperclipConfigFingerprint: recovered.fingerprint,
+        __paperclipConfigFingerprintVersion: recovered.version, __paperclipConfigCategoryFingerprints: recovered.categoryFingerprints },
+      configMetadata: next })).toMatchObject({ reset: false, changedCategories: [] });
+    expect(config).not.toHaveProperty("homeMode");
+  });
+
+  it("pins the admitted isolated mode but invalidates a genuinely preconfigured next run", async () => {
+    const config = { provider: "codex", model: "fixture-model", homeMode: "preconfigured" };
+    const recoveredConfig = bindHeartbeatRunnerHomeMode(config, { schema: "paperclip.native-execution-input.v5" });
+    expect(recoveredConfig.homeMode).toBe("isolated");
+    expect(bindHeartbeatRunnerHomeMode(config, null).homeMode).toBe("preconfigured");
+    const recovered = await fingerprint(recoveredConfig);
+    const next = await fingerprint(config);
+    expect(next.fingerprint).not.toBe(recovered.fingerprint);
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: config.model,
+      taskSessionParams: { __paperclipConfiguredModel: config.model, __paperclipConfigFingerprint: recovered.fingerprint,
+        __paperclipConfigFingerprintVersion: recovered.version, __paperclipConfigCategoryFingerprints: recovered.categoryFingerprints },
+      configMetadata: next })).toMatchObject({ reset: true, changedCategories: ["adapterConfig"] });
+  });
+
   it.each([
     ["preconfigured", { schema: "paperclip.native-execution-input.v5" }, "isolated"],
     ["preconfigured", { schema: "paperclip.native-execution-input.v7", homeMode: "isolated" }, "isolated"],
@@ -162,15 +207,16 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const persisted = saved === null ? null : { schema: saved === "isolated" ? "paperclip.native-execution-input.v5" : "paperclip.native-execution-input.v7",
       ...(saved === "preconfigured" ? { homeMode: saved } : {}),
     } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"];
+    const localEnvironment = await environmentService(db).ensureLocalEnvironment();
     const opening = prepareHeartbeatExecutionConfiguration(db, {
       run, agent, task: { issueId: f.issueId, context: {}, responsibleUserId: f.userId,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
         routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: { ...agent.adapterConfig, homeMode: "preconfigured" }, aiBinding: managed
-        ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
+        ? aiConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
-      environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
+      environment: { selectedEnvironmentId: localEnvironment.id, selectedEnvironmentForConfig: localEnvironment,
         resolvedInstanceSettings: await instanceSettingsService(db).get(), persistedNativeExecutionInput: persisted },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: vi.fn(), onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: vi.fn(),
@@ -235,6 +281,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
     const appendRunEvent = vi.fn();
+    const environment = selectedEnvironmentForConfig ?? await environmentService(db).ensureLocalEnvironment();
     return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
       task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest,
@@ -242,7 +289,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding: undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
-      environment: { selectedEnvironmentId: selectedEnvironmentForConfig?.id ?? null, selectedEnvironmentForConfig,
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent, finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
@@ -347,9 +394,9 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         skills: [{ skillKey: "new-invalid", displayName: "New invalid skill", markdown: "---\nname: new-invalid\nmetadata:\n  sources:\n    - kind: github-dir\n      repo: fixture/skills\n---\nUnpinned." }] } });
     const [environment] = await db.insert(environments).values({ name: "Fixture", driver: "plugin", config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
     const config = { paperclipSkillSync: { desiredSkills: [] } };
-    const restoring = await configuration(f, config, { skillVersions: {}, skillSelectionSnapshot: true }, "paperclip_runner", false, "shared_workspace", environment);
+    const restoring = await configuration(f, config, { skillVersions: {}, skillSelectionSnapshot: true }, "paperclip_runner", false, "shared_workspace", environment as Environment);
     expect(await restoring.prepare()).toMatchObject({ prepared: true, runtimeSkillEntries: [] });
-    const fresh = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const fresh = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const rejected = await fresh.prepare().then(() => false, error => { expect(error.message).toMatch(/pinned Git commit/); return true; });
     expect(rejected).toBe(true);
   });
@@ -366,7 +413,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "plugin", config: { pluginKey, driverKey: "tasks" } }).returning();
     await db.update(issues).set({ description: `Use [company skill](skill://${existing.id}).` }).where(eq(issues.id, f.issueId));
     const config = { paperclipSkillSync: { desiredSkills: [existing.key] } };
-    const run = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const run = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const result = await run.prepare();
     expect(result.prepared).toBe(true);
     if (!result.prepared) throw new Error("Configuration did not finish");
@@ -377,7 +424,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.run.id));
     expect(saved.contextSnapshot!.shadowedSkills).toEqual([{ key: existing.key, shadowedBy: key }]);
     expect(Object.keys(saved.contextSnapshot!.skillVersions as object)).toEqual([key]);
-    const recovery = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", environment);
+    const recovery = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", environment as Environment);
     const resumed = await recovery.prepare();
     expect(resumed.prepared).toBe(true);
     if (!resumed.prepared) throw new Error("Recovery did not finish");
@@ -394,6 +441,118 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(initial.mergedConfig).toEqual(reused.mergedConfig);
     expect(initial.configSnapshot).toEqual(reused.configSnapshot);
   });
+
+  it("keeps shared provider workspace configuration across native recovery and the next turn", async () => {
+    const f = await seed();
+    const selectedSkills = [];
+    for (const name of ["Alphabetically first long skill", "B longer selected skill", "C", "D small"]) {
+      selectedSkills.push(await companySkillService(db).createLocalSkill(f.companyId, { name, markdown: "# Keep the saved result\n" }));
+    }
+    const instructionsRootPath = path.join(home, f.companyId);
+    await mkdir(instructionsRootPath);
+    await writeFile(path.join(instructionsRootPath, "AGENTS.md"), "Preserve the workspace across controller replacement.\n");
+    const config = { provider: "codex", model: "fixture-model", lifecycleMode: "warm", idleTimeoutMs: 300_000,
+      codexPermissionMode: "full", paperclipSkillSync: { desiredSkills: selectedSkills.map(skill => skill.key) },
+      instructionsRootPath, instructionsFilePath: path.join(instructionsRootPath, "AGENTS.md"),
+      instructionsEntryFile: "AGENTS.md", instructionsBundleMode: "managed", env: { OPENAI_API_KEY: "fixture-direct-key" } };
+    const [environment] = await db.insert(environments).values({ name: `Directory ${f.companyId}`, driver: "plugin",
+      config: { pluginKey: "test.directory", driverKey: "tasks" } }).returning();
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: config,
+      defaultEnvironmentId: environment.id }).where(eq(agents.id, f.agentId)).returning();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, scopeKind: "issue", status: "running", runtimeMode: "native", responsibleUserId: f.userId, contextSnapshot: {} }).returning();
+    const workspaceId = run.id;
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId,
+      projectId: issue.projectId, sourceIssueId: issue.id, name: "Shared task workspace", mode: "shared_workspace",
+      strategyType: "project_primary", providerType: "adapter_managed", cwd: `/workspaces/${workspaceId}` }).returning();
+    const issueSettings = { mode: "shared_workspace" as const };
+    const sourceConfig = (current: Record<string, unknown>) => buildExecutionWorkspaceAdapterConfig({ agentConfig: current,
+      projectPolicy: null, issueSettings, mode: "shared_workspace", legacyUseProjectWorkspace: null });
+    const selectionInput: HeartbeatEnvironmentSelectionInput = {
+      run, agent, task: { issueRef: { ...issue, executionWorkspaceId: null }, issueContext: issue, issueId: issue.id,
+        executionProjectId: issue.projectId, workspaceProjectContext: { hasWorkspace: false }, boundSourceWorkspace: null,
+        hasSelectedWorkspaceSource: false, taskWorkspaceIntent: null, responsibleUserId: f.userId, context: {},
+        freshWorkspace: null },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        requestedExecutionWorkspaceMode: "shared_workspace", isolatedWorkspacesEnabled: true,
+        projectExecutionWorkspacePolicy: null, issueExecutionWorkspaceSettings: issueSettings },
+      config: { config, sourceWorkspaceConfig: sourceConfig(config), issueAssigneeOverrides: null },
+      services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db),
+        instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: vi.fn(async () => null),
+        findExecutionWorkspaceHolder: vi.fn(async () => null) },
+    };
+    const prepare = async () => {
+      const selected = await selectHeartbeatEnvironment(db, selectionInput);
+      const result = await prepareHeartbeatExecutionConfiguration(db, { run, agent,
+        task: { issueId: issue.id, context: {}, responsibleUserId: f.userId, acceptedPlanContinuationWake: false,
+          acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
+          routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
+        config: { sourceWorkspaceConfig: selectionInput.config.sourceWorkspaceConfig, aiBinding: undefined },
+        policy: { trustPreset: selectionInput.policy.trustPreset, useIsolatedTaskDirectory: selected.useIsolatedTaskDirectory,
+          explicitTaskDirectory: selected.explicitTaskDirectory, requestedExecutionWorkspaceMode: selectionInput.policy.requestedExecutionWorkspaceMode },
+        environment: selected, services: { secretsSvc: secretService(db), companySkills: companySkillService(db),
+          appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
+        onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {} });
+      if (!result.prepared) throw new Error("Configuration was not prepared");
+      const metadata = await buildEffectiveRunSessionConfigMetadata({ adapterType: "paperclip_runner",
+        effectiveAdapterConfig: result.runtimeConfig, agentRuntimeConfig: {}, issueOverrides: null, workspaceConfig: {},
+        environment: null, environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: result.runtimeSkillEntries });
+      return { selected, result, metadata };
+    };
+    const first = await prepare();
+    expect(first.selected.useIsolatedTaskDirectory).toBe(false);
+    expect(first.result.runtimeConfig.workspaceStrategy).toBeUndefined();
+    // Preserve the pre-fix fresh name/key query order, including exact versions.
+    expect(first.result.runtimeConfig.paperclipSkillSync).toEqual({ desiredSkills: selectedSkills.map(skill => ({
+      key: skill.key, versionId: skill.currentVersionId,
+    })) });
+    // Read the actual JSONB snapshot rather than reusing the pre-persistence
+    // JavaScript map: PostgreSQL key order differs for these four real keys.
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    run.contextSnapshot = saved.contextSnapshot;
+    selectionInput.task.freshWorkspace = null;
+    selectionInput.task.issueRef!.executionWorkspaceId = workspaceId;
+    selectionInput.task.issueRef!.executionWorkspacePreference = "reuse_existing";
+    await db.update(issues).set({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
+    selectionInput.run.runnerProfileJson = { nativeExecutionInput: buildNativeExecutionInput({
+      companyId: f.companyId, agentId: agent.id, runId: run.id, normalizedSessionId: randomUUID(), provider: "codex",
+      issue: { id: issue.id, identifier: "CFG-1", title: issue.title, description: null, workMode: "standard" },
+      taskPrompt: "Continue the admitted work", workspace: { id: workspaceId, cwd: workspace.cwd!, repoUrl: null, repoRef: null, branchName: null },
+      completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Retain the directory", criteria: [{ id: "objective", requirement: "Preserve the workspace" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    }) };
+    const recovered = await prepare();
+    expect(recovered.selected.nativeRecoveryExecutionWorkspaceId).toBe(workspaceId);
+    expect(recovered.selected.useIsolatedTaskDirectory).toBe(false);
+    expect(recovered.result.runtimeSkillEntries).toEqual(first.result.runtimeSkillEntries);
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: config.model,
+      taskSessionParams: { __paperclipConfiguredModel: config.model, __paperclipConfigFingerprint: first.metadata.fingerprint,
+        __paperclipConfigFingerprintVersion: first.metadata.version, __paperclipConfigCategoryFingerprints: first.metadata.categoryFingerprints },
+      configMetadata: recovered.metadata })).toMatchObject({ reset: false, changedCategories: [] });
+    expect(recovered.result.runtimeConfig).toEqual(first.result.runtimeConfig);
+    expect(recovered.metadata.fingerprint).toBe(first.metadata.fingerprint);
+    selectionInput.run.runnerProfileJson = {};
+    run.contextSnapshot = {};
+    const next = await prepare();
+    expect(next.result.runtimeConfig).toEqual(first.result.runtimeConfig);
+    expect(next.metadata.fingerprint).toBe(first.metadata.fingerprint);
+
+    selectionInput.config.sourceWorkspaceConfig = sourceConfig({ ...config,
+      paperclipSkillSync: { desiredSkills: selectedSkills.slice(1).map(skill => skill.key) } });
+    const fewerSkills = await prepare();
+    expect(fewerSkills.result.runtimeSkillEntries).toHaveLength(3);
+    expect(fewerSkills.metadata.fingerprint).not.toBe(first.metadata.fingerprint);
+
+    // A real model change must still invalidate the next admission.
+    selectionInput.config.config = { ...config, model: "changed-model" };
+    selectionInput.config.sourceWorkspaceConfig = sourceConfig(selectionInput.config.config);
+    const changed = await prepare();
+    expect(changed.selected.useIsolatedTaskDirectory).toBe(false);
+    expect(changed.result.runtimeConfig.model).toBe("changed-model");
+    expect(changed.metadata.fingerprint).not.toBe(first.metadata.fingerprint);
+  }, 30_000);
 
   it.each([
     { mode: "shared_workspace" as const, config: { workspaceStrategy: { type: "git_worktree", baseRef: "main" } } },
@@ -514,7 +673,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
     const f = await seed(true);
     skillFailures.set(f.companyId, `Invalid fixture skill configuration: ${f.credential}`);
-    const capturedFailure = vi.spyOn(sentry, "captureRunFailure").mockImplementation(() => undefined);
+    const capturedFailure = vi.spyOn(sentry, "captureRunFailure").mockImplementation(() => false);
     const prepare = aiRuntime.prepareManagedAiRuntime;
     let acquiredHome: string | undefined;
     vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockImplementation(async (...args) => {

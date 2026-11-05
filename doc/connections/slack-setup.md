@@ -24,6 +24,10 @@ Creation, installation, message waiting, and success use the same production
 components and server evidence as the own-app flow. A click or OAuth return does
 not constitute successful configuration.
 
+Reopening a completed Slack setup retains its Slack handoff. **Done** opens the
+saved connection settings without repeating activation or reactivating a paused
+bot. Unfinished setups still complete their normal server verification first.
+
 ## Cloud deployment prerequisites
 
 Managed setup is disabled by default. Qualification requires all of:
@@ -52,6 +56,9 @@ Slack user, workspace, and manager app. Another company member must authorize th
 own account, even for the same workspace. Access and rotating refresh tokens are
 user-scoped vault entries. Refreshes serialize across connections, persist the new
 refresh token, and require fresh authorization after an ambiguous exchange.
+Managed provisioning resolves the submitted grant from the Slack manager-grant
+registry. Both provisioning and revocation check its company and current user;
+these IDs are separate from tool-connection grants.
 
 Revoking a grant requests provider revocation, removes its local credentials, invalidates pending manager
 authorization, and prevents future provisioning with it. The local activity records whether provider revocation succeeded. Provider errors never restore local access. It does not uninstall
@@ -75,6 +82,9 @@ Provider-side app removal remains explicit through the saved Slack management UR
   permissions therefore pass through installation again before activation.
 - Expired or revoked manager grants require reconnection. Losing managed
   availability pauses setup; it never changes the saved ownership method.
+  A saved draft that needs workspace reauthorization shows **Reconnect Slack
+  workspace** on Connect, even before its app has been created. This button
+  opens Slack authorization and returns to the same saved agent setup.
 - Slack rate limits are grouped by manager/workspace/method. Provider `Retry-After`
   is persisted across matching grants in the company, survives restarts, and blocks
   early retries. Other tenant instances must observe Slack's limits independently;
@@ -160,6 +170,10 @@ The action records a durable request before sending. Repeating the same request
 returns its saved result; an uncertain delivery is never automatically resent.
 **Open Slack configuration** opens the saved app's OAuth & Permissions page.
 Legacy connections without an app ID open Slack's app list instead.
+**Open Slack** remains available after automatic setup completion and on the
+saved connection page. It opens the current user's bot DM when its workspace
+and channel are known and its linked owner matches the signed-in user. Another
+manager or an unknown identity uses the saved provider link or Slack instead.
 
 An explicit managed reconnect reinstalls the saved app and verifies the replacement
 bot credentials. Its request ID is saved before dispatch, so a duplicate completed

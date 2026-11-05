@@ -43,7 +43,7 @@ function boardActor(companyId: string, userId: string): Express.Request["actor"]
 }
 
 function agentActor(companyId: string, agentId: string): Express.Request["actor"] {
-  return { type: "agent", agentId, companyId, runId: null, source: "agent_jwt" };
+  return { type: "agent", agentId, companyId, source: "agent_jwt" };
 }
 
 async function createApp(db: Db, actor: Express.Request["actor"]) {

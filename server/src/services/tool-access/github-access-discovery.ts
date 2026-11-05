@@ -1,3 +1,4 @@
+import { providerRetryAt } from "../provider-retry-after.js";
 import { randomUUID } from "node:crypto";
 import { unprocessable } from "../../errors.js";
 
@@ -106,6 +107,7 @@ export async function loadGitHubGrantMetadata(
       throw unprocessable(
         "GitHub could not verify this account's installation access",
         {
+          retryAt: providerRetryAt(response.headers.get("retry-after")),
           code:
             response.status === 401
               ? "oauth_reauthorization_required"

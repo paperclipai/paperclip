@@ -32,6 +32,7 @@ export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionWorkspaceSnapshots } from "./execution_workspace_snapshots.js";
 export {
   executionWorkspaceRestorePoints,
   EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES,
@@ -145,6 +146,7 @@ export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
 export { nativeRunnerCheckpoints } from "./native_runner_checkpoints.js";
+export { nativeHarnessBackups } from "./native_harness_backups.js";
 export { workAssessments } from "./work_assessments.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
@@ -232,6 +234,7 @@ export { announcementDismissals, announcementPublications } from "./announcement
 export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
 
 export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { agentFileRoots, type DurableAgentFileEntry } from "./agent_file_roots.js";
 export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
 
 
@@ -272,3 +275,6 @@ export { workflows } from "./workflows.js";
 export { userWorkspacePreferences } from "./user_workspace_preferences.js";
 
 export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interaction_idempotency_keys.js";
+
+export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
+export { budgetEvaluationWork } from "./budget_evaluation_work.js";

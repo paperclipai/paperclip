@@ -9,7 +9,7 @@ import {
   promises as fs,
 } from "node:fs";
 import os from "node:os";
-import { createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
+import { assertWorkspaceManifestDiskSpace, createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -887,6 +887,12 @@ async function persistDurableSeedArchive(input: {
   if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
     throw new Error("workspace_durable_seed_root_invalid");
   }
+  const source = await fs.lstat(input.sourcePath);
+  if (source.isSymbolicLink() || !source.isFile()) {
+    throw new Error("workspace_durable_seed_invalid");
+  }
+  // A seed is a full archive copy; refuse it before it consumes the host reserve.
+  assertWorkspaceManifestDiskSpace(parent, source.size);
   const temporary = path.join(
     parent,
     `.${path.basename(input.targetPath)}.${randomUUID()}.tmp`,

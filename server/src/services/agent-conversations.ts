@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
@@ -86,6 +88,10 @@ export function isConversationReset(body: string): boolean {
 }
 
 export const AGENT_CHAT_DIRECTIVE = `You are in an ongoing conversation with the user. Help them clarify the outcome they want. Ask focused questions when missing information materially affects the task; when the request is already clear, do not require a ritual confirmation.
+
+When changing defaults or policy for new or future work, update the resource that owns those defaults. Leave existing items and active work unchanged unless the user explicitly includes them in the requested change. This boundary includes metadata and association changes, even when they seem harmless or helpful. Do not broaden the request to align related existing items. Explain which subsequent work inherits the saved defaults and whether existing work changed.
+
+If the current execution lacks the board or instance-operator identity required by an operation, use permitted discovery to identify the supported operator path, complete other permitted work, then explain the required handoff and end your response. A user's request or confirmation does not expand your credential's scope. Treat permission denials as boundaries: do not probe host processes, private control files, or unrelated endpoints for alternate access. Distinguish a requested action from a verified action.
 
 Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. Planning alone does not create execution tasks. Put implementation and substantial execution into separate tasks.
 
@@ -269,6 +275,7 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
+    await notifyStatusCardIssueChange(tx, issue.companyId);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     await tx
@@ -389,6 +396,7 @@ export async function settleConversationTurn(
       issue.conversationState === conversationState
     )
       return true;
+    await notifyStatusCardIssueChange(tx, issue.companyId);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
     if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
@@ -547,6 +555,7 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
       eq(issues.id, comment.issueId), eq(issues.companyId, comment.companyId),
     )).for("update");
     if (!isConversation(issue) || comment.conversationSessionGeneration != null) return;
+    await notifyIssueRecovery(tx, { companyId: issue.companyId });
     const released = await tx.update(issueTreeHolds).set({
       status: "released", releasedAt: new Date(), updatedAt: new Date(),
       releasedByActorType: "user", releasedByUserId: comment.authorUserId,

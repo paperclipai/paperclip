@@ -1,3 +1,7 @@
+import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
@@ -13,6 +17,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
@@ -244,6 +249,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? true,
       enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
@@ -298,6 +304,11 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    // An unrelated malformed field must not erase an explicit enrollment opt-out.
+    remoteWorkspaceStorageEnabled: !(
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && "remoteWorkspaceStorageEnabled" in raw && raw.remoteWorkspaceStorageEnabled === false
+    ),
     enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
@@ -623,13 +634,23 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           }
         }
       }
+      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
+        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
+        if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
+        if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {
+          await notifyRunDispatch(tx);
+          await notifyDeferredExecutionEligibility(tx);
+          await notifyLiveRunRecovery(tx);
+          await notifyLiveResourceRecovery(tx);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyExternalAgentSettlement(tx);
           await notifyInstructionCommit(tx);

@@ -1,3 +1,7 @@
+import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { wakeWorkspaceBusyWaitersInTx } from "../../modules/run-dispatch/index.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -84,6 +88,7 @@ import {
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
+  nativeRunFinalizations,
   issueApprovals,
   issueComments,
   issueRecoveryActions,
@@ -642,6 +647,32 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown> | null, setupFailure = false) {
+  const projected = incoming === null ? sql`null::jsonb` : sql`${JSON.stringify(incoming)}::jsonb`;
+  const result = setupFailure ? sql`case when ${heartbeatRuns.runtimeMode} = 'native'
+    and exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+        and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+        and ${nativeRunFinalizations.attempt} > 0)
+    and ${projected}->'executionRecovery'->>'kind' = 'bootstrap'
+    and ${projected}->'executionRecovery'->>'providerWorkStarted' = 'false'
+    then ${projected} - 'executionRecovery' else ${projected} end` : projected;
+  return sql`case when ${heartbeatRuns.runtimeMode} = 'native'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'schema' = 'paperclip.native-cancellation.v1'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'scope' = 'run'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'reasonCode' = 'cancellation_run_only'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'runId' = ${heartbeatRuns.id}::text
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'companyId' = ${heartbeatRuns.companyId}::text
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'issueId' = ${heartbeatRuns.nativeIssueId}::text
+    then coalesce(${result}, '{}'::jsonb) || (
+      select coalesce(jsonb_object_agg(stop_field.key, stop_field.value), '{}'::jsonb)
+      from jsonb_each(${heartbeatRuns.resultJson}) as stop_field(key, value)
+      where stop_field.key in ('nativeCancellation', 'executionCancellation', 'startupCancellation',
+        'cancellation', 'cancelledByActorType', 'cancelledByUserId', 'reassignmentStopRequested')
+    ) else ${result} end`;
+}
+
 /** Run lifecycle binds status, progress, liveness, and completion operations. */
 export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycleDependencies) {
   const {
@@ -1024,7 +1055,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot" | "scheduledRetryReason"> | null,
     write: (tx: Db) => Promise<T>) {
     const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
@@ -1044,9 +1075,14 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous && isHeartbeatRunTerminalStatus(status))
         await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
-      await notifyExecutionRunWork(tx);
+      await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
+      // A running run may hold a shared workspace that parked retries wait for.
+      if (previous?.status === "running" && isHeartbeatRunTerminalStatus(status))
+        await wakeWorkspaceBusyWaitersInTx(tx, { companyId: previous.companyId, runId: previous.id,
+          contextSnapshot: parseObject(previous.contextSnapshot), scheduledRetryReason: previous.scheduledRetryReason, now: new Date() });
       return write(tx);
     });
   }
@@ -1105,6 +1141,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
+              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -1130,8 +1167,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
+    options?: { setupFailure: true },
   ) {
-    return setRunStatusFromLive(runId, status, ["running"], patch, failureReport);
+    return setRunStatusFromLive(runId, status, ["running"], patch, failureReport, undefined, options);
   }
 
   // Move a run to a new status only when its current status is one of
@@ -1146,6 +1184,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
+    options?: { setupFailure: true },
   ) {
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
@@ -1156,6 +1195,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     const previousStatus = previous?.run ?? null;
+    if (status === "failed" && patch?.errorCode === "process_lost" && previousStatus?.runtimeMode === "native" && readNativeStartupCleanup(previousStatus)) {
+      return { updated: false, run: previousStatus };
+    }
 
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
@@ -1187,8 +1229,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus, writer =>
-      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
+    const updated = await writeRunStatus(status, previousStatus, async writer => {
+      if (options?.setupFailure && previousStatus?.runtimeMode === "native" && previousStatus.nativeIssueId) {
+        await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+          .where(and(eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, previousStatus.companyId),
+            eq(nativeRunFinalizations.issueId, previousStatus.nativeIssueId)))
+          .for("update");
+      }
+      return previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
             run: previousStatus,
@@ -1203,6 +1252,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
+              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
               ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
@@ -1235,7 +1285,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .catch((error: unknown) => {
               if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
               throw error;
-            }));
+            });
+    });
 
     if (updated) {
       publishLiveEvent({
@@ -1417,12 +1468,13 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   ) {
     if (!wakeupRequestId) return;
     await db.transaction(async tx => {
-      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, status: agentWakeupRequests.status })
+      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status })
         .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)).for("update");
       if (!current || current.status === "cancelled") return;
       if (current.status !== (patch?.status ?? status) || patch?.payload !== undefined || patch?.runId !== undefined) {
         await notifyExternalConversationSettlement(tx, { companyId: current.companyId });
       }
+      await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: current.agentId });
       await tx.update(agentWakeupRequests)
         .set({ status, ...patch, updatedAt: new Date() })
 
@@ -2447,6 +2499,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
+      await notifyRunDispatch(tx, { companyId: run.companyId });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

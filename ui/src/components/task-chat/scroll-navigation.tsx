@@ -40,9 +40,9 @@ export function useTaskChatScrollNavigation() {
     key: navigation?.key,
     hash: navigation?.hash,
     ready,
-    initialPosition(root: Element, viewportTop: number, scrollTop: number): number | null {
+    initialPosition(root: Element, viewportTop: number, scrollTop: number, options?: { restore?: boolean }): number | null {
       if (!navigation) return null;
-      if (navigation.restore && positionKey && positions.has(positionKey)) {
+      if (options?.restore !== false && navigation.restore && positionKey && positions.has(positionKey)) {
         const saved = positions.get(positionKey)!;
         // A saved pixel offset goes stale when rotation changes text wrapping.
         // Bottom-follow needs no row measurements, even across navigation.

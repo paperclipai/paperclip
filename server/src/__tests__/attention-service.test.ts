@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -62,13 +62,16 @@ describeEmbeddedPostgres("attention service", () => {
 
   beforeAll(async () => {
     if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
-    db = createDb(externalUrl ?? tempDb!.connectionString);
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 30_000);
 
   afterEach(async () => {
-
-
-    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    await db.transaction(async (tx) => {
+      // CASCADE emits a notice for every related table; keep cleanup quiet while
+      // retaining warnings/errors and the same complete database reset.
+      await tx.execute(sql`SET LOCAL client_min_messages = warning`);
+      await tx.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    });
   });
 
   afterAll(async () => {
@@ -1164,13 +1167,13 @@ describeEmbeddedPostgres("attention service", () => {
       })));
     }
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const feed = await attentionService(db).list(companyId, { userId: "board-user" });
       expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
     } finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
@@ -1208,8 +1211,11 @@ describeEmbeddedPostgres("attention service", () => {
       contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
 
+    // Bulk-loaded fixtures need planner statistics before exercising production queries.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
+
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const feed = await attentionService(db).list(companyId, {
@@ -1218,7 +1224,7 @@ describeEmbeddedPostgres("attention service", () => {
       expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
         .toEqual([...keptIds].sort());
     } finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeLessThan(4);
@@ -1250,6 +1256,9 @@ describeEmbeddedPostgres("attention service", () => {
       id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
       contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
+
+    // Do not race autovacuum to collect statistics for the 16,400 new rows.
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
 
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
@@ -1407,7 +1416,7 @@ describeEmbeddedPostgres("attention service", () => {
     const interactionItems = feed.items.filter((item) => item.sourceKind === "issue_thread_interaction");
     const detailsByKind = new Map(interactionItems.map((item) => [item.detail?.kind, item]));
     const summaryEvents: Array<Record<string, unknown>> = [], captureNow = Date.now();
-    const summaryCapture = createDatabaseResponseCapture({ start: captureNow - 100, end: captureNow + 59_000 }, event => summaryEvents.push(event));
+    const summaryCapture = createFullDatabaseResponseCapture({ start: captureNow - 100, end: captureNow + 59_000 }, event => summaryEvents.push(event));
     installDatabaseResponseCapture(db, { documents, assets, issueAttachments }, summaryCapture);
     try {
       const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
@@ -1418,7 +1427,7 @@ describeEmbeddedPostgres("attention service", () => {
       expect(index.totalCount).toBe(feed.totalCount);
 
     } finally { summaryCapture.flush(); }
-    const cardReads = summaryEvents.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const cardReads = summaryEvents.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && ["documents", "assets", "issue_attachments"].includes(String(event.table)));
     expect(cardReads).toEqual([]);
 
@@ -1536,8 +1545,8 @@ describeEmbeddedPostgres("attention service", () => {
     const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
     const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
     await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
-      id, companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: workerId,
-      payload: { version: 1, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      id, companyId, issueId, kind: "request_confirmation" as const, status: "pending" as const, continuationPolicy: "wake_assignee" as const, createdByAgentId: workerId,
+      payload: { version: 1 as const, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
       createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
     })));
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });

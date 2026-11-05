@@ -110,8 +110,9 @@ and the [agent case reference](../skills/paperclip/references/cases.md).
 Task detail, heartbeat context, and closed-workspace admission guards read stored
 workspace metadata. They do not inspect Git or refresh live runtime health.
 Task context includes persisted runtime service state; delivery state is unknown
-until an explicit workspace read or lifecycle inspection computes it. Use the
-workspace detail and close-readiness APIs for current Git safety checks.
+until an explicit close-readiness or lifecycle inspection computes it. Workspace
+detail reads also return unknown delivery state without running Git or contacting
+a storage provider. Use close-readiness for current Git safety checks.
 
 ## Deployment Modes
 
@@ -146,19 +147,29 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
-Runner selection calls `ci-routing.yml@master` on a GitHub-hosted runner. It
-verifies authorization before allocating any AWS capacity and never checks out
-or executes PR code. The author, event sender and rerun actor must each be both
+Runner selection calls `ci-routing.yml@master`. Allowlisted maintainers use the
+reserved `paperclip-ci-routing-x64` AWS fleet for this bounded metadata job;
+other callers use GitHub-hosted capacity. The gate never checks out or executes
+PR code. The author, event sender and rerun actor must each be both
 in `AWS_CI_TRUSTED_USER_IDS` and a current owner of `.github/**` in CODEOWNERS.
 The resolver and CODEOWNERS are read from the same protected master revision;
 PR edits cannot change the trusted owner list. Documentation-only owners,
 unsupported owner rules and failed identity lookups do not authorize AWS.
-Repository, head and merge validation also apply. Missing or malformed settings
+Repository, head and merge validation also apply. The gate validates this run's
+immutable event merge, including its PR head and a base snapshot between the
+event's base and the current branch tip. Normal base advancement and regeneration
+of GitHub's live merge ref do not move an authorized run to GitHub-hosted CI.
+Stacked synthetic bases must contain a validated base snapshot. Rewritten base
+history, changed PR heads and unverifiable ancestry still deny AWS execution.
+Missing or malformed settings
 and unverifiable authorization use GitHub-hosted runners. A maintainer rerunning
 an outside contributor's PR does not grant it AWS access.
+Both `full-ci` and `profile-ci` label events use this same authorization path.
+The labels request CI scope; they do not grant AWS access or move an authorized
+CODEOWNER run to GitHub-hosted capacity. Other label events do not request CI.
 Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
-AWS fleet. The metadata authorization job remains hosted even for maintainers,
-so stale admission snapshots cannot allocate an AWS runner before verification.
+AWS fleet. A stale admission roster can allocate only the short metadata gate;
+the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
@@ -274,6 +285,30 @@ ID saved with the plan, even when GitHub increments the run attempt. Turbo hashe
 `PAPERCLIP_CI_SELECTION_HASH`, so a passing subset cannot satisfy a full run or a
 different selection.
 
+Graph discovery runs at most two isolated Node processes concurrently. Each
+project retains its own Vite configuration, aliases and module graph. Any worker
+error or timeout rejects the whole refinement and retains the original task plan.
+The selector checkout needs only the merge commit and its two parents, not the
+repository's complete history.
+
+Server test costs are recorded in CI with tests, hooks, collection, setup and
+environment preparation included. The weekly **Refresh CI test durations**
+workflow reads two successful protected-master Cloud readiness runs and opens a
+timing-only PR. It never executes code from logs, changes test selection rules,
+or grants AWS access. GitHub may require a maintainer to approve the bot PR's
+workflow runs; the refresh never merges itself. An outstanding refresh PR pauses
+new refreshes. Both timing manifests include source runs and measurement coverage.
+The refresh requires at least 90% coverage of each current lane and uses median
+measurements; missing files retain their old weights. Historical logs can bootstrap
+test/hook costs until structured loading/setup measurements are available.
+
+To reproduce a refresh from a full checkout with GitHub Actions read access:
+
+```sh
+node scripts/ci/refresh-test-durations.mjs [master-run-id ...]
+node --test scripts/ci/test-selection-timing*.test.mjs
+```
+
 Set the repository variable `CI_VITEST_SELECTION=off` to disable file selection
 while keeping the existing task-level optimization. Empty or `enabled` enables
 it; other values disable it. `full-ci`, profiling, and task-level `full`/`shadow`
@@ -314,10 +349,16 @@ explicit. When changing shard layout, update `.github/ci-task-matrix.json` and
 the full fallback matrices in `pr-trusted.yml`; the contract tests require them
 to agree. Add new cache-affecting environment settings to `globalEnv`.
 
-The former reserved routing Fleet is no longer selected by this workflow.
-Keep its existing authorization until older assigned jobs finish. A manual
-dispatch of `ci-routing.yml` on master exercises the hosted metadata job without
-launching the test matrix; its non-PR event returns the hosted test-runner output.
+The `paperclip-ci-routing` runner group must allow
+`paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`.
+Keep `AWS_CI_ROUTING_USER_IDS_SOURCE` equal to the exact JSON value of
+`AWS_CI_TRUSTED_USER_IDS` and `AWS_CI_ROUTING_USER_IDS` as its delimiter-wrapped
+numeric IDs (for example, `|34892728|139239|`). Missing or mismatched admission
+settings use GitHub-hosted capacity for the gate. Current CODEOWNERS remain
+authoritative for PR execution regardless of these admission settings.
+A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
+metadata gate without launching the test matrix; its non-PR event returns the
+hosted test-runner output.
 
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
@@ -328,15 +369,44 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
-General server shards run at most two test files at a time in separate Vitest
+General server shards run at most three test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
-cases run serially. An explicit `PAPERCLIP_TEST_DATABASE_URL` keeps those shards
-serial because the database is shared. Unsharded local tests, route/authz lanes,
-and native Runner lanes retain their existing concurrency. Sharded chat jobs run
+cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
+`PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
+is shared. Native Runner suites use four isolated file workers. Their long
+lease, preparation, disk-loss and checkpoint tests have separate files so real
+observation windows can overlap. Issue recovery suites split by producer and
+recovery behavior for the same reason. Unsharded local tests and route/authz
+lanes retain their existing file concurrency. Maintenance server cases overlap
+two owned server/database fixtures within their file; an explicit shared
+maintenance database keeps them serial. Sharded chat jobs run
 two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
+
+Exact-source release verification uses the post-merge AWS fleet on the first
+attempt. Reruns of its verification and chaos jobs use GitHub-hosted runners.
+Exact-source cloud-migrator planning and package builds use the same policy.
+This gives interrupted jobs an independent recovery path. It keeps the same
+source, commands, assertions and required gates. A failed test still needs a fix;
+a successful rerun does not explain an earlier failure.
+
+The two PR Runner Vitest jobs separate package tests from native server tests.
+The first runs the complete package inventory; the second runs the complete
+native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
+through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
+workflow. Other workflow names and shard counts keep their existing coverage.
+Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+the workspace library and every Cargo binary target. Its key includes source,
+protocol and fixture content, Cargo configuration, compiler flags, toolchain
+and checkout path. Only the Rust lane of a verified master push saves it.
+PR jobs only restore it; a missing or incomplete entry rebuilds normally.
+
+Affected-test selection treats Vite's exact `?raw` imports as file inputs.
+Changing that file selects its consumers. Generated/untracked files and unknown
+query loaders retain their consumers conservatively. Other filesystem, process
+and network effects keep their existing fallback.
 
 For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
@@ -1025,10 +1095,73 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+The Runner transport suite keeps attachment recovery, warm attachment, live
+adoption, and suspension in separate test files. Vitest can schedule these
+independent fixtures on its existing file workers; cases within each file stay
+serial. The package sequencer starts the ten files measured above 50 seconds in
+the November 4, 2026 AWS run first, ordered by approximate duration. This includes
+transport deadlines, settlement, provider launch, recovery, and streaming waits,
+so fresh CI runners do not have to infer duration from file size. Package CI uses
+up to four workers, bounded by available CPUs; local runs retain Vitest defaults.
+Vitest's file selection and shard membership are unchanged. Real lease/deadline
+waits and assertions are unchanged. Run the complete
+family, including the separate deadline and settlement regressions, with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
+```
+
 #### Embedded Postgres template cache
 
+To run the suite with one owned PostgreSQL server and a separate disposable
+database for each fixture, use:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts
+node cli/node_modules/tsx/dist/cli.mjs packages/db/src/test-postgres-command.ts -- pnpm exec vitest run --project @paperclipai/db
+```
+
+The command starts an embedded server, prepares a migrated database template,
+passes it to the child command, and waits for server shutdown before returning.
+It preserves the child command's exit status. On cancellation it stops and waits
+for the test process group before shutting down PostgreSQL. Database, server,
+and CLI fixtures all use the common implementation. Tests of embedded startup itself continue to
+start dedicated clusters.
+
+To reuse a disposable server that you already manage, set
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` to its administrative PostgreSQL URL. The role
+must be able to create databases. Each fixture creates a random database and
+closes only its clients before dropping it. It never stops the external server.
+`DATABASE_URL` does not select this test path. The optional
+`PAPERCLIP_TEST_POSTGRES_TEMPLATE` can name an existing migrated database with
+the form `paperclip_test_template_<hex>`; `0` disables template reuse.
+
+On a supported platform, PostgreSQL startup failures fail test collection.
+Resource exhaustion, unavailable configured servers, and broken native binaries
+do not make integration tests skip. A genuinely unsupported platform or CPU can
+still skip embedded PostgreSQL coverage. Startup retries apply only to port
+collisions. Teardown waits for process exit, requests fast shutdown first, and
+uses immediate PostgreSQL shutdown if needed. A failed stop fails the hook and
+retains its data directory. Worker termination also requests owned server
+shutdown. A forced `SIGKILL` can bypass these handlers; the separate host cleanup
+job remains the backstop for stale macOS semaphore sets.
+Database and CLI hooks use the same 30-second deadline as server hooks. This
+allows the ten-second shutdown protocol and client/database cleanup to finish
+before the test runner ends a worker. A shutdown timeout still fails the hook.
+Template publication uses `pg_ctl` to request clean fast shutdown on every
+supported platform and allows thirty seconds for it. A template is never
+published after immediate shutdown or a crash. Cancelling the shared-server
+command also waits for its owned cluster-directory cleanup after the test
+processes and PostgreSQL exit. Direct worker termination stops PostgreSQL but
+retains its disposable files for inspection; the synchronous exit guard cannot
+await directory removal.
+Stopped cluster directories are removed asynchronously, and cleanup awaits their
+removal. Large suites can leave many relation files; deleting them must not block
+the worker's event loop. The idle-sleep suite uses the existing 90-second fixture
+budget for its final directory cleanup after hundreds of table truncations.
+
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
-get their own embedded Postgres cluster. The first such suite on a host builds
+without an administrative URL get their own embedded Postgres cluster. The first such suite on a host builds
 one fully migrated cluster and publishes its data directory under
 `$TMPDIR/paperclip-embedded-postgres-templates-<uid>/<key>`. Every later suite
 copies that template and starts Postgres on the copy instead of running
@@ -1053,6 +1186,81 @@ failure on the template path (root checks, build, copy, start, or publish)
 falls back to the fresh path automatically, so the cache can make a suite
 slower but never fail it or skip it: a migration that cannot apply still fails
 the suite on the fresh path.
+
+#### Typecheck memory
+
+TypeScript 7 is a native binary, so `NODE_OPTIONS=--max-old-space-size` does not
+limit `tsc`. Its peak memory depends on how much source one process checks and on
+the number of checkers, because each checker keeps its own copy of the types.
+
+`pnpm --filter @paperclipai/server typecheck` does not check one program.
+`server/scripts/typecheck-layers.mjs` reads the import graph and runs one `tsc`
+process per layer. Each layer reads the earlier layers as declarations:
+
+| Layer | Files |
+| --- | --- |
+| `below` | Files the largest import cycle depends on, and unrelated files |
+| `cycle` | The largest import cycle |
+| `above` | Files that depend on the cycle |
+| `tests` | Test files outside `src/__tests__` |
+| `test-tree-0` to `test-tree-2` | `src/__tests__`, in shards |
+
+The generated configs and declarations go in
+`server/node_modules/.cache/paperclip-typecheck`. You do not maintain a layer list.
+`server/tsconfig.json` remains the single program for editors and `pnpm build`.
+The server typecheck builds only the Runner's TypeScript output. Use
+`pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
+Runner binary.
+
+`src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
+editor and the typecheck report the same errors. Server tests reach Daytona plugin
+source, but the root install does not install that plugin's dependencies. So this
+config maps `@daytonaio/sdk` to `server/scripts/typecheck-stubs/daytona-sdk.d.ts`.
+The plugin's own project checks that source against the real package.
+
+If the memory available to the task is limited, use this command:
+
+```sh
+node scripts/typecheck-low-memory.mjs
+```
+
+It peaks at about 3.8 GiB, against about 5.5 GiB for `pnpm -r typecheck` on 16
+cores. It also takes about twice as long.
+
+It checks one package at a time and uses one thread for the server layers and the
+UI. Do not add `GOMEMLIMIT` to this path. It saves at most 300 MiB here, and it
+slows `tsc` by up to 20 times when the live heap goes above the limit.
+`pnpm build` still checks the whole server program and needs more than 8 GiB. The
+Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
+JavaScript without checks or declarations.
+
+Test projects outside `pnpm -r` import server source through relative paths. Each
+project's `tsconfig.layers.json` reads that source as layer declarations. This
+command builds the declarations and then checks every project:
+
+```sh
+node scripts/typecheck-test-projects.mjs
+```
+
+Name a project to check only that project. `pnpm test:e2e:runner:typecheck` and
+`pnpm test:lifecycle-baseline:typecheck` do this for their projects. If the memory
+available to the task is limited, add `--low-memory`, or set
+`PAPERCLIP_TYPECHECK_LOW_MEMORY=1` for the pnpm commands.
+
+The command fails if a project loads server source, because that is what makes
+these programs large. It does not limit memory. CI runs it with
+`--reuse-declarations` straight after the server typecheck, so it does not build
+the declarations again. Do not use that option when the declarations can be stale.
+
+Add each new test project that imports server source to `PROJECTS` in
+`scripts/typecheck-test-projects.mjs`.
+
+Keep the project references out of each project's `tsconfig.json`. Vitest reads
+that file, and it fails when a referenced config does not exist yet. The
+`tsconfig.json` files remain single programs for editors, and
+`tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
+program. That program peaks at about 15 GiB at default settings and about 8 GiB on
+one thread.
 
 #### Reused Runner build in the server build
 
@@ -1205,6 +1413,22 @@ tasks; failed batch reads retain saved history. Existing full-detail cache data
 can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
+
+### Authenticated board startup
+
+`GET /api/auth/get-session` can include an optional `boardBootstrap` for the same
+authenticated session or Cloud tenant actor. It contains accessible company
+snapshots and the existing current-board-access projection. Directory visibility
+through instance admin alone does not add accessible companies. The ordinary
+session schema stays compatible with clients that ignore this projection.
+
+The browser seeds account-keyed navigation and board-access queries from this
+response, avoiding two serial startup reads. Normal company/access readers still
+own invalidation and refresh. A new successful session snapshot replaces older
+cached membership/access for a returning account once; later ordinary reads and
+mutations can update those queries. Missing, malformed, or failed optional bootstrap
+falls back to those readers; a failed session does not become an anonymous cache
+entry. Local trusted startup keeps its existing synthetic `local-board` principal.
 
 ### Run history authorization reads
 
@@ -1603,6 +1827,174 @@ These are prerequisites for shared storage and secrets. They do not establish
 that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
+
+### Experimental native remote workspace storage
+
+`experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
+for Cloud and self-hosted instances. New Paperclip Runner sandbox workspaces
+enroll automatically when durable storage is configured and the fresh source is
+supported. Existing host workspaces and configured local folders retain their
+legacy behavior until explicitly imported; the default does not convert them.
+The local, SSH, and plugin environment drivers, legacy adapters, and Dot keep
+their existing paths.
+An explicit stored `false` disables new enrollment, and a managed setting takes
+precedence over the stored choice. Enrolled workspaces retain remote authority
+when enrollment is disabled; losing a storage prerequisite fails their admission
+instead of falling back to a controller checkout.
+
+After enrollment, roll back only to binaries that understand the same remote
+workspace authority and saved-version format. Older local-only binaries are
+unsupported rollback targets.
+
+This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
+and the same encryption master key on every replacement server. The managed
+profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
+instances may instead preserve their existing configured
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` across replacements. An embedded database,
+local-disk object storage, or a newly generated replacement key cannot provide
+this durability contract. New workspaces continue through the legacy path when
+these prerequisites are absent. Validate S3 put/read/delete and database access
+with the deployment credentials before enrollment.
+Snapshot expiry also needs `s3:ListBucketVersions` on the bucket and
+`s3:DeleteObjectVersion` on the snapshot object prefix. S3-compatible endpoints
+must support version listing. Retention verifies that every version and delete
+marker is gone. Denied permissions and object locks keep a retry obligation.
+
+The sandbox holds current working files. PostgreSQL records its location,
+writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+S3 multipart uploads stream up to four parts concurrently. One producer reads
+the source in order, and bounded stream buffers preserve backpressure. Failed
+uploads cancel and settle their active requests before multipart cleanup.
+Snapshot publication still requires full object hash and size verification.
+Preparation creates a saved baseline, and native finalization saves the stopped
+writer's files before releasing its persistence obligation. Replacing a
+webserver reconnects to the recorded allocation without copying files back to
+a controller checkout. Saved versions restore in a new sandbox without the old
+host, sandbox, or Git remote. Files changed since the last save still depend on
+the live sandbox: losing that allocation can lose those edits. There is no
+periodic workspace backup in this release.
+
+Remote workspace command timeouts report `remote_workspace_operation_timed_out`
+with the operation (`prepare`, `repository`, `archive_helper`, `capture`, `restore`,
+or `cleanup`) and its timeout in milliseconds. Command output is excluded from
+that diagnostic. A timeout does not prove the remote process stopped or that a
+save failed before publication. Reconcile the existing workspace and operation
+receipts before recovery; the transport does not automatically repeat the command.
+Export cleanup keeps this typed timeout diagnostic in the operation's
+`metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
+The saved snapshot stays acknowledged and the cleanup obligation stays pending
+until the existing reconciliation path settles it.
+
+Files reads use the current committed saved version when remote authority is
+clean and has no active writer, even while its old allocation remains recorded.
+The saved loader verifies the company, workspace, snapshot, and archive before
+reading. Dirty or writer-owned authority uses the live allocation and cannot
+substitute an older save if that allocation is unavailable. A saved read permits
+cleanup to clear its recorded allocation while the epoch, snapshot, source,
+clean state, and absent writer stay identical. A new or reintroduced allocation
+still invalidates that read. Live reads retain the full allocation fence, and
+private saved-file copies are removed after use.
+Embedders that omit the optional saved-file loader keep valid live reads. They
+still report unavailability when neither a live location nor a loader exists.
+
+Existing local task workspaces require an explicit import. Run from a source
+checkout with the deployment's database, S3, and key configuration loaded:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --dry-run
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --apply
+```
+
+Dry-run is the default and reports eligibility and blocking reasons without
+importing. Apply retains the source folder, uploads an encrypted snapshot,
+independently restores it for verification, rechecks source/writer state, and
+atomically activates remote authority. Active execution, unresolved operations
+or recovery, unsafe paths, and explicitly concurrent shared writers block
+import. An interrupted apply retains its journal and admission hold; retry the
+same command to reconcile it before starting another writer.
+
+An import preserves the workspace's lifecycle state and the task's current
+workspace binding. It can import an archived or superseded workspace without
+reopening the task or selecting that older workspace for future turns. A changed
+task binding during the import blocks publication.
+
+If an archived folder has already been removed, the importer can reconstruct it
+in private scratch space from its encrypted task-directory restore point or
+validated Git restoration recipe. For older Git workspaces without a recipe,
+it requires a successful branch-deletion receipt and the exact saved commit in
+the verified source repository. It never substitutes today's default branch.
+Git restore points retain unpushed history and staged and unstaged edits, even
+when the source repository has pruned the saved branch. Missing, expired,
+corrupt, or unbound sources block the import. Publication still requires an
+independent download and restore of the new encrypted snapshot. The old folder
+remains absent, and the importer does not change the original restore point.
+
+Shared physical folders require Cloud's offline enrollment maintenance process.
+A task-level hold cannot fence another workspace record pointing at the same
+folder. Maintenance verifies that legacy deployments have stopped and that no
+runs are active or queued, then imports nested task directories before parent
+roots. A parent can omit a runtime-created nested task folder only after an
+independent restore and source comparison prove that its committed snapshot
+covers those bytes. The parent snapshot records that dependency, and retention
+pins the child snapshot until the parent is deleted. Changed or unavailable
+nested data blocks publication. Ordinary user folders remain in the archive.
+Interrupted maintenance resumes the same import journals; completed records
+leave the pending set. Original folders remain on the retained volume.
+
+Supported sources include empty task folders, repository URLs, and managed
+mutable repositories. Authorized mentioned projects attach all their configured
+Git repositories as writable copies under `.paperclip-repositories/` in the task
+workspace. These copies use the existing remote save/restore lifecycle and do not
+write to the source project's folder. Later turns retain their saved paths, refs,
+pins and edits, and recheck each retained project's access and trust policy.
+New repository attachments after a save are acquired separately from the saved
+archive. Repository refs use `repoRef`, then `defaultRef`, then the Git remote's
+default. A configured remote branch is resolved before its checkout is published.
+Configured local folders use the legacy path until imported. V1 rejects explicitly read-only sources
+and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
+and runtime commands are also rejected before any local directory access; run
+those commands through an agent task. One writer owns each logical
+workspace; separate workspaces can run concurrently. The Files panel identifies
+**Live workspace** and **Saved copy** with its save time. An unavailable dirty
+allocation is not silently replaced with an older saved copy.
+
+Workspace validation failures show their redacted explanation in the task's
+failure notice. They retain the normal Retry permission and admission gates.
+Retained-folder access and trust denials use this explanation; low-trust project
+boundary denials retain their dedicated project-access action.
+
+Remote archive capture retains fixed validation failures and a closed set of
+Node filesystem codes as `remote_workspace_archive_fs_<errno>`. The transport
+accepts exact diagnostic messages from separate or combined command output.
+Paths, filenames, file contents, and unknown errors remain redacted. The existing
+full-disk and unfinished-Git messages keep their priority. These diagnostics
+describe a failed capture attempt; saving and recovery still require their
+ordinary verified receipts.
+
+A child or follow-up task can use a remote workspace inherited through its
+persisted task binding, including an isolated workspace or operator branch.
+Reservation checks current task/run access and all retained workspace sources.
+The original `sourceIssueId` remains provenance; it does not prevent authorized
+bound tasks from continuing saved work. Explicitly selected roots follow the
+same binding contract and the filesystem access boundary below. Task-assignment
+grants are not filesystem permissions. The single-writer fence still applies.
+If reservation finds a current running writer, the bound task uses the existing
+workspace wait and scheduled retry path, including for isolated workspaces and
+operator branches. Reservation does not acquire another allocation or change
+the writer's saved files. A stale writer or a stopped writer with unfinished
+saves still requires reconciliation; contention retries cannot clear that fence.
+The wait retains the run's admitted assignment role so reassignment during
+preparation cannot resume the former assignee through the guest-run path.
+
+Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
+for storage, import, retention, and lifecycle regression checks. These checks do
+not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
+the existing persistent volume until the other instance data paths and deploy
+handoff are separately qualified. See the
+[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
+and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -2408,7 +2800,9 @@ Legacy runner; incompatible settings return remediation instead of being ignored
 Saved OpenCode agents keep their runner and runtime policies.
 
 Plugin environment drivers can declare `requiresAgent: true` when their leases
-need an agent-owned resource. Setup saves the draft and environment, runs its
+need an agent-owned resource. The host selects that plugin's lifecycle work only for
+agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
 use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
@@ -2503,6 +2897,16 @@ not a credential source for its isolated runner home. The default
 connections, including provider-native tools. Company permissions, approval
 gates, and workspace isolation still apply. Explicit restrictive modes remain
 restrictive; omitted settings use full auto.
+
+Assigned app tools can use `paperclip_search_assigned_tools` and
+`paperclip_call_assigned_tool` instead of direct tool definitions. Search with
+`{"query":"github"}` and call an exact returned tool name. Omitted, empty or
+whitespace-only `schemaTool` values perform normal discovery, including when
+`schemaOffset` is zero. To read a large schema, set `schemaTool` to the exact
+`inputSchemaRef` from discovery and follow `nextSchemaOffset`. A positive
+`schemaOffset` requires a nonblank reference. Unknown or revoked references
+return guidance to search again; discovery still checks current grants and work
+modes against the session's pinned catalog.
 
 Test questions, saved plan revisions, approval before task handoff, status
 lookups, and `/new` preserving chat history. Hiring additionally requires the
@@ -2636,6 +3040,18 @@ Older packs without the declaration retain content verification until the image
 is updated. Selected ACPX agent profile checks remain in force.
 Daytona detects gzip/zstd headers and skips redundant transport compression.
 
+### Daytona duplex close receipts
+
+Lease teardown removes duplex routes from command admission before it closes
+their transports. The provider retains up to 4096 route/session bindings and
+their close promises, so a later host close joins the same cleanup and returns
+the original binding. These records grant no write, stop, or open authority.
+Unknown or evicted routes cannot supply a session acknowledgement. A pending
+close still waits; an unconfirmed close still retires the worker through the
+existing host guard. The acknowledgement identifies the channel. Provider stop
+receipts and unresolved external-work checks still determine process termination.
+No command is replayed or worker restarted by this mechanism.
+
 ### Remote GitHub launcher staging
 
 Managed GitHub launchers stage their nine text files in one bounded control
@@ -2648,6 +3064,33 @@ keeps its 15-second deadline. Run `packages/adapter-utils/src/github-launcher-en
 and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contracts.
 
 ### Native runner restart recovery
+
+For remote controller disk-loss work, use the existing control-plane snapshot
+transaction and `native-controller-recovery.ts`; do not add a second snapshot
+writer. The private versioned metadata is limited to 4 KiB. Its importer handles
+one verified retained source while the source disk is available. Workspace and
+provider-backup migrations remain with their storage owners. See
+[the continuity verification guide](testing-native-remote-continuity.md) for
+the direct/prepared transport and three-controller continuation fixtures.
+An upgrade readiness report contains preliminary native evidence, not permission
+to remove a deployment volume. Keep the checkpoint pool bounded and measure all
+pools when qualifying database cost; the current size of two is a default.
+
+Committed native Agent Chat turns recover their unanswered final reply through
+the existing response presentation worker. Recovery verifies the accepted result
+and final turn, agent, responsible user, native session and conversation generation.
+It stores the exact final message before the normal conversation settlement moves
+the chat to waiting. Later user input remains active. Recovery does not run the
+agent again, replace a selected reply or restore a deleted reply.
+
+For retained Codex event tails, keep source drain/accounting and target admission
+separate. `native-staged-attachment-recovery.ts` validates private source/target
+header evidence; `native-recovery-usage-delivery.ts` binds the source's accounting
+receiver. The transport persists its staged target before source bootstrap, then
+uses the existing authenticated attachment protocol after durable drain. Do not
+rotate the identity first, acknowledge before receipt persistence, or weaken the
+Runner's settled-provider check. A staged target does not yet certify a resumable
+session. Its eventual snapshot still uses the existing checkpoint transaction.
 
 Custom source-mode HTTP launchers should create their listener with
 `createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
@@ -2782,7 +3225,7 @@ Run the credential-free real-process restart suite with:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
-pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```
 
 The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
@@ -2790,6 +3233,49 @@ The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
 and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
+
+Native task-session publication is part of the terminal checkpoint transaction,
+not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
+owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal projection also advances its source epoch when a fresh native session
+holds the task's current execution lock and assignee. The predecessor must be
+terminal, and its saved goal must be absent or complete. This lets the accepted
+checkpoint publish the fresh session as the next continuation baseline. A
+different session without current task authority, an unfinished or unreadable
+goal, a reset conversation, and delayed predecessor events retain their fences.
+The goal-less regression in `native-session-resumption.test.ts` holds provider
+cleanup open and then exercises a normal follow-up and an explicit session reset.
+Its fresh-session case keeps the prior task-session row, opens one new provider
+session, and verifies that the following ordinary comment resumes that session.
+The opt-in `native-session-epoch.live.test.ts` runs the same path with an existing
+Codex login and a built native Runner. It uses warm mode, makes three model calls,
+checks exact file contents and provider-thread reuse, and removes its temporary
+credential copy and workspace. Run it with
+`PAPERCLIP_LIVE_SESSION_EPOCH=true pnpm exec vitest run server/src/services/native-runtime/native-session-epoch.live.test.ts`.
+`PAPERCLIP_LIVE_EVIDENCE_PATH` can select a JSON evidence file outside the fixture.
+Control-port tests also cover terminal snapshots before accepted results and
+result-replay contention with the status writer's coordinator-first lock order.
+Remote adoption tests must invoke actual external-state preparation. Inspecting
+transport options alone does not exercise the resumed-lease harness checks.
+Include a healthy warm handoff before the crash so recovery exercises the
+handoff's turn and item attachment IDs as well as first-run identities.
+Retirement tests must exercise the preceding `turn.stop` as well as drain and
+suspend after result acceptance. Use the actual native-observed, unclaimed
+admission phase and the production claim before retiring the predecessor;
+a synthetic legacy preparation does not cover that boundary. Verify failed
+claims and Stop leave the predecessor and shared attachment staging untouched.
+Configuration tests compare fresh and recovered
+home-mode fingerprints while preserving rejection of real mode changes.
+Include multiple skill versions read back from Postgres JSONB: version-map key
+order must not change the generated preference or session fingerprint. Exercise
+the real environment-selection and configuration services with a retained shared
+workspace, and keep actual model or skill-version changes incompatible.
+Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
+host cannot start embedded Postgres:
+
+```sh
+pnpm exec vitest run server/src/__tests__/native-session-resumption.test.ts -t 'publishes the completed task session before provider cleanup'
+```
 
 ## Version-based skill authoring and delivery
 
@@ -3521,31 +4007,63 @@ Every delivery and request still checks current permissions. Grant revocation,
 deleted tasks, missing runs, and cross-company run IDs remain fail-closed.
 The developer-server health poll also stops in hidden tabs.
 
-Workspace detail responses share concurrent Git inspections and reuse their
-results for up to thirty seconds after completion. Workspace identity and metadata
-changes invalidate the cached result. The cache holds at most 256
-entries. Close-readiness checks and final cleanup validation request separate
-Git scans that cannot join an older in-flight scan. A display result never
-authorizes worktree removal.
+Workspace detail responses return stored metadata and runtime service information
+without inspecting Git, resolving delivery PRs, or reconciling remote storage.
+This also keeps operation-history reads, login handoffs, runtime controls and
+metadata updates from inspecting storage through their common workspace lookup.
+Delivery state stays `unknown` on these reads. Explicit close-readiness and final
+cleanup validation still inspect current Git state; neither uses a display result
+to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
-recover existing workspace rows in bounded pages. Issue status and tree changes,
-workspace lifecycle writes, and pull-request work-product writes signal work on
+recover existing workspace rows in bounded pages. The first readiness sweep
+defers the new remote delivery-proof checks while preserving candidate deadlines;
+later scheduled work performs them. GitHub latency does not block readiness
+through this path. Issue status and tree changes,
+workspace lifecycle writes, finalization receipts, and pull-request work-product writes signal work on
 their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.
 Empty and nonterminal-only lanes have no recurring timer or query. Terminal trees
 schedule their actual cooldown deadline; unresolved delivery or cleanup eligibility
-is checked again after five minutes. Nonterminal trees, cooldowns, and active runs
-are checked before Git. The worker shares Git readiness across compatible rows
-that point at one directory within a bounded page. Company, branch, base ref,
-and runtime ownership must match. Each row keeps its own task and delivery
-assessment, which reuses the task tree read by the early gate. Unchanged terminal
-candidates also back off for five minutes during unrelated commit wakes. Scoped
-task/workspace hints invalidate
-affected candidates; changed tree or workspace revisions invalidate them too.
-Deadline selection reuses task trees read by those pages and performs no separate
-full-inventory query. Commits during a paged rotation request another bounded
-rotation so changes behind its cursor are recovered.
+is checked again after five minutes. Providers that explicitly declare
+`supportsMergeAncestry: false` use the latest successful finalization receipt as a
+candidate HEAD. Core checks GitHub before inspecting storage: the exact HEAD must
+be an ancestor of the intended destination tip, or an associated merged PR must
+have that exact final HEAD and destination, with its integration commit still
+reachable from the destination. Recorded PR work products are optional lookup
+hints. This supports squash merges without equating the squash commit with the
+original workspace commit.
+
+Preparation captures the resolved destination branch when the provider supports
+it. Cleanup never silently adopts a changed project source or today's default
+branch for an ambiguous old workspace. Missing receipts or destinations park the
+workspace; finalization, workspace, issue, provider and work-product changes and
+startup reconsider it. A known commit awaiting delivery, or an unavailable remote
+lookup, keeps a five-minute remote-only retry. GitHub merges have no guaranteed
+local ingress for this lane, so this concrete unresolved delivery obligation can
+keep the worker scheduled until delivery is proved. There is no new polling loop.
+Background GitHub delivery checks use the source project's explicit GitHub
+authorization, with the same consent checks as provider inspection and removal.
+The stored source must still match the workspace repository. Each proof, including
+the final removal check, revalidates the selected grant, project access and trust.
+Public sources use anonymous access; missing or revoked private-source consent
+retains storage without falling back to another identity. No task identity is borrowed.
+
+Only positive delivery evidence triggers a fresh storage inspection. The actual
+HEAD and branch must match the receipt. Cleanup revalidates delivery after its
+last inspection before recording removal intent. A provider can opt into
+`recoveryPullRequestVersion: 1` to receive one specific PR number and original
+HEAD for recovery checks. A merged PR alone does not prove that the original
+commit remains recoverable after source-branch deletion. The provider must
+independently prove recovery of that exact commit and reject any local data.
+Missing capability declarations preserve existing provider protocols.
+Nonterminal trees, cooldowns, and active runs are checked before Git. The worker
+shares readiness across compatible rows within a bounded page. Each row retains
+its own task and delivery assessment. Scoped task/workspace hints invalidate
+backoff; changed tree or workspace revisions invalidate it too. Deadline selection
+reuses task trees read by those pages without a separate full-inventory query.
+Commits during a paged rotation request another bounded rotation so changes behind
+its cursor are recovered.
 The backoff retains at most 256 candidates and only applies to the background
 worker. Final cleanup still checks the current task tree,
 delivery evidence, ownership, lifecycle generation, and Git state under the
@@ -3749,6 +4267,11 @@ under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
 
+New-task staged file bytes are stored in IndexedDB for the account and company.
+Writes merge the selected files with the current saved list in one read/write
+transaction. Removal and successful creation delete only the files that the
+mounted draft removed. Other open tabs keep their saved files across reloads.
+
 Successful pending-record writes have the same readable size range as browser
 storage. In particular, a large task description cannot silently drop its
 creation key on reload. Reselected text documents recover their original
@@ -3805,6 +4328,12 @@ Task files, personal agent state (`AGENT_HOME`), and provider home are distinct.
 Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repositories*.test.ts`, `task-workspace-tools.test.ts`, channel integration tests, and adapter-utils checkpoint/native persistence tests. Full handoff still requires the repository typecheck, test, and build commands. Remote transport fixtures establish protocol behavior; they do not qualify production provider throughput.
 
 Channel defaults can be configured in Apps connection settings and per destination. They affect new conversations only. A queued selection or repository request is applied on the next normal admission; configuration changes do not interrupt a live run. See [the architecture](plans/2026-10-09-task-workspaces.md).
+
+GitHub repository discovery and admission recheck current grant access. Installation
+changes advance the access revision and invalidate an in-flight refresh. Ordinary
+pull-request webhooks update delivery health without invalidating repository
+access. A refresh preserves their latest webhook timestamp and health when it
+commits. Concurrent access refreshes retain the existing one-retry limit.
 
 ### Slack provisioning paths
 
@@ -4008,6 +4537,23 @@ capabilities, stable keys, operating limits, automatic history migration and qua
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.
 
+## Volume-free execution admission
+
+With `PAPERCLIP_EPHEMERAL_SERVER=true`, workspace preparation requires Paperclip
+Runner and remote workspace storage. A fresh run still has its initial `legacy`
+label at this phase; that label is not the selected execution mode. The runtime
+selector checks the resolved native warm lifecycle before admission and rejects
+legacy or per-turn execution. External conversation providers keep their existing
+exemption because they own no task filesystem. Source resolution checks this
+contract again before a configured host folder can fall back to local storage.
+
+A replacement controller reconstructs an active remote agent-directory cache
+from the registered sandbox, including unsaved files. The remote directory,
+lease and save baseline remain unchanged; current canonical files are never
+uploaded over the retained execution. Remote collection and cleanup serialize
+through Postgres across controller homes. A missing remote collector retains a
+pending save instead of treating an empty local cache as the agent's files.
+
 ## Cloud startup configuration
 
 Cloud stores nonsecret startup choices in a private PostgreSQL singleton.
@@ -4016,3 +4562,24 @@ one-time config-file seed preserves existing choices, then later starts use the
 database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
+
+
+### Read resilience during deploys
+
+Read surfaces use `useQueryView` and `QueryErrorState`. Transient refetch failures keep loaded data visible. An initial outage keeps a quiet placeholder until recovery. Authorization, missing resources and validation failures still show readable errors. Exhausted first reads on a reachable server offer Retry, including task filters and hierarchy reads. Health probes and the socket own app-wide recovery; a successful component load may be an older in-flight response or a local no-op. Sensitive manual reads use `useResilientFetch`; browser viewer URLs and pairing previews remain in component memory and never enter a shared cache.
+
+Run `node scripts/check-query-error-rendering.mjs`. The guard now enforces across `ui/src`, including multiline expressions, and CI runs it as a policy check. Its small allowlist covers standalone preview/performance fixtures, transcript protocol result flags, and the existing account-resolution and Copilot discovery retry owners. These are not ordinary read-error renders. Additions require a specific reason; do not allowlist a page to hide an outage regression.
+
+The browser saves a small read cache in `paperclip:query-cache:v1:*` local storage records. It contains session display identity, health and shell preferences, company and sidebar data, agent/project lists, plugin UI contribution metadata, the first inbox page (including up to 100 rows per legacy Inbox query), and up to 20 recently opened tasks. Records belong to one user and company, expire 24 hours after each read, and are discarded when the build changes. Normal in-memory query garbage collection does not erase saved recent tasks or extend their expiry. Builds without a source commit stamp skip read-cache hydration and persistence, but still revoke and clear saved reads on sign-out. Plugin contributions use the existing instance-wide query inside the user's root record. Session tokens, bootstrap payloads, documents, comments, browser viewer capabilities, pairing data, other queries and mutations are excluded. Task content in this allowlist remains on the browser until expiry or sign-out; use the normal sign-out action to clear it across tabs. Account changes also detach pending shared GETs so a new user cannot join the previous user’s private reads. Editors that need fields excluded from the display cache, including bulk agent settings, fetch complete current data before opening.
+
+Restored identity permits cached display only. Restored inline task drafts compare their saved base with a fresh field read before each replay; conflicting edits stay in the editor for review. Account-bound writes wait for a fresh server session and are cancelled if its user changes. A definitive session denial removes saved account reads. Service-worker updates reload hidden tabs only after connectivity is online and mutations, durable sends and autosaves have settled. Durable queues synchronously report each unresolved operation, including the intervals between online rate-limit retries. Sign-out revocation also works on plain-HTTP installs without `crypto.randomUUID`.
+
+Embedded plan documents and preview work products are stripped from saved payloads. A denied task clears its UUID and identifier projections. Sign-out revocation markers contain no task content and remain after sign-out to reject stale records and delayed writes from older tabs. Session responses started before revocation cannot restore those reads, even before the storage event reaches the other tab.
+
+Cached agents retain only safe adapter display fields and an empty runtime configuration. Their configuration objects remain present for existing display consumers; provider credentials and environment values are excluded.
+
+A restored task shows its header and properties while uncached history is still loading. History is not persisted, and its normal placeholder remains until reads recover. The header stays visible across recovery.
+
+Query-cache cleanup snapshots storage keys before deletion because native storage can reorder them as records are removed. Flush cleanup affects only its owning account and yields if another account becomes active.
+
+Run `pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/disconnect-resilience.spec.ts` for the built-UI outage regressions. The suite uses fresh isolated local data, 20-second API interceptions, and a controlled sign-out session response. It covers retained tasks, comment and document recovery, queued-comment reloads, cached settings/sidebar/task reads, legacy Inbox reloads, real error status handling and sign-out clearing across several company records. The existing CI e2e shards discover it automatically. A real hosted restart or deploy remains a separate acceptance check.

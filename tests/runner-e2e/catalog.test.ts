@@ -33,6 +33,72 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("uses effective supported warm agent policy across controller replacement and migration suites", () => {
+    const warmSuites = ["rolling-web-deployment-warm", "legacy-workspace-migration-warm", "remote-workspace-storage", "daytona-restart-continuity"];
+    const warm = runnerMatrix.filter(cell => warmSuites.includes(cell.suite.id));
+    for (const id of warmSuites) expect(warm.some(cell => cell.suite.id === id && cell.profile.id === "runner-codex"), id).toBe(true);
+    const perTurn = runnerMatrix.filter(cell => cell.suite.id === "rolling-web-deployment");
+    expect(warm.some(cell => ["runner-opencode", "runner-acpx-claude", "runner-acpx-grok"].includes(cell.profile.id))).toBe(false);
+    expect(perTurn.length).toBeGreaterThan(runnerMatrix.filter(cell => cell.suite.id === "rolling-web-deployment-warm").length);
+    for (const cell of [...warm, ...perTurn]) {
+      const secretRefs = Object.fromEntries([cell.profile.credential, "DAYTONA_API_KEY"].map(key => [key,
+        { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const }]));
+      const input = { executionId: cell.id, secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+      const agent = cell.profile.buildAgent({ ...input, environmentId: "env-1", environmentFixtureId: "daytona", workspacePath: "/workspace" });
+      const environment = cell.environment.buildEnvironment(input);
+      const expected = warmSuites.includes(cell.suite.id) ? "warm" : "per_turn";
+      expect(agent.adapterConfig).toMatchObject({ lifecycleMode: expected });
+      expect(environment.config).toMatchObject({ runnerLifecycleMode: expected, reuseLease: expected === "warm" });
+      expect(cell.suite.expectedMatrixSize).toBe(cell.suite.profiles.length * cell.suite.tasks.length);
+    }
+  });
+  it("keeps verified artifact transfer a single explicit Daytona run", () => {
+    const id = "api-artifact-transfer.runner-codex.daytona.verified-artifact-copy";
+    const cells = selectRunnerExecutions(parseRunnerSelectors(["--id", id]));
+    expect(cells.map(cell => cell.id)).toEqual([id]);
+    expect(cells[0]!.task.expectedRunCount).toBe(1);
+    expect(cells[0]!.task.automaticRetryPolicy).toBe("single_attempt");
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(cell => cell.id === id)).toBe(false);
+  });
+  it("keeps the Daytona controller outage on a reusable warm sandbox inside its idle lifetime", () => {
+    const suite = runnerSuites.find(candidate => candidate.id === "daytona-restart-continuity")!;
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "44444444-4444-4444-8444-444444444444", version: "latest" as const },
+    };
+    const environmentInput = { executionId: "controller-outage", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    const base = runnerEnvironments.find(environment => environment.id === "daytona")!;
+    const baseConfig = base.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const warmConfig = daytonaWarmEnvironment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const cells = runnerMatrix.filter(entry => entry.suite.id === suite.id);
+    expect(cells).toHaveLength(1);
+    expect(cells.map(cell => cell.id)).toEqual([
+      "daytona-restart-continuity.runner-codex.daytona.recover-controller",
+    ]);
+    for (const cell of cells) {
+      const config = cell.environment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+      expect(config).toMatchObject({ reuseLease: true, runnerLifecycleMode: "warm" });
+      expect(config.autoStopInterval).toBe(15);
+      expect(Number(config.autoStopInterval) * 60_000).toBeGreaterThan(420_000);
+      expect(config).toEqual({ ...warmConfig, autoStopInterval: 15 });
+      expect(cell.environment.configurationKey).toBe("warm-controller-outage-v1");
+      expect(cell.environment.label).toContain("warm reusable");
+      const agentInput = { ...environmentInput, environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace" };
+      const adapterConfig = cell.profile.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      expect(adapterConfig.idleTimeoutMs).toBe(300_000);
+      expect(adapterConfig.lifecycleMode).toBe("warm");
+      expect(cell.suite.manualOnly).toBe(true);
+      expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(entry => entry.id)).toEqual([cell.id]);
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(entry => entry.id === cell.id)).toBe(false);
+    }
+    expect(baseConfig).toMatchObject({ autoStopInterval: 5, reuseLease: false, runnerLifecycleMode: "per_turn" });
+    expect(warmConfig).toMatchObject({ autoStopInterval: 5, reuseLease: true, runnerLifecycleMode: "warm" });
+    expect(suite.definitionMetadata).toMatchObject({ version: 8, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api", maximumAttemptsPerCell: 1 });
+  });
+
   it("selects non-reused Kimi lifecycle leases without changing its warm or local cases", () => {
     const suite = runnerSuites.find(row => row.id === "kimi-qualification")!;
     const cells = runnerMatrix.filter(row => row.suite.id === suite.id);
@@ -77,7 +143,33 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual([
+      "saved-skill-use",
+      "task-edit-lifecycle",
+      "company-access-isolation",
+      "repository-continuation",
+      "routine-scheduled-run",
+      "inbox-triage",
+      "file-input-answer",
+      "task-create",
+      "project-task-context",
+      "task-dependency-resume",
+      "ask-question",
+      "chat-continuity",
+      "question-answer-resume",
+      "task-properties",
+      "task-document-persistence",
+      "task-search-filter",
+      "plan-revise-accept",
+      "build-revise",
+      "protected-actions",
+      "create-skill-studio",
+      "stop-redirect",
+      "followup-while-running",
+      "hire-delegate-reuse",
+      "agent-settings-persistence",
+      "cloud-onboarding"
+    ]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -237,10 +329,11 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      1, 9, 2, 9, 2, 4, 1, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 2, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(795);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(795);
+    expect(validateRunnerCatalog()).toHaveLength(824);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(824);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
@@ -264,7 +357,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(385);
+    ).toBe(397);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -358,6 +451,10 @@ describe("runner E2E catalog", () => {
     const suite = runnerSuites.find(
       (candidate) => candidate.id === "daytona-warm-continuity",
     )!;
+    expect(suite.definitionMetadata).toMatchObject({ version: 5,
+      managedSaveReceipt: "latest-paginated-run-log-instruction-save" });
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite,
+      definitionMetadata: { version: 4, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 } }));
     expect(
       suiteDefinitionHash({
         ...suite,
@@ -704,6 +801,9 @@ describe("runner E2E catalog", () => {
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
     expect(task!.buildPrompt("nonce")).toContain("first call get_task_context");
+    expect(task!.buildPrompt("nonce")).toContain("criteria:CURRENT_TURN_CRITERIA");
+    expect(task!.buildPrompt("nonce")).toContain("entry for every current criterion ID");
+    expect(task!.buildPrompt("nonce")).not.toContain('criterionId:"objective"');
     expect(task!.buildPrompt("nonce")).toContain(
       "identifies the exact revised Plan revision used as the confirmation target as accepted",
     );

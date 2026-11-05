@@ -54,6 +54,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 vi.mock("./useProfilesData", () => ({ useProfilesData: () => profilesData.current }));
 
+import { ApiError } from "@/api/client";
 import { ProfilesIndex } from "./ProfilesIndex";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,6 +95,14 @@ function profile(partial: Partial<ToolProfileWithDetails> & { name: string }): T
 function setData(profiles: ToolProfileWithDetails[]) {
   profilesData.current = {
     profiles: { isLoading: false, isError: false, data: { profiles }, refetch: vi.fn() },
+    agents: { data: [] },
+  };
+}
+
+/** The raw query-result slice `useQueryView` reads, for outage and failure states. */
+function setProfilesQuery(query: Record<string, unknown>) {
+  profilesData.current = {
+    profiles: { isLoading: false, fetchStatus: "idle", refetch: vi.fn(), ...query },
     agents: { data: [] },
   };
 }
@@ -141,6 +150,40 @@ describe("ProfilesIndex", () => {
     expect(container.textContent).toContain("2 agents");
     expect(container.textContent).toContain("All except 2 tools");
     expect(container.textContent).toContain("Organization default");
+  });
+
+  it("keeps loaded profiles visible when a refetch fails transiently", async () => {
+    setProfilesQuery({
+      status: "success",
+      data: { profiles: [profile({ name: "Everyday work" })] },
+      error: new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    });
+    await render();
+
+    expect(container.textContent).toContain("Everyday work");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("shows readable copy and a Retry button for a real error", async () => {
+    const refetch = vi.fn();
+    setProfilesQuery({
+      status: "error",
+      data: undefined,
+      error: new ApiError("Boom", 500, { error: "Boom" }),
+      refetch,
+    });
+    await render();
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load profiles");
+
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Retry"));
+    expect(retry, "Retry button").toBeTruthy();
+    flushSync(() => {
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(refetch).toHaveBeenCalled();
   });
 
   it("shows a new-tools chip in the Allows column", async () => {

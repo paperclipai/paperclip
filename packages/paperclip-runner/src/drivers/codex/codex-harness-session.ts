@@ -1,5 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
-import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
+import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -134,7 +134,7 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        this.codexUsageBaseline = codexUsageBaselineForNextRun(this.codexUsageBaseline);
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;
@@ -729,6 +729,9 @@ export class CodexHarnessSession
           reconciledUsage.total,
           false,
         );
+        // Only an active turn's report belongs to this run. An idle thread read
+        // can include late usage that no run has been charged for yet.
+        if (this.activeTurnId !== null) this.codexUsageBaseline.accounted = { ...this.codexUsageBaseline.latest };
         this.usageSnapshot = {
           ...reconciledUsage,
           ...codexRunUsage(this.codexUsageBaseline),

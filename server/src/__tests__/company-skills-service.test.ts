@@ -17,7 +17,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { parseFrontmatterMarkdown } from "@paperclipai/shared";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -651,17 +651,17 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]);
     await svc.list(companyId);
     const events: Record<string, unknown>[] = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { agents, costEvents }, capture);
     let listed: Awaited<ReturnType<typeof svc.list>>;
     try { listed = await svc.list(companyId); } finally { capture.flush(); }
     expect(listed.find(item => item.id === first.id)?.attachedAgentCount).toBe(2);
     expect(listed.find(item => item.id === second.id)?.attachedAgentCount).toBe(1);
     expect(listed.find(item => item.id === ambiguous.id)?.attachedAgentCount).toBe(0);
-    const agentReads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "agents");
+    const agentReads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "agents");
     expect(agentReads).toHaveLength(1);
     expect(Number(agentReads[0]?.responseValueBytes)).toBeLessThan(2_000);
-    expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "cost_events")).toHaveLength(0);
+    expect(events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "cost_events")).toHaveLength(0);
     await db.update(agents).set({ adapterConfig: { paperclipSkillSync: { desiredSkills: [second.key] } } }).where(eq(agents.id, readerId));
     const refreshed = await svc.list(companyId, { q: "First" });
     expect(refreshed.find(item => item.id === first.id)?.attachedAgentCount).toBe(1);
@@ -680,12 +680,12 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const before = await svc.list(companyId);
     expect(before.find(item => item.id === inserted[0]!.id)?.folderPath).toBe("bundled/paperclip-core");
     const events: Record<string, unknown>[] = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { companySkills }, capture);
     let after: Awaited<ReturnType<typeof svc.list>>;
     try { after = await svc.list(companyId); } finally { capture.flush(); }
     expect(after).toEqual(before);
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "company_skills");
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "company_skills");
     expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(950_000);
     const stored = await svc.getById(companyId, inserted[0]!.id);
     expect(stored?.markdown).toBe(savedMarkdown);
@@ -762,11 +762,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       .orderBy(companySkillVersions.id);
     expect(before.length).toBeGreaterThan(0);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { companySkillVersions }, capture);
     try { expect(await companySkillService(db).list(companyId)).toEqual(expected); }
     finally { capture.flush(); }
-    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "company_skill_versions" && event.operation === "select");
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
@@ -783,11 +783,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       ? { type, companyId: otherCompanyId, agentId: randomUUID() }
       : { type, companyIds: [otherCompanyId] };
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { companySkillVersions }, capture);
     try { expect(await companySkillService(db, { actor }).list(companyId)).toEqual([]); }
     finally { capture.flush(); }
-    expect(events.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.completedQueries).toBe(0);
+    expect(events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")?.completedQueries).toBe(0);
   });
 
   it("restores a deleted release after warm validation", async () => {

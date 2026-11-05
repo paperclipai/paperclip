@@ -256,17 +256,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id + 1, command, &request))?;
             }
             "remote-error" => {
+                let mut error = json!({
+                    "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
+                    "message": "violet-circuit-4821",
+                    "retryable": false,
+                });
+                if let Some(cause) = request["params"].get("providerFailure") {
+                    error["providerFailure"] = cause.clone();
+                }
                 write_json(
                     &mut stdout,
                     &json!({
                         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                         "id": id,
                         "ok": false,
-                        "error": {
-                            "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
-                            "message": "violet-circuit-4821",
-                            "retryable": false,
-                        },
+                        "error": error,
                     }),
                 )?;
             }
@@ -310,6 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -345,6 +350,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
                 if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
                     let turn_id = request
                         .pointer("/params/turnId")
@@ -439,6 +456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -455,7 +473,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;

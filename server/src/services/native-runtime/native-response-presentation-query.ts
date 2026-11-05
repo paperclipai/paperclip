@@ -1,15 +1,18 @@
 import { QueryBuilder } from "drizzle-orm/pg-core";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
 export function nativeResponsePresentationCandidates(scope?: NativeResponsePresentationScope, after?: string, runId?: string) {
   const db = new QueryBuilder();
   return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
     issueId: nativeRunFinalizations.issueId, agentId: heartbeatRuns.agentId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+    endpointId: chatActions.endpointId, principalId: chatActions.principalId,
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
+    .leftJoin(chatActions, and(eq(chatActions.id, heartbeatRuns.wakeupRequestId),
+      eq(chatActions.companyId, heartbeatRuns.companyId)))
     .innerJoin(issues, and(eq(issues.id, nativeRunFinalizations.issueId), eq(issues.companyId, nativeRunFinalizations.companyId)))
     .innerJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
       eq(nativeRunResults.companyId, nativeRunFinalizations.companyId), eq(nativeRunResults.issueId, nativeRunFinalizations.issueId),
@@ -30,9 +33,31 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
       sql`${nativeRunResults.resultJson} #>> '{terminal,turnTerminalState}' = 'completed'`,
       or(
         and(eq(heartbeatRuns.status, "succeeded"),
-          sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
-          sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'done'`,
-          sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'done'`),
+          or(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
+            and(eq(statusDecisions.reasonCode, "conversation_turn_finished"),
+              eq(issues.conversationAgentId, heartbeatRuns.agentId), eq(issues.conversationUserId, heartbeatRuns.responsibleUserId),
+              eq(issues.status, "in_progress"), eq(issues.conversationState, "active"),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, heartbeatRuns.id)),
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
+              sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
+              sql`${heartbeatRuns.contextSnapshot}->>'conversationSessionGeneration' = ${issues.conversationSessionGeneration}::text`,
+              exists(db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+                eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.runId, heartbeatRuns.id),
+                eq(heartbeatRunEvents.agentId, heartbeatRuns.agentId), eq(heartbeatRunEvents.eventType, "item.completed"),
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,runId}' = ${heartbeatRuns.id}::text`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,normalizedSessionId}' = ${heartbeatRuns.nativeSessionId}::text`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,turnId}' = ${nativeRunResults.turnId}`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+                sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}' ~ '[^[:space:]]'`,
+              ))))),
+          or(
+            and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'done'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'done'`),
+            and(sql`(coalesce(${issues.conversationAgentId}::text, '') = '' or coalesce(${issues.conversationUserId}, '') = '')`,
+              sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'needs_review'`,
+              sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'needs_review'`),
+          )),
         and(sql`${nativeRunResults.resultJson} #>> '{result,reportedWorkDisposition}' = 'yielded'`,
           sql`${nativeRunResults.resultJson} #>> '{terminal,reportedWorkDisposition}' = 'yielded'`,
           sql`jsonb_typeof(${nativeRunResults.resultJson} #> '{result,summary}') = 'string'

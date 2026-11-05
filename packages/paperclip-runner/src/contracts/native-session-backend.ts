@@ -1,3 +1,4 @@
+import type { ProviderFailure } from "./provider-failure.generated.js";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -14,6 +15,7 @@ import type {
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
   HarnessGoalOperation,
+  HarnessSessionRecoveryResult,
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
@@ -81,6 +83,7 @@ export interface NativeSessionRecoveryResult {
   recovered: boolean;
   session?: NativeSession;
   reason?: string;
+  failureClass?: HarnessSessionRecoveryResult["failureClass"];
 }
 
 /** Runner-owned cause: the process was restored, but its active turn was lost. */
@@ -117,6 +120,7 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
  */
 export interface NativeSessionCancellation {
   cleanup: Promise<void>;
+  terminalDrainTimeoutMs?: number;
 }
 
 export interface NativeSessionSnapshotOptions {
@@ -276,11 +280,25 @@ export interface NativeSessionBackend {
   ): Promise<NativeSessionRecoveryResult>;
 }
 
+/** Same-session recovery is forbidden here, and the runner proved that the
+ * saved provider session cannot be restored by its build. Retrying the same
+ * run cannot succeed. */
+export class NativeProviderStateIncompatibleError extends Error {
+  readonly code = "native_provider_state_incompatible";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderStateIncompatibleError";
+  }
+}
+
 /** A provider failed terminal is not a missing completion proposal. */
 export class NativeProviderTerminalFailure extends Error {
   readonly code = "native_provider_terminal_failed";
-  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal") {
+  declare readonly providerFailure?: ProviderFailure;
+  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal",
+    providerFailure?: ProviderFailure | null) {
     super(message);
     this.name = "NativeProviderTerminalFailure";
+    if (providerFailure) Object.defineProperty(this, "providerFailure", { value: providerFailure, enumerable: false });
   }
 }
