@@ -415,3 +415,87 @@ it("coalesces broad reconstruction without delaying an exact object hint or save
   await vi.advanceTimersByTimeAsync(120_000);
   expect(load).toHaveBeenCalledTimes(4); expect(check).toHaveBeenCalledOnce();
 });
+
+it("admits saved deadlines that come due behind a slow check without overlapping its resource", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  const now = Date.now();
+  const started: string[] = [];
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const retries = new Map<string, number>();
+  const check = vi.fn(async (item: Entry, signal?: AbortSignal) => {
+    started.push(item.id);
+    if (item.id === "slow") { await slow; return null; }
+    // A failed attempt saves a retry 30 seconds later, three attempts in all.
+    const count = (retries.get(item.id) ?? 0) + 1;
+    retries.set(item.id, count);
+    expect(signal?.aborted).toBe(false);
+    return count < 3 ? { ...item, dueAt: Date.now() + 30_000 } : null;
+  });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "slow", issueId: "shared", companyId: "company", dueAt: now },
+      { id: "retrying", issueId: "other", companyId: "company", dueAt: now },
+      // Same resource as the slow check: it must stay queued behind it.
+      { id: "sibling", issueId: "shared", companyId: "company", dueAt: now + 10_000 },
+    ],
+    check,
+  }, () => true);
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(new Set(started)).toEqual(new Set(["slow", "retrying"]));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(retries.get("retrying")).toBe(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(retries.get("retrying")).toBe(3);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(started).not.toContain("sibling");
+    releaseSlow();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started.filter(id => id === "sibling")).toHaveLength(1);
+  } finally { releaseSlow(); await worker.ready; }
+  expect(started.filter(id => id === "slow")).toHaveLength(1);
+  expect(retries.get("retrying")).toBe(3);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("wakes an idle admission slot during shutdown and starts nothing new", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  const now = Date.now();
+  const started: string[] = [];
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "slow", issueId: "a", companyId: "company", dueAt: now },
+      { id: "later", issueId: "b", companyId: "company", dueAt: now + 60_000 },
+    ],
+    check: async (item: Entry) => { started.push(item.id); if (item.id === "slow") await slow; return null; },
+  }, () => true);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(started).toEqual(["slow"]);
+  let stopped = false;
+  const stopping = coordinator.stop().then(() => { stopped = true; });
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(stopped).toBe(false);
+  expect(started).toEqual(["slow"]);
+  releaseSlow();
+  await vi.advanceTimersByTimeAsync(1);
+  await stopping;
+  expect(stopped).toBe(true);
+  expect(started).toEqual(["slow"]);
+  await worker.ready;
+});

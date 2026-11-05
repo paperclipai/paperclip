@@ -12,7 +12,17 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     queue: DeliveryQueue;
     batchSize?: number;
     minimumPassIntervalMs?: number;
-    concurrentChecks?: { limit: number; key(entry: Entry): string | readonly string[] };
+    concurrentChecks?: {
+      limit: number;
+      key(entry: Entry): string | readonly string[];
+      // A pass otherwise ends only after its slowest check. Owners whose checks
+      // can legitimately run for minutes may let idle slots keep admitting
+      // entries that become due meanwhile, so one slow resource cannot hold
+      // every other resource's saved deadline until it finishes. check() must
+      // revalidate each entry against durable state, because an entry admitted
+      // this way is not reconstructed first.
+      admitDueWhileActive?: boolean;
+    };
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
@@ -145,18 +155,89 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       }
       const pending = [...groups.values()];
       let nextGroup = 0;
+      const admitDueWhileActive = options.concurrentChecks?.admitDueWhileActive === true;
+      const keysOf = (entry: Entry) => {
+        const configured = options.concurrentChecks?.key(entry) ?? "";
+        return typeof configured === "string" ? [configured] : [...configured];
+      };
+      // Entries owned by this pass (queued in a group or running) and the
+      // resource keys of running checks. Admission never overlaps either.
+      const owned = new Set(batch.entries.map(entry => entry.id));
+      const busyKeys = new Map<string, number>();
+      const lastChecked = new Map<string, number>();
+      const spacing = options.minimumPassIntervalMs ?? 1000;
+      let running = 0;
+      let changed: (() => void) | null = null;
+      const notify = () => { const resolve = changed; changed = null; resolve?.(); };
+      const checkEntry = async (entry: Entry) => {
+        const keys = keysOf(entry);
+        for (const key of keys) busyKeys.set(key, (busyKeys.get(key) ?? 0) + 1);
+        running += 1;
+        try {
+          const current = await options.check(entry, signal);
+          if (current) entries.set(entry.id, current); else entries.delete(entry.id);
+          failures.delete(entry.id);
+        } catch (error) { failed(failures, entry.id); errors.push(error); }
+        finally {
+          running -= 1;
+          lastChecked.set(entry.id, Date.now());
+          for (const key of keys) {
+            const count = (busyKeys.get(key) ?? 1) - 1;
+            if (count > 0) busyKeys.set(key, count); else busyKeys.delete(key);
+          }
+          notify();
+        }
+      };
+      const nextAdmission = () => {
+        // Mid-pass settlements mark scopes dirty, but reconstruction waits for
+        // the next pass. Admission therefore relies on check() revalidating
+        // the entry against durable state, as the option requires.
+        const now = Date.now();
+        let wakeAt: number | null = null;
+        let candidate: Entry | null = null;
+        for (const item of entries.values()) {
+          if (owned.has(item.id)) continue;
+          if (keysOf(item).some(key => busyKeys.has(key))) continue;
+          const at = Math.max(item.dueAt, failures.get(item.id)?.retryAt ?? 0, (lastChecked.get(item.id) ?? -Infinity) + spacing);
+          if (at > now) { wakeAt = wakeAt === null ? at : Math.min(wakeAt, at); continue; }
+          if (!candidate || item.dueAt < candidate.dueAt || (item.dueAt === candidate.dueAt && item.id < candidate.id)) candidate = item;
+        }
+        return { candidate, wakeAt };
+      };
+      const waitForChange = (wakeAt: number | null) => new Promise<void>(resolve => {
+        const timer = wakeAt === null ? undefined : setTimeout(finish, Math.max(0, wakeAt - Date.now()));
+        function finish() {
+          if (timer !== undefined) clearTimeout(timer);
+          signal.removeEventListener("abort", finish);
+          if (changed === finish) changed = null;
+          resolve();
+        }
+        const previous = changed;
+        changed = previous ? () => { previous(); finish(); } : finish;
+        signal.addEventListener("abort", finish, { once: true });
+      });
       const checkGroups = async () => {
         while (!signal.aborted && canRun()) {
           const group = pending[nextGroup++];
-          if (!group) return;
-          for (const entry of group) {
-            if (signal.aborted || !canRun()) return;
-            try {
-              const current = await options.check(entry, signal);
-              if (current) entries.set(entry.id, current); else entries.delete(entry.id);
-              failures.delete(entry.id);
-            } catch (error) { failed(failures, entry.id); errors.push(error); }
+          if (group) {
+            for (const entry of group) {
+              if (signal.aborted || !canRun()) return;
+              try { await checkEntry(entry); } finally { owned.delete(entry.id); }
+            }
+            continue;
           }
+          if (!admitDueWhileActive) return;
+          const { candidate, wakeAt } = nextAdmission();
+          if (candidate) {
+            owned.add(candidate.id);
+            try { await checkEntry(candidate); } finally { owned.delete(candidate.id); }
+            continue;
+          }
+          // Nothing is admissible now. Stay available only while another
+          // check still holds this pass open; otherwise the pass ends and the
+          // coordinator schedules the next saved deadline as usual.
+          if (running === 0) return;
+          await waitForChange(wakeAt);
         }
       };
       const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));

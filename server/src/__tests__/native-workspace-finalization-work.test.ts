@@ -267,6 +267,44 @@ describe("workspace finalization scheduled lifecycle", () => {
     await worker.ready; await flush();
     expect(await successful(slow.runId)).toHaveLength(1); await quiet();
   });
+  it("keeps another task's saved retries on schedule and settles it while a slow copy-back is running", async () => {
+    const slow = await seed(); await complete(slow);
+    const failing = await seed();
+    await db.update(workspaceOperations).set({ cwd: join(root, "absent") }).where(eq(workspaceOperations.heartbeatRunId, failing.runId));
+    await complete(failing);
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const attempts: string[] = [];
+    const attempt = vi.fn(async (input: Parameters<typeof attemptNativeWorkspaceFinalization>[0]) => {
+      attempts.push(input.runId);
+      if (input.runId === slow.runId) await blocked;
+      return attemptNativeWorkspaceFinalization(input);
+    });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
+      onError: error => errors.push(error) });
+    worker = nativeWorkspaceFinalizationWork(db, { attempt, onWorkspaceSettled: settled }).register(coordinator, () => admitted);
+    try {
+      // Each failed export saves a 30-second retry. A sandbox export of another
+      // task can legitimately take many minutes; it must not hold those retries
+      // until it finishes, or the failing run stays retryable with an overdue deadline.
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(settled).toHaveBeenCalledWith(expect.objectContaining({ runId: failing.runId, succeeded: false }));
+      }, { timeout: 10_000 });
+      const [exhausted] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, failing.runId));
+      expect(exhausted.phase).toBe("terminal_failure");
+      expect(exhausted.failureCode).toBe("native_workspace_sync_out_retry_exhausted");
+      expect(attempts.filter(id => id === failing.runId)).toHaveLength(3);
+      // The slow copy-back was admitted once and is still the only owner of its task.
+      expect(attempts.filter(id => id === slow.runId)).toHaveLength(1);
+      expect(await successful(slow.runId)).toHaveLength(0);
+    } finally { release(); }
+    await worker.ready; await flush();
+    expect(await successful(slow.runId)).toHaveLength(1);
+    expect(attempts.filter(id => id === slow.runId)).toHaveLength(1);
+    expect(attempts.filter(id => id === failing.runId)).toHaveLength(3);
+    await quiet();
+  }, 30_000);
   it("orders work without a saved retry behind older overdue retries", async () => {
     const overdue = await seed(); await complete(overdue);
     const failedAt = new Date(Date.now() - 60 * 60_000);

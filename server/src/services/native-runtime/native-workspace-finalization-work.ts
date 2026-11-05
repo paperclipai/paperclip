@@ -99,7 +99,9 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
       queue: DELIVERY_QUEUES.nativeWorkspaceFinalization,
       // A slow sandbox export can take many minutes. Independent tasks proceed
       // in parallel; runs that share a task keep their copy-backs serialized.
-      concurrentChecks: { limit: 4, key: (item: Entry) => `issue:${item.companyId}:${item.issueId}` },
+      // Retries saved while another copy-back is still exporting are admitted
+      // on schedule instead of waiting for that export to finish.
+      concurrentChecks: { limit: 4, key: (item: Entry) => `issue:${item.companyId}:${item.issueId}`, admitDueWhileActive: true },
       decodeScope: (hint: string): NativeWorkspaceFinalizationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
       matches: (item: Entry, scope?: NativeWorkspaceFinalizationScope) => !scope || item.companyId === scope.companyId
         && (!scope.issueId || item.issueId === scope.issueId) && (!scope.runId || item.id === scope.runId),
