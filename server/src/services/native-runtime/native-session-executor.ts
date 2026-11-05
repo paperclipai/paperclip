@@ -1592,6 +1592,35 @@ export function continuingPendingInteractionIds(
     .map((response) => response.interactionId);
 }
 
+/**
+ * A planning run can synchronize its completed checklist before the harness's
+ * full proposal arrives. The proposal then supersedes that same-run revision
+ * (its pending review expires as stale); a revision written by anyone else
+ * since the pinned base still fails the revision check.
+ */
+async function proposalBaseRevisionId(input: {
+  db: Db;
+  issueId: string;
+  runId: string;
+  pinnedRevisionId: string | null;
+  proposal: boolean;
+}): Promise<string | null> {
+  if (!input.proposal) return input.pinnedRevisionId;
+  const latest = await documentService(input.db).getIssueDocumentByKey(input.issueId, "plan");
+  if (!latest?.latestRevisionId || latest.latestRevisionId === input.pinnedRevisionId) {
+    return input.pinnedRevisionId;
+  }
+  const latestRevision = await input.db
+    .select({ createdByRunId: documentRevisions.createdByRunId })
+    .from(documentRevisions)
+    .where(eq(documentRevisions.id, latest.latestRevisionId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return latestRevision?.createdByRunId === input.runId
+    ? latest.latestRevisionId
+    : input.pinnedRevisionId;
+}
+
 export async function synchronizeCompletedProviderPlan(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -1622,7 +1651,13 @@ export async function synchronizeCompletedProviderPlan(input: {
       : null;
   if (planMode && !planningContext) return null;
   const baseRevisionId = planningContext
-    ? planningContext.baseRevisionId
+    ? await proposalBaseRevisionId({
+        db: input.db,
+        issueId: input.execution.binding.issueId,
+        runId: input.execution.binding.runId,
+        pinnedRevisionId: planningContext.baseRevisionId,
+        proposal,
+      })
     : ((
         await documentService(input.db).getIssueDocumentByKey(
           input.execution.binding.issueId,

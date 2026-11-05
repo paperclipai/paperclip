@@ -125,6 +125,51 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     expect((await documentService(db).getIssueDocumentByKey(issueId, "plan"))?.body).toBe(PLAN);
   });
 
+  it("lets a planning run's full proposal supersede its own earlier checklist sync", async () => {
+    const { issueId, binding } = await seed("planning");
+    const execution = {
+      binding,
+      provider: { kind: "codex" },
+      executionMode: "plan",
+      planningContext: { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "none", reviewContext: {} },
+    } as never;
+    const checklist = await synchronizeCompletedProviderPlan({
+      db,
+      execution,
+      event: {
+        sourceEventId: "checklist-1",
+        eventType: "plan.updated",
+        payload: { schema: "paperclip.plan.updated.v1", planId: "turn-1", revision: 1, complete: true, steps: [{ stepId: "s1", body: "Inspect", status: "completed" }] },
+      },
+    });
+    expect(checklist).toMatchObject({ status: "synchronized", documentRevision: 1 });
+
+    const proposal = await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent(PLAN) });
+
+    expect(proposal).toMatchObject({ status: "synchronized", documentRevision: 2 });
+    expect((await documentService(db).getIssueDocumentByKey(issueId, "plan"))?.body).toBe(PLAN);
+    const pending = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.status, "pending"));
+    expect(pending.map((row) => (row.payload as { target?: { revisionNumber?: number } }).target?.revisionNumber)).toContain(2);
+  });
+
+  it("still refuses a proposal when someone else edited the plan after the pinned base", async () => {
+    const { issueId, binding } = await seed("planning");
+    await documentService(db).upsertIssueDocument({
+      issueId, key: "plan", title: "Plan", format: "markdown", body: "# Human edit", createdByUserId: "local-board",
+    });
+    const execution = {
+      binding,
+      provider: { kind: "codex" },
+      executionMode: "plan",
+      planningContext: { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "none", reviewContext: {} },
+    } as never;
+
+    const result = await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent(PLAN) });
+
+    expect(result).toMatchObject({ status: "conflict" });
+    expect((await documentService(db).getIssueDocumentByKey(issueId, "plan"))?.body).toBe("# Human edit");
+  });
+
   it("ignores streaming proposals and Standard-mode checklists", async () => {
     const { issueId, binding } = await seed("standard");
     const execution = { binding, provider: { kind: "codex" } } as never;
