@@ -2,8 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 const port = vi.hoisted(() => ({ observation: {} as Record<string, unknown> }));
+vi.mock("./external-personal-secret-confirmation.js", async original => ({ ...await original<typeof import("./external-personal-secret-confirmation.js")>(), readVisiblePersonalSecretConfirmation: async () => ({ definitionVisible: true, visibleTextHash: "reader-tested-separately" }) }));
 vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => port.observation }));
-import { personalSecretExternalCases, personalSecretQuestionHandoff } from "./external-personal-secret.js";
+import { personalSecretExternalCases, personalSecretQuestionHandoff, personalSecretSavedAcknowledgement } from "./external-personal-secret.js";
 afterEach(() => { vi.useRealTimers(); });
 export function question() {
   return { id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo",
@@ -162,4 +163,10 @@ it("requires completed setup for terse Done and rejects prospective instructions
   expect(choose({ prompt: "Will I save your PERSONAL_PUBLISHING_KEY value in My secrets?" })).toBeUndefined();
   expect(choose({ prompt: "Confirm your setup", header: "May I save the value for you?" })).toBeUndefined();
   expect(choose({ prompt: "Have you saved your own PERSONAL_PUBLISHING_KEY value in My secrets?", helpText: "May I save the value for you?" })).toBeUndefined();
+});
+
+it("plain-comment followup acknowledges only secure entry without repeating setup or exposing private content", () => {
+  expect(personalSecretSavedAcknowledgement).toBe("I saved my personal publishing value through the secure UI. Please continue and check the task.");
+  expect(personalSecretSavedAcknowledgement).not.toBe("Set up my personal publishing credential for this task.");
+  expect(personalSecretSavedAcknowledgement).not.toMatch(/PERSONAL_PUBLISHING_KEY|userSecret|definition|https?:|[a-f0-9]{8}-[a-f0-9-]{27,}|verified|succeeded|complete|delivered/i);
 });

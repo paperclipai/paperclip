@@ -1,4 +1,4 @@
-import { personalSecretConfirmationHandoff, acceptPersonalSecretConfirmation, confirmThenStartPersonalConsumer } from "./external-personal-secret-confirmation.js";
+import { personalSecretConfirmationHandoff, acceptPersonalSecretConfirmation, confirmThenStartPersonalConsumer, readVisiblePersonalSecretConfirmation } from "./external-personal-secret-confirmation.js";
 import type {Page} from "@playwright/test";
 import {visibleSecretSettingsURL} from "./external-secret-route.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -43,6 +43,7 @@ import {
   verifyRenderedReply,
 } from "./external-support.js";
 import type { Entity } from "./internal-support.js";
+export const personalSecretSavedAcknowledgement = "I saved my personal publishing value through the secure UI. Please continue and check the task.";
 type OwnEntry = {
   definition: UserSecretDefinition;
   secret: CompanySecret | null;
@@ -231,7 +232,7 @@ export function gradePersonalSecret(value: unknown) {
       .at(-1);
   const confirmationRow = o.interactions.find(row => row.id === o.state.initialConfirmationId);
   const confirmation = personalSecretConfirmationHandoff(confirmationRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId), agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId), canonicalCommentId: String(o.state.canonicalHumanCommentId) }, personalSecretGuidance, "accepted");
-  const confirmationAccepted = !!confirmation && confirmation.payloadHash === o.state.initialConfirmationPayloadHash
+  const confirmationAccepted = o.state.confirmationVisibleBeforeEntry === true && !!confirmation && confirmation.payloadHash === o.state.initialConfirmationPayloadHash
     && o.activity.some(event => event.action === "issue.thread_interaction_accepted" && event.companyId === o.companyId && event.entityId === o.state.sourceIssueId && event.actorType === "user" && event.actorId === o.state.currentPersonId && event.details?.interactionId === confirmation.interactionId && event.details.interactionStatus === "accepted");
   const secret = o.state.currentSecret as Partial<CompanySecret> | undefined;
   c.add(
@@ -457,7 +458,7 @@ export const personalSecretExternalCases = [
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v10",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v11",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
@@ -473,6 +474,7 @@ export const personalSecretExternalCases = [
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
+        "chat-catalog-domains/external-personal-secret-entry-dialog.ts",
         "chat-catalog-domains/external-credential-language.ts",
         "chat-catalog-domains/external-secret-scan.ts",
         "chat-catalog-domains/identity-auth.ts",
@@ -600,6 +602,11 @@ export const personalSecretExternalCases = [
           throw new Error("Personal setup must direct the current person's secure publishing value before human action");
         state.initialRunId = run.id;
         if (confirmation) Object.assign(state, { initialConfirmationId: confirmation.interactionId, initialConfirmationPayloadHash: confirmation.payloadHash, canonicalHumanCommentId: canonical[0]!.id });
+        if (confirmation) {
+          const visible = await readVisiblePersonalSecretConfirmation(ctx.input.page, confirmation, { origin: initial.origin, prefix: String(ctx.input.fixtures.company.issuePrefix), definitionId: String(state.definitionId) }, personalSecretGuidance, remaining);
+          state.confirmationVisibleBeforeEntry = visible.definitionVisible;
+          state.confirmationVisibleTextHash = visible.visibleTextHash;
+        }
         if (question) Object.assign(state, { initialQuestionId: question.interactionId,
           initialQuestionOptionId: question.optionId, initialQuestionPayloadHash: question.payloadHash });
         if (
@@ -732,7 +739,7 @@ export const personalSecretExternalCases = [
             form.getByRole("button", { name: question.submitLabel, exact: true }).click({ timeout: remaining() }),
           ]);
           if (!response.ok()) throw new Error("Secure-entry human question response failed");
-        } else if (!confirmation) await sendChatMessage(ctx.input.page, ctx.scenario.query);
+        } else if (!confirmation) await sendChatMessage(ctx.input.page, personalSecretSavedAcknowledgement);
       },
       async observe(ctx, state) {
         const fixture = fixtures.get(ctx)!;

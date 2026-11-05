@@ -4966,6 +4966,7 @@
       "chat-catalog-domains/external-secret-endpoint.ts",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
+      "chat-catalog-domains/external-personal-secret-entry-dialog.ts",
       "chat-catalog-domains/external-credential-language.ts",
       "chat-catalog-domains/external-secret-scan.ts",
       "chat-catalog-domains/identity-auth.ts",
@@ -4985,7 +4986,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v10",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v11",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
