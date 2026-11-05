@@ -1133,7 +1133,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     run: typeof heartbeatRuns.$inferSelect,
     reason: string,
   ) {
-    if (run.runtimeMode !== "legacy" || activeRunExecutions.has(run.id)) return;
+    if (run.runtimeMode !== "legacy" || activeRunExecutions.has(run.id) || runningProcesses.has(run.id) ||
+      adapterExecutionControls.has(run.id) || processRunCancellationSettlements.has(run.id) ||
+      (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())) return;
     try {
       await releaseEnvironmentLeasesForRun({
         runId: run.id,

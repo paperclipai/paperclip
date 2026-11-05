@@ -35,7 +35,7 @@ describePostgres("leases of cancelled runs with no executor", () => {
     await database?.cleanup();
   });
 
-  async function seedRunWithLease() {
+  async function seedRunWithLease(controllerLeaseExpiresAt: Date | null = null) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -69,6 +69,8 @@ describePostgres("leases of cancelled runs with no executor", () => {
       runtimeMode: "legacy",
       runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
       contextSnapshot: { issueId },
+      controllerBootId: controllerLeaseExpiresAt ? randomUUID() : null,
+      controllerLeaseExpiresAt,
       startedAt: new Date(),
     });
     await db.insert(issues).values({
@@ -119,6 +121,26 @@ describePostgres("leases of cancelled runs with no executor", () => {
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run!.status).toBe("cancelled");
+    expect((await readLease(leaseId)).status).toBe("expired");
+    expect(await getConversationOwnershipBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it("keeps the lease of a cancelled run whose controller lease another server still holds", async () => {
+    const { runId, leaseId } = await seedRunWithLease(new Date(Date.now() + 60_000));
+
+    const cancelled = await heartbeatService(db).cancelRun(runId, "Cancelled by control plane");
+
+    expect(cancelled?.status).toBe("cancelled");
+    const lease = await readLease(leaseId);
+    expect(lease.status).toBe("active");
+    expect(lease.releasedAt).toBeNull();
+  });
+
+  it("releases the lease of a cancelled run whose controller lease has expired", async () => {
+    const { companyId, issueId, runId, leaseId } = await seedRunWithLease(new Date(Date.now() - 60_000));
+
+    await heartbeatService(db).cancelRun(runId, "Cancelled by control plane");
+
     expect((await readLease(leaseId)).status).toBe("expired");
     expect(await getConversationOwnershipBlocker(db, companyId, issueId)).toBeNull();
   });
