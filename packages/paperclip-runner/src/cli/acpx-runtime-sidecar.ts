@@ -2,6 +2,7 @@
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
+import { sidecarToolDetail } from "./acpx-tool-detail-redaction.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { acpxProviderFailure, acpxTerminalResult, type AcpxTerminalSessionFailure } from "../drivers/acpx/provider-failure.js";
 import { providerFailureFromError } from "../drivers/provider-failure.js";
@@ -1636,20 +1637,6 @@ function safeText(value: unknown, maxBytes = 8_192): string {
   return bytes.length <= maxBytes
     ? message
     : bytes.subarray(0, maxBytes).toString("utf8");
-}
-
-/**
- * Tool facts cross the boundary under the same secret filter as tool output:
- * a command or refusal message can carry a token (curl ...?token=...).
- */
-function sidecarToolDetail(value: unknown): { toolDetail?: Record<string, unknown> } {
-  const detail = record(value);
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(detail)) {
-    if (typeof item === "string") output[key] = redactSecrets(item);
-    else if (typeof item === "number" && Number.isSafeInteger(item)) output[key] = item;
-  }
-  return Object.keys(output).length > 0 ? { toolDetail: output } : {};
 }
 
 function redactSecrets(value: string): string {
