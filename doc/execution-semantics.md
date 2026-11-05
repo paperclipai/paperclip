@@ -2171,6 +2171,14 @@ complete, so recovery and that turn cannot both wait for each other. Running
 turns, and queued turns for other tasks that share the workspace, still block
 recovery.
 
+After recovery saves the files of a run whose sandbox is destroyed after each
+turn (an ephemeral lease), it re-stops the sandbox and then queues the destroy.
+The lease carries the verified stop forward as
+`workspaceRecoveryCleanup.stopReceipt`. The saved message, Retry and the next
+remote workspace writer wait for that stop, not for the destroy. So they continue
+right after recovery, instead of after the cleanup retry. A lease without a
+matching stop receipt still blocks them.
+
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
 the controller stops renewal and releases only that exact claim. Ordinary

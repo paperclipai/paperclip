@@ -22,7 +22,7 @@ import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
@@ -240,7 +240,7 @@ export async function reserveRemoteWorkspace(input: {
           && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
           && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
-          && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
+          && leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease) || (pristinePreparation
             && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
         if (!unusedReservation) {
           // An ended writer still holds the workspace until its save and sandbox
