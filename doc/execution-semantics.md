@@ -2435,8 +2435,12 @@ worker sees a terminal coordinator. A released reusable lease with a confirmed
 stop-and-retain receipt for the same run, lease and allocation therefore
 remains a preservation source. The worker records it as file recovery work and
 keeps its release status, policy and receipts. It dispatches no second stop and
-grants no execute right on the reusable sandbox. A released reusable lease without
-that receipt stays ineligible. Until this recovery saves the files, the
+grants no execute right on the reusable sandbox. A released reusable lease
+stays ineligible without that valid receipt and the exact remote-workspace binding.
+Native-sync descriptors have no such binding proof, so they also stay ineligible.
+Ineligible sources cause no run writes or notifications. Recovery still rejects
+the source while a task writer is live or a later lease shares the allocation.
+Until this recovery saves the files, the
 task's remote workspace keeps the ended writer's hold. Successor runs wait for that
 recovery instead of overwriting unsaved files.
 A reusable lease can also owe native copyback: the export-repair action must

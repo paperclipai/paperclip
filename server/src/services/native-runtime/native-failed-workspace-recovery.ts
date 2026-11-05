@@ -17,11 +17,12 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
 import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
+import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
 
 /** Leases that can still hold a cancelled run's prepared files. Terminal
  * release can stop and retain a reusable sandbox before preservation runs.
- * Its confirmed stop receipt keeps those files as a recovery source; the
- * restore recorder rechecks the receipt and the exact workspace binding. */
+ * Its confirmed stop receipt keeps those files as a recovery source. This SQL
+ * is a prefilter only: `cancelledWorkspaceSource` applies the exact proof. */
 function cancelledWorkspaceSourceLease() {
   return or(eq(environmentLeases.status, "active"), and(
     inArray(environmentLeases.status, ["pending_cleanup", "released"]), eq(environmentLeases.leasePolicy, "ephemeral"),
@@ -29,6 +30,22 @@ function cancelledWorkspaceSourceLease() {
     inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "reuse_by_execution_workspace"]),
     sql`${environmentLeases.metadata}->'remoteExecutionTermination'->>'state' = 'stopped'`,
     sql`${environmentLeases.metadata} ? 'sandboxStopAndRetainReceipt'`));
+}
+
+/** The exact source the restore recorder can retain. A released reusable lease
+ * qualifies only with a confirmed stop-and-retain receipt and the remote
+ * workspace binding proof. Native-sync descriptors have no such proof here. */
+async function cancelledWorkspaceSource(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">) {
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    cancelledWorkspaceSourceLease(),
+  ));
+  for (const lease of leases) {
+    if (lease.status !== "released" || lease.leasePolicy === "ephemeral") return lease;
+    if (run.runnerProfileJson?.nativeWorkspaceSync == null && hasConfirmedSandboxStopAndRetain(lease)
+      && await preparedRemoteWorkspaceSource(db, lease)) return lease;
+  }
+  return null;
 }
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
@@ -206,7 +223,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
   for (const candidate of candidates) {
     cancelledWorkspaceCursors.set(db, candidate.runId);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, candidate.runId));
-    if (run && hasAcknowledgedNativeRunStopRequest(run)) {
+    if (run && hasAcknowledgedNativeRunStopRequest(run) && await cancelledWorkspaceSource(db, run)) {
       try { await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true }); }
       catch (error) {
         if (error instanceof NativeWorkspaceFinalizationBusyError) continue;
@@ -268,13 +285,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
     if (finalization?.resultId) return null;
     if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
       return { ...entry, dueAt: Date.now() + 30_000 };
-    const sources = await db.select().from(environmentLeases).where(and(
-      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      cancelledWorkspaceSourceLease(),
-    ));
-    const source = sources.find(lease => lease.status !== "released" || lease.leasePolicy === "ephemeral"
-      || hasConfirmedSandboxStopAndRetain(lease));
-    if (source) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
+    if (await cancelledWorkspaceSource(db, run)) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
     const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();

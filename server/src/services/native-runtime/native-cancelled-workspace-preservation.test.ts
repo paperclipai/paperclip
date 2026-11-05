@@ -269,23 +269,66 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     } finally { await worker.stop(); }
   }, 120_000);
 
-  it.each(["live-owner", "pending-stop", "no-stop-receipt", "running"] as const)
-  ("does not preserve a stopped reusable sandbox for %s", async invalid => {
+  it("fences recovery of a stopped reusable source behind later allocation owners and live writers", async () => {
     const f = await seed();
-    const stopped = await stopAndRetainReusableSource(f, { stopReceipt: invalid !== "no-stop-receipt" });
+    await stopAndRetainReusableSource(f);
+    await preserveCancelledNativeWorkspaces(db);
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+    const source = { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: action.id };
+    expect((await inspectWorkspaceRecoverySource(db, source)).sources).toHaveLength(1);
+    // A live writer on the task blocks recovery from the retained files.
+    const writerId = randomUUID();
+    fixtures.add(writerId);
+    await db.insert(heartbeatRuns).values({ id: writerId, companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      status: "running", contextSnapshot: { issueId: f.issueId } });
+    await expect(inspectWorkspaceRecoverySource(db, source)).rejects.toMatchObject({ code: "workspace_writer_active" });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, writerId));
+    // A later lease on the same reusable allocation is not a retired
+    // predecessor. Ownership is ambiguous, so recovery stops.
+    const [stopped] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    await db.insert(environmentLeases).values({ companyId: f.companyId, environmentId: stopped.environmentId,
+      heartbeatRunId: writerId, issueId: f.issueId, executionWorkspaceId: f.workspaceId, provider: "daytona",
+      providerLeaseId: stopped.providerLeaseId, status: "active", leasePolicy: "reuse_by_environment",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: undefined, sandboxStopAndRetainReceipt: undefined } });
+    await expect(inspectWorkspaceRecoverySource(db, source)).rejects.toMatchObject({ code: "allocation_ownership_ambiguous" });
+  }, 120_000);
+
+  it.each(["live-owner", "pending-stop", "no-stop-receipt", "invalid-receipt", "expired-lease", "native-sync", "running"] as const)
+  ("does not preserve or rewrite a stopped reusable sandbox for %s", async invalid => {
+    const f = await seed();
+    let stopped = await stopAndRetainReusableSource(f, { stopReceipt: invalid !== "no-stop-receipt" });
     if (invalid === "live-owner") await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: randomUUID(),
       leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (invalid === "pending-stop") await db.update(heartbeatRuns).set({ resultJson: {
       nativeCancellation: { ...f.nativeCancellation, dispatchState: "pending" } } }).where(eq(heartbeatRuns.id, f.runId));
     if (invalid === "running") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.runId));
+    if (invalid === "invalid-receipt" || invalid === "expired-lease") {
+      [stopped] = await db.update(environmentLeases).set(invalid === "expired-lease"
+        ? { expiresAt: new Date(Date.now() - 1_000) }
+        : { metadata: { ...stopped.metadata, sandboxStopAndRetainReceipt: {
+          ...stopped.metadata?.sandboxStopAndRetainReceipt as Record<string, unknown>, runId: randomUUID() } } })
+        .where(eq(environmentLeases.id, f.leaseId)).returning();
+    }
+    if (invalid === "native-sync") {
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeResourceDisposition: "keep_running", nativeWorkspaceSync: {
+        schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: f.workspaceId,
+        leaseId: f.leaseId, providerLeaseId: f.reference.providerLeaseId, remoteCwd: f.reference.remoteCwd,
+        baselineSha256: "a".repeat(64), descriptorSha256: "b".repeat(64), finalHostSha256: null,
+        resourceDisposition: "keep_running" } } }).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(executionWorkspaces).set({ metadata: {} }).where(eq(executionWorkspaces.id, f.workspaceId));
+    }
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const errors: unknown[] = [];
     const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { errors.push(error); } });
     try {
       await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
       await preserveCancelledNativeWorkspaces(db);
+      await preserveCancelledNativeWorkspaces(db);
       expect(errors).toEqual([]);
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       expect(run.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+      // No pass rewrites the run: no restore-failure marker, no new status delivery.
+      expect(run).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0]).toEqual(stopped);
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
