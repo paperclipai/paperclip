@@ -24,7 +24,7 @@ function fixture() {
   const first = { id: "first", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" }, resultJson: { decisionId: "block-decision", assessmentId: "assessment-first", issueStatusBefore: "in_progress", issueStatusAfter: "blocked" } };
   const second = { ...first, id: "second", agentId: "riley", resultJson: { decisionId: "done-decision", assessmentId: "assessment-second", issueStatusBefore: "in_progress", issueStatusAfter: "done" } };
   const blocked = { id: "task", companyId: "company", status: "blocked", assigneeAgentId: "morgan", lastStatusDecisionId: "block-decision" };
-  const done = { ...blocked, status: "done", assigneeAgentId: "riley", lastStatusDecisionId: "done-decision" };
+  const done = { ...blocked, identifier: "RUN-3", status: "done", assigneeAgentId: "riley", lastStatusDecisionId: "done-decision" };
   const blockedEvent = { ...producer("blocked", "first", "block-decision"), id: "blocked", createdAt: "2026-10-26T01:00:00Z" };
   const doneEvent = { ...producer("done", "second", "done-decision"), id: "done", createdAt: "2026-10-26T03:00:00Z" };
   return { scenarioId: "activity.work-timeline", origin: "https://fixture.test", companyId: "company", leadId: "ceo",
@@ -55,6 +55,24 @@ it.each([
 it("does not move the repair before a reduced-passive handoff", () => {
   const o = fixture();
   o.reply = "Morgan ran verification which failed and work paused. Riley repaired the label and the check passed. Same task reassigned to Riley.";
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+it.each([
+  { subject: "RUN-3", successor: "Riley", expected: true },
+  { subject: "RUN-9", successor: "Riley", expected: false },
+  { subject: "RUN-3", successor: "Morgan", expected: false },
+])("binds an identified task handoff to saved identity and successor: $subject / $successor", ({ subject, successor, expected }) => {
+  const o = fixture();
+  o.reply = `Morgan ran verification which failed and work paused.\n\n## Repair — ${subject} reassigned to ${successor}.\nRiley repaired the label and the check passed.`;
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+it("requires saved task identity and chronological repair for an identified handoff", () => {
+  const o = fixture();
+  o.reply = "Morgan ran verification which failed and work paused. RUN-3 reassigned to Riley. Riley repaired the label and the check passed.";
+  Reflect.deleteProperty(o.state.task, "identifier");
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+  o.state.task.identifier = "RUN-3";
+  o.reply = "Morgan ran verification which failed and work paused. Riley repaired the label and the check passed. RUN-3 reassigned to Riley.";
   expect(gradeWorkTimeline(o).passed).toBe(false);
 });
 it("accepts the successor's natural ownership transition in the ordered account", () => {
@@ -251,7 +269,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v8");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v9");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
