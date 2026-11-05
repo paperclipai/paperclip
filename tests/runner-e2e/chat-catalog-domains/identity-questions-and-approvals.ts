@@ -78,7 +78,7 @@ function multipartContinuationCards(o: NonNullable<ReturnType<typeof identityObs
   const original = o.state.original as Interaction | undefined;
   return o.interactions.filter(card => card.id !== original?.id && card.companyId === o.companyId && card.issueId === original?.issueId
     && card.createdByAgentId === o.leadId && card.kind === "ask_user_questions" && card.status === "pending"
-    && typeof card.payload.questionSet?.description === "string" && o.runs.some(run => run.id === card.sourceRunId
+    && typeof card.payload.questionSet?.description === "string" && card.payload.questionSet.description.trim().length > 0 && o.runs.some(run => run.id === card.sourceRunId
       && run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded"
       && run.contextSnapshot?.interactionId === original?.id && run.contextSnapshot?.issueId === original?.issueId));
 }
@@ -232,7 +232,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v3",
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v4",
     async verifyResult(ctx, _state, value) {
       if (await ctx.input.page.getByTestId("task-chat-composer-input").isVisible()) return;
       const o = identityObservation(value);

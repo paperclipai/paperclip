@@ -206,3 +206,24 @@ it("rejects an asserted pass whose command exit is nonzero", () => {
 it.each(["Friday", "5 PM", "the end of the day"])("does not invent an actor from a by-deadline adjunct: %s", deadline => {
   expect(grade(account.replace("You reassigned the task to Riley.", `You reassigned the task to Riley by ${deadline}.`))).toBe(true);
 });
+
+const explicitRepairContinuity = "Morgan ran verification which failed and work paused.\n\nYou reassigned the task to Riley.\n\n## Repair and verification\nRiley added the label, preserved the heading, then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.";
+it("binds the explicit repair subject to its adjacent command result without a named heading", () => {
+  expect(grade(explicitRepairContinuity)).toBe(true);
+});
+it.each([
+  explicitRepairContinuity.replace("Riley added", "Morgan added"),
+  explicitRepairContinuity.replace("then re-ran", "then Morgan re-ran"),
+  explicitRepairContinuity.replace("It passed", "Avery inspected the page. It passed"),
+  explicitRepairContinuity.replace("It passed", "The unrelated test passed"),
+  explicitRepairContinuity.replace("Riley added the label", "Riley repaired no label"),
+  explicitRepairContinuity.replace("Riley added the label", "Riley planned to add the label"),
+  explicitRepairContinuity.replace("It passed", "It did not pass"),
+  explicitRepairContinuity.replace("You reassigned the task to Riley.", "") + " You reassigned the task to Riley.",
+])("keeps actor, event, negation and chronology boundaries for adjacent repair results: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});
+
+it("stops repair subject continuity when a coordinated clause introduces another worker", () => {
+  expect(grade("Morgan ran verification which failed and work paused. You reassigned the task to Riley. Riley added the label, and Avery inspected the saved bytes and then re-ran verify_launch_html. It passed with exit code 0 on the saved bytes.")).toBe(false);
+});

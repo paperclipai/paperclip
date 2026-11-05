@@ -163,6 +163,14 @@ describe("multipart continuation on the visible question surface", () => {
     expect(gradeQuestions(o).passed).toBe(true);
     expect(multipartVisibleSummaries(o)).toHaveLength(1);
   });
+  it.each(["", "   "])("skips a continuation card without a usable question description: %j", description => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    card.payload.questionSet!.description = description;
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: description,
+      visibleText: "Researchers, Clear, Acorn 42" }];
+    expect(multipartVisibleSummaries(o)).toHaveLength(0);
+    expect(gradeQuestions(o).passed).toBe(false);
+  });
   it("uses rendered Markdown text rather than its source markup", () => {
     const o = cardSummary(); const card = o.interactions.at(-1)!;
     card.payload.questionSet!.description = "**Researchers**\n\nTone: `Clear`; headline: **Acorn 42**.";
