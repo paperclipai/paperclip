@@ -2012,6 +2012,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it.each([
+    { name: "constructor", type: "text", value: "paperclip", options: [] },
+    { name: "toString", type: "select", value: "high", options: ["high", "low"] },
+    { name: "hasOwnProperty", type: "boolean", value: true, options: [] },
+    { name: "valueOf", type: "number", value: 42, options: [] },
+    { name: "isPrototypeOf", type: "date", value: "2026-11-04", options: [] },
+  ] as const)("resolves $name from supplied values and defaults", async ({ name, type, value, options }) => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: `Review {{${name}}}`,
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [{ name, type, label: null, defaultValue: value, required: true, options: [...options] }],
+    }, {});
+
+    for (const variables of [{ [name]: value }, {}, { [name]: undefined }]) {
+      const run = await svc.runRoutine(variableRoutine.id, { source: "manual", variables });
+      const storedRun = await db.select().from(routineRuns)
+        .where(eq(routineRuns.id, run.id)).then((rows) => rows[0]);
+      const storedIssue = await db.select().from(issues)
+        .where(eq(issues.id, run.linkedIssueId!)).then((rows) => rows[0]);
+
+      expect(storedRun?.triggerPayload).toEqual({ variables: { [name]: value } });
+      expect(storedIssue?.title).toBe(`Review ${value}`);
+    }
+  });
+
   it("infers capital-Date variables, preserves builtin date, and validates submitted date values", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const dateRoutine = await svc.create(
