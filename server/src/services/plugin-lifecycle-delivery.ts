@@ -1,6 +1,6 @@
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
+import { createOwnedDatabaseListener, type OwnedDatabaseListener, agents, companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -10,6 +10,8 @@ import { isWorkspaceProvider } from "./project-workspace-provider.js";
 import { managedPluginEnabledCompanies } from "./managed-plugin-worker-env.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
+import { isIdleTaskDrainActive, subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "./task-admission.js";
 
 type Coordinator = ReturnType<typeof createDeliveryWorkCoordinator>;
 
@@ -24,7 +26,17 @@ export function registerPluginLifecycleDelivery(
   // The coordinator may reconcile signals while idle drain prevents dispatch.
   let pending = true;
   let disposed = false;
+  let held = false;
+  let epoch = 0;
+  let delivering = 0;
+  let listenerUpdates = 0;
+  let listenerFailure = false;
+  let inspectionFailure = false;
+  let listenerClient: OwnedDatabaseListener | undefined;
+  let disposePromise: Promise<void> | undefined;
   const retryAt = new Map<string, number>();
+  const unregisterIdle = registerIdleLocalWorkProbe(() => listenerFailure || inspectionFailure ? "unknown"
+    : listenerUpdates || delivering || listenerClient || pending ? "present" : "none");
   const refreshedRuntimeCompanies = new Set<string>();
   const retryMs = 30_000;
   async function managedTargets() {
@@ -69,6 +81,7 @@ export function registerPluginLifecycleDelivery(
       return next;
     },
     async run(signal) {
+      delivering++;
       pending = false;
       try {
         await ensureListening();
@@ -160,36 +173,86 @@ export function registerPluginLifecycleDelivery(
       } catch (error) {
         pending = true; // A failed scan must survive a retry skipped during idle drain.
         throw error;
-      }
+      } finally { delivering--; }
     },
   });
-  function wake() { if (disposed) return; pending = true; delivery.wake(); }
+  function wake() { if (disposed) return; epoch++; pending = true; delivery.wake(); }
   let listening: Awaited<ReturnType<Db["$client"]["listen"]>> | undefined;
   let listenerUpdate = Promise.resolve();
+  function updateListener<T>(operation: () => Promise<T>): Promise<T> {
+    listenerUpdates++;
+    const update = listenerUpdate.then(operation);
+    listenerUpdate = update.then(() => undefined, () => undefined);
+    return update.finally(() => { listenerUpdates--; });
+  }
+  async function closeListener() {
+    const client = listenerClient;
+    if (!client) return;
+    try { await client.close(); }
+    catch (error) {
+      listenerFailure = true;
+      try { logger.warn({ operation: "plugin_lifecycle_listener_close", failed: true }, "Owned plugin lifecycle listener close failed"); } catch {}
+      throw error;
+    }
+    if (listenerClient === client) { listening = undefined; listenerClient = undefined; }
+    listenerFailure = false;
+  }
   function ensureListening() {
-    const update = listenerUpdate.then(async () => {
-      if (disposed || !db.$client?.listen) return;
-      const configured = await db.select({ manifest: plugins.manifestJson }).from(plugins)
-        .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
-        .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, pluginConfig.companyId)))
-        .where(and(eq(plugins.status, "ready"), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
-      const installed = [...configured, ...(await enabledManagedPlugins()).map(plugin => ({ manifest: plugin.manifestJson }))];
-      if (disposed) return;
+    return updateListener(async () => {
+      if (disposed || held || isIdleTaskDrainActive()) return;
+      let installed: Array<{ manifest: (typeof plugins.$inferSelect)["manifestJson"] }>;
+      try {
+        const configured = await db.select({ manifest: plugins.manifestJson }).from(plugins)
+          .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
+          .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, pluginConfig.companyId)))
+          .where(and(eq(plugins.status, "ready"), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
+        installed = [...configured, ...(await enabledManagedPlugins()).map(plugin => ({ manifest: plugin.manifestJson }))];
+        inspectionFailure = false;
+      } catch (error) { inspectionFailure = true; throw error; }
+      if (disposed || held || isIdleTaskDrainActive()) return;
       const wanted = installed.some(plugin => plugin.manifest.resourceLifecycle?.includes("agent_runtime") && plugin.manifest.capabilities?.includes("events.subscribe"));
-      if (wanted) listening ??= await db.$client.listen("paperclip_plugin_lifecycle", wake, wake);
-      else if (listening) {
-        const subscription = listening;
-        listening = undefined;
-        await subscription.unlisten();
-      }
+      if (!wanted) { await closeListener(); listenerFailure = false; return; }
+      if (listenerFailure) await closeListener();
+      if (disposed || held || isIdleTaskDrainActive()) return;
+      try {
+        listenerClient ??= createOwnedDatabaseListener(db);
+        listening ??= await listenerClient.listen("paperclip_plugin_lifecycle", wake, wake);
+        listenerFailure = false;
+      } catch (error) { listenerFailure = true; throw error; }
     });
-    listenerUpdate = update.catch(() => {});
-    return update;
+  }
+  async function hasJournalWork(current: () => boolean): Promise<IdleLocalWork> {
+    if (!current()) return "unknown";
+    const targets = await deliveryTargets();
+    if (!current()) return "unknown";
+    for (const { plugin, companyId } of targets) {
+      const types = plugin.manifestJson.resourceLifecycle;
+      if (!types?.length || !plugin.manifestJson.capabilities.includes("events.subscribe")) continue;
+      const [disabled] = await db.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings)
+        .where(and(eq(pluginCompanySettings.pluginId, plugin.id), eq(pluginCompanySettings.companyId, companyId), eq(pluginCompanySettings.enabled, false)));
+      if (!current()) return "unknown";
+      if (disabled) continue;
+      const events = await pluginLifecycleInbox(db, plugin.id).list(companyId, 1, undefined, types);
+      if (!current()) return "unknown";
+      if (events.length) { wake(); inspectionFailure = false; return "present"; }
+    }
+    inspectionFailure = false;
+    return "none";
   }
   function pluginChanged() {
     wake();
     void ensureListening().catch(wake);
   }
+  const resumeListening = () => {
+    if (disposed) return;
+    epoch++;
+    if (isIdleTaskDrainActive()) return;
+    held = false;
+    wake();
+    void ensureListening().catch(wake);
+  };
+  const unsubscribeDrain = subscribeTaskDrainChanges(resumeListening);
+  const unsubscribeExpiry = subscribeTaskDrainExpiry(resumeListening);
   const listenerReady = ensureListening();
   const unsubscribeConfig = manager.onConfigApplied(pluginChanged);
   lifecycle.on("plugin.loaded", pluginChanged);
@@ -202,16 +265,54 @@ export function registerPluginLifecycleDelivery(
     ...delivery,
     ready: listenerReady,
     wake,
-    dispose() {
+    async prepareForIdleSleep({ canRetire }: { canRetire: () => boolean }): Promise<IdleLocalWork> {
+      if (disposed || !canRetire() || !isIdleTaskDrainActive() || (listenerFailure && !listenerClient)) return "unknown";
+      if (listenerUpdates || delivering || pending) return "present";
+      const ownerEpoch = epoch;
+      held = true;
+      const current = () => !disposed && held && isIdleTaskDrainActive() && canRetire() && epoch === ownerEpoch;
+      return updateListener(async () => {
+        if (!current()) return "unknown";
+        if (listenerUpdates !== 1 || delivering || pending) return "present";
+        try {
+          const before = await hasJournalWork(current);
+          if (before !== "none") return before;
+          if (!current() || (listenerFailure && !listenerClient)) return "unknown";
+          await closeListener();
+          if (!current()) return "unknown";
+          if (listenerFailure) return "unknown";
+          if (pending || delivering) return "present";
+          return await hasJournalWork(current);
+        } catch {
+          inspectionFailure = true;
+          return "unknown";
+        }
+      });
+    },
+    dispose(): Promise<void> {
+      if (disposePromise) return disposePromise;
       disposed = true;
-      void listenerUpdate.then(() => listening?.unlisten()).catch(() => {});
+      epoch++;
       unsubscribeConfig();
+      unsubscribeDrain();
+      unsubscribeExpiry();
       lifecycle.off("plugin.loaded", pluginChanged);
       lifecycle.off("plugin.enabled", pluginChanged);
       lifecycle.off("plugin.worker_started", pluginChanged);
       lifecycle.off("plugin.status_changed", pluginChanged);
       lifecycle.off("plugin.disabled", pluginChanged);
       lifecycle.off("plugin.unloaded", pluginChanged);
+      disposePromise = (async () => {
+        const failures: unknown[] = [];
+        try { await delivery.stop(); } catch (error) { failures.push(error); }
+        try { await updateListener(closeListener); } catch (error) { failures.push(error); }
+        if (failures.length) {
+          listenerFailure = true;
+          throw failures.length === 1 ? failures[0] : new AggregateError(failures, "Plugin lifecycle delivery disposal failed");
+        }
+        unregisterIdle();
+      })().catch(error => { disposePromise = undefined; throw error; });
+      return disposePromise;
     },
   };
 }

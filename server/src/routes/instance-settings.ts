@@ -134,7 +134,12 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
+export function instanceSettingsRoutes(
+  db: Db,
+  pluginWorkers?: PluginWorkerManager,
+  prepareIdleDatabaseBackup?: () => Promise<boolean>,
+  prepareIdlePluginLifecycle?: (input: { canRetire: () => boolean }) => Promise<"none" | "present" | "unknown">,
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -351,7 +356,8 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         { incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
           prepareLocalWork: async ({ canPrepare }) => {
             const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
-            return result.busy || result.failed ? "present" : "none";
+            if (result.busy || result.failed) return "present";
+            return prepareIdlePluginLifecycle ? prepareIdlePluginLifecycle({ canRetire: canPrepare }) : "none";
           },
           ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
