@@ -27,14 +27,6 @@ mod human_input_validation;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 static RECEIPT_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// Upper bound on waiting for something the fake provider is expected to do.
-///
-/// Every wait in this file stops as soon as its condition holds, so this
-/// bound only turns a genuine hang into a failure; it is never the expected
-/// latency. It is deliberately generous: CI runs these tests in parallel on
-/// shared runners, and on Windows process spawn, antivirus scanning and
-/// durable-state fsyncs routinely stretch a sub-second exchange past the
-/// five-second bound these waits used to share.
 const EVENT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn event_deadline() -> std::time::Instant {

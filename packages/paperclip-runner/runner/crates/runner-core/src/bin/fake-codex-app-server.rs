@@ -8,10 +8,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// How long a background fixture thread waits for a test to release its gate
-/// file. Tests release a gate only after their own (bounded) waits succeed,
-/// which can take far longer than a second on a contended CI runner, so this
-/// bound only catches a test that never releases the gate.
 const TEST_GATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
