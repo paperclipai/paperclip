@@ -1,7 +1,5 @@
 import { useRef, useState } from "react";
-import { FoldVertical, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /**
@@ -83,14 +81,7 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
   );
 }
 
-export type ContextCompactState =
-  /** The agent has a live session that can compact now. */
-  | { status: "available"; onCompact: () => void }
-  | { status: "pending" }
-  /** Shown disabled with the reason, e.g. the agent is between runs. */
-  | { status: "unavailable"; reason: string };
-
-function ContextUsageCard({ usage, compact }: { usage: ContextUsage; compact?: ContextCompactState | null }) {
+function ContextUsageCard({ usage }: { usage: ContextUsage }) {
   const percent = Math.min(100, Math.round((usage.usedTokens / usage.contextWindow) * 100));
   const level = contextUsageLevel(usage);
   const totals = usage.totals;
@@ -136,44 +127,19 @@ function ContextUsageCard({ usage, compact }: { usage: ContextUsage; compact?: C
           {usage.compactions ? <Row label="Compactions" value={String(usage.compactions)} muted /> : null}
         </dl>
       ) : null}
-      {compact ? (
-        <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
-          <Button
-            type="button"
-            size="sm"
-            variant={level === "normal" ? "outline" : "default"}
-            className="w-full"
-            disabled={compact.status !== "available"}
-            onClick={compact.status === "available" ? compact.onCompact : undefined}
-            data-testid="context-usage-compact"
-          >
-            {compact.status === "pending"
-              ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              : <FoldVertical className="size-3.5" aria-hidden />}
-            {compact.status === "pending" ? "Compacting…" : "Compact now"}
-          </Button>
-          <p className="text-muted-foreground">
-            {compact.status === "unavailable"
-              ? compact.reason
-              : "Summarizes the conversation so far so the agent has room to keep working."}
-          </p>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 /**
  * Context row value for the task Properties panel: a thin fill bar and
- * "64% of 272k". Hover or tap opens the token breakdown and Compact now.
+ * "64% of 272k". Hover or tap opens the token breakdown.
  */
 export function ContextUsageMeter({
   usage,
-  compact,
   defaultOpen = false,
 }: {
   usage: ContextUsage;
-  compact?: ContextCompactState | null;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -217,7 +183,7 @@ export function ContextUsageMeter({
         onMouseEnter={show}
         onMouseLeave={hide}
       >
-        <ContextUsageCard usage={usage} compact={compact} />
+        <ContextUsageCard usage={usage} />
       </PopoverContent>
     </Popover>
   );

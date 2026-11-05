@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { IssueContextUsage } from "@paperclipai/shared";
 import { issuesApi } from "../../api/issues";
 import { queryKeys } from "../../lib/queryKeys";
-import { ContextUsageMeter, type ContextCompactState, type ContextUsage } from "../ContextUsageMeter";
+import { ContextUsageMeter, type ContextUsage } from "../ContextUsageMeter";
 import { PropertyRow } from "./primitives";
 
 /** Refresh cadence while an agent run is reporting usage. */
@@ -32,11 +32,9 @@ export function contextUsageFromIssue(value: IssueContextUsage): ContextUsage {
 export function IssueContextUsageRow({
   issueId,
   hasActiveRun,
-  compact,
 }: {
   issueId: string;
   hasActiveRun: boolean;
-  compact?: ContextCompactState | null;
 }) {
   const query = useQuery({
     queryKey: queryKeys.issues.contextUsage(issueId),
@@ -54,7 +52,7 @@ export function IssueContextUsageRow({
   if (!query.data) return null;
   return (
     <PropertyRow label="Context">
-      <ContextUsageMeter usage={contextUsageFromIssue(query.data)} compact={compact} />
+      <ContextUsageMeter usage={contextUsageFromIssue(query.data)} />
     </PropertyRow>
   );
 }
