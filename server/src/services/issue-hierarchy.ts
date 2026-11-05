@@ -20,8 +20,8 @@ export type ParentChainRow = {
 
 export type ParentPlacement = { effectiveParentId: string | null; adjustment: IssueParentAdjustment | null };
 
-/** Bound on ancestor walks; real trees are far shallower, and cycles stop here. */
-const MAX_PARENT_CHAIN_LENGTH = 64;
+// Ancestor walks are not depth-capped: placement needs the real root even for
+// legacy trees deeper than any fixed bound. Both loaders stop on a cycle.
 
 /** Root of a low-trust authorization boundary recorded on an issue's execution policy. */
 function lowTrustBoundaryRootIssueId(executionPolicy: unknown): string | null {
@@ -86,7 +86,6 @@ export async function loadParentChain(
       JOIN chain ON parent.id = chain.parent_id
       WHERE parent.company_id = ${companyId}
         AND NOT parent.id = ANY(chain.path)
-        AND chain.depth < ${MAX_PARENT_CHAIN_LENGTH}
     )
     SELECT id, identifier, parent_id, conversation_agent_id, execution_policy FROM chain ORDER BY depth
   `);
@@ -110,7 +109,7 @@ export async function loadParentChainWith(
   const chain: ParentChainRow[] = [];
   const visited = new Set<string>();
   let nextId: string | null = parentId;
-  while (nextId && !visited.has(nextId) && chain.length < MAX_PARENT_CHAIN_LENGTH) {
+  while (nextId && !visited.has(nextId)) {
     visited.add(nextId);
     const row = await load(nextId);
     if (!row) break;

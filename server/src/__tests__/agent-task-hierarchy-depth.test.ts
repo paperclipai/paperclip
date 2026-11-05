@@ -181,6 +181,18 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(second.issue.id).toBe(first.issue.id);
   });
 
+  it("places under the real root of a legacy tree deeper than 64 levels", async () => {
+    const { companyId } = await seedCompany();
+    const rootId = await seedIssue(companyId);
+    let deepestId = rootId;
+    for (let level = 1; level < 70; level += 1) deepestId = await seedIssue(companyId, { parentId: deepestId });
+
+    const created = await issueService(db).create(companyId, { title: "From the 70th level", parentId: deepestId });
+
+    expect(created.parentId).toBe(rootId);
+    expect(created.originIssueId).toBe(deepestId);
+  });
+
   it("does not move a task above a low-trust boundary root", async () => {
     const { companyId } = await seedCompany();
     const rootId = await seedIssue(companyId);
