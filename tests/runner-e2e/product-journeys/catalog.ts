@@ -2,6 +2,7 @@ import { agentJourneyRuns } from "./success-contract.js";
 export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
+  { id: "saved-skill-use", label: "Use a saved assigned skill and verify its run-authored result", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/policy", "skills/versions", "documents-artifacts/documents"], paid: true },
   { id: "task-edit-lifecycle", label: "Edit task properties, complete and reopen with saved context", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/properties", "tasks/completion"], paid: false },
   { id: "company-access-isolation", label: "Switch QA workspaces and verify restricted agent isolation", requires: ["company", "board-user", "task-write", "company-access"], capabilities: ["companies/selection", "access/resources"], paid: false },
   { id: "repository-continuation", label: "Continue repository work with the same saved workspace", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["projects/task-context", "documents-artifacts/attachments"], paid: true },
@@ -10,6 +11,7 @@ export const productJourneys = [
   { id: "file-input-answer", label: "Upload a reference file and verify the agent uses its contents", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["documents-artifacts/attachments", "documents-artifacts/documents"], paid: true },
   { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
   { id: "project-task-context", label: "Create a project and reopen its self-assigned task", requires: ["company", "board-user", "task-write"], capabilities: ["projects/lifecycle", "projects/task-context", "tasks/create"], paid: false },
+  { id: "task-dependency-resume", label: "Complete a blocker and automatically resume its dependent task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["tasks/properties", "tasks/completion", "documents-artifacts/documents"], paid: true },
   { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "chat-continuity", label: "Reopen a chat, recall its context, then start a fresh session", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["agent-chat/history", "runs-adapters/session"], paid: true },
   { id: "question-answer-resume", label: "Answer agent questions and verify the saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },

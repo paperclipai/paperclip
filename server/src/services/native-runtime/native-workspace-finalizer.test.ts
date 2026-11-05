@@ -219,12 +219,19 @@ describe("native workspace finalization recovery", () => {
       observed.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, seed.runId)).then(rows => rows[0].profile));
     });
+    const queued: Array<Promise<unknown>> = [];
+    const stopQueued = subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, () => {
+      queued.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, seed.runId)).then(rows => rows[0].profile));
+    });
     let receipt: Awaited<ReturnType<typeof resumeNativeWorkspaceAfterOwnerStop>>;
     try {
       receipt = await resumeNativeWorkspaceAfterOwnerStop(seed);
       await vi.waitFor(() => expect(observed).toHaveLength(1));
       expect(await Promise.all(observed)).toEqual([{ preserved: "workspace descriptor" }]);
-    } finally { stop(); }
+      await vi.waitFor(() => expect(queued).toHaveLength(1));
+      expect(await Promise.all(queued)).toEqual([{ preserved: "workspace descriptor" }]);
+    } finally { stop(); stopQueued(); }
     expect(receipt).toEqual({ runId: seed.runId, resultId: before.resultId, status: "queued" });
     const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
     expect(after).toEqual(before);

@@ -1,3 +1,4 @@
+import { formatCommandForDisplay } from "./workspace-command-display.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
@@ -832,12 +833,6 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
     return resolveHomeAwarePath(value);
   }
   return path.resolve(baseDir, value);
-}
-
-function formatCommandForDisplay(command: string, args: string[]) {
-  return [command, ...args]
-    .map((part) => (/^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part)))
-    .join(" ");
 }
 
 function trimToLastBytes(value: string, limit: number) {

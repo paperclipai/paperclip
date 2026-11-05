@@ -320,6 +320,7 @@ test("the real serialized shard partition is complete, non-overlapping and durat
 const chatSuitePath = "server/src/__tests__/chat-channels.integration.test.ts";
 const nativeRunnerSuitePath =
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const ingressRetrySuitePath = "server/src/services/native-runtime/native-ingress-bootstrap-retry.integration.test.ts";
 const usageDeliverySuitePath = "server/src/services/native-runtime/native-usage-delivery.integration.test.ts";
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
@@ -364,10 +365,11 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
   assert.ok(!files.includes(chatSuitePath));
   assert.ok(!files.includes(nativeRunnerSuitePath));
+  assert.ok(!files.includes(ingressRetrySuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
   assert.ok(!files.includes(usageDeliverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -414,6 +416,7 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   assert.deepEqual(lane.selectedGeneralServerSuites, [
     "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+    ingressRetrySuitePath,
     dotRunnerSuitePath,
     restartRecoverySuitePath,
     ...restartWaitSuites,
@@ -657,7 +660,7 @@ test("default chat isolation executes every partition sequentially before other 
   assert.ok(server.args.includes("@paperclipai/server"));
   const excluded = server.args.flatMap((arg, index) => arg === "--exclude" ? [server.args[index + 1]] : []);
   assert.equal(excluded.filter(file => file === chatSuitePath.replace(/^server\//, "")).length, 1);
-  for (const file of [nativeRunnerSuitePath, usageDeliverySuitePath, dotRunnerSuitePath, restartRecoverySuitePath,
+  for (const file of [nativeRunnerSuitePath, ingressRetrySuitePath, usageDeliverySuitePath, dotRunnerSuitePath, restartRecoverySuitePath,
     "server/src/services/native-runtime/plugin-runner-probe.test.ts"]) {
     assert.ok(!excluded.includes(file.replace(/^server\//, "")), `default must retain ${file}`);
   }

@@ -52,6 +52,7 @@ import { secretService } from "../services/secrets.js";
 import {
   listReadyPluginEnvironmentDrivers,
   type ReadyPluginWorkerRecovery,
+  assertAgentsReadyForEnvironmentChange,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
@@ -1216,6 +1217,11 @@ export function environmentRoutes(
     // Persist the config change and its binding rows atomically: a binding
     // ref that fails validation (e.g. a deleted secret) must roll the whole
     // save back instead of leaving the config re-pointed with stale bindings.
+    if (patch.config !== undefined || patch.driver !== undefined) {
+      const instanceDefault = (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      await assertAgentsReadyForEnvironmentChange(db, existing, { driver: nextDriver, config: patch.config ?? existing.config },
+        { environmentId: existing.id, inheritsDefault: instanceDefault === existing.id });
+    }
     const environment = await db.transaction(async (tx) => {
       const updated = await svc.update(existing.id, patch, { db: tx });
       if (!updated) return null;

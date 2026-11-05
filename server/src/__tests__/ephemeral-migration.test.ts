@@ -23,6 +23,11 @@ import { verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 import { resolveDecisionSigningSecret } from "../services/decision-signing.js";
 import { getRunLogStore } from "../services/run-log-store.js";
+import { companySkillService } from "../services/company-skills.js";
+import { skillPackageStore } from "../services/skill-package-store.js";
+import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
+import { companySkills, companySkillRepositorySnapshots } from "@paperclipai/db";
 
 // Explicit real-dependency qualification. Never contacts off-host storage in
 // the default test path; use a disposable S3-compatible service and PostgreSQL.
@@ -55,6 +60,8 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(companySkills).where(eq(companySkills.companyId, companyId));
+    await db.delete(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
     let token: string | undefined;
     do {
@@ -99,6 +106,46 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     if (file.kind !== "file" || !file.objectKey) throw new Error("Missing object");
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: file.objectKey, Body: "corrupt" }));
     await expect(verifyAgentFileObjects(db, getStorageService(), AbortSignal.timeout(30_000))).rejects.toThrow(/agent_file_object_(size|digest)_mismatch/);
+  }, 120_000);
+  it("preserves original skill objects and identity when destination readback fails", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId);
+    const local = getStorageService(), store = skillPackageStore(db, local);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await store.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await store.versionFiles(version!) };
+    }));
+    expect(before.length).toBeGreaterThan(0);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const remote = getStorageService();
+    await expect(migrateLocalSkillPackageObjects(db, { source: local, destination: { ...remote,
+      getObject: async () => { throw new Error("Synthetic destination readback failed"); } }, writersStopped: true,
+      signal: AbortSignal.timeout(30_000) })).rejects.toThrow("Synthetic destination readback failed");
+    for (const point of before) {
+      expect((await store.descriptor(companyId, point.version.packageSnapshotId!)).storage?.provider).toBe("local_disk");
+      expect(await store.versionFiles(point.version)).toEqual(point.files);
+    }
+  }, 120_000);
+  it("verifies bundled skill migration after removal of the old server home", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId), local = skillPackageStore(db);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await local.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await local.versionFiles(version!) };
+    }));
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const result = await migrate();
+    expect(result.eligibility.eligible).toBe(true);
+    expect(result.counts.skillObjects).toBe(before.length);
+    await fs.rm(home, { recursive: true, force: true });
+    const remote = skillPackageStore(db);
+    for (const point of before) {
+      const version = await remote.version(companyId, point.skillId, point.version.id);
+      expect(version?.packageSnapshotId).toBe(point.version.packageSnapshotId);
+      expect(await remote.versionFiles(version!)).toEqual(point.files);
+    }
+    expect((await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 })).results
+      .every(row => ["remote_storage", "database_release_snapshot"].includes(row.status))).toBe(true);
   }, 120_000);
   it("migrates overlapping task folders through maintenance and restores both from S3 after volume loss", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));

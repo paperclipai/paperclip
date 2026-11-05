@@ -1,5 +1,6 @@
 import { useContext } from "react";
-import { QueryClient, QueryClientContext, useMutation, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+import { useAccountBoundMutation } from "./useAccountBoundMutation";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { workspacePreferencesApi } from "@/api/workspacePreferences";
@@ -32,15 +33,14 @@ export function useCoordinatorWorkspaceEnabled() {
     queryFn: () => workspacePreferencesApi.get(),
     enabled: contextClient != null && !!userId,
   }, client);
-  const mutation = useMutation({
+  const mutation = useAccountBoundMutation({
     mutationFn: async ({ companyId, enabled, owner }: { companyId: string; enabled: boolean; owner: string }) => {
       const result = await workspacePreferencesApi.update(companyId, { coordinatorWorkspaceEnabled: enabled });
       if (result.userId !== owner) throw new Error("Your account changed. Reload your workspace preference and try again.");
       return result;
     },
     onSuccess: (result) => {
-      // A pending response from a previous account may update only that
-      // account's cache. Never optimistically flip the active shell.
+      // Only a response in its original verified account may update the cache.
       client.setQueryData(queryKeys.workspacePreferences.mine(result.userId), result);
     },
   }, client);

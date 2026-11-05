@@ -5,7 +5,7 @@ import { agents, agentWakeupRequests, companies, completionContracts, createDb, 
   executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
-import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { hasAcknowledgedNativeRunStopReceipt, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { requestWorkspaceRecovery } from "../workspace-recovery.js";
 import { inspectWorkspaceRecoverySource } from "../workspace-recovery-source.js";
 import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
@@ -120,14 +120,53 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     } finally { await worker.stop(); }
   }, 120_000);
 
-  it.each(["pending", "undispatched", "foreign-company", "foreign-issue", "foreign-run", "turn-scope",
+  it.each(["native-sync", "remote-workspace", "startup-scan"] as const)("preserves files when Stop finds no live controller (%s)", async kind => {
+    const f = await seed();
+    const nativeCancellation = { ...f.nativeCancellation, dispatched: false };
+    const resultJson = { ...f.run.resultJson, nativeCancellation, cancelledByActorType: "user", cancelledByUserId: "operator" };
+    const runnerProfileJson = kind === "native-sync" ? { nativeWorkspaceSync: {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: f.workspaceId,
+      leaseId: f.leaseId, providerLeaseId: f.reference.providerLeaseId, remoteCwd: f.reference.remoteCwd,
+      baselineSha256: "a".repeat(64), descriptorSha256: "b".repeat(64), finalHostSha256: null,
+      resourceDisposition: "destroy",
+    }, nativeResourceDisposition: "destroy" } : f.run.runnerProfileJson;
+    await db.update(heartbeatRuns).set({ resultJson, runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "native-sync") await db.update(executionWorkspaces).set({ metadata: {} })
+      .where(and(eq(executionWorkspaces.companyId, f.companyId), eq(executionWorkspaces.id, f.workspaceId)));
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      if (kind === "startup-scan") await preserveCancelledNativeWorkspaces(db);
+      else await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(retained.resultJson).toMatchObject({ ...resultJson,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } });
+      expect(retained).toMatchObject({ status: "cancelled", finishedAt: f.run.finishedAt,
+        runnerProfileJson, costAccountingPending: true, usageJson: f.run.usageJson });
+      expect(hasAcknowledgedNativeRunStopReceipt(retained)).toBe(false);
+      expect(hasAcknowledgedNativeStopIntent(retained)).toBe(false);
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+      expect(lease).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+          metadata: { sandboxStopAndRetain: { runId: f.runId, leaseId: f.leaseId } } });
+      expect(lease.metadata).not.toHaveProperty("remoteExecutionTermination");
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, actionId: action.id })).sources).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+      expect(worker.nextWakeAt()).toBeNull();
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  it.each(["pending", "missing-dispatch", "invalid-dispatch", "foreign-company", "foreign-issue", "foreign-run", "turn-scope",
     "empty-intent-audit", "missing-ack-audit", "empty-ack-audit", "live-owner", "live-controller", "accepted-result",
     "foreign-allocation", "foreign-workspace", "foreign-cwd", "saved-reference", "unknown-reference", "running"] as const)
   ("does not admit preservation for %s", async invalid => {
     const f = await seed();
-    const intent: Record<string, unknown> = { ...f.nativeCancellation };
+    const intent: Record<string, unknown> = { ...f.nativeCancellation, dispatched: false };
     if (invalid === "pending") intent.dispatchState = "pending";
-    if (invalid === "undispatched") intent.dispatched = false;
+    if (invalid === "missing-dispatch") delete intent.dispatched;
+    if (invalid === "invalid-dispatch") intent.dispatched = "false";
     if (invalid === "foreign-company") intent.companyId = randomUUID();
     if (invalid === "foreign-issue") intent.issueId = randomUUID();
     if (invalid === "foreign-run") intent.runId = randomUUID();

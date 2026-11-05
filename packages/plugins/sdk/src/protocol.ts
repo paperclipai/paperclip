@@ -618,6 +618,12 @@ export interface PluginEnvironmentProbeResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface PluginEnvironmentWorkspaceAllocationFiles {
+  providerLeaseId: string;
+  remoteCwd: string;
+  files: Array<{ relativePath: string; sha256: string }>;
+}
+
 export interface PluginEnvironmentLease {
   providerLeaseId: string | null;
   metadata?: Record<string, unknown>;

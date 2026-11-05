@@ -4736,6 +4736,51 @@ describe("executeNativeSession recovery", () => {
     expect(lifecycle).toEqual(["closed"]);
   });
 
+  it("settles an intentional governed park through the actual Codex session facade", async () => {
+    const transport = new FakeCodexTransport();
+    const request = transport.request.bind(transport);
+    transport.request = async (method, params) => {
+      const response = await request(method, params);
+      if (method === "turn/interrupt") setImmediate(() => transport.push("turn/completed", {
+        threadId: "thread-1", turn: { id: "turn-1", status: "interrupted", error: null, items: [] },
+      }));
+      return response;
+    };
+    const executionInput = { ...input, workspace: { ...input.workspace, cwd: WORKSPACE } };
+    const backend = createCodexNativeSessionBackend(executionInput, {
+      runnerInstanceId: "runner-recovery", transportFactory: () => transport,
+    });
+    const events: PrpEvent[] = [];
+    const deferredEventTypes: string[] = [];
+    const completeRun = vi.fn(async () => undefined);
+    const execution = executeNativeSession({ input: executionInput, backend,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 5_000,
+      controlPlane: {
+        async openRun() {}, async checkpointSession() {}, completeRun,
+        async appendEvent(event, options) {
+          if (options?.deferPostCommitObservers) deferredEventTypes.push(event.eventType);
+          events.push(structuredClone(event)); return {
+          cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed",
+        }; },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      },
+      resolveGovernedWait: ({ event }) => event.eventType === "item.completed"
+        && event.payload.kind === "agentMessage" ? yieldedResult : null,
+    });
+    const outcome = expect(execution).resolves.toMatchObject({ result: yieldedResult,
+      terminal: { runTerminalState: "succeeded", reportedWorkDisposition: "yielded" } });
+    await vi.waitFor(() => expect(transport.calls.some(call => call.method === "turn/start")).toBe(true));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    transport.push("item/completed", { threadId: "thread-1", turnId: "turn-1",
+      item: { id: "waiting-message", type: "agentMessage", channel: "final", text: "The human-only question is saved." } });
+    await outcome;
+    expect(events.find(event => event.eventType === "turn.interrupted")?.payload).toMatchObject({ error: null, status: "interrupted" });
+    expect(deferredEventTypes).toEqual(["turn.interrupted"]);
+    expect(events.some(event => event.eventType === "item.completed")).toBe(true);
+    expect(completeRun).toHaveBeenCalledOnce();
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(1);
+  });
+
   it("commits a proved governed wait without waiting for abort-insensitive provider cleanup", async () => {
     vi.useFakeTimers();
     try {
