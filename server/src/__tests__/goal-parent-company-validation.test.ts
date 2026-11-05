@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { companies, createDb, goals } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -96,5 +96,83 @@ describeDatabase("goal parent company validation", () => {
 
   it("keeps a missing update target as null", async () => {
     expect(await goalService(db).update("db7da378-99a6-43ea-964f-000000000000", { title: "Missing" })).toBeNull();
+  });
+
+  it("rejects raw plugin patches that move the goal to another company", async () => {
+    const home = await company();
+    const foreign = await company();
+    const service = goalService(db);
+    const parent = await service.create(home, { title: "Home parent" });
+    const child = await service.create(home, { title: "Original", parentId: parent.id });
+    // The plugin host forwards params.patch as any, outside the REST validator.
+    const patch = { companyId: foreign, parentId: parent.id, title: "Must not change" };
+    const failure = await service.update(child.id, patch as any)
+      .then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(HttpError);
+    expect((failure as HttpError).status).toBe(422);
+    expect(await service.getById(child.id)).toMatchObject({ companyId: home, title: "Original", parentId: parent.id });
+  });
+
+  it("keeps runtime identity fields out of allowed same-company updates", async () => {
+    const companyId = await company();
+    const service = goalService(db);
+    const goal = await service.create(companyId, { title: "Original" });
+    const unwantedId = "db7da378-99a6-43ea-964f-000000000000";
+    const patch = { id: unwantedId, companyId, title: "Allowed" };
+    expect(await service.update(goal.id, patch as any)).toMatchObject({ id: goal.id, companyId, title: "Allowed" });
+    expect(await service.getById(unwantedId)).toBeNull();
+  });
+
+  it("allows concurrent parent edits without conflicting with foreign-key checks", async () => {
+    const companyId = await company();
+    const service = goalService(db);
+    const first = await service.create(companyId, { title: "First" });
+    const second = await service.create(companyId, { title: "Second" });
+    // Pause both real UPDATEs after their service row locks, before the FK
+    // checks. This exposes incompatible row locks without relying on timing.
+    await db.execute(sql`create function goal_parent_test_gate() returns trigger language plpgsql as $$
+      begin
+        perform pg_advisory_xact_lock_shared(hashtextextended(current_database() || 'goal-parent-test', 0));
+        return new;
+      end $$`);
+    await db.execute(sql`create trigger goal_parent_test_gate before update on goals
+      for each row execute function goal_parent_test_gate()`);
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const gateReady = new Promise<number>((resolve) => { ready = resolve; });
+    const gate = db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(current_database() || 'goal-parent-test', 0))`);
+      const [owner] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      ready(owner.pid);
+      await released;
+    });
+    const ownerPid = await gateReady;
+    const edits = Promise.allSettled([
+      service.update(first.id, { parentId: second.id }),
+      service.update(second.id, { parentId: first.id }),
+    ]);
+    try {
+      await expect.poll(async () => {
+        const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count
+          from pg_locks where locktype = 'advisory' and not granted
+          and ${ownerPid} = any(pg_blocking_pids(pid))`);
+        return waiting.count;
+      }, { timeout: 5_000 }).toBe(2);
+      release();
+      await gate;
+      const failures = (await edits).flatMap((result) => result.status === "rejected"
+        ? [result.reason?.cause?.code ?? result.reason?.code ?? String(result.reason)]
+        : []);
+      expect(failures).toEqual([]);
+      expect(await service.getById(first.id)).toMatchObject({ parentId: second.id });
+      expect(await service.getById(second.id)).toMatchObject({ parentId: first.id });
+    } finally {
+      release();
+      await gate;
+      await edits;
+      await db.execute(sql`drop trigger goal_parent_test_gate on goals`);
+      await db.execute(sql`drop function goal_parent_test_gate()`);
+    }
   });
 });
