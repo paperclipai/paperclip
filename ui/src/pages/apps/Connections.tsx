@@ -18,6 +18,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { accessApi } from "@/api/access";
+import { useQueryView } from "@/components/QueryView";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import {
   AlertDialog,
@@ -51,6 +52,7 @@ import {
   connectionOwnerProfile,
   type ConnectionOwnerProfile,
 } from "./connection-owner";
+import { describeError } from "@/api/errors";
 
 const BROWSE_HREF = "/apps";
 
@@ -162,6 +164,10 @@ export function Connections() {
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
   });
+  const galleryView = useQueryView(galleryQuery);
+  const applicationsView = useQueryView(applicationsQuery);
+  const connectionsView = useQueryView(connectionsQuery);
+  const connectorEnrollmentView = useQueryView(connectorEnrollmentQuery);
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(selectedCompanyId!, selectedCompany?.name),
     onSuccess: (status) => {
@@ -169,7 +175,7 @@ export function Connections() {
     },
     onError: (error) => pushToast({
       title: "Couldn’t reach Paperclip Cloud",
-      body: error instanceof Error ? error.message : "Try again in a moment.",
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -198,7 +204,7 @@ export function Connections() {
     onError: (error) =>
       pushToast({
         title: "Couldn't delete the connection",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -307,14 +313,15 @@ export function Connections() {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
   }
 
-  const loading = applicationsQuery.isLoading || connectionsQuery.isLoading || galleryQuery.isLoading;
+  const loading = applicationsQuery.isLoading || connectionsQuery.isLoading || galleryQuery.isLoading
+    || [applicationsView, connectionsView, galleryView].some((view) => view.kind === "reconnecting");
 
   return (
     <div className="max-w-5xl space-y-5">
-      {!connectorEnrollmentQuery.isLoading ? (
+      {!(connectorEnrollmentQuery.isLoading || connectorEnrollmentView.kind === "reconnecting") ? (
         <CloudConnectorEnrollmentBanner
           status={connectorEnrollmentQuery.data}
-          unavailable={connectorEnrollmentQuery.isError}
+          unavailable={connectorEnrollmentView.kind === "error"}
           busy={startConnectorEnrollment.isPending}
           onEnable={() => {
             const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;

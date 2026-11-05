@@ -541,6 +541,10 @@ jobs:
   daytona_image:
     name: Publish verified Daytona image
     needs: [authorize, target_lock, catalog]
+    # testops_selection is skipped outside TestOps campaigns. GitHub's implicit
+    # success() also checks skipped ancestors, so jobs below catalog state
+    # their real dependency results explicitly.
+    if: ${{ !cancelled() && needs.catalog.result == 'success' }}
     # Keep image builds on the same authorized fleet as campaign execution.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 45
@@ -687,7 +691,9 @@ jobs:
   build_runner_artifacts:
     name: Build reusable runner campaign artifacts
     needs: [authorize, target_lock, catalog]
-    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' &&
+      (github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'))
     # Compile native binaries on the same reviewed image used to execute them,
     # avoiding libc/architecture drift between GitHub-hosted and AWS lanes.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
@@ -815,7 +821,10 @@ jobs:
     name: Build reusable remote provider pack
     needs:
       [authorize, target_lock, catalog, daytona_image, build_runner_artifacts]
-    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' &&
+      (github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -951,7 +960,10 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
     needs:
       [
         authorize,
@@ -1443,7 +1455,10 @@ jobs:
 
   test_recurring:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
@@ -1460,7 +1475,10 @@ jobs:
 
   test_manual_private:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'private' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'private' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}

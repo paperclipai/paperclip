@@ -1,3 +1,4 @@
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorTasks } from "./CoordinatorTasks";
@@ -283,14 +284,7 @@ function OrganizationIssues({
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
-  const {
-    data: issuePages,
-    isLoading,
-    isFetchingNextPage,
-    error,
-    hasNextPage,
-    fetchNextPage,
-  } = useInfiniteQuery({
+  const issuesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
@@ -327,6 +321,8 @@ function OrganizationIssues({
     placeholderData: (previousData) => previousData,
   });
 
+  const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
@@ -353,12 +349,13 @@ function OrganizationIssues({
     );
   }
 
+  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
+
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}

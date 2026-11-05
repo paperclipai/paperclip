@@ -1,7 +1,8 @@
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -611,25 +612,26 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const assertCurrentOwner = () => {
     if (!active.current || draftOwner === undefined || readOwner() !== draftOwner) throw new PendingSendAccountChangedError();
   };
-  const createIssue = useMutation({
+  const createIssue = useAccountBoundMutation({
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
       navigateOnCreate,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
-      assertCurrentOwner();
+    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>, { assertCurrentAccount }) => {
+      const assertVerifiedOwner = () => { assertCurrentAccount(); assertCurrentOwner(); };
+      assertVerifiedOwner();
       const issue = await issuesApi.create(companyId, data);
-      assertCurrentOwner();
+      assertVerifiedOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
         issueId: issue.id,
         stagedFiles: pendingStagedFiles,
-        assertCurrentOwner,
+        assertCurrentOwner: assertVerifiedOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
 
-      assertCurrentOwner();
+      assertVerifiedOwner();
       return { issue, companyId, failures, navigateOnCreate };
     },
     onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {

@@ -19,6 +19,11 @@ import { legacyControllerBootId } from "../legacy-controller-lease.js";
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
   const ownedHomes: string[] = [];
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
   afterEach(async () => {
     for (const home of ownedHomes.splice(0)) await removeNativeHarnessBackup(home);
     vi.unstubAllEnvs();
@@ -45,6 +50,99 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     return { ...f, home, root, companyId, owner, scopeDigest, sessionScopeId, storage, identity,
       manifestSha256: `sha256:${createHash("sha256").update(manifest).digest("hex")}` };
   }
+  async function offlineFixture(base: string) {
+    const f = await fixture("codex-home"), home = join(base, f.scopeDigest);
+    await rename(f.home, home);
+    const root = join(home, "failover-backups", "current"), runnerInstanceId = randomUUID(), providerLeaseId = randomUUID();
+    const execution = { provider: { kind: "codex" }, binding: { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, agentId: environment.current.agentId, executionWorkspaceId: randomUUID() },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: f.identity.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } } as never;
+    const manifest = buildNativeHarnessBackupManifest({ backupRoot: root, execution, runnerInstanceId,
+      providerSessionIdentity: { providerSessionId: f.identity.providerSessionId }, sourceProviderLeaseId: providerLeaseId });
+    await writeFile(join(root, "manifest.json"), JSON.stringify(manifest));
+    const stamp = createNativeHarnessBackupStamp({ manifestPath: join(root, "manifest.json"), sessionScopeId: f.sessionScopeId,
+      authorizedProviderLeaseId: providerLeaseId, runnerInstanceId, normalizedSessionId: f.identity.normalizedSessionId, completedAt: manifest.completedAt });
+    await f.db.update(heartbeatRuns).set({ nativeSessionId: f.identity.normalizedSessionId, runnerInstanceId }).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+      providerLeaseId, status: "expired", metadata: { nativeHarnessBackup: stamp } });
+    return { ...f, home, root };
+  }
+  async function offlineFixtures(count: number) {
+    const base = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(base); await mkdir(base);
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", base);
+    const fixtures = [];
+    for (let i = 0; i < count; i++) fixtures.push(await offlineFixture(base));
+    const runs = await fixtures[0].db.select({ id: heartbeatRuns.id, issueId: heartbeatRuns.nativeIssueId }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, fixtures[0].companyId));
+    for (const run of runs) await settle({ ...fixtures[0], runId: run.id, issueId: run.issueId! }, new Date());
+    return fixtures.sort((a, b) => a.scopeDigest.localeCompare(b.scopeDigest));
+  }
+  it("overlaps verified offline backups within a four-transfer bound and restores their bytes", async () => {
+    const fixtures = await offlineFixtures(6), f = fixtures[0], gate = deferred();
+    const put = f.storage.putFile.bind(f.storage); let active = 0, peak = 0, entered = 0;
+    vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      active++; entered++; peak = Math.max(peak, active);
+      try { await gate.promise; return await put(input); } finally { active--; }
+    });
+    const migration = migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) });
+    try { await vi.waitFor(() => expect(active).toBe(4), { timeout: 3000 }); }
+    finally { gate.resolve(); await migration.catch(() => undefined); }
+    expect(await migration).toBe(6); expect(peak).toBe(4); expect(entered).toBe(6); expect(active).toBe(0);
+    for (const source of fixtures) {
+      await removeNativeHarnessBackup(source.home);
+      const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+      expect(await restoreDurableNativeHarnessBackup({ ...source, storage: f.storage, backupRoot: replacement })).toBe(true);
+      expect(JSON.parse(await readFile(join(replacement, "current", "codex-home", "sessions", "history.json"), "utf8"))).toEqual(source.identity);
+    }
+  });
+  it("waits for cancelled peer transfers before returning failure and permits a complete retry", async () => {
+    const fixtures = await offlineFixtures(2), f = fixtures[0], peerEntered = deferred(), release = deferred();
+    const failed = deferred(), put = f.storage.putFile.bind(f.storage); let entered = 0, active = 0, settled = false;
+    const spy = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      const ordinal = ++entered; active++;
+      try {
+        if (ordinal === 1) { await peerEntered.promise; failed.resolve(); throw new Error("storage unavailable"); }
+        peerEntered.resolve(); await release.promise; return await put(input);
+      } finally { active--; }
+    });
+    const migration = migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) });
+    const completed = migration.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(entered).toBe(2), { timeout: 3000 }); await failed.promise;
+      await new Promise<void>(resolve => setImmediate(resolve)); expect(settled).toBe(false);
+    } finally { peerEntered.resolve(); release.resolve(); await completed; }
+    await expect(migration).rejects.toThrow("storage unavailable"); expect(active).toBe(0); spy.mockRestore();
+    for (const source of fixtures) expect(await readFile(join(source.root, "manifest.json"), "utf8")).toContain("paperclip.native-harness-backup.v1");
+    expect(await migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) })).toBe(2);
+    for (const source of fixtures) {
+      const rows = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, source.scopeDigest));
+      expect(rows.filter(row => row.status === "current")).toHaveLength(1);
+    }
+  });
+  it("preserves unlisted files with an exclusive scratch reservation", async () => {
+    const fixtures = await offlineFixtures(3), f = fixtures[0], extra = fixtures[1];
+    await writeFile(join(extra.root, "retained-extra.txt"), "unlisted surviving bytes");
+    const put = f.storage.putFile.bind(f.storage); let active = 0, peak = 0;
+    vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
+      active++; peak = Math.max(peak, active);
+      try { await new Promise<void>(resolve => setImmediate(resolve)); return await put(input); } finally { active--; }
+    });
+    expect(await migrateNativeHarnessBackups(f.db, { storage: f.storage, writersStopped: true, signal: AbortSignal.timeout(15_000) })).toBe(3);
+    expect(peak).toBe(1);
+    await removeNativeHarnessBackup(extra.home);
+    const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...extra, storage: f.storage, backupRoot: replacement })).toBe(true);
+    expect(await readFile(join(replacement, "current", "retained-extra.txt"), "utf8")).toBe("unlisted surviving bytes");
+  });
+  it("enforces the reserved archive size while streaming before publishing any object", async () => {
+    const f = await fixture(), put = vi.spyOn(f.storage, "putFile");
+    await expect(persistNativeHarnessBackup({ ...f, maxArchiveBytes: 512 })).rejects.toThrow("native_harness_archive_invalid");
+    expect(put).not.toHaveBeenCalled();
+    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toHaveLength(0);
+    expect(JSON.parse(await readFile(join(f.root, "codex", "sessions", "history.json"), "utf8"))).toEqual(f.identity);
+  });
   it.each(["codex", "claude", "opencode", "grok", "new-provider"])("restores %s session bytes after deleting the entire controller home", async provider => {
     const f = await fixture(provider);
     await persistNativeHarnessBackup(f);
