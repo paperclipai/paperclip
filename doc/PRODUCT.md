@@ -423,6 +423,20 @@ with the task list's filters and a sort control. The agent's artifacts are a
 second card stack available from the panel's **+** menu. Both open in a new tab
 so the conversation stays open.
 
+### Coordinator Inbox and personal task views
+
+Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
+inbox icon and keeps the existing decision feed, its count, and decision history
+at `/decisions`. The previous Inbox destination under More is removed.
+
+Tasks defaults to **Mine**, with a saved view per person and company. Mine uses
+the previous Inbox's personal participation rules, mixed attention items,
+read/unread title weights, keyboard shortcuts, archive and undo, mobile
+swipe-to-archive, grouping, and saved columns. Its existing preferences carry
+over. Unread, Recent, Blocked, and Everything are also task views. Organization
+views retain the task table and board. The table saves column selection and
+order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
 ### Combined Inbox + Task List
 
 An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)

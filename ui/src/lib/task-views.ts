@@ -21,6 +21,7 @@ export const TASK_VIEW_KEYS = [
   "blocked",
   "recent",
   "everything",
+  "needs_attention",
   "all",
   "active",
   "backlog",
@@ -40,6 +41,7 @@ export interface TaskView {
   statuses?: string[];
   /** One-line description shown in the Views menu. */
   hint: string;
+  coordinatorOnly?: boolean;
 }
 
 export interface TaskViewGroup {
@@ -61,6 +63,7 @@ export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
   {
     label: "Organization",
     views: [
+      { key: "needs_attention", label: "Needs attention", surface: "issues", statuses: [], hint: "Tasks with pending decisions", coordinatorOnly: true },
       { key: "all", label: "All tasks", surface: "issues", statuses: [], hint: "Every task in the organization" },
       { key: "active", label: "Active", surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], hint: "Open tasks, running or not" },
       { key: "backlog", label: "Backlog", surface: "issues", statuses: ["backlog"], hint: "Not started yet" },
