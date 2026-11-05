@@ -179,6 +179,17 @@ describe.skipIf(!support.supported)("finalized workspace recovery preservation",
     await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
     expect(await verifiedWorkspaceRepairReceipt(db, (await preserved(f)).run)).toBeNull();
   });
+  it("preserves an older finalized reference with omitted optional fields", async () => {
+    const f = await fixture(true);
+    const { resourceDisposition: _disposition, ...legacy } = f.reference;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+      ...legacy, schema: "paperclip.native-workspace-sync/v1",
+    } } }).where(eq(heartbeatRuns.id, f.runId));
+    await migrateRemoteWorkspace({ db, ...f, apply: true, writersStopped: true });
+    const inspected = await inspectWorkspaceRecoverySource(db, { ...f, actionId: f.action.id });
+    expect(inspected.sources).toEqual([expect.objectContaining({ preservationOnly: true,
+      reference: { ...legacy, schema: "paperclip.native-workspace-sync/v1", resourceDisposition: null } })]);
+  });
   it("requires the exact receipt and leaves ordinary finalized references alone", async () => {
     const f = await fixture(true);
     expect(await readMigratedLegacyWorkspaceSource(db, { ...f, reference: f.reference })).toBeNull();

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, heartbeatRuns, issues, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
-import type { NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { readNativeWorkspaceSyncReference, type NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 
 export type LegacyWorkspaceRecoverySource = {
   runId: string; issueId: string; reference: NativeWorkspaceSyncReference | null;
@@ -77,7 +77,7 @@ export async function readMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, 
   const runMarker = run?.runnerProfileJson?.[input.reference?.state === "finalized"
     ? "finalizedWorkspaceRecoveryMigration" : "legacyWorkspaceRecoveryMigration"] as { workspaceId?: unknown } | undefined;
   if (input.reference?.state === "finalized" && runMarker == null) return null;
-  if (input.reference?.state === "finalized" && !isDeepStrictEqual(input.reference, run?.runnerProfileJson?.nativeWorkspaceSync))
+  if (input.reference?.state === "finalized" && !isDeepStrictEqual(input.reference, readNativeWorkspaceSyncReference(run?.runnerProfileJson?.nativeWorkspaceSync)))
     throw new Error("legacy_workspace_migration_receipt_invalid");
   const workspaceId = input.reference?.workspaceId ?? runMarker?.workspaceId;
   if (typeof workspaceId !== "string") return null;
