@@ -564,6 +564,50 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
     expect(await fs.stat(path.join(targetDir, "unrelated.txt")).catch(() => null)).toBeNull();
   });
+  it.each(["valid", "changed-branch", "competing-owner", "registered-branch", "unowned", "missing-branch", "active-online", "active-offline"])("preserves a missing checkout from its retained owned branch (%s)", async mode => {
+    const f = await gitArchiveFixture(), closedAt = new Date();
+    const active = mode.startsWith("active-");
+    await db.update(executionWorkspaces).set({ status: active ? "active" : "archived", closedAt: active ? null : closedAt })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    await git(f.base, "worktree", "remove", f.cwd);
+    await fs.writeFile(path.join(f.base, "base.txt"), "new shared default branch\n");
+    await git(f.base, "add", "."); await git(f.base, "commit", "-qm", "unrelated shared work");
+    if (mode === "changed-branch") {
+      const put = storage.putFile.bind(storage);
+      storage.putFile = async input => { const saved = await put(input); await git(f.base, "update-ref", `refs/heads/${f.branchName}`, await git(f.base, "rev-parse", "HEAD")); return saved; };
+    }
+    if (mode === "competing-owner") {
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Different branch owner" }).returning();
+      await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: issue!.id, projectId: f.projectId,
+        name: "Other owner", mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree",
+        repoUrl: f.repoUrl, branchName: f.branchName, cwd: path.join(root, "other-owner") });
+    }
+    if (mode === "registered-branch") await git(f.base, "worktree", "add", path.join(root, "registered"), f.branchName);
+    if (mode === "unowned") await db.update(executionWorkspaces).set({ metadata: { gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    if (mode === "missing-branch") await git(f.base, "branch", "-D", f.branchName);
+    const offline = mode === "active-offline";
+    if (offline) vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const migrate = () => migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: offline });
+    if (!["valid", "active-offline"].includes(mode)) {
+      await expect(migrate()).rejects.toThrow();
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull(); return;
+    }
+    await migrate();
+    const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
+    expect(row.status).toBe(active ? "active" : "archived");
+    expect(authority.source).toMatchObject({ kind: "git", ref: f.commit });
+    const [operation] = await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.executionWorkspaceId, f.workspaceId), eq(workspaceOperations.phase, "remote_workspace_migration")));
+    expect(operation!.metadata?.archivedGitSource).toMatchObject({ commit: f.commit, retainedBranch: f.branchName });
+    await fs.rm(f.base, { recursive: true });
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "retained-branch.pcws"), targetDir = path.join(root, "restored-retained-branch");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
   async function serveRepository() {
     const directory = path.join(root, "http"), bare = path.join(directory, "repository.git");
     await fs.mkdir(bare, { recursive: true }); await git(bare, "init", "--bare", "--initial-branch=main");

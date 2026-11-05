@@ -206,6 +206,15 @@ finite offline operation adds no idle background work. A resumed rehearsal can
 measure the fix but cannot replace fresh full-image migration and empty-home
 recovery proof.
 
+A missing managed task checkout can still have its runtime-owned branch in the
+verified company and project Git cache. Preserve that exact commit when the
+recorded private path matches, no other workspace owns the branch, and Git has
+no surviving worktree registration or index for it. Pin and recheck the commit
+before publication. This saves the surviving committed tree; it does not
+certify recovery of files that were already absent. An active record requires
+the existing offline provider fence and keeps its original status. Invalid
+restore recipes, live registrations and competing branch owners stay blocked.
+
 During offline migration, known task-only assignment, configuration, deliberate-wait and
 disposition warnings can remain unchanged while the owner saves local files.
 They do not certify file recovery and are not resolved by migration. An active

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, gte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaces, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import type { StorageService } from "../storage/types.js";
@@ -14,6 +14,7 @@ import { ensureSavedGitCommit, gitRestorePointExpired, managedSourcePaths, readG
   verifiedGitCacheSource, verifiedManagedGitObjectSource, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { localRepositoryPath } from "./local-repository-path.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
 export type ArchivedGitMigrationSource = {
@@ -21,6 +22,7 @@ export type ArchivedGitMigrationSource = {
   sourcePath: string;
   cleanupOperationId: string | null;
   recipe: GitCacheRestoration | null;
+  retainedBranch?: string;
 };
 const execute = promisify(execFile);
 const unavailable = () => new Error("remote_workspace_migration_archived_git_source_unavailable");
@@ -38,15 +40,23 @@ async function git(cwd: string, args: string[]) {
 
 /** A removed branch must be reconstructed from its saved commit or its exact
  * successful deletion receipt. Today's default branch is never a substitute. */
-export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, workspace: Workspace): Promise<ArchivedGitMigrationSource | null> {
-  if (workspace.status !== "archived" || !workspace.repoUrl || !workspace.branchName || !workspace.sourceIssueId) return null;
+export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, workspace: Workspace,
+  options: { allowActiveRetainedBranch?: boolean } = {}): Promise<ArchivedGitMigrationSource | null> {
+  const archived = workspace.status === "archived";
+  if ((!archived && !options.allowActiveRetainedBranch) || !workspace.repoUrl || !workspace.branchName || !workspace.sourceIssueId) return null;
   const recipe = readGitCacheRestoration(workspace);
   if (recipe) {
+    if (!archived) return null;
     if (gitRestorePointExpired(recipe)) throw new Error("remote_workspace_migration_restore_point_expired");
     return { commit: recipe.commit, sourcePath: recipe.sourcePath, recipe, cleanupOperationId: null };
   }
-  if (workspace.providerType !== "git_worktree" || !workspace.closedAt || workspace.metadata?.gitBranchOwnershipVersion !== 1) return null;
-  const [operation] = await db.select().from(workspaceOperations).where(and(
+  if (workspace.providerType !== "git_worktree" || workspace.metadata?.gitBranchOwnershipVersion !== 1) return null;
+  const [projectWorkspace] = workspace.projectWorkspaceId ? await db.select({ cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
+    .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+      eq(projectWorkspaces.companyId, workspace.companyId), workspace.projectId ? eq(projectWorkspaces.projectId, workspace.projectId) : undefined)) : [];
+  const sourcePath = projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
+  if (!sourcePath || projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
+  const [operation] = archived && workspace.closedAt ? await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.phase, "worktree_cleanup"), eq(workspaceOperations.status, "succeeded"),
     or(eq(workspaceOperations.command, `git branch -d ${workspace.branchName}`), and(
@@ -55,16 +65,32 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
       sql`${workspaceOperations.metadata}->>'branchName' = ${workspace.branchName}`,
       sql`${workspaceOperations.metadata}->>'workspacePath' = ${workspace.providerRef ?? workspace.cwd}`,
     )), gte(workspaceOperations.startedAt, workspace.closedAt),
-  )).orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.id)).limit(1);
+  )).orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.id)).limit(1) : [];
+  if (!operation) {
+    // A branch that was never deleted still owns its committed tree. It does
+    // not certify lost untracked files. Any surviving worktree registration
+    // can retain additional index/files authority and must stay blocked.
+    if (!isRuntimeOwnedGitBranch(workspace.metadata) || workspace.mode !== "isolated_workspace"
+      || !workspace.projectId || !managedSourcePaths(workspace).includes(sourcePath)) return null;
+    await git(sourcePath, ["check-ref-format", `refs/heads/${workspace.branchName}`]);
+    const expected = path.join(sourcePath, ".paperclip", "worktrees", workspace.branchName);
+    if (workspace.cwd !== expected || workspace.providerRef && workspace.providerRef !== expected) return null;
+    await verifiedManagedGitObjectSource(workspace, sourcePath);
+    const [other] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.projectId, workspace.projectId),
+      eq(executionWorkspaces.repoUrl, workspace.repoUrl), eq(executionWorkspaces.branchName, workspace.branchName),
+      ne(executionWorkspaces.id, workspace.id),
+    )).limit(1);
+    if (other || (await git(sourcePath, ["worktree", "list", "--porcelain", "-z"]))
+      .split("\0").includes(`branch refs/heads/${workspace.branchName}`)) throw unavailable();
+    const commit = await git(sourcePath, ["rev-parse", "--verify", `refs/heads/${workspace.branchName}^{commit}`]);
+    if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
+    return { commit, sourcePath, cleanupOperationId: null, recipe: null, retainedBranch: workspace.branchName };
+  }
   const receipt = operation?.stdoutExcerpt?.trim(), prefix = `Deleted branch ${workspace.branchName} (was `;
   if (!operation || !receipt?.startsWith(prefix) || !receipt.endsWith(").")) return null;
   const abbreviation = receipt.slice(prefix.length, -2);
   if (!/^[a-f0-9]{7,40}$/.test(abbreviation)) throw unavailable();
-  const [projectWorkspace] = workspace.projectWorkspaceId ? await db.select({ cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
-    .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, workspace.projectWorkspaceId),
-      eq(projectWorkspaces.companyId, workspace.companyId), workspace.projectId ? eq(projectWorkspaces.projectId, workspace.projectId) : undefined)) : [];
-  const sourcePath = projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0];
-  if (!sourcePath || projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
   await verifiedReceiptObjectSource(workspace, sourcePath);
   const commit = await git(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
   if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
@@ -87,9 +113,10 @@ export async function materializeArchivedGitMigrationSource(input: {
     // A deletion receipt owns a specific committed tree. Its objects can come
     // from the verified project cache after the private checkout was removed.
     // Saved private edits still require their original restore-point source.
-    if (!source.recipe && !source.cleanupOperationId) throw unavailable();
+    if (!source.recipe && !source.cleanupOperationId && source.retainedBranch !== workspace.branchName) throw unavailable();
     const verified = source.recipe ? await verifiedGitCacheSource(workspace, source.sourcePath)
       : await verifiedReceiptObjectSource(workspace, source.sourcePath);
+    if (source.retainedBranch && (await git(verified, ["rev-parse", "--verify", `refs/heads/${source.retainedBranch}^{commit}`])) !== source.commit) throw unavailable();
     await fs.mkdir(cwd, { mode: 0o700 }); await git(cwd, ["init", "--quiet"]);
     // Fetch objects, never the current working tree of a shared project root.
     const presentCommit = await git(verified, ["cat-file", "-e", `${source.commit}^{commit}`]).then(() => true, () => false);
