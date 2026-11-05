@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -243,6 +245,33 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     await taskInterruptionPresentations(db, companyId, [input[0]!]);
     expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       taskId: input[0]!.id, runErrorCode: "native_workspace_sync_out_retry_exhausted" }));
+  });
+
+  it("reports recovery that newly fails on an old run once, then treats it as retained", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Old run recovery", issuePrefix: `O${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Recovery", status: "in_progress",
+      assigneeAgentId: agentId }).returning();
+    const old = new Date(Date.now() - 22 * 60 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, status: "failed",
+      createdAt: old, finishedAt: old }).returning();
+    // Exhausted recovery clears nextAttemptAt; only the saved transition time is recent.
+    const exhausted = { ...createSystemRecovery(run!.id), state: "exhausted" as const, attempts: 6, retriesUsed: 5,
+      firstFailureAt: old.getTime(), deadlineAt: old.getTime() + 30 * 60_000, nextAttemptAt: null };
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue!.id,
+      kind: "workspace_recovery", status: "active", ownerType: "system", cause: "native_workspace_sync_out_failed",
+      fingerprint: `recovery:${run!.id}`, nextAction: "Recover saved files.", createdAt: old, updatedAt: new Date(),
+      evidence: { runId: run!.id, systemRecovery: exhausted } }).returning();
+    captureTaskInterruptionFailure.mockClear();
+    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
+      .toMatchObject({ responsibility: "system", state: "failed" });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: issue!.id, runId: run!.id }));
+    await db.update(issueRecoveryActions).set({ updatedAt: old }).where(eq(issueRecoveryActions.id, action!.id));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
   });
 
   it("keeps the failed run's adapter after the task is reassigned", async () => {

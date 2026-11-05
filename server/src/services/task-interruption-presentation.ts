@@ -44,12 +44,14 @@ type ProjectionState = {
 // replica would otherwise resend each old failure whenever a list shows it.
 const TASK_INTERRUPTION_REPORT_WINDOW_MS = 60 * 60_000;
 
-/** Latest saved fact that can move a task into the failed state, if known. */
+/** Latest saved fact that can move a task into the failed state, if known. The
+ * recovery row's update time covers recovery that newly fails on an old run:
+ * each saved recovery transition stamps it, while activity heartbeats do not. */
 export function taskInterruptionChangedAt(input: Pick<ProjectionState, "run" | "action" | "wait" | "retryWait">): number | null {
   const { run, wait, action } = input;
   const retryWait = input.retryWait ?? wait;
-  const times: unknown[] = [run?.finishedAt ?? run?.createdAt, run?.scheduledRetryAt, wait?.requestedAt, retryWait?.requestedAt]
-    .map(value => value?.getTime());
+  const times: unknown[] = [run?.finishedAt ?? run?.createdAt, run?.scheduledRetryAt, wait?.requestedAt, retryWait?.requestedAt,
+    action?.updatedAt].map(value => value?.getTime());
   times.push(readSystemRecovery(action?.evidence)?.nextAttemptAt,
     retryWait?.preparationRetryAt == null ? null : Number(retryWait.preparationRetryAt));
   const known = times.filter((time): time is number => typeof time === "number" && Number.isFinite(time));
