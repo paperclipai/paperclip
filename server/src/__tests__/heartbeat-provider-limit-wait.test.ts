@@ -158,6 +158,25 @@ describePostgres("heartbeat provider usage limit wait", () => {
     expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
   });
 
+  it("recovers a wait whose retry was lost to a crash after its cancellation committed", async () => {
+    const f = await seed([]);
+    const [lost] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "cancelled",
+      invocationSource: "automation", triggerDetail: "system", issueId: f.issueId, scopeKind: "issue",
+      startedAt: new Date(Date.now() - 10 * 60_000), finishedAt: new Date(Date.now() - 9 * 60_000), errorCode: "provider_limit_wait",
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      contextSnapshot: { issueId: f.issueId } }).returning();
+    await db.update(issues).set({ status: "in_progress", executionRunId: lost.id, executionLockedAt: new Date(Date.now() - 9 * 60_000) })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.sweepStaleIssueLocks();
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await heartbeat.drainActiveRunExecutions();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+    // Existing stranded-work recovery gives the wake a bounded successor; the gate re-checks the limit when it runs.
+    expect(runs.find(run => run.id !== lost.id)).toMatchObject({ status: "scheduled_retry", retryOfRunId: lost.id });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue).toMatchObject({ status: "in_progress", executionRunId: null });
+  }, 60_000);
+
   it("still dispatches a manual run, and work after a later success or an expired reset", async () => {
     const manual = await seed([rateLimited(16)]);
     expect(dispatched.has((await wake(manual, true)).id)).toBe(true);
