@@ -81,6 +81,31 @@ function skillsObservation(value: unknown): SkillsObservation | undefined {
   const base = observation(value); const o = value as SkillsObservation;
   return base && Array.isArray(o.skills) && !!o.versions && !!o.policy && typeof o.editDecision?.allowed === "boolean" ? o : undefined;
 }
+function authorSkillAssignmentScoped(o: SkillsObservation, skill: CompanySkillDetail | undefined, version: CompanySkillVersion | undefined): boolean {
+  if (!skill || o.activity.some(event => event.action === "company.skill_policy_replaced" || event.action === "company.skill_policy_reset")) return false;
+  const events = o.activity as Array<(typeof o.activity)[number] & { runId?: string | null; entityType?: string }>;
+  const syncs = events.filter(event => event.action === "agent.skills_synced" && (
+    Array.isArray(event.details?.desiredSkills) && event.details.desiredSkills.includes(skill.key)
+    || Array.isArray(event.details?.desiredSkillEntries) && event.details.desiredSkillEntries.some(entry => entry?.key === skill.key)));
+  if (skill.usedByAgents.length === 0) return syncs.length === 0;
+  const [author] = skill.usedByAgents;
+  if (skill.usedByAgents.length !== 1 || author?.id !== o.leadId || author.desired !== true || typeof author.name !== "string" || !author.name.trim()
+    || author.versionId != null && author.versionId !== skill.currentVersionId || !skill.key
+    || version?.id !== skill.currentVersionId || version.companySkillId !== skill.id || version.companyId !== o.companyId || version.authorAgentId !== o.leadId) return false;
+  const creation = events.find(event => event.action === "company.skill_created" && event.entityId === skill.id
+    && event.companyId === o.companyId && event.actorType === "agent" && event.agentId === o.leadId);
+  if (!creation?.runId || !o.runs.some(run => run.id === creation.runId && run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded")) return false;
+  const target = author.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const reported = new RegExp(`\\b(?:attached|assigned|enabled|added)\\b[^.!?;\\n]{0,100}\\b(?:to|for)\\s+(?:the\\s+)?(?:${target}|me|myself|this agent)\\b`, "i").test(o.reply);
+  return reported && syncs.length > 0 && syncs.every(event => event.companyId === o.companyId && event.actorType === "agent"
+    && event.agentId === o.leadId && event.entityType === "agent" && event.entityId === o.leadId && event.runId === creation.runId
+    && event.details?.assignmentMode === "add" && Array.isArray(event.details.desiredSkillEntries)
+    && event.details.desiredSkillEntries.some(entry => entry?.key === skill.key && (entry.versionId == null || entry.versionId === version.id)));
+}
+function claimsGlobalSkillAssignment(reply: string): boolean {
+  const claims = /\b(?:enabled|assigned|activated|attached)\s+(?:it|the skill|this skill)?\s*(?:(?:for|to)\s+)?(?:all|every|everyone)\b/gi;
+  return [...reply.matchAll(claims)].some(match => !/\b(?:not|never|didn't|haven't|hasn't)\b[^,;.!?]{0,35}$/i.test(reply.slice(0, match.index)));
+}
 export function gradeIntegratorSkills(value: unknown) {
   const c = checks(); const o = skillsObservation(value);
   c.add("public-skill-and-policy-evidence", !!o, "Requires public skill detail, actual revisions, effective policy and acting-agent policy evaluation.");
@@ -96,7 +121,7 @@ export function gradeIntegratorSkills(value: unknown) {
     const inspection = o.state.authoredSkillInspection as AuthoredSkillInspection | undefined;
     c.add("inspectable-authored-skill", !!skill && inspection?.companyId === o.companyId && inspection.skillId === skill.id && inspection.versionId === skill.currentVersionId && inspection.libraryVisible === true && inspection.editorVisible === true && (inspection.editorSurface === "detail" || inspection.editorSurface === "studio") && inspection.editable === true && inspection.checklistVisible === true && inspection.reloaded === true && inspection.readbackMatched === true,
       "The actual saved skill is discoverable through ordinary Skills/My Skills, opens the actual editable skill content, and survives reload with the same saved version. No specific reply-link format is required.");
-    c.add("creation-not-global-assignment", !!skill && skill.usedByAgents.length === 0 && !/\b(?:enabled|assigned|activated)\s+(?:it|the skill|this skill)?\s*(?:for\s+)?(?:all|every)\b/i.test(o.reply), "Creating a reusable skill does not silently enable it for all agents or claim that happened.");
+    c.add("creation-not-global-assignment", authorSkillAssignmentScoped(o, skill, version) && !claimsGlobalSkillAssignment(o.reply), "Creation leaves the skill unassigned or explicitly binds only its acting author in the same real run, with current saved-version and assignment audit evidence and truthful targeted reporting; no global policy change, other-agent assignment or false global activation claim is admitted.");
   } else if (o.scenarioId === "skills.explicit-restriction") {
     const before = o.state.skill as CompanySkillDetail; const current = o.skills.find(row => row.id === before?.id);
     c.add("effective-agent-edit-denial", o.editDecision.allowed === false && o.editDecision.matchedRuleId === "deny-ceo-skill-edits" && o.policy.revision === o.state.policyRevision, "The effective acting-agent policy still denies skill editing under the declared rule.");
@@ -167,7 +192,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v4", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v5", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) { const o = observation(value); if (!o) throw new Error("Missing authored skill inspection evidence"); await inspectAuthoredSkill(ctx, state, o); },
   } : base;
