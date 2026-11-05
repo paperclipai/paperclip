@@ -240,9 +240,15 @@ export function createProviderTraceObjectStore(
       capture.finishIdle();
     }
   }
-  async function* readChunks(ref: string, signal?: AbortSignal) {
+  // Background reads (capture finalization, migration digests) always queue;
+  // only client reads that can be retried pass "interactive" and may be shed.
+  async function* readChunks(
+    ref: string,
+    signal?: AbortSignal,
+    priority: ObjectJournalIOPriority = "background",
+  ) {
     let nativeTail: number | undefined;
-    for (const [index, { journal }] of channelsFor(ref, "", "interactive").entries()) {
+    for (const [index, { journal }] of channelsFor(ref, "", priority).entries()) {
       const snapshot = await journal.head(signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("provider_trace_payload_unavailable");
       if (snapshot.head.end > MAX_CAPTURE_BYTES)
@@ -256,9 +262,13 @@ export function createProviderTraceObjectStore(
       }
     }
   }
-  async function read(ref: string, signal?: AbortSignal) {
+  async function read(
+    ref: string,
+    signal?: AbortSignal,
+    priority: ObjectJournalIOPriority = "background",
+  ) {
     const chunks: Buffer[] = [];
-    for await (const bytes of readChunks(ref, signal)) chunks.push(bytes);
+    for await (const bytes of readChunks(ref, signal, priority)) chunks.push(bytes);
     return Buffer.concat(chunks);
   }
   async function stop(ref: string) {
