@@ -3312,6 +3312,8 @@ describe("automatic retained workspace recovery", () => {
     try { await recoverRetainedWorkspace(f.input); } finally { restore.mockRestore(); }
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted",
       failure: { code: "snapshot_verification_failed", retryClass: "service_required" }, preservationOperationIds: [] });
+    // A classified failure names its own subsystem; it never gets a provider cause.
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.failure).not.toHaveProperty("cause");
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
@@ -4299,6 +4301,7 @@ describe("automatic retained workspace recovery", () => {
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted", attempts,
       failure: failure === "disk_full" ? { code: "source_unavailable", retryClass: "use_alternative_strategy" }
         : { code: "provider_unavailable", retryClass: "retry_transient", cause: { label: "provider_error", code: null, status: null } } });
+    if (failure === "disk_full") expect(readSystemRecovery((await action(f.actionId)).evidence)?.failure).not.toHaveProperty("cause");
     expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(attempts);
     expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
   }, 60_000);
