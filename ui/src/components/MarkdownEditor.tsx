@@ -4,6 +4,7 @@ import {
   Component,
   type ClipboardEvent,
   type ErrorInfo,
+  type KeyboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -98,8 +99,10 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Capability-aware action commands supplied by the owning composer. */
   actionCommands?: SlashCommandOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on the configured submit shortcut. */
   onSubmit?: () => void;
+  /** Task composers use Enter; document editors retain Cmd/Ctrl+Enter by default. */
+  submitKey?: "enter" | "mod-enter";
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -743,9 +746,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
+  function isSubmitShortcut(event: KeyboardEvent<HTMLElement>): boolean {
+    return !readOnly
+      && event.key === "Enter"
+      && !event.nativeEvent.isComposing
+      && event.keyCode !== 229
+      && !event.shiftKey
+      && !event.altKey
+      && (submitKey === "enter" || event.metaKey || event.ctrlKey);
+  }
   const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
   const slashCommands = useMemo(
     () => [...actionCommands, ...sharedSlashCommands],
@@ -1368,8 +1381,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && isSubmitShortcut(event)) {
               event.preventDefault();
+              event.stopPropagation();
               onSubmit();
             }
           }}
@@ -1404,7 +1418,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onKeyDownCapture={(e) => {
-        if (readOnly) return;
+        if (readOnly || e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter" && (e.shiftKey || e.altKey)) return;
         if (
           (e.key === "Backspace" || e.key === "Delete")
           && e.target instanceof HTMLElement
@@ -1413,8 +1428,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           // Lexical handles deletion on keydown and may suppress DOM input.
           initialChildOnChangeRef.current = false;
         }
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // An explicit Cmd/Ctrl+Enter sends even while autocomplete is open.
+        if (onSubmit && isSubmitShortcut(e) && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1467,6 +1482,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Plain Enter first accepts an active autocomplete selection.
+        if (
+          onSubmit && isSubmitShortcut(e)
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
         }
       }}
       onDragEnter={(evt) => {

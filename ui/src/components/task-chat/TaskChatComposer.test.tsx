@@ -1095,17 +1095,73 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined, undefined, expect.any(String));
   });
 
-  it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {
+  it.each(["standard", "ask", "planning"] as const)("submits %s messages on Enter by default", async (workMode) => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode={workMode} />);
+    typeText("hello");
+    expect(sendButton().title).toBe("Send (Enter)");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined, undefined, expect.any(String));
+  });
+
+  it("does not submit on Shift+Enter (newline stays with the editor)", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
     typeText("line one");
-    pressKey("Enter");
     pressKey("Enter", { shiftKey: true });
     await flushAsync();
 
     expect(onAdd).not.toHaveBeenCalled();
     expect(editable().textContent).toBe("line one");
+  });
+
+  it.each([false, true])("uses the experimental shortcut preference for new tasks (legacy=%s)", async (legacy) => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: legacy });
+    const creation = {
+      value: "Create this task", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+      submitLabel: "Create task", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn(),
+    };
+    render(<QueryClientProvider client={client}><TaskChatComposer creation={creation} workMode="standard" /></QueryClientProvider>);
+    expect(sendButton().title).toBe(`Create task (${legacy ? "⌘/Ctrl+Enter" : "Enter"})`);
+    pressKey("Enter", { shiftKey: true });
+    expect(creation.onSubmit).not.toHaveBeenCalled();
+    pressKey("Enter");
+    await flushAsync();
+    if (legacy) {
+      expect(creation.onSubmit).not.toHaveBeenCalled();
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+    }
+    expect(creation.onSubmit).toHaveBeenCalledExactlyOnceWith(creation.value, "standard", null);
+  });
+
+  it("restores the old shortcut for task replies and updates the preference without remounting", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: true });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" /></QueryClientProvider>);
+    typeText("first message");
+    expect(sendButton().title).toBe("Send (⌘/Ctrl+Enter)");
+    pressKey("Enter");
+    pressKey("Enter", { shiftKey: true });
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    pressKey("Enter", { ctrlKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: false });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    typeText("second message");
+    expect(sendButton().title).toBe("Send (Enter)");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(2);
   });
 
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
