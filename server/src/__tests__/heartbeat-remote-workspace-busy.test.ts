@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+  environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -211,6 +211,49 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
     expect((await heartbeat.promoteDueScheduledRetries(new Date(cutoff + 2_000))).runIds).toContain(retry.id);
     await heartbeat.cancelRun(retry.id);
     await heartbeat.drainActiveRunExecutions();
+  });
+
+  // A writer stopped by reassignment whose retained files Paperclip is still
+  // saving (an in-progress workspace recovery) is still settling, even after the
+  // one-hour cutoff from its end. A waiter already parked for it stays parked
+  // instead of being released into a setup failure; the save's own retry budget
+  // bounds the wait. A finished or board-handed-off save no longer extends it.
+  it.each([
+    { state: undefined, waits: true },
+    { state: "scheduled", waits: true },
+    { state: "awaiting_evidence", waits: true },
+    { state: "exhausted", waits: false },
+    { state: "complete", waits: false },
+  ] as const)("keeps a waiter parked while an ended writer's save is in progress ($state)", async ({ state, waits }) => {
+    const f = await terminalWriterFixture(new Date());
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+    // The writer ended over an hour ago; its save recovery recorded progress a minute ago.
+    const endedAt = new Date(Date.now() - 2 * 60 * 60_000);
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned", finishedAt: endedAt,
+      startedAt: new Date(endedAt.getTime() - 60_000), lastOutputAt: endedAt }).where(eq(heartbeatRuns.id, f.writer.id));
+    await db.insert(issueRecoveryActions).values({ companyId: f.run.companyId, sourceIssueId: f.workspace.sourceIssueId!,
+      kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board",
+      cause: "native_continuation_requires_reconciliation", fingerprint: `native-workspace:${f.writer.id}`,
+      resolvedAt: new Date(), updatedAt: new Date(Date.now() - 60_000), nextAction: "Save the retained files.",
+      evidence: { runId: f.writer.id, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [randomUUID()] },
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: f.writer.id, replay: "blocked" },
+        ...(state ? { systemRecovery: { state } } : {}) } });
+    const checkAt = new Date(retry.scheduledRetryAt!.getTime() + 1_000);
+    const promoted = (await heartbeat.promoteDueScheduledRetries(checkAt)).runIds;
+    if (waits) {
+      expect(promoted).not.toContain(retry.id);
+      const parked = await heartbeat.getRun(retry.id);
+      expect(parked?.status).toBe("scheduled_retry");
+      // Bounded by the cutoff measured from the save's last progress.
+      expect(new Date(parked!.scheduledRetryAt!).getTime()).toBeLessThanOrEqual(Date.now() + 60 * 60_000);
+    } else expect(promoted).toContain(retry.id);
+    await heartbeat.cancelRun(retry.id);
+    await heartbeat.drainActiveRunExecutions();
+    // Waiting never takes over or discards the unsaved writer's files.
+    expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, f.workspace.id)))[0].metadata)).toEqual(f.authority);
   });
 
   it("stops waiting for an ended writer whose save stayed unsettled past the holder cutoff", async () => {

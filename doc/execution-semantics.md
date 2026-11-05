@@ -502,6 +502,19 @@ This wait is also one parked retry, for example after a reassignment stops the
 writer. It is re-checked every minute while the ended writer's hold settles, is
 admitted once the hold releases, and stops parking at the same cutoff.
 
+A writer stopped mid-run, for example by reassignment, keeps its unsaved files
+in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
+leaves that lease `released` under its reusable policy with a stop-and-retain
+receipt. Cancelled-workspace preservation admits that stopped source, as it does
+an active or ephemeral one. It records the save obligation for the exact writer
+run while the workspace is still bound to that writer. Paperclip's workspace
+recovery then saves those files, which releases the hold. It never replays the
+stopped run. While that save is in progress, its last progress counts as the
+ended writer's activity for the holder cutoff. A waiter keeps waiting instead of
+failing setup. The save's retry budget bounds that wait. A save that exhausts
+its retries is handed to the board as a named recovery action. After that hand-off,
+the cutoff no longer advances.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's
