@@ -23,6 +23,14 @@ encrypted task-directory restoration, Git restoration recipes, and legacy
 branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
+
+An archived isolated checkout can be gone while its recorded deleted commit
+survives in the company/project Git cache. After validating the exact successful
+branch-deletion receipt, the importer can read immutable objects from that
+namespace- and origin-checked cache. It reconstructs only the recorded commit,
+never today's working tree. Ordinary private-checkout and restore-point
+validation stays strict. Missing/revoked receipts, foreign caches and changed
+origins still block publication.
 The next slice adds leaf-first offline migration of overlapping folders, verified
 nested snapshot dependencies, interruption recovery, and dependency retention.
 Recovery-obligation reconciliation remains a separate gap; these slices do not
