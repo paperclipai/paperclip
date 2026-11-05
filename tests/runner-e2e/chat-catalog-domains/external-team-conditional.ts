@@ -260,6 +260,7 @@ export function truthfulTeamPartial(
   skill: Pick<CatalogSkill, "slug" | "name">,
   allowContextualCaveat = false,
 ) {
+  reply = reply.replaceAll("’", "'");
   const named = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].some(
     (name) => reply.toLowerCase().includes(name.toLowerCase()),
   );
