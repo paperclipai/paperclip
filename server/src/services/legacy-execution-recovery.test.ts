@@ -20,7 +20,7 @@ it.each(["failed", "cancelled"])("holds an unverified provider stop after %s eve
   expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: { conversationContinuation: "continue_conversation_v1" } })).toBe(true);
 });
 
-it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
+it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
   const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,
     resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
   expect(legacyExecutionNeedsReconciliation(run)).toBe(false);

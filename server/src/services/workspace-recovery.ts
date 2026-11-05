@@ -28,7 +28,7 @@ import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/nativ
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
 
-import { adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
+import { handOffExhaustedSystemRecovery, adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { SYSTEM_RECOVERY_MAX_RETRIES, createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure, type SystemRecoveryState } from "./system-recovery-state.js";
 import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible, workspaceSourceBindingFailure } from "./workspace-recovery-source.js";
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
@@ -160,14 +160,24 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   const initial = await loadSystemRecovery(db, input);
-  if (!initial || initial.state === "complete" || (initial.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) ||
+  if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
+    await handOffExhaustedSystemRecovery(db, input, initial);
+    return;
+  }
+  if (!initial || initial.state === "complete" ||
       (initial.nextAttemptAt !== null && initial.nextAttemptAt > Date.now())) return;
   const runAttempt = async (ownership: { token: string; assertHeld(): Promise<void> }) => {
     let current = await loadSystemRecovery(db, input);
     if (!current) return;
     if (current.state === "exhausted") {
+      const spent = current;
       current = await retainNativeRecoverySource(db, input, current, ownership);
-      if (!current) return;
+      if (!current) {
+        // Not adoptable now. The board owns the spent budget until Retry or a
+        // later adoption returns it to the system.
+        await handOffExhaustedSystemRecovery(db, input, (await loadSystemRecovery(db, input)) ?? spent);
+        return;
+      }
     }
     const reserved = reserveSystemRecoveryAttempt(current);
     if (!reserved) {

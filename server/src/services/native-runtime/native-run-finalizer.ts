@@ -96,6 +96,7 @@ import {
   selectHeartbeatRunFinalAgentMessage,
 } from "../heartbeat-run-summary.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
+import { settledResponsePublicationSql } from "./native-response-publication-receipt.js";
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import {
   authorizeCommittedChatResponse,
@@ -1036,6 +1037,17 @@ async function recoverCommittedNativeChatResponseInScope(
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });
+        if (resolved.decision.commentAction === "reuse" && typeof resolved.decision.commentId === "string") {
+          // The reply is already on the task (for example, the live path wrote
+          // it but did not record its decision). Record it; never post again.
+          await tx.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+              presentationDecision: { ...resolved.decision,
+                reasonCodes: [...resolved.decision.reasonCodes, "committed_task_response_reused"] },
+            })}::jsonb || ${settledResponsePublicationSql()}`, updatedAt: new Date(),
+          }).where(eq(heartbeatRuns.id, run.id));
+          return false;
+        }
         if (!resolved.text || resolved.decision.commentAction !== "create") return false;
         await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
@@ -1045,7 +1057,7 @@ async function recoverCommittedNativeChatResponseInScope(
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
             presentationDecision: { ...resolved.decision, commentId: comment.id,
               reasonCodes: [...resolved.decision.reasonCodes, "committed_task_response_recovered"] },
-          })}::jsonb`, updatedAt: new Date(),
+          })}::jsonb || ${settledResponsePublicationSql()}`, updatedAt: new Date(),
         }).where(eq(heartbeatRuns.id, run.id));
         agentId = run.agentId;
         conversationReply = conversation;
