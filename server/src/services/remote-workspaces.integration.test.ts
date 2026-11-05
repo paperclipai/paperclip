@@ -470,6 +470,84 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
   }, 60_000);
 
+  it.each(["own retired root", "own restored root", "receipt missing", "forged receipt", "later allocation", "never saved here"] as const)(
+    "restores a newer save over this workspace's own retired root on a reused sandbox (%s)", async mode => {
+    // A parent prepares on its retained sandbox, then children inherit the
+    // workspace on other sandboxes and save newer work. When the parent wakes on
+    // the same sandbox, its old root is still present.
+    const reserved = await reserve({ kind: "empty" }), parentSandbox = await target("sandbox-A");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: parentSandbox });
+    await fs.writeFile(path.join(prepared.remoteRoot, "plan.md"), "parent plan\n");
+    await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: parentSandbox, assertOwned: async () => undefined });
+    const writer = async (providerLeaseId: string) => {
+      const runId = randomUUID(), leaseId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+      await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company, environmentId: ids.environment,
+        heartbeatRunId: runId, issueId: ids.issue, provider: "daytona", providerLeaseId, status: "active" });
+      const workspace = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId,
+        agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+      const leased = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]! as EnvironmentLease;
+      return { runId, workspace, lease: leased };
+    };
+    const child = await writer("allocation-child"), childSandbox = await target("sandbox-B");
+    const childPrepared = await prepareRemoteWorkspace({ db, storage, workspace: child.workspace, runId: child.runId, lease: child.lease, target: childSandbox });
+    await fs.writeFile(path.join(childPrepared.remoteRoot, "child-result.md"), "child result\n");
+    const childSaved = await saveRemoteWorkspace({ db, storage, workspace: childPrepared.workspace, runId: child.runId,
+      lease: childPrepared.lease, target: childSandbox, assertOwned: async () => undefined });
+    if (mode === "receipt missing") {
+      // An occupant without a Paperclip preparation or restore receipt is unknown.
+      await fs.rm(path.join(prepared.remoteRoot, ".paperclip-runtime"), { recursive: true, force: true });
+    }
+    if (mode === "own restored root" || mode === "forged receipt") {
+      // The retired root was itself restored by an earlier preparation of this workspace.
+      const runtime = path.join(prepared.remoteRoot, ".paperclip-runtime");
+      await fs.rm(path.join(runtime, "workspace-ready.json"));
+      await fs.writeFile(path.join(runtime, "workspace-restored.json"), JSON.stringify(mode === "forged receipt"
+        ? { identity: "not-an-identity" } : { identity: "a".repeat(64), manifestDigest: "b".repeat(64) }));
+    }
+    if (mode === "later allocation") {
+      // A later writer used this root on the parent's sandbox after its last final save.
+      await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id, heartbeatRunId: child.runId,
+        issueId: ids.issue, phase: "remote_workspace_restore", status: "succeeded",
+        metadata: { epoch: 2, exportCleanup: { ...readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location, state: "cleaned" } } });
+    }
+    // Preparation narrows a target to its root; a later turn reattaches to the sandbox.
+    const reattach = () => ({ ...parentSandbox, remoteCwd: path.join(root, "sandbox-A") });
+    let parentTarget = reattach();
+    if (mode === "never saved here") {
+      // A different sandbox that holds an unknown folder at this path.
+      parentTarget = await target("sandbox-C");
+      await fs.cp(prepared.remoteRoot, path.join(parentTarget.remoteCwd, ".paperclip-workspaces", path.basename(prepared.remoteRoot)), { recursive: true });
+    }
+    const parent = await writer(mode === "never saved here" ? "allocation-unrelated" : prepared.lease.providerLeaseId!);
+    const restoring = prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: parentTarget });
+    if (mode !== "own retired root" && mode !== "own restored root") {
+      const refused = await restoring.then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(refused).toBeInstanceOf(RemoteWorkspaceRestoreError);
+      expect(refused).toMatchObject({ step: "sandbox_restore", retryable: false });
+      expect(refused!.message).toMatch(/stage=inspect_root reason=occupied_root$/);
+      expect(await fs.readFile(path.join(prepared.remoteRoot, "plan.md"), "utf8")).toBe("parent plan\n");
+      expect(await fs.lstat(path.join(prepared.remoteRoot, "child-result.md")).catch(() => null)).toBeNull();
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toEqual(readRemoteWorkspaceAuthority(parent.workspace.metadata));
+      return;
+    }
+    const restored = await restoring;
+    expect(restored.remoteRoot).toBe(prepared.remoteRoot);
+    expect(await fs.readFile(path.join(restored.remoteRoot, "plan.md"), "utf8")).toBe("parent plan\n");
+    expect(await fs.readFile(path.join(restored.remoteRoot, "child-result.md"), "utf8")).toBe("child result\n");
+    // The replaced root and the restore staging are gone; only saved files were replaced.
+    expect((await fs.readdir(path.dirname(restored.remoteRoot))).filter(name => name.startsWith(path.basename(restored.remoteRoot))))
+      .toEqual([path.basename(restored.remoteRoot)]);
+    expect(readRemoteWorkspaceAuthority(restored.workspace.metadata)).toMatchObject({ snapshotId: childSaved.snapshotId, dirty: true,
+      writerRunId: parent.runId, location: { providerLeaseId: prepared.lease.providerLeaseId, remoteCwd: prepared.remoteRoot } });
+    // A lost reply repeats the same preparation without replacing the restored root again.
+    await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
+    const repeated = await prepareRemoteWorkspace({ db, storage, workspace: parent.workspace, runId: parent.runId, lease: parent.lease, target: reattach() });
+    expect(repeated.remoteRoot).toBe(prepared.remoteRoot);
+    expect(await fs.readFile(path.join(restored.remoteRoot, "parent-continued.md"), "utf8")).toBe("unsaved parent edits\n");
+  }, 60_000);
+
   it.each(["per_turn", "warm", "occupied", "foreign-target", "foreign-allocation", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {
     const original = path.join(root, "old-controller", "workspace"); await fs.mkdir(original, { recursive: true });
     await fs.writeFile(path.join(original, "saved.txt"), "retained work");
