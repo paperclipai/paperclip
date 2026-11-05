@@ -889,6 +889,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    let mut goal_update_on_next_thread_read: Option<String> = None;
     let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
     let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
     let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
@@ -1457,6 +1458,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("thread/read must not hydrate turns".into());
                 }
+                if let Some(status) = goal_update_on_next_thread_read.take() {
+                    state.goal = Some(json!({"objective":"Final read goal", "status":status}));
+                    save_state(&state_path, &state)?;
+                    log_call(call_log.as_deref(), "late-goal-on-thread-read")?;
+                    send(
+                        json!({"method":"thread/goal/updated", "params":{"threadId":state.thread_id,"goal":state.goal}}),
+                    )?;
+                }
                 let turns = state
                     .active_turn_id
                     .as_ref()
@@ -1478,6 +1487,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }))?,
             "thread/goal/get" => {
                 send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                goal_update_on_next_thread_read = argument(&args, "--goal-on-thread-read-file")
+                    .and_then(|path| fs::read_to_string(path).ok());
                 if args
                     .iter()
                     .any(|value| value == "--idle-protocol-failure-on-goal-probe")

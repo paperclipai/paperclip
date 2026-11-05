@@ -359,6 +359,24 @@ pub struct DurableState {
 }
 
 impl DurableState {
+    pub(crate) fn recovery_pending_effects(&self) -> usize {
+        self.processed_commands
+            .values()
+            .filter(|command| {
+                matches!(command.status.as_str(), "pending" | "indeterminate")
+                    && !matches!(
+                        command.command_type.as_str(),
+                        "session.snapshot"
+                            | "session.goal.get"
+                            | "runner.drain"
+                            | "runner.suspend"
+                            | "runner.shutdown"
+                            | "turn.stop"
+                    )
+            })
+            .count()
+    }
+
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
             identity_output: IdentityOutputBuffer::default(),
@@ -1541,7 +1559,7 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
     if normalized == "tokenbudgetcontrol" {
         return !value.is_boolean();
     }
-    if normalized == "tokenbudget" {
+    if matches!(normalized.as_str(), "tokenbudget" | "tokensused") {
         return !value.is_number() && !value.is_null();
     }
     if matches!(
@@ -1558,7 +1576,6 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "totaltokens"
             | "pretokens"
             | "posttokens"
-            | "tokensused"
     ) {
         return !value.is_number();
     }
@@ -3690,6 +3707,13 @@ mod tests {
         assert_eq!(sanitized["tokenBudget"], json!(4096));
         assert_eq!(sanitized["tokensUsed"], json!(128));
         assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
+        let unknown = sanitize_value(&json!({"tokenBudget":null, "tokensUsed":null}));
+        assert!(unknown["tokenBudget"].is_null());
+        assert!(unknown["tokensUsed"].is_null());
+        assert_eq!(
+            sanitize_value(&json!({"tokensUsed":"synthetic credential"}))["tokensUsed"],
+            json!("[REDACTED]")
+        );
     }
 
     #[test]
