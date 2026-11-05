@@ -1641,10 +1641,9 @@ fn codex_workspace_relative_path(item: &Value, path: &str) -> Option<String> {
 
 /// Non-flag operands after the program name, ignoring `sed` line ranges.
 fn codex_command_operands(command: &str) -> usize {
-    command
-        .split_whitespace()
+    shell_words(command)
+        .into_iter()
         .skip(1)
-        .map(|token| token.trim_matches(|character| character == '\'' || character == '"'))
         .filter(|token| {
             !token.is_empty()
                 && !token.starts_with('-')
@@ -1653,6 +1652,46 @@ fn codex_command_operands(command: &str) -> usize {
                 })
         })
         .count()
+}
+
+/// Split a command into words the way a POSIX shell groups them: single and
+/// double quotes and backslash escapes keep spaces inside one word.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut characters = command.chars();
+    while let Some(character) = characters.next() {
+        match (quote, character) {
+            (Some(open), close) if close == open => quote = None,
+            (Some('"'), '\\') | (None, '\\') => {
+                if let Some(escaped) = characters.next() {
+                    current.push(escaped);
+                }
+                in_word = true;
+            }
+            (Some(_), other) => current.push(other),
+            (None, '\'' | '"') => {
+                quote = Some(character);
+                in_word = true;
+            }
+            (None, other) if other.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            (None, other) => {
+                current.push(other);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
 }
 
 /// The command a person typed, without the `/bin/zsh -lc '…'` wrapper. Codex
@@ -2154,6 +2193,20 @@ mod tests {
         );
         assert_eq!(several[0].payload["operation"], "read");
         assert_eq!(several[0].payload["target"], Value::Null);
+
+        let quoted = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-quoted", "type": "commandExecution", "status": "completed",
+                "command": "cat \"docs/setup guide.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat \"docs/setup guide.md\"", "path": "docs/setup guide.md"}],
+            }}),
+        );
+        assert_eq!(quoted[0].payload["target"], "docs/setup guide.md");
+        assert_eq!(
+            shell_words(r#"sed -n '1,20p' a\ b.md "c d.md""#),
+            ["sed", "-n", "1,20p", "a b.md", "c d.md"]
+        );
 
         let search = normalize_codex_notification(
             "item/completed",
