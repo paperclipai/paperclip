@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -163,6 +163,16 @@ test("dependency installation, ignored dotenv and child environment enter the ca
   assert.notEqual(snapshot(f.root, f.env).hash, before);
   assert.notEqual(snapshot(f.root, { ...f.env, NEW_TEST_FLAG: "1" }).hash, before);
   assert.equal(snapshot(f.root, { ...f.env, PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgres://external.invalid/test" }).cacheable, false);
+});
+
+test("fingerprints preserve file boundaries when content resembles another input record", t => {
+  const f = fixture(t), a = "ui/src/hash-a.ts", b = "ui/src/hash-b.ts";
+  f.write(a, ""); f.write(b, "tail");
+  const boundary = JSON.stringify(b) + String(lstatSync(path.join(f.root, b)).mode);
+  f.write(a, `${boundary}payload`);
+  const first = snapshot(f.root, f.env).hash;
+  f.write(a, ""); f.write(b, `payload${boundary}tail`);
+  assert.notEqual(snapshot(f.root, f.env).hash, first);
 });
 
 test("documentation-only changes and empty diffs do not start a full suite", async t => {

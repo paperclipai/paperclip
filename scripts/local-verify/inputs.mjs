@@ -47,24 +47,24 @@ export function snapshot(root, env = localEnvironment()) {
   root = realpathSync(root);
   const files = sourceFiles(root);
   const hash = createHash("sha256");
+  const append = record => hash.update(`${JSON.stringify(record)}\n`);
+  const digest = file => createHash("sha256").update(readFileSync(file)).digest("hex");
   let cacheable = true;
   const addFile = file => {
     const absolute = path.join(root, file);
-    hash.update(JSON.stringify(file));
     try {
       const stat = lstatSync(absolute);
-      hash.update(String(stat.mode));
       if (stat.isSymbolicLink()) {
-        hash.update(readlinkSync(absolute));
         const target = realpathSync(absolute);
         if (!target.startsWith(`${root}${path.sep}`)) cacheable = false;
-        if (lstatSync(target).isFile()) hash.update(readFileSync(target));
-        else cacheable = false;
-      } else if (stat.isFile()) hash.update(readFileSync(absolute));
-      else cacheable = false;
+        const regular = lstatSync(target).isFile();
+        if (!regular) cacheable = false;
+        append(["link", file, stat.mode, readlinkSync(absolute), target, regular ? digest(target) : null]);
+      } else if (stat.isFile()) append(["file", file, stat.mode, digest(absolute)]);
+      else { cacheable = false; append(["special", file, stat.mode]); }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      hash.update("<missing>");
+      append(["missing", file]);
     }
   };
   productInputs(files).forEach(addFile);
@@ -79,12 +79,15 @@ export function snapshot(root, env = localEnvironment()) {
       for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
         if (entry.name.startsWith(".") && entry.name !== ".bin") continue;
         const name = path.join(relative, entry.name), absolute = path.join(root, name);
-        hash.update(JSON.stringify(name));
+        append(["binding", name, entry.isSymbolicLink() ? "link" : entry.isFile() ? "file" : "directory"]);
         if (entry.name.startsWith("@") || entry.name === ".bin") bindings(name);
-        else if (entry.isSymbolicLink()) hash.update(readlinkSync(absolute));
-        else if (entry.isFile()) hash.update(readFileSync(absolute));
-        try { hash.update(readFileSync(path.join(absolute, "package.json"))); }
-        catch (error) { if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error; }
+        else if (entry.isSymbolicLink()) append(["target", name, readlinkSync(absolute)]);
+        else if (entry.isFile()) append(["contents", name, digest(absolute)]);
+        try { append(["package", name, digest(path.join(absolute, "package.json"))]); }
+        catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error;
+          append(["package-missing", name]);
+        }
       }
     };
     bindings(installed);
@@ -101,7 +104,7 @@ export function snapshot(root, env = localEnvironment()) {
     pnpm: version(root, env, "pnpm", ["--version"]),
     rust: version(root, env, "rustc", ["--version", "--verbose"]),
     cargo: version(root, env, "cargo", ["--version"]) };
-  hash.update(JSON.stringify(context));
+  append(["context", context]);
   return { hash: hash.digest("hex"), cacheable };
 }
 
