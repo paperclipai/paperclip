@@ -31,6 +31,7 @@ import { workspaceOperationService } from "./workspace-operations.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectTaskInterruption, taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
+import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
 import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
@@ -227,6 +228,40 @@ describe("automatic retained workspace recovery", () => {
   }
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+
+  it("recovers files after Stop finds no live controller without replaying the cancelled chat", async () => {
+    const f = await seed("native", true, "destroy", false, true), original = await run(f.runId);
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(issues).set({ conversationAgentId: original.agentId, conversationUserId: "operator",
+      conversationState: "active", status: "in_review" }).where(eq(issues.id, f.issueId));
+    const nativeCancellation = { schema: "paperclip.native-cancellation.v1", runId: f.runId, companyId: f.companyId,
+      issueId: f.issueId, scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: false,
+      intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID() };
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled", resultJson: {
+      nativeCancellation, cancelledByActorType: "user", cancelledByUserId: "operator",
+      executionCancellation: { state: "requested", requestedAt: new Date().toISOString() },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null,
+      metadata: f.lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [preservation] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect(preservation).toBeDefined();
+      await recoverRetainedWorkspace({ ...f.input, actionId: preservation.id });
+      expect(readSystemRecovery((await action(preservation.id)).evidence)?.state).toBe("complete");
+      expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+      expect(await run(f.runId)).toMatchObject({ status: "cancelled", resultJson: { nativeCancellation },
+        runnerProfileJson: { nativeWorkspaceSync: { state: "finalized" } } });
+      expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalled();
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].metadata)
+        .toHaveProperty("remoteExecutionTermination");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_review");
+    } finally { await worker.stop(); }
+  }, 30_000);
 
   async function failedWarmSource(exportOnly = false, hops = 0) {
     const f = hops ? await warmHandoffSource(hops) : await seed("native", true, "keep_running");

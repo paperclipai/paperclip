@@ -57,6 +57,7 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
@@ -1538,6 +1539,11 @@ export async function finalizeNativeRun(input: {
     })) {
       proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
         reasonCode: "onboarding_first_task_decision_required", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    }
+    // A reassigned-away run keeps its accepted result, but cannot close the
+    // new owner's task. The status committer rechecks this under the issue lock.
+    if (!isConversation(authoritativeIssue)) {
+      proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId);
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);

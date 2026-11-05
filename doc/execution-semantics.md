@@ -1011,6 +1011,17 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+A preserved reusable sandbox that the provider refuses to resume before provider
+dispatch uses the same bounded bootstrap budget (`reusable_sandbox_resume_failed`).
+A common cause is a follow-up that arrives while the provider is auto-stopping an
+idle sandbox. The retry inherits the source wake, so a reply is delivered once,
+and it resumes the same recorded lease. A refusal is not proof that the sandbox is
+lost, so the retry never destroys it or creates a replacement. Only an explicit
+provider not-found or a workspace identity mismatch with a verified backup permits
+replacement. The run records the refusal by closed labels only (cause label, HTTP
+status, errno-style code), never by provider text. On exhaustion, the task gets a
+specific recovery notice, and generic recovery does not grant another budget.
+
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
 Earlier unpublished directories and their receipts stay intact. Repeating the
@@ -2062,7 +2073,7 @@ results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
 
-Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. Historical ambiguous runs are never automatically replayed after an upgrade.
+Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
 When that deadline fails a native run with a prepared workspace, the same
 transaction records the exact source's file-preservation obligation. Existing
@@ -2281,6 +2292,11 @@ not grant board Stop or continuation authority, change the cancelled result,
 or prove physical termination. Normal recovery stops and retains the same
 allocation, saves its files, and obtains a fresh stop receipt before cleanup
 can apply the original destroy disposition. It starts no provider turn.
+An audited acknowledgement with `dispatched: false` also admits this preservation
+when Stop found no live controller. The worker retains the exact prepared source
+and obtains independent provider-stop evidence through normal recovery. It does
+not convert the no-op acknowledgement into a dispatched interrupt receipt or
+permission to continue the cancelled turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
