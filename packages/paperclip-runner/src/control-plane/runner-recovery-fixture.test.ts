@@ -99,12 +99,17 @@ it.each([false, true])("preserves useful in-process work through repeated replac
     expect(run.receipt().completedSteps).toBe(0);
     await run.stopController();
     run.release();
-    await vi.waitFor(() => expect(run.receipt()).toMatchObject({ phase: "backpressured", completedSteps: 8, retainedEvents: 8 }), { timeout: 5000 });
+    await vi.waitFor(() => expect(run.receipt()).toMatchObject({ phase: "awaiting_controller", completedSteps: 32, retainedEvents: 0, acknowledgedEvents: 32 }), { timeout: 10_000 });
     expect(run.receipt().pid).toBe(run.child.pid);
     expect(run.child.exitCode).toBeNull();
     expect(run.delivered).toHaveLength(0);
+    const offline = JSON.parse(readFileSync(resolve(run.root, "runner/runner-state.json"), "utf8"));
+    expect(offline.ackedSourceSeq).toBe(0);
+    expect(offline.outbox).toHaveLength(32);
+    expect(offline.peakOutboxBytes).toBeLessThanOrEqual(offline.maxOutboxBytes);
     await run.replaceController();
     await vi.waitFor(() => expect(run.delivered).toHaveLength(32), { timeout: 10_000 });
+    expect(run.delivered.map(event => event.sourceEventId)).toEqual(offline.outbox.map((event: any) => event.envelope.payload.sourceEventId));
     expect(run.receipt()).toMatchObject({ phase: "awaiting_controller", completedSteps: 32 });
     await run.stopController();
     expect(run.receipt().completedSteps).toBe(32);
@@ -125,7 +130,7 @@ it.each([false, true])("preserves useful in-process work through repeated replac
     await run.command("runner.shutdown", "shutdown");
     expect((await run.exit)[0]).toBe(0);
   } finally { await run.cleanup(); }
-}, 35_000);
+}, 60_000);
 
 it("stops after the original reconnect deadline while retaining recovery state", async () => {
   const run = await fixture(true, 1500, undefined, 5000);

@@ -187,6 +187,10 @@ impl CommandExecutor for ScriptedExecutor {
         Ok(self.stop_at)
     }
 
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.retained_events()
+    }
+
     fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         Ok(self
             .shared

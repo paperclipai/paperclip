@@ -662,7 +662,8 @@ impl DurableState {
             self.record_diagnostic("outbox soft limit reached; non-P0 event rejected");
             return Err(DurableRunnerError::invalid(
                 "outbox soft limit reached; reserved storage is available only to P0 events",
-            ));
+            )
+            .with_classification("outbox_backpressure"));
         }
         if projected > config.max_outbox_bytes {
             self.lifecycle = "unrecoverable".to_owned();
