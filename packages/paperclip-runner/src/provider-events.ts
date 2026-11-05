@@ -751,6 +751,43 @@ export function canonicalProviderEventsFromCodex(
       },
     }];
   }
+  if (method === "mcpServer/startupStatus/updated") {
+    // Only a failed start is user-facing: the agent then runs without that
+    // server's tools. starting/ready/cancelled stay in the raw run log.
+    if (params.status !== "failed") return [];
+    const serverName = [...text(params.name).trim()].slice(0, 160).join("") || "An";
+    const failureReason = text(params.failureReason);
+    // Codex wraps the reason in sentences that repeat what the notice already
+    // says: "MCP client for `github` failed to start: MCP startup failed: <reason>".
+    const error = redactCodexDiagnostic(text(params.error))
+      .trim()
+      .replace(/^MCP client for `[^`]*` failed to start:\s*/i, "")
+      .replace(/^MCP startup failed:\s*/i, "")
+      .trim();
+    const reason = failureReason === "reauthenticationRequired"
+      ? "needs re-authentication"
+      : error;
+    const noticeId = safeId(`mcp-startup:${serverName}`, "mcp-startup");
+    return [{
+      eventType: "provider.notice.recorded",
+      itemId: noticeId,
+      payload: {
+        schema: "paperclip.provider.notice.v1",
+        noticeId,
+        severity: "warning",
+        category: "mcp_server_startup_failed",
+        scope: "session",
+        recoverable: true,
+        userActionable: true,
+        summary: `${serverName} MCP server failed to start${reason ? `: ${reason}` : ""}`.slice(0, 4000),
+        details: [
+          { name: "server", value: serverName },
+          ...(reason ? [{ name: "reason", value: reason.slice(0, 4000) }] : []),
+          ...(failureReason ? [{ name: "failureReason", value: failureReason.slice(0, 160) }] : []),
+        ],
+      },
+    }];
+  }
   if (method === "turn/plan/updated") {
     const turnPlanId = safeId(text(params.turnId), "turn-plan");
     return [

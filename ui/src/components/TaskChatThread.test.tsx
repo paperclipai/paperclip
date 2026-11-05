@@ -248,6 +248,37 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(props.onResumeAssignee).not.toHaveBeenCalled();
   });
 
+  it.runIf(runtimeMode === "native")("keeps a failed MCP start on a historical settled run while hiding other notices", () => {
+    const prp = (seq: number, eventType: string, payload: Record<string, unknown>) => ({
+      id: seq, companyId: "company", runId: "mcp", agentId: "agent", seq, eventType, stream: "system", level: "info",
+      color: null, message: null, createdAt: new Date(`2025-01-01T10:00:0${seq}Z`),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", sourceEventId: `event-${seq}`, sourceSeq: seq,
+        sourceInstanceId: "runner", sourceKind: "runner", runId: "mcp", normalizedSessionId: "session", eventType,
+        schemaVersion: 1, priority: 1, emittedAt: `2025-01-01T10:00:0${seq}.000Z`, payload } },
+    }) as Parameters<typeof nativeRunEventsToTranscript>[0][number];
+    const notice = (seq: number, category: string, summary: string, details: unknown[] = []) => prp(seq, "provider.notice.recorded", {
+      schema: "paperclip.provider.notice.v1", noticeId: `notice-${seq}`, severity: "warning", category, scope: "session",
+      recoverable: true, userActionable: true, summary, details,
+    });
+    nativeTranscriptState.transcriptByRun.set("mcp", [
+      ...nativeRunEventsToTranscript([
+        notice(1, "mcp_server_startup_failed", "github MCP server failed to start: No such file or directory (os error 2)",
+          [{ name: "server", value: "github" }, { name: "reason", value: "No such file or directory (os error 2)" }]),
+        notice(2, "auth", "Sign in again"),
+      ]),
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:05Z", text: "Inspected the source." },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "I couldn't reach the GitHub MCP server." },
+    ]);
+    render(<TaskChatThread comments={[comment("response", "I couldn't reach the GitHub MCP server.", "mcp")]}
+      linkedRuns={[run("mcp", "succeeded", 0)]} onAdd={async () => {}} issueStatus="done" />);
+    const banners = container.querySelectorAll('[data-testid="task-chat-run-health-banner"]');
+    expect([...banners].map((banner) => banner.textContent)).toEqual([
+      "github MCP server failed to start: No such file or directory (os error 2)",
+    ]);
+    expect(container.textContent).not.toContain("Sign in again");
+    expect(container.textContent).toContain("I couldn't reach the GitHub MCP server.");
+  });
+
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
     setTranscript("old");
     const notice = { ...comment("notice", "Old recovery details."), authorType: "system" as const,

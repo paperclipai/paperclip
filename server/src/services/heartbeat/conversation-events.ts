@@ -35,6 +35,7 @@ function planWriteCondition(runId: string) {
  * Canonical PRP conversation data, excluding ordinary historical tool activity.
  * Successful document writes retain a body-free boundary for saved Plan cards.
  * Keep request lifecycles so a cold open cannot hide a question or approval.
+ * Keep MCP startup failures so a settled run still explains missing tools.
  * Item identity may occur on started/completed rather than each text delta.
  */
 export function conversationEventCondition(runId: string) {
@@ -44,6 +45,10 @@ export function conversationEventCondition(runId: string) {
       ${planWriteCondition(runId)}
     )
     or ${heartbeatRunEvents.eventType} in ('run.result.accepted', 'run.terminal', 'turn.completed', 'turn.failed', 'turn.cancelled', 'turn.interrupted')
+    or (
+      ${heartbeatRunEvents.eventType} = 'provider.notice.recorded'
+      and ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,category}' = 'mcp_server_startup_failed'
+    )
     or (
       ${heartbeatRunEvents.eventType} in ('item.started', 'item.delta', 'item.completed')
       and (lower(replace(coalesce(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}', ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,kind}', ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,type}', ''), '_', '')) in ('agentmessage', 'assistantmessage')
