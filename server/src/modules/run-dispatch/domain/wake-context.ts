@@ -45,6 +45,12 @@ export type WorkspaceBusyWait = {
   holderRunId: string;
   /** ISO time of the first deferral for this key; carried across re-deferrals. */
   waitingSince: string;
+  /**
+   * The task's workspace binding when it deferred. The wait applies only while
+   * the binding is unchanged; a remote reservation can defer before it binds.
+   */
+  issueExecutionWorkspaceId: string | null;
+  issueProjectWorkspaceId: string | null;
 };
 
 export function workspaceBusyWaitKey(input: {
@@ -66,7 +72,12 @@ export function readWorkspaceBusyWait(
   const holderRunId = readNonEmptyString(wait.holderRunId);
   const waitingSince = readNonEmptyString(wait.waitingSince);
   if (!key || !holderRunId || !waitingSince || Number.isNaN(Date.parse(waitingSince))) return null;
-  return { key, holderRunId, waitingSince };
+  if (!("issueExecutionWorkspaceId" in wait) || !("issueProjectWorkspaceId" in wait)) return null;
+  return {
+    key, holderRunId, waitingSince,
+    issueExecutionWorkspaceId: readNonEmptyString(wait.issueExecutionWorkspaceId),
+    issueProjectWorkspaceId: readNonEmptyString(wait.issueProjectWorkspaceId),
+  };
 }
 
 /**

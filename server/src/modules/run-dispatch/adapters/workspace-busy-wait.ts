@@ -8,7 +8,7 @@ import {
   WORKSPACE_BUSY_RETRY_REASON,
   WORKSPACE_BUSY_WAIT_KEY,
   readWorkspaceBusyWait,
-  workspaceBusyWaitKey,
+  type WorkspaceBusyWait,
 } from "../domain/wake-context.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -33,7 +33,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   // The task may have moved to another workspace while parked (a parked retry
   // does not block that change). Then the saved wait no longer applies, and
   // normal dispatch re-resolves the workspace and its holder.
-  if (!(await taskStillUsesWaitedWorkspace(tx, run, wait.key))) return false;
+  if (!(await taskStillUsesWaitedWorkspace(tx, run, wait))) return false;
 
   const [holder] = await tx
     .select({
@@ -88,7 +88,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   return Boolean(parked);
 }
 
-async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, key: string): Promise<boolean> {
+async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, wait: WorkspaceBusyWait): Promise<boolean> {
   const context = run.contextSnapshot ?? {};
   const issueId = typeof context.issueId === "string" ? context.issueId : null;
   if (!issueId) return false;
@@ -96,10 +96,9 @@ async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, key: stri
     .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
     .from(issues)
     .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
-  if (!issue) return false;
-  return key.startsWith("execution:")
-    ? workspaceBusyWaitKey({ executionWorkspaceId: issue.executionWorkspaceId, projectWorkspaceId: null }) === key
-    : workspaceBusyWaitKey({ executionWorkspaceId: null, projectWorkspaceId: issue.projectWorkspaceId }) === key;
+  return Boolean(issue) &&
+    (issue!.executionWorkspaceId ?? null) === wait.issueExecutionWorkspaceId &&
+    (issue!.projectWorkspaceId ?? null) === wait.issueProjectWorkspaceId;
 }
 
 /**

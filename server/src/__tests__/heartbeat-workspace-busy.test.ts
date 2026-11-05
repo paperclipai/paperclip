@@ -817,6 +817,21 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
     });
 
+    it("parks a waiter that deferred before its task was bound to the workspace", async () => {
+      // A remote reservation can defer before it writes the task's binding.
+      const fixture = await seedInheritedWorkspace();
+      const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);
+      await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, fixture.issueId));
+      const context = retryRun.contextSnapshot as Record<string, unknown>;
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...context,
+        workspaceBusyWait: { ...(context.workspaceBusyWait as Record<string, unknown>), issueExecutionWorkspaceId: null } } })
+        .where(eq(heartbeatRuns.id, retryRun.id));
+
+      const dueAt = new Date(new Date(retryRun.scheduledRetryAt!).getTime() + 1_000);
+      expect((await heartbeat.promoteDueScheduledRetries(dueAt)).runIds).not.toContain(retryRun.id);
+      expect((await heartbeat.getRun(retryRun.id))?.status).toBe("scheduled_retry");
+    });
+
     it("still lets the user stop a parked waiter", async () => {
       const fixture = await seedInheritedWorkspace();
       const retryRun = await deferredRetryFor(fixture.agentId, fixture.issueId);
@@ -1255,6 +1270,27 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.status).toBe("succeeded");
     expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).toContain(run!.id);
+  });
+
+  it("stops parking a project-workspace wait once the task gains an execution workspace", async () => {
+    const fixture = await seedWorkspaceFixture();
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system");
+    expect((await waitForRunToLeaveActiveStates(run!.id))?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    const retryRun = (await waitForRetryRun(run!.id))!;
+    expect((retryRun.contextSnapshot as Record<string, unknown>).workspaceBusyWait).toMatchObject({
+      key: `project:${fixture.projectWorkspaceId}`, holderRunId: fixture.holderRunId,
+    });
+    const dueAt = new Date(new Date(retryRun.scheduledRetryAt!).getTime() + 1_000);
+    expect((await heartbeat.promoteDueScheduledRetries(dueAt)).runIds).not.toContain(retryRun.id);
+
+    const executionWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId, companyId: fixture.companyId, projectId: fixture.projectId, mode: "isolated_workspace",
+      strategyType: "project_primary", name: "Own workspace", status: "active", cwd: workspaceCwd,
+      providerType: "local_fs", providerRef: workspaceCwd,
+    });
+    await db.update(issues).set({ executionWorkspaceId }).where(eq(issues.id, fixture.issueId));
+    expect((await heartbeat.promoteDueScheduledRetries(new Date(dueAt.getTime() + 10 * 60_000))).runIds).toContain(retryRun.id);
   });
 
   it("keeps deferring past earlier attempts while the holder is still live", async () => {

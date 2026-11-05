@@ -1521,11 +1521,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const runContext = parseObject(run.contextSnapshot);
     const waitKey = workspaceBusyWaitKey(deferral);
     const priorWait = readWorkspaceBusyWait(run.scheduledRetryReason, runContext);
-    const workspaceBusyWait = waitKey
+    const waitIssueId = readNonEmptyString(runContext.issueId);
+    const [waitIssue] = waitKey && waitIssueId
+      ? await db
+          .select({ executionWorkspaceId: issues.executionWorkspaceId, projectWorkspaceId: issues.projectWorkspaceId })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, waitIssueId)))
+      : [];
+    const workspaceBusyWait = waitKey && waitIssue
       ? {
           key: waitKey,
           holderRunId: deferral.holder.runId,
           waitingSince: priorWait?.key === waitKey ? priorWait.waitingSince : now.toISOString(),
+          // Parking is valid only while this binding is unchanged.
+          issueExecutionWorkspaceId: waitIssue.executionWorkspaceId ?? null,
+          issueProjectWorkspaceId: waitIssue.projectWorkspaceId ?? null,
         }
       : null;
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
