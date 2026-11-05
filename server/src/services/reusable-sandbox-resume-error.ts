@@ -1,3 +1,4 @@
+import { readEnvironmentResumeErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 
 /**
@@ -21,6 +22,13 @@ export class ReusableSandboxResumeError extends Error {
     // Record why the provider refused with closed labels only. The provider
     // message stays on `cause` and off the run record.
     const failure = input.cause === undefined ? null : sandboxProviderFailureLabel(input.cause);
+    // A plugin worker refusal crosses JSON-RPC with only a message and an RPC
+    // code; its safe status and errno travel in the validated error envelope.
+    const envelope = input.cause === undefined ? null : readEnvironmentResumeErrorDiagnostic(input.cause);
+    if (failure && envelope) {
+      failure.status ??= envelope.httpStatus ?? null;
+      failure.code ??= envelope.errorCode ?? null;
+    }
     const detail = failure
       ? ` (cause=${failure.label}${failure.status !== null ? ` status=${failure.status}` : ""}${failure.code ? ` code=${failure.code}` : ""})`
       : "";

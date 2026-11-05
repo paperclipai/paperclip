@@ -1,4 +1,4 @@
-import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -3804,7 +3804,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentResumeLease") {
-          throw Object.assign(new Error("stale sandbox /home/daytona/private-path"), { status: 409 });
+          // The real worker RPC path: a message and a numeric RPC code, with the
+          // provider status only in the validated resume-error envelope.
+          throw new JsonRpcCallError({ code: -32000, message: "stale sandbox /home/daytona/private-path",
+            data: environmentResumeErrorData(Object.assign(new Error("private"), { statusCode: 409 })) });
         }
         if (method === "environmentDestroyLease") {
           return undefined;
