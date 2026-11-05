@@ -113,16 +113,17 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const inWindow = policy.windowKind === "calendar_month_utc"
       ? sql`coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) >= ${start.toISOString()}::timestamptz
         and coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) < ${end.toISOString()}::timestamptz` : sql`true`;
-    const run = and(eq(heartbeatRuns.companyId, policy.companyId), eq(heartbeatRuns.costAccountingPending, true),
+    const lateReceiptDebt = sql`coalesce(${usage}->>'accountingLateReceiptPending', 'false') = 'true'`;
+    const run = and(eq(heartbeatRuns.companyId, policy.companyId), or(eq(heartbeatRuns.costAccountingPending, true), lateReceiptDebt),
       policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
       policy.scopeType === "project" ? sql`${usage}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined)!;
-    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), inWindow)!;
+    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt))!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
     // qualifiers from a single-table selection's direct column chunks.
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
-    const recovering = sql`exists (select 1 from ${nativeRunFinalizations}
+    const recovering = sql`not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
       where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
         and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} <> 'terminal_failure')`;
@@ -137,15 +138,28 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
     runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
   }
-  const [ledger = {}] = billable.length ? await db.select(ledgerColumns).from(costEvents).where(or(...ledgerPredicates)) : [];
-  const [held = {}] = billable.length ? await db.select(heldColumns).from(budgetReservations)
-    .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
-    .where(or(...heldPredicates)) : [];
-  const [runs = {}] = billable.length ? await db.select(runColumns).from(heartbeatRuns).where(or(...runPredicates)) : [];
-  const [browser = {}] = billable.length ? await db.select(browserColumns).from(browserUseRuns)
-    .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseRuns.companyId)))
-    .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
-    .where(or(...browserPredicates)) : [];
+  // A single statement preserves hold-to-ledger atomicity even when a caller
+  // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
+  // JSON projection so the driver does not collapse repeated aggregate names.
+  const columns = (values: Record<string, SQL>) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.as(key)]));
+  let ledger: Record<string, string> = {}, held: Record<string, string> = {}, runs: Record<string, string> = {}, browser: Record<string, string> = {};
+  if (billable.length) {
+    const ledgerQuery = db.select(columns(ledgerColumns)).from(costEvents).where(or(...ledgerPredicates));
+    const heldQuery = db.select(columns(heldColumns)).from(budgetReservations)
+      .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
+      .where(or(...heldPredicates));
+    const runsQuery = db.select(columns(runColumns)).from(heartbeatRuns).where(or(...runPredicates));
+    const browserQuery = db.select(columns(browserColumns)).from(browserUseRuns)
+      .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseSessions.companyId)))
+      .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
+      .where(or(...browserPredicates));
+    const [row] = await db.execute<{ ledger: Record<string, string>; held: Record<string, string>; runs: Record<string, string>; browser: Record<string, string> }>(sql`
+      select row_to_json(ledger) as ledger, row_to_json(held) as held,
+        row_to_json(runs) as runs, row_to_json(browser) as browser
+      from (${ledgerQuery}) ledger cross join (${heldQuery}) held
+        cross join (${runsQuery}) runs cross join (${browserQuery}) browser`);
+    ({ ledger, held, runs, browser } = row);
+  }
   return policies.map((_, index) => {
     const ledgerCents = normalizeCents(String(ledger[`total${index}`] ?? 0));
     const liveObservedCents = normalizeCents(String(runs[`live${index}`] ?? 0));
@@ -158,10 +172,18 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
   });
 }
 
-export async function computeObservedSpend(db: Db, policy: SpendPolicy) {
-  return (await computeObservedSpends(db, [policy]))[0];
+export async function computeObservedSpend(db: Db, policy: SpendPolicy, now = new Date()) {
+  return (await computeObservedSpends(db, [policy], now))[0];
 }
 
 export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date()): Promise<ObservedSpend[]> {
-  return withBudgetSpan("budget.exposure.evaluate", () => readObservedSpends(db, policies, now), { "budget.policy_count": policies.length });
+  return withBudgetSpan("budget.exposure.evaluate", async () => {
+    // Each policy contributes several aggregate columns. Bound statement width
+    // below PostgreSQL's target-list limit. Multi-scope evaluators/reports own
+    // a repeatable-read transaction; individual admission batches fit one SQL.
+    const result: ObservedSpend[] = [];
+    for (let offset = 0; offset < policies.length; offset += 128)
+      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now));
+    return result;
+  }, { "budget.policy_count": policies.length });
 }

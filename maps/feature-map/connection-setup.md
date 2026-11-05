@@ -255,18 +255,6 @@ remain. Complete the step, verify the exact task continues, and confirm that
 revoked authority or cancelled work prevents continuation. An ordinary bot-token
 repair or an unchanged credential must not complete a signing-key request.
 
-For Google, request a specific service set, leave and reopen setup, and inspect
-the addressed user's pending choices. Another user's or organization grant must
-not supply those choices. A newer actual consent supersedes the saved request;
-a token refresh does not. A failed grant read must not broaden the selection.
-For Vercel personal setup, verify the selected credential belongs to the
-responsible person and new bindings record the configuring human as creator.
-Agent-initiated API changes retain the acting agent in audit; the human callback
-retains its actual human actor.
-Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
-field-specific credential entry and saved rotation recovery, and the
-[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
-
 ## Gotchas
 
 - For connecting an assistant to Paperclip itself, use [Assistant connections (MCP)](./assistant-connections.md). This recipe's MCP-link journey connects Paperclip to an external app server.

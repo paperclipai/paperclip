@@ -14,7 +14,9 @@ describeIssueRecovery("issue recovery production producers and assignments", () 
     await finish(issue.id); await quiet();
   }, 90_000);
   it("fences nested assignment writes until outer commit and ignores rollback", async () => {
-    const f = await fixture(); await start(); await quiet();
+    const f = await fixture();
+    const providerFailures = await state.completingProvider(f);
+    await start(); await quiet();
     let committedId = "";
     await state.db.transaction(async outer => {
       await outer.transaction(async nested => {
@@ -33,6 +35,8 @@ describeIssueRecovery("issue recovery production producers and assignments", () 
     })).rejects.toThrow("rollback control");
     await quiet();
     expect(await state.db.select().from(issues).where(eq(issues.title, "Nested rollback"))).toHaveLength(0);
+    expect(providerFailures).toEqual([]);
+    expect(await state.db.select().from(heartbeatRuns)).toHaveLength(1);
   }, 90_000);
   it("retains the first committed assignment during drain and executes on resume", async () => {
     const f = await fixture(); await start(); await quiet(); state.draining = true;

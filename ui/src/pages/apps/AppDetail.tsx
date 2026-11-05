@@ -1,3 +1,4 @@
+import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
@@ -36,6 +37,7 @@ import { accessApi } from "@/api/access";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -74,14 +76,19 @@ import {
   connectionDisplayNameForOwner,
   connectionOwnerProfile,
 } from "./connection-owner";
+import { describeError } from "@/api/errors";
 
 export { connectionAddress, connectionTransportLabel };
 
 export function AppDetail(props: { renderActions?: (connection: ToolConnection) => ReactNode; renderAgentSettings?: (connection: ToolConnection) => ReactNode; renderConnectionSettings?: (connection: ToolConnection) => ReactNode; onReconnect?: (connection: ToolConnection) => void } = {}) {
   const { connectionId = "" } = useParams<{ connectionId: string }>();
   const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: () => toolsApi.getConnection(connectionId), enabled: !!connectionId });
-  if (connection.isPending) return <p role="status">Loading connection…</p>;
-  if (connection.error) return <p role="alert">{connection.error.message}</p>;
+  const view = useQueryView(connection);
+  if (connection.isPending || view.kind === "reconnecting") return <p role="status">Loading connection…</p>;
+  if (view.kind === "error" && view.errorKind === "not_found") return <AppNotFound />;
+  if (view.kind === "error") {
+    return <QueryErrorState size="page" error={connection.error} action="load the connection" onRetry={view.retry} retrying={view.isFetching} />;
+  }
   const pluginKey = connection.data && aiConnectionRouterPluginKey(connection.data);
   // Keyed so page state, such as a failed refresh's recovery link, never carries over to another connection.
   return pluginKey ? <AiConnectionPoolConnector pluginKey={pluginKey} connection={connection.data} /> : <StandardAppDetail key={connectionId} {...props} />;
@@ -160,6 +167,13 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     retry: retryTransientOnly(1),
     enabled: !!connectionId && !!activeTab,
   });
+  const connectionView = useQueryView(connectionQuery);
+  const installsView = useQueryView(installsQuery);
+  const catalogView = useQueryView(catalogQuery);
+  const profilesView = useQueryView(profilesQuery);
+  const policiesView = useQueryView(policiesQuery);
+  const agentsView = useQueryView(agentsQuery);
+  const grantsView = useQueryView(grantsQuery);
 
   const connection = connectionQuery.data;
   const application = connection
@@ -202,9 +216,10 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       && grantsQuery.data?.capabilities.canConnectAsCurrentUser,
     )
     : grantsQuery.data?.capabilities.canConfigure === true;
-  const reconnectUnavailableMessage = grantsQuery.isLoading
+  const grantsPending = grantsQuery.isLoading || grantsView.kind === "reconnecting";
+  const reconnectUnavailableMessage = grantsPending
     ? "Checking who can reconnect this identity…"
-    : grantsQuery.isError
+    : grantsView.kind === "error"
       ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
       : managedIdentityGrant?.kind === "user"
         && managedPersonalUserId !== grantsQuery.data?.currentUserId
@@ -287,7 +302,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       navigate("/apps");
     },
-    onError: (error) => pushToast({ title: "Couldn't disconnect", body: error instanceof Error ? error.message : "Please try again.", tone: "error" }),
+    onError: (error) => pushToast({ title: "Couldn't disconnect", body: describeError(error).body, tone: "error" }),
   });
   const [pending, setPending] = useState(false);
   const persist = useMutation({
@@ -320,7 +335,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     onError: (error) =>
       pushToast({
         title: "Couldn't save that",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
     onSettled: () => setPending(false),
@@ -339,7 +354,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     onError: (error) =>
       pushToast({
         title: "Couldn't rename the app",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -353,7 +368,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          body: describeError(error).body,
           tone: "error",
         });
       }
@@ -362,7 +377,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       authorization.cancel();
       pushToast({
         title: "Couldn't start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -393,7 +408,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       } catch (error) {
         pushToast({
           title: "Couldn't start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          body: describeError(error).body,
           tone: "error",
         });
       }
@@ -402,7 +417,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       authorization.cancel();
       pushToast({
         title: "Couldn't start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -428,7 +443,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       });
     },
     onError: (error) =>
-      setAudienceError(error instanceof Error ? error.message : "We couldn't save that audience."),
+      setAudienceError(describeError(error).body),
   });
 
   const refreshTools = useMutation({
@@ -453,7 +468,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     onError: (error) =>
       pushToast({
         title: "Couldn't refresh actions",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -476,7 +491,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
         title: "Couldn't refresh GitHub access",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -519,7 +534,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
   }
-  if (connectionQuery.isLoading) {
+  if (connectionQuery.isLoading || connectionView.kind === "reconnecting") {
     return (
       <div className="max-w-3xl space-y-4">
         <Skeleton className="h-10 w-56" />
@@ -528,16 +543,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       </div>
     );
   }
-  if (!connection) {
-    return (
-      <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
-          Back to connectors
-        </Button>
-      </div>
-    );
+  if (connectionView.kind === "error" && connectionView.errorKind === "not_found") return <AppNotFound />;
+  if (connectionView.kind === "error") {
+    return <AppReadError size="page" action="load the connection" failure={connectionView} />;
   }
+  if (!connection) return <AppNotFound />;
 
   if (isRetiredComposioConnection(connection)) {
     return <div className="max-w-4xl space-y-6 pb-12">
@@ -567,10 +577,15 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const canChange = active.filter((e) => !e.isReadOnly);
   const actionsContent = renderActions?.(connection) ?? (connection.connectionPurpose === "ai" ? <ManagedAiConnectionDetails connection={connection} /> : undefined);
   const actionCount = actionsContent !== undefined ? null : catalogQuery.data ? active.length : null;
-  const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
-  const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
-  const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
-  const permissionsFailed = reviewFailed || installsQuery.isError || agentsQuery.isError;
+  const reviewViews = [catalogView, profilesView, policiesView];
+  const permissionsViews = [...reviewViews, installsView, agentsView];
+  const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading
+    || reviewViews.some((view) => view.kind === "reconnecting");
+  const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading
+    || permissionsViews.some((view) => view.kind === "reconnecting");
+  // Only a real failure replaces the panel; a transient refetch failure keeps the loaded tools.
+  const reviewFailure = reviewViews.find((view) => view.kind === "error");
+  const permissionsFailure = permissionsViews.find((view) => view.kind === "error");
 
   return (
     <div className="max-w-4xl space-y-10 pb-12">
@@ -622,8 +637,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       )}
 
       {activeTab === "review" && (
-        reviewFailed
-          ? <ToolsLoadError onRetry={() => {
+        reviewFailure
+          ? <AppReadError failure={reviewFailure} onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
               void policiesQuery.refetch();
@@ -638,8 +653,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
             />
       )}
       {activeTab === "permissions" && (
-        permissionsFailed
-          ? <ToolsLoadError onRetry={() => {
+        permissionsFailure
+          ? <AppReadError failure={permissionsFailure} onRetry={() => {
               void catalogQuery.refetch();
               void profilesQuery.refetch();
               void policiesQuery.refetch();
@@ -666,8 +681,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                   ? agents.find((agent) => agent.id === managedIdentityGrant.subjectAgentId) ?? null
                   : null}
                 grantsQuery={grantsQuery.data}
-                loading={grantsQuery.isLoading}
-                error={grantsQuery.isError}
+                loading={grantsPending}
+                error={grantsView.kind === "error"}
                 connectPending={startPersonalAuth.isPending || startOAuth.isPending}
                 audiencePending={replaceAudience.isPending}
                 audienceError={audienceError}
@@ -858,14 +873,6 @@ function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
   );
 }
 
-function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="space-y-3 py-8">
-      <p className="text-sm text-destructive">Couldn’t load tools for this app.</p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
-    </div>
-  );
-}
 
 function unverifiedRemoteHost(connection: ToolConnection): string | null {
   const sourceTemplateKey = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;

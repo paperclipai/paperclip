@@ -45,12 +45,15 @@ describe("context integrity final evidence contract", () => {
     }
   });
 
-  it("rejects the former context-specific filenames", async () => {
+  it.each([
+    ["context-specific", "context-integrity-final.png", "context-integrity.json"],
+    ["Cloud Stop custom-only", "cloud-stopped.png", "cursor-cloud-stop-settled.json"],
+  ])("rejects %s filenames without the shared final evidence", async (_label, screenshot, snapshot) => {
     const privateDir = await fixtureRoot();
     const uploadDir = `${privateDir}-upload`;
     try {
-      await writeFile(path.join(privateDir, "context-integrity-final.png"), "png\n");
-      await writeFile(path.join(privateDir, "snapshots", "context-integrity.json"), "{}\n");
+      await writeFile(path.join(privateDir, screenshot), "png\n");
+      await writeFile(path.join(privateDir, "snapshots", snapshot), "{}\n");
       const packaged = await packageEvidence({ privateDir, uploadDir, secrets: [], expectPassScreenshot: true });
       expect(packaged.missing).toContain("final-state.png");
       expect(packaged.missing).toContain(path.join("snapshots", "api-state.json"));

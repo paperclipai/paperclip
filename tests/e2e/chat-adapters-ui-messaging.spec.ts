@@ -257,6 +257,9 @@ test.describe("Board send delivery refresh", () => {
               ? `/issues/${issue.id.toUpperCase()}`
               : `/${selected.prefix}/issues/${issue.identifier}?external=chat#files`,
         );
+        if (!classic) {
+          await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+        }
         await expect(
           page.getByRole("heading", {
             name: "Organization-bound task link",

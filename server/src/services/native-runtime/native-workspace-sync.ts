@@ -1,3 +1,4 @@
+import { hasMigratedLegacyWorkspaceSource } from "../legacy-workspace-recovery-migration.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -921,7 +922,7 @@ export async function prepareNativeWorkspaceSync(input: {
     throw new Error("native_remote_recovery_lease_mismatch");
   }
   const run = await measureRunPhase("workspace_sync.run_read", () => input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -1184,7 +1185,7 @@ export async function resumeNativeWorkspaceSync(input: {
     throw new Error("workspace_sync_out_unrecoverable");
   }
   const run = await input.db
-    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -1193,6 +1194,8 @@ export async function resumeNativeWorkspaceSync(input: {
     parseObject(run?.runnerProfileJson).nativeWorkspaceSync,
   );
   if (!reference) return false;
+  if (run && await hasMigratedLegacyWorkspaceSource(input.db, { companyId: run.companyId, runId: input.runId, reference }))
+    throw new Error("native_workspace_sync_source_migrated");
   const existing = await readDescriptor({ runId: input.runId, reference });
   const providerLeaseId =
     input.target.sandboxLeaseAcquisition?.providerLeaseId ??

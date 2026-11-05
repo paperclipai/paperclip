@@ -49,6 +49,7 @@ function sidecarSource(root: string, selectedProfile = profile, agent = "claude"
     " const reply = (r,result) => send({protocolVersion,id:r.id,ok:true,result});",
     " const lines=rl.createInterface({input:process.stdin}); lines.on('close',()=>process.exit(0)); lines.on('line', line => {",
     "  const r=JSON.parse(line), p=r.params || {};",
+    "  if(r.command==='session.open'&&fs.existsSync(root+'/startup-failure.json')){send({protocolVersion,id:r.id,ok:false,error:{code:'ACPX_SESSION_ENSURE_FAILED',message:'Internal error',retryable:false,providerFailure:JSON.parse(fs.readFileSync(root+'/startup-failure.json','utf8'))}});return;}",
     "  switch(r.command) {",
     "   case 'initialize': reply(r,{protocolVersion,sidecarPid:process.pid,profile:{agent:" + JSON.stringify(agent) + "},capabilities:{persistentSessions:true,exactModelVerification:true,permissions:'runner_policy',semanticTools:'runner_bridge',structuredInput:'paperclip.question_set.v1'}});break;",
     "   case 'session.open': identity={kind:'acpx',normalizedSessionId:p.normalizedSessionId,acpxRecordId:'record-1',backendSessionId:'backend-1',agentSessionId:'agent-1',profileDigest,workspaceDigest:'sha256:'+'2'.repeat(64),requestedModel:p.model,effectiveModel:p.model,permissionMode:p.permissionMode,mode:p.mode,piThinkingLevel:p.piThinkingLevel,claudeEffort:p.claudeEffort,grokEffort:p.grokEffort,grokDisableWebSearch:p.grokDisableWebSearch,providerLifetimeFenceCandidates:ports};reply(r,{sidecarPid:process.pid,identity,status:{},turnControls:{steering:false,queuedFollowUp:false}});break;",
@@ -66,6 +67,23 @@ function sidecarSource(root: string, selectedProfile = profile, agent = "claude"
     "})().catch(e=>{process.stderr.write(String(e));process.exit(1);});",
   ].join("\n");
 }
+
+it("preserves a startup provider failure through the real sidecar transport and restored controller journal", async () => {
+  const run = await fixture();
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "rate_limit", message: "This request would exceed your account's rate limit.", httpStatus: 429, retryability: "unknown" };
+  try {
+    writeFileSync(resolve(run.root, "startup-failure.json"), JSON.stringify(providerFailure));
+    expect(await run.command("run.prepare", { provider: run.descriptor })).toMatchObject({ status: "completed" });
+    const failed = await run.command("session.open");
+    expect(failed).toMatchObject({ status: "failed", result: { result: { code: "command_execution_failed", providerFailure } } });
+    await run.stopController();
+    await run.replaceController();
+    expect(run.controller().getCommand("command-2")).toMatchObject({ status: "failed",
+      result: { result: { providerFailure } } });
+    expect(run.launches()).toHaveLength(1);
+  } finally { await run.cleanup(); }
+}, 20_000);
 
 async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidateStartupAdmission, beforeLaunchDelayMs = 0) {
   const root = mkdtempSync(resolve(tmpdir(), "acpx-controller-recovery-"));
@@ -156,7 +174,7 @@ async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidat
     rmSync(stateDirectory,{recursive:true,force:true});
     decodeDurablePrpCheckpoint(checkpoint.records).restoreSessionDirectory(root);
   };
-  return {root,child,exit,command,ready,startedAt,deadlineAt,processGroupId: bounded?.processGroupId ?? child.pid,
+  return {root,child,exit,command,ready,descriptor,startedAt,deadlineAt,processGroupId: bounded?.processGroupId ?? child.pid,
     controller:()=>controller,
     stopController:stopped,
     restoreCheckpoint,

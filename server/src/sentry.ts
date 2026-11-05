@@ -47,6 +47,9 @@
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
 //
+// `beforeSend` adds run navigation links, then bounded provenance for the
+// dynamic-import-callback error — see `sentry-dynamic-import-provenance.ts`.
+//
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
 // `peerDependencies` declares — the same audited version documented in
@@ -66,6 +69,7 @@ import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
 import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
+import { addDynamicImportProvenance, type ProvenanceHint } from "./sentry-dynamic-import-provenance.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -209,7 +213,11 @@ function normalizeRunSignal(value: unknown): string | null {
  *
  */
 export function captureRunFailure(event: RunFailureEvent): boolean {
-  if (!sentryHandle || readRunFailureReportingMode() === "off") return false;
+  return captureRunFailureEvent(event) !== null;
+}
+
+function captureRunFailureEvent(event: RunFailureEvent): string | null {
+  if (!sentryHandle || readRunFailureReportingMode() === "off") return null;
   const handle = sentryHandle;
   try {
     const errorCode = event.errorCode ?? "unknown";
@@ -269,7 +277,7 @@ export function captureRunFailure(event: RunFailureEvent): boolean {
       exception.stack = typeof diagnostics?.adapter.stackPreview === "string"
         ? diagnostics.adapter.stackPreview : undefined;
     }
-    handle.captureException(exception, {
+    return handle.captureException(exception, {
       tags: {
         event_kind: "run_failure",
         ...(event.failureSource ? { failure_source: event.failureSource } : {}),
@@ -297,22 +305,48 @@ export function captureRunFailure(event: RunFailureEvent): boolean {
       },
       fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
     });
-    return true;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureRunFailure failed", err);
-    return false;
+    return null;
   }
 }
 
 const reportedTaskInterruptions = new Set<string>();
 const MAX_REPORTED_TASK_INTERRUPTIONS = 1_000;
+const TASK_INTERRUPTION_DELIVERY_RETRY_MS = 60_000;
+const pendingTaskInterruptions = new Map<string, { eventId: string; retryAt: number }>();
+const pendingTaskInterruptionEvents = new Map<string, string>();
+
+function forgetPendingTaskInterruption(key: string) {
+  const pending = pendingTaskInterruptions.get(key);
+  if (pending && pendingTaskInterruptionEvents.get(pending.eventId) === key) {
+    pendingTaskInterruptionEvents.delete(pending.eventId);
+  }
+  pendingTaskInterruptions.delete(key);
+}
+
+function confirmTaskInterruptionDelivery(eventId: string | undefined, statusCode: number | undefined) {
+  if (!eventId || statusCode === undefined || statusCode < 200 || statusCode >= 300) return;
+  const key = pendingTaskInterruptionEvents.get(eventId);
+  if (!key) return;
+  forgetPendingTaskInterruption(key);
+  reportedTaskInterruptions.add(key);
+  if (reportedTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    reportedTaskInterruptions.delete(reportedTaskInterruptions.values().next().value!);
+  }
+}
 
 export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
   "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
   const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
   if (reportedTaskInterruptions.has(key)) return;
-  if (!captureRunFailure({
+  const now = Date.now();
+  if ((pendingTaskInterruptions.get(key)?.retryAt ?? 0) > now) return;
+  for (const [pendingKey, pending] of pendingTaskInterruptions) {
+    if (pending.retryAt <= now) forgetPendingTaskInterruption(pendingKey);
+  }
+  const eventId = captureRunFailureEvent({
     companyId: event.companyId,
     agentId: event.agentId,
     taskId: event.taskId,
@@ -322,10 +356,12 @@ export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
     errorMessage: "Couldn’t finish this attempt. Your message is saved.",
     errorCode: "task_attempt_failed",
     failureSource: "task_interruption",
-  })) return;
-  reportedTaskInterruptions.add(key);
-  if (reportedTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
-    reportedTaskInterruptions.delete(reportedTaskInterruptions.values().next().value!);
+  });
+  if (!eventId) return;
+  pendingTaskInterruptions.set(key, { eventId, retryAt: now + TASK_INTERRUPTION_DELIVERY_RETRY_MS });
+  pendingTaskInterruptionEvents.set(eventId, key);
+  if (pendingTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    forgetPendingTaskInterruption(pendingTaskInterruptions.keys().next().value!);
   }
 }
 
@@ -370,7 +406,14 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-  beforeSend: typeof addSentryRunLinks;
+  beforeSend: typeof enrichServerEvent;
+}
+
+type ServerEvent = Parameters<typeof addSentryRunLinks>[0] & Parameters<typeof addDynamicImportProvenance>[0];
+
+/** The server's `beforeSend`: run navigation links, then dynamic-import provenance. */
+export async function enrichServerEvent<T extends ServerEvent>(event: T, hint?: ProvenanceHint): Promise<T> {
+  return addDynamicImportProvenance(await addSentryRunLinks(event), hint);
 }
 
 /**
@@ -389,7 +432,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    beforeSend: addSentryRunLinks,
+    beforeSend: enrichServerEvent,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
@@ -438,6 +481,10 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     const Sentry = await import("@sentry/node");
 
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
+
+    Sentry.getClient?.()?.on("afterSendEvent", (event: { event_id?: string }, response?: { statusCode?: number }) => {
+      confirmTaskInterruptionDelivery(event.event_id, response?.statusCode);
+    });
 
     sentryHandle = {
       captureException: (...args) => Sentry.captureException(...args),

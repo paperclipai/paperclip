@@ -1,6 +1,7 @@
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { ExternalLink, Loader2 } from "lucide-react";
 import type { GitHubAppWizardState } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
@@ -25,6 +26,7 @@ import { buildPermissionsForTrustPreset } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
 import { GITHUB_APP_CREDENTIAL_FIELDS, GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
+import { describeError } from "@/api/errors";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
 export function gitHubAppManifestAction(
@@ -114,6 +116,7 @@ export function GitHubChatSetup() {
     enabled: !!resume,
     refetchInterval: 3000,
   });
+  const currentView = useQueryView(current);
   const bot = current.data;
   const progress = useQuery({
     queryKey: ["github-wizard", resume],
@@ -125,13 +128,14 @@ export function GitHubChatSetup() {
       )
         ? false
         : 5000,
-    retry: false,
   });
+  const progressView = useQueryView(progress);
   const accounts = useQuery({
     queryKey: ["github-personal-connections", resume],
     queryFn: () => githubChatApi.personalConnections(resume!),
     enabled: !!bot && (identityOnly || progress.data?.state === "identity"),
   });
+  const accountsView = useQueryView(accounts);
   const selectedAgent = agents.data?.find(
     (agent) => agent.id === (bot?.assignedAgentId ?? agentId),
   );
@@ -143,12 +147,16 @@ export function GitHubChatSetup() {
     enabled: !!selectedCompanyId && choosingAccount,
     staleTime: 30_000,
   });
+  const repositoriesView = useQueryView(repositories);
   const connectedBots = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && choosingAccount,
     staleTime: 30_000,
   });
+  const connectedBotsView = useQueryView(connectedBots);
+  const setupReadFailure = accountsView.kind === "error" ? accountsView
+    : !identityOnly && progressView.kind === "error" ? progressView : null;
   const organizations = new Map<string, string>();
   for (const repository of repositories.data?.repositories ?? []) {
     if (repository.ownerType !== "organization") continue;
@@ -217,9 +225,7 @@ export function GitHubChatSetup() {
     } catch (error) {
       authorization.cancel();
       setError(
-        error instanceof Error
-          ? error.message
-          : "Could not connect GitHub. Try again.",
+        describeError(error).body,
       );
     } finally {
       setBusy(false);
@@ -274,7 +280,7 @@ export function GitHubChatSetup() {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
         <h1 className="text-2xl font-semibold">Resume GitHub setup</h1>
-        {current.error ? (
+        {currentView.kind === "error" ? (
           <p role="alert" className="text-sm text-destructive">
             Could not load this connection. Try again to resume your draft.
           </p>
@@ -283,7 +289,7 @@ export function GitHubChatSetup() {
             Loading your draft…
           </p>
         )}
-        {footer(current.error ? "Try again" : undefined, async () => {
+        {footer(currentView.kind === "error" ? "Try again" : undefined, async () => {
           await current.refetch();
         })}
       </div>
@@ -309,17 +315,19 @@ export function GitHubChatSetup() {
               ? "Connect your account"
               : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
-      {(error || (!identityOnly && !existing && progress.error) || accounts.error) && (
+      {error ? (
         <p role="alert" className="text-sm text-destructive">
-          {error ||
-            (accounts.error instanceof Error
-              ? accounts.error.message
-              : undefined) ||
-            (progress.error instanceof Error
-              ? progress.error.message
-              : "Could not check GitHub setup. Try again.")}
+          {error}
         </p>
-      )}
+      ) : setupReadFailure ? (
+        <QueryErrorState
+          size="inline"
+          error={setupReadFailure.error}
+          action="check GitHub setup"
+          onRetry={setupReadFailure.retry}
+          retrying={setupReadFailure.isFetching}
+        />
+      ) : null}
       {!bot ? (
         <>
           <AgentSelect
@@ -374,7 +382,7 @@ export function GitHubChatSetup() {
             !agentId || !selectedCompanyId,
           )}
         </>
-      ) : !identityOnly && !existing && progress.isPending ? (
+      ) : !identityOnly && !existing && (progress.isPending || progressView.kind === "reconnecting") ? (
         <>
           <p role="status" className="text-sm text-muted-foreground">
             Checking your GitHub connection…
@@ -620,7 +628,7 @@ export function GitHubChatSetup() {
               ))}
               <option value="organization">Another organization</option>
             </select>
-            {(repositories.isError || connectedBots.isError) && (
+            {(repositoriesView.kind === "error" || connectedBotsView.kind === "error") && (
               <p role="alert" className="text-sm text-destructive">
                 Could not load some connected GitHub accounts. Choose Another organization to enter a name.
               </p>

@@ -13,9 +13,12 @@ export function registerProviderTraceRetentionWork(
   const traces = providerTraceStore(db);
   let deadline: number | null | undefined;
 
-  const unregister = registerIdleLocalWorkProbe(() =>
-    deadline === undefined ? "unknown" : deadline === null ? "none" : "present",
-  );
+  const unregister = registerIdleLocalWorkProbe((options = {}) => {
+    if (deadline === undefined) return "unknown";
+    if (deadline === null) return "none";
+    return options.deadlineCapability?.deadlineCatalog === "domain_deadlines_v1" && deadline > Date.now()
+      ? "none" : "present";
+  });
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.providerTraceRetention, {
     canRun,
     retryMs: 30_000,

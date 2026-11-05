@@ -15,7 +15,13 @@ const schema = JSON.parse(
     "utf8",
   ),
 );
-const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+const providerFailureSchema = JSON.parse(await readFile(new URL("../protocol/schemas/provider-failure.schema.json", import.meta.url), "utf8"));
+function compileSidecarSchema(value) {
+  return new Ajv2020({ allErrors: true, strict: true,
+    formats: { "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/ },
+  }).addSchema(providerFailureSchema).compile(value);
+}
+const validate = compileSidecarSchema(schema);
 const protocolVersion = readAcpxSidecarProtocolVersion(schema);
 
 const messages = [
@@ -47,11 +53,36 @@ test("the ACPX sidecar schema accepts each versioned message family", () => {
   }
 });
 
+test("usage prices declare turn or session scope without changing legacy cumulative prices", () => {
+  const event = cost => ({ protocolVersion, sequence: 1, eventType: "runtime.event", runId: "run-1", turnId: "turn-1",
+    payload: { type: "status", tag: "usage_update", cost } });
+  for (const cost of [null, { amount: 0.1, currency: "USD" }, { amount: 0.1, currency: "USD", basis: "turn" },
+    { amount: 0.1, currency: "USD", basis: "session_cumulative" }]) {
+    assert.equal(validate(event(cost)), true, JSON.stringify(validate.errors));
+  }
+  for (const cost of [{ amount: -1 }, { amount: 0.1, basis: "estimated" }, { amount: 0.1, rawProviderReceipt: {} }]) {
+    assert.equal(validate(event(cost)), false);
+  }
+});
+
+test("failed responses accept the bounded provider cause and reject extra diagnostic fields", () => {
+  const failure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "rate_limit", message: "Account rate limit reached.", httpStatus: 429, retryability: "unknown" };
+  const response = { protocolVersion, id: 1, ok: false,
+    error: { code: "ACPX_SESSION_ENSURE_FAILED", message: "Internal error", retryable: false } };
+  assert.equal(validate(response), true);
+  const withCause = value => ({ ...response, error: { ...response.error, providerFailure: value } });
+  assert.equal(validate(withCause(failure)), true, JSON.stringify(validate.errors));
+  for (const change of [{ httpStatus: 999 }, { message: "x".repeat(4001) }, { headers: { authorization: "private" } }, { category: "invented" }]) {
+    assert.equal(validate(withCause({ ...failure, ...change })), false);
+  }
+});
+
 test("candidate startup and sidecar admission share one strict identity-bound JSON record", () => {
   const candidateAdmission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-1", agent: "antigravity", model: "gemini-3.8-flash-low",
     profileDigest: `sha256:${"a".repeat(64)}`, nativeClosureDigest: `sha256:${"b".repeat(64)}`, platform: "darwin", architecture: "arm64",
     expiresAt: 1800000060000, runId: "run-1", normalizedSessionId: "session-1" };
-  const startup = new Ajv2020({ allErrors: true, strict: true }).compile({ ...schema, oneOf: undefined, $ref: "#/$defs/candidateAdmission" });
+  const startup = compileSidecarSchema({ ...schema, oneOf: undefined, $ref: "#/$defs/candidateAdmission" });
   assert.equal(startup(candidateAdmission), true, JSON.stringify(startup.errors));
   for (const command of ["initialize", "session.open"]) {
     const request = { protocolVersion, id: 1, command, params: { agent: "antigravity", model: candidateAdmission.model, candidateAdmission } };

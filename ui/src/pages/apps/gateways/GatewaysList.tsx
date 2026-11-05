@@ -10,11 +10,12 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { projectsApi } from "@/api/projects";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { ErrorState, RelativeTime } from "@/pages/tools/shared";
+import { RelativeTime } from "@/pages/tools/shared";
 import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
 import { NewGatewayDialog, gatewaysQueryKey } from "./NewGatewayDialog";
 import { gatewayTabHref } from "./gateway-tabs";
@@ -27,6 +28,7 @@ import {
   isGatewayOn,
   latestTokenActivity,
 } from "./gateway-helpers";
+import { describeError } from "@/api/errors";
 
 export function GatewaysList() {
   const navigate = useNavigate();
@@ -75,6 +77,7 @@ export function GatewaysList() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const gatewaysView = useQueryView(gatewaysQuery);
 
   const profileById = useMemo(
     () => new Map((profilesQuery.data?.profiles ?? []).map((profile) => [profile.id, profile])),
@@ -108,7 +111,7 @@ export function GatewaysList() {
     onError: (error) =>
       pushToast({
         title: "Couldn't update the gateway",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -140,13 +143,18 @@ export function GatewaysList() {
         </p>
       </header>
 
-      {gatewaysQuery.isLoading ? (
+      {gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting" ? (
         <div className="space-y-3 pt-2">
           <Skeleton className="h-9 w-full max-w-sm" />
           <Skeleton className="h-52 w-full" />
         </div>
-      ) : gatewaysQuery.isError ? (
-        <ErrorState error={gatewaysQuery.error} onRetry={() => gatewaysQuery.refetch()} />
+      ) : gatewaysView.kind === "error" ? (
+        <QueryErrorState
+          error={gatewaysQuery.error}
+          action="load gateways"
+          onRetry={gatewaysView.retry}
+          retrying={gatewaysView.isFetching}
+        />
       ) : gateways.length === 0 ? (
         <EmptyGateways onCreate={() => setCreating(true)} />
       ) : (

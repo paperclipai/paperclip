@@ -67,13 +67,6 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
 
-The deployment-targeted [personal-triage journey](../../tests/runner-e2e/product-journeys/inbox-triage-flow.ts)
-drives Mark as read and Archive, reloads Unread and Mine, independently verifies
-unchanged task status, and observes a later Blocked transition resurface the item.
-It uses one owned self-assigned task and no agent work; its registration is
-separate from a measured Cloud pass. Other actors and company boundaries remain
-separate verification cases.
-
 Automated: [Issue service regressions](../../server/src/__tests__/issues-service.test.ts)
 cover exclusion of historical automatic read cleanup from user participation,
 unread counts, and activity timestamps while retaining explicit user decisions
@@ -94,26 +87,11 @@ participation, while the cleanup remains in activity history. Record an explicit
 user recovery decision on a separate task and verify it still counts. This
 browser journey remains manual.
 
-Cold-open verification: load Mine with the task-index response delayed while
-approvals/runs resolve. Only the stable list placeholder should appear until the
+Cold-open verification: load Mine with its snapshot response delayed while
+approvals resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
-100-row index. Missing parents use the same index projection for their captions;
-parents already in the index are reused. Failed-run tasks still load rich row
-context by ID, including when they are also parents or already indexed, so resolved
-interruptions stay hidden. The initial reveal waits for both context sources.
-Sidebar badges use the count endpoint.
-Coordinator desktop and mobile navigation share `/attention/summary` for the
-outstanding count. Needs You owns its complete feed; Tasks → Needs attention
-owns a compact complete task-ID index. Navigation reuses either page response. Coordinator keeps the optimized Inbox even when
-the instance Streamlined UI setting is off. The loopback browser checks in
-[collection startup](../../tests/perf/collections/startup.spec.ts) exercise these
-reads and the initial task row budget. They do not establish deployed latency.
-Collection startup selects the addressed active organization before starting
-company reads. Shared controls load separately from task detail. A painted
-collection or task-link intent starts a low-priority code fetch; direct task URLs keep
-early module preload. The collection
-browser cases cover a remembered different organization and failed speculation.
+100-row snapshot with parent/run context; sidebar badges use the count endpoint.
 The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
 barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
 cover unread counts. Browser timing and layout proof remain separate from these tests.
@@ -210,5 +188,3 @@ Scope: ui
 Storybook: Eligible live task toast, explicit mention, quiet unrelated event, own-action/visible-task suppression, dedupe and company/account switch.
 Production: Persisted participation and mentions determine per-viewer socket eligibility; quiet events still refresh caches; reload retains eligibility, unauthorized resources remain denied.
 Sources: Source: [ToastViewport.tsx](../../ui/src/components/ToastViewport.tsx), [ToastContext.tsx](../../ui/src/context/ToastContext.tsx), [LiveUpdatesProvider.tsx](../../ui/src/context/LiveUpdatesProvider.tsx), [task-toast-eligibility.ts](../../server/src/realtime/task-toast-eligibility.ts). Tests: [ToastContext.test.tsx](../../ui/src/context/ToastContext.test.tsx), [ToastViewport.test.tsx](../../ui/src/components/ToastViewport.test.tsx), [LiveUpdatesProvider.hook.test.tsx](../../ui/src/context/LiveUpdatesProvider.hook.test.tsx), [task-toast-eligibility.test.ts](../../server/src/__tests__/task-toast-eligibility.test.ts), [live-events-toast.test.ts](../../server/src/__tests__/live-events-toast.test.ts), [multi-user-authenticated.spec.ts](../../tests/e2e/multi-user-authenticated.spec.ts)
-
-Coordinator navigation counts all outstanding canonical attention items on desktop and phone, using the same complete feed as Needs You. Classic keeps its existing today-oriented badge. Task questions resolve through their original interaction; pending chat projections, counts and recorded receipts invalidate together.

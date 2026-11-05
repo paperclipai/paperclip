@@ -112,9 +112,6 @@ to the existing Agent Chat control. Hidden or Cloud-managed controls are not
 presented as editable. Disabled Chat routes link back to Experimental settings.
 Enabling the personal workspace never changes the instance capability.
 
-The Coordinator sidebar has a visible **New task** button above **Chat**. It opens
-the existing task form and retains the shortcut beside **Tasks**.
-
 Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
 [prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
 [authorization](../../server/src/__tests__/workspace-preferences-routes.test.ts), and
@@ -125,15 +122,8 @@ choice. The [Settings card story](../../ui/storybook/stories/navigation-preferen
 uses the production component with simulated API responses; it does not establish
 real persistence or permission behavior.
 
-Local browser verification (2026-10-26, isolated Coordinator worktree): initially
-off, enabled and persisted across reload, disabled back to classic navigation,
-then enabled back to Chat / Tasks / Needs You. This used `local_trusted`; signed-in
-two-person browser isolation remains unverified.
-
-Coordinator More exposes a pin/unpin button beside every destination. Each flyout
-row highlights as one surface; its pin appears on row hover or keyboard focus.
-Opening the flyout focuses its container so Search is not highlighted before
-interaction. Pinned pages appear beneath More in pinning order and retain the
+Coordinator More exposes a pin/unpin button beside every destination.
+Pinned pages appear above More in pinning order and retain the
 existing company-aware routes.
 Unpin from either the flyout or the pinned row. The list is personal to the current
 user in this browser, shared across companies; it does not sync across devices.

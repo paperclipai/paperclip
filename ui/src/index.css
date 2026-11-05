@@ -4658,6 +4658,7 @@ html:has(.design-proposal-theme) [data-slot="card-title"] { color: var(--foregro
    over the app background, matching the main-pane header and pane boundaries. */
 .design-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border); background: var(--design-sidebar-surface); background-clip: padding-box; }
 .design-sidebar-brand { display: flex; align-items: center; gap: var(--design-page-control-gap); flex-shrink: 0; height: var(--design-page-header-height); padding-inline: var(--design-sidebar-inset); font-size: var(--design-page-type-size); font-weight: var(--font-weight-semibold); }
+.coordinator-sidebar .design-sidebar-brand[data-collapsed] { height: auto; flex-direction: column; padding-block: var(--design-sidebar-item-inset); }
 .design-sidebar-search { flex-shrink: 0; color: var(--muted-foreground); }
 .design-sidebar-search svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-search:hover { background: var(--muted-highlight); color: var(--foreground); }
@@ -4995,6 +4996,8 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   --coordinator-card-shadow: 0 5px 22px #00000008;
   --coordinator-composer-shadow: 0 8px 30px #0000000a;
   --background: #fafafa;
+  --task-list-surface: var(--background);
+  --task-list-edge-fade-surface: var(--task-list-surface);
   --foreground: #262626;
   --card: #ffffff;
   --card-foreground: var(--foreground);

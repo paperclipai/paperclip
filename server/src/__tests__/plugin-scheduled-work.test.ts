@@ -88,7 +88,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("does not query repeatedly after an empty startup reconciliation", async () => { await start(); await quiet(); });
   it("bounds full refreshes while many job status writes arrive sequentially", async () => {
-    await pluginJobStore(db).syncJobDeclarations(pluginId, Array.from({ length: 40 }, (_, i) => ({ jobKey: `manual-${i}`, schedule: "" })));
+    await pluginJobStore(db).syncJobDeclarations(pluginId, Array.from({ length: 40 }, (_, i) => ({ jobKey: `manual-${i}`, displayName: `Manual ${i}`, schedule: "" })));
     const jobs = await db.select().from(pluginJobs).where(eq(pluginJobs.pluginId, pluginId));
     await start(); await quiet();
     const reads = vi.spyOn(db, "select");
@@ -157,7 +157,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("does not dispatch a nested write until the outer transaction commits", async () => {
     await start(); await quiet();
     await db.transaction(async tx => {
-      await pluginJobStore(tx).syncJobDeclarations(pluginId, [{ jobKey: "outer", schedule: "0 * * * *" }]);
+      await pluginJobStore(tx).syncJobDeclarations(pluginId, [{ jobKey: "outer", displayName: "Outer", schedule: "0 * * * *" }]);
       const row = await pluginJobStore(tx).getJobByKey(pluginId, "outer");
       await pluginJobStore(tx).updateRunTimestamps(row!.id, new Date(0), new Date(Date.now() - 1000));
       await vi.advanceTimersByTimeAsync(5000); expect(rpc).not.toHaveBeenCalled();
@@ -167,7 +167,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("disarms after a rolled-back declaration", async () => {
     await start(); await quiet();
     await expect(db.transaction(async tx => {
-      await pluginJobStore(tx).syncJobDeclarations(pluginId, [{ jobKey: "rollback", schedule: "* * * * *" }]);
+      await pluginJobStore(tx).syncJobDeclarations(pluginId, [{ jobKey: "rollback", displayName: "Rollback", schedule: "* * * * *" }]);
       throw new Error("abort");
     })).rejects.toThrow("abort");
     await quiet(); expect(rpc).not.toHaveBeenCalled();

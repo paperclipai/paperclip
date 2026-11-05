@@ -135,7 +135,7 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     reply({ providerLeaseId: "late-replacement" });
     const fresh = await acquiring;
     await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId,
-      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId, providerMetadata: { binding: "actual" } });
+      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId!, providerMetadata: { binding: "actual" } });
     if (state === "pending") await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0) })
       .where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
     expect(await nextEnvironmentCleanupAt(db)).not.toBeNull();
@@ -145,13 +145,13 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     const [creation] = await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId)));
     await expect(verifyNativeStartupCleanup(db, await f.reload(), async () => {})).rejects.toThrow("cleanup is still pending");
     const replacement = (await environmentService(db).getLeaseById(creation.leaseId!))!;
-    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId! });
     expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0].leaseId).toBe(replacement.id);
     await expect(queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: "foreign-task" })).rejects.toThrow("ownership changed");
     await environmentService(db).releaseLease(replacement.id, "released", { cleanupStatus: "success",
       remoteExecutionTermination: remoteTerminationReceipt(replacement, { providerLeaseId: replacement.providerLeaseId, state: "stopped" }) });
     expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0].state).toBe("resolved");
-    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+    await queueSandboxCreationCleanup(db, { id: creation.id, companyId, environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId! });
     expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, creation.id)))[0])
       .toMatchObject({ state: "resolved", leaseId: replacement.id });
     await verifyNativeStartupCleanup(db, await f.reload(), async () => {});
@@ -194,7 +194,7 @@ describePostgres("durable cleanup after a native startup timeout", () => {
     const writes: boolean[][] = [];
     const observe = async (queues: string[], work: () => Promise<unknown>) => {
       const transaction = db.transaction.bind(db);
-      const spy = vi.spyOn(db, "transaction").mockImplementation(((callback: (tx: typeof db) => Promise<unknown>) => transaction(async tx => {
+      const spy = vi.spyOn(db, "transaction").mockImplementation(((callback: Parameters<typeof db.transaction>[0]) => transaction(async tx => {
         const update = tx.update.bind(tx);
         tx.update = ((table: unknown) => {
           if ([heartbeatRuns, nativeRunFinalizations, environmentLeases].includes(table as never)) {
@@ -202,7 +202,7 @@ describePostgres("durable cleanup after a native startup timeout", () => {
           }
           return update(table as never);
         }) as typeof tx.update;
-        return callback(tx as unknown as typeof db);
+        return callback(tx);
       })) as typeof db.transaction);
       try { await work(); } finally { spy.mockRestore(); }
     };
@@ -669,14 +669,14 @@ rl.on("line",line=>{const m=JSON.parse(line);
     const f = await fixture(true), original = await f.lease(), pluginId = randomUUID();
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-abandoned-task", version: "1", status: "ready",
       manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
-    await db.update(environments).set({ companyId, config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } })
+    await db.update(environments).set({ config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } })
       .where(eq(environments.id, original.environmentId!));
     const fresh = await createOwnedSandbox(db, { companyId, environmentId: original.environmentId!, heartbeatRunId: f.request.runId,
       issueId: original.issueId, provider: original.provider!, pluginId, driverKey: "tasks", config: {}, requestKey: original.providerLeaseId!,
       metadata: { driver: "plugin", pluginId, pluginKey: pluginId, driverKey: "tasks", runnerTaskLease: true, agentId,
         runnerTaskCreationContextId: f.request.contextId } }, async () => ({ providerLeaseId: "late-never-dispatched" }));
     await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId,
-      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId });
+      environmentId: original.environmentId!, providerLeaseId: fresh.providerLeaseId! });
     const creation = async () => (await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.id, String(fresh.metadata!.creationOperationId))))[0]!;
     const replacement = async () => (await environmentService(db).getLeaseById((await creation()).leaseId!))!;
     expect((await replacement()).metadata?.runnerTaskDispatched).not.toBe(true);

@@ -31,6 +31,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       disconnectActiveRunner() {}
       persistRunAttachTemplate() {}
       persistPreparedLaunchConfiguration() {}
+      unclaimedBootstrapCheckpoint() { return null; }
       issueBootstrapTicket() { return {}; }
       async flushCheckpoint() {}
       async recoverPendingSemanticInputs() {}

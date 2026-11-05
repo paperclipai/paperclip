@@ -10,6 +10,7 @@ const text = value => typeof value === 'string' && value.trim().length > 0;
 
 export function validateFullCatalogManifest(value) {
   if (value?.schema !== 'paperclip.chat-full-catalog-testops-manifest/v1'
+    || !/^[a-f0-9]{64}$/.test(value.launcherSha256 ?? '')
     || !/^[a-f0-9]{40}$/.test(value.targetSha ?? '') || !/^[a-f0-9]{40}$/.test(value.metadataSourceSha ?? '')
     || value.profile !== 'runner-opencode' || value.model !== 'openrouter/deepseek/deepseek-v4.1-flash-1017'
     || !Array.isArray(value.cases) || value.cases.length !== 244) throw new Error('chat_full_catalog_manifest_invalid');
@@ -52,6 +53,7 @@ function freeze(value) {
 
 validateFullCatalogManifest(manifest);
 export const catalogTargetSha = manifest.targetSha;
+export const catalogLauncherSha256 = manifest.launcherSha256;
 export const catalogManifestSha256 = createHash('sha256').update(bytes).digest('hex');
 export const fullCatalogPlanName = 'Chat feature catalog — OpenCode 1017 (candidate)';
 export const fullCatalogCases = freeze(manifest.cases);

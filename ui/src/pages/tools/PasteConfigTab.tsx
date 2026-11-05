@@ -9,6 +9,7 @@ import type {
   ToolAppConnectionActionSummary,
   ToolOAuthStartResult,
 } from "@paperclipai/shared";
+import { QueryErrorState } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,7 +24,7 @@ import {
 } from "@/features/connections/ConnectionSetupFlow";
 import { endpointHost } from "@/pages/apps/generic-mcp-connect";
 import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
-import { ErrorState } from "./shared";
+import { describeError } from "@/api/errors";
 
 const SAMPLE_CONFIG = `{
   "mcpServers": {
@@ -134,7 +135,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       setOAuthPhase("redirecting");
     } catch (error) {
       setOAuthPhase("error");
-      setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
+      setOAuthError(describeError(error).body);
     }
   };
 
@@ -179,9 +180,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       authorization.cancel();
       setOAuthPhase("error");
       setOAuthError(
-        error instanceof Error
-          ? error.message
-          : "Paperclip couldn’t start secure sign-in. Try again.",
+        describeError(error).body,
       );
     },
   });
@@ -339,7 +338,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         </span>
       </div>
 
-      {importMutation.isError ? <ErrorState error={importMutation.error} /> : null}
+      {importMutation.error ? <QueryErrorState error={importMutation.error} action="check the config" /> : null}
 
       {preview ? (
         drafts.length === 0 ? (
@@ -388,7 +387,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         )
       ) : null}
 
-      {connectMutation.isError ? <ErrorState error={connectMutation.error} /> : null}
+      {connectMutation.error ? <QueryErrorState error={connectMutation.error} action="check the app" /> : null}
       {connectResult ? (
         <CatalogReview
           result={connectResult}
@@ -406,7 +405,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           onFinish={() => finishMutation.mutate()}
         />
       ) : null}
-      {finishMutation.isError ? <ErrorState error={finishMutation.error} /> : null}
+      {finishMutation.error ? <QueryErrorState error={finishMutation.error} action="finish setup" /> : null}
     </div>
   );
 }

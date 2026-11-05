@@ -47,7 +47,7 @@ describe("current image plugin runtime loader", () => {
     fs.writeFileSync(service, (await transform(source, { loader: "ts", format: "esm", target: "node24" })).code);
     const entry = path.join(root, "server", "dist", "probe.js");
     fs.writeFileSync(entry, 'import { resolveBundledPluginRuntimeLoader } from "./services/bundled-plugin-runtime.js"; process.stdout.write(resolveBundledPluginRuntimeLoader());');
-    const bundled = await bundleRuntime({ entry, outdir: path.join(root, "server", "dist-runtime") });
+    const bundled = await bundleRuntime({ entry, outdir: path.join(root, "server", "dist-runtime"), maintenanceEntry: undefined, ephemeralMigrationEntry: undefined });
     expect(execFileSync(process.execPath, [bundled.outfile], { encoding: "utf8" })).toBe(loader);
   });
 
