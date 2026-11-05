@@ -9,7 +9,7 @@ import { queryKeys } from "@/lib/queryKeys";
 let detachedClient: QueryClient | null = null;
 const getDetachedClient = () => detachedClient ??= new QueryClient();
 
-/** Per-person, initially-off presentation choice. The existing local-board
+/** Per-person, default-on presentation choice. The existing local-board
  * principal is used only when the server explicitly reports local_trusted. */
 export function useCoordinatorWorkspaceEnabled() {
   const contextClient = useContext(QueryClientContext);

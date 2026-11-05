@@ -18,6 +18,23 @@ describe("instance settings service", () => {
     expect(applyExperimentalSettingsPatch(saved, { enableCases: true }).enableLegacyComposerSubmit).toBe(true);
     expect(applyExperimentalSettingsPatch(saved, { enableLegacyComposerSubmit: false }).enableLegacyComposerSubmit).toBe(false);
   });
+  it("defaults Agent Chat on while preserving stored and managed opt-outs", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableAgentChat).toBe(true);
+    expect(INSTANCE_FEATURE_CATALOG.enableAgentChat).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    for (const stored of [undefined, null, {}, { enableCases: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).enableAgentChat).toBe(true);
+    }
+    const disabled = applyExperimentalSettingsPatch({}, { enableAgentChat: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(disabled))).enableAgentChat).toBe(false);
+    expect(normalizeExperimentalSettings({ enableAgentChat: false, enableCases: "invalid" }).enableAgentChat).toBe(false);
+    expect(applyExperimentalSettingsPatch(disabled, { enableStatusCards: true }).enableAgentChat).toBe(false);
+    const config: ManagedInstanceConfig = {
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      features: { enableAgentChat: false },
+    };
+    expect(applyManagedExperimentalOverlay(applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, config), config).experimental.enableAgentChat).toBe(false);
+  });
+
   it("defaults remote workspace enrollment on while preserving explicit operator choices", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).remoteWorkspaceStorageEnabled).toBe(true);
     expect(INSTANCE_FEATURE_CATALOG.remoteWorkspaceStorageEnabled).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
@@ -112,7 +129,7 @@ describe("instance settings service", () => {
       enableStreamlinedUi: true,
       enableApps: true,
     enableMcpAggregators: true,
-      enableAgentChat: false,
+      enableAgentChat: true,
       enablePublicMcp: false,
       enableOpenAiDot: false,
       enableMuse: false,

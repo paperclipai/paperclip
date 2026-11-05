@@ -2156,7 +2156,7 @@ Agent appearances are stable, versioned ClipLab end-cap personas, separate from
 behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
 placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
 for persistence, migration, rendering, and integration contracts.
-### Experimental task-backed agent chat (2026-09-10)
+### Task-backed agent chat (2026-09-10)
 
 Ordinary task and routine runs in standard mode may publish with
 `send_chat_message({body,idempotencyKey})` or `POST /api/agents/me/chat/messages`.
@@ -2192,7 +2192,7 @@ preserved with accessible unread dots and an aggregate Chat indicator.
 `enableAgentChat` gates delivery; external channels, push/email and private-chat
 redesign are outside this contract.
 
-`enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
+`enableAgentChat` is an instance setting, default true for Cloud and self-hosted instances. Upgrades preserve the previous default for existing instances; explicit stored and managed choices remain authoritative. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
 
@@ -2844,10 +2844,13 @@ connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
 
 
-### Personal experimental workspace preference
+### Personal workspace preference
 
-Settings → Experimental can opt the current human into the Coordinator workspace.
-The choice defaults off and is saved per user across companies on an instance in
+Coordinator is the default workspace for a new human. The upgrade migration retains
+the classic workspace for existing people without a saved preference.
+Settings → Experimental can restore the classic workspace. Explicit saved choices
+remain authoritative. The choice defaults on and is saved per user across companies
+on an instance in
 `user_workspace_preferences`; it is not an instance feature or a company capability.
 Turning it off restores the classic shell without modifying canonical tasks, agents,
 artifacts, permissions, or runs. Local-trusted development uses the existing shared

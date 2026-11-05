@@ -1904,3 +1904,13 @@ pre-upgrade database transactions before enabling independent writers. Do not ru
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## New-user workspace defaults
+
+Migration `0432_fancy_pretty_boy.sql` changes the workspace preference column's
+default to Coordinator. Before that change, it preserves the classic default for
+existing auth users, human company members, and the shared Local Board on existing
+installations. Existing saved choices remain intact. It also preserves Agent Chat's
+previous instance-wide default on existing installations when no value was saved;
+new installations receive the new enabled application default. No task, agent,
+permission, or execution state changes.

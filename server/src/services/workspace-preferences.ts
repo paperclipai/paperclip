@@ -11,7 +11,7 @@ export function workspacePreferenceService(db: Db) {
     });
     return {
       userId,
-      coordinatorWorkspaceEnabled: row?.coordinatorWorkspaceEnabled ?? false,
+      coordinatorWorkspaceEnabled: row?.coordinatorWorkspaceEnabled ?? true,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }

@@ -37,10 +37,10 @@ export function CoordinatorWorkspaceSetting() {
         <div className="space-y-1.5">
           <h3 id="coordinator-workspace-title" className="text-sm font-medium">Coordinator workspace</h3>
           <p id="coordinator-workspace-description" className="text-sm text-muted-foreground">
-            Try the new Chat, Tasks, and Needs You workspace. This changes your interface across companies on this instance.
+            Use the Chat, Tasks, and Needs You workspace. This changes your interface across companies on this instance.
           </p>
           <p className="text-xs text-muted-foreground">
-            Off by default. Turn it off to return to the classic workspace. Your work and your teammates’ settings stay the same.
+            On by default for new users. Turn it off to return to the classic workspace. Your work and your teammates’ settings stay the same.
           </p>
           {workspace.userId === "local-board" && (
             <p className="text-xs text-muted-foreground">This local instance uses the shared Local Board identity.</p>

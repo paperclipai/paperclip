@@ -38,9 +38,9 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
   }
   const url = (companyId: string) => `/api/companies/${companyId}/workspace-preferences/me`;
 
-  it("defaults to classic without creating a row", async () => {
+  it("defaults to Coordinator without creating a row", async () => {
     const userId = randomUUID();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: false, updatedAt: null });
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, updatedAt: null });
     expect(await db.select().from(userWorkspacePreferences).where(eq(userWorkspacePreferences.userId, userId))).toHaveLength(0);
   });
 
@@ -50,7 +50,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     const response = await request(app(actor(second, userId))).get("/api/workspace-preferences/me").expect(200);
     expect(response.body).toMatchObject({ userId, coordinatorWorkspaceEnabled: true });
     expect(response.headers["cache-control"]).toBe("private, no-store");
-    expect((await request(app(actor(first, otherUser))).get("/api/workspace-preferences/me").expect(200)).body.coordinatorWorkspaceEnabled).toBe(false);
+    expect((await request(app(actor(first, otherUser))).get("/api/workspace-preferences/me").expect(200)).body.coordinatorWorkspaceEnabled).toBe(true);
     await request(app(actor(second, userId))).put(url(second)).send({ coordinatorWorkspaceEnabled: false }).expect(200);
     expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(false);
     const events = await db.select().from(activityLog).where(and(eq(activityLog.actorId, userId), eq(activityLog.action, "workspace_preferences.updated")));
@@ -66,7 +66,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: true, userId: "someone-else" }).expect(400);
     await request(app({ type: "none", source: "none" })).get("/api/workspace-preferences/me").expect(403);
     await request(app({ type: "agent", source: "agent_key", companyId, agentId: randomUUID() })).get("/api/workspace-preferences/me").expect(403);
-    expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(false);
+    expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(true);
   });
 
   it("uses the explicit local board principal without creating a signed-in user's setting", async () => {
@@ -74,12 +74,12 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     const local: Express.Request["actor"] = { type: "board", source: "local_implicit", userId: "local-board", isInstanceAdmin: true };
     await request(app(local)).put(url(companyId)).send({ coordinatorWorkspaceEnabled: true }).expect(200);
     expect((await request(app(local)).get("/api/workspace-preferences/me").expect(200)).body).toMatchObject({ userId: "local-board", coordinatorWorkspaceEnabled: true });
-    expect((await workspacePreferenceService(db).get(randomUUID())).coordinatorWorkspaceEnabled).toBe(false);
+    expect((await workspacePreferenceService(db).get(randomUUID())).coordinatorWorkspaceEnabled).toBe(true);
   });
 
   it("rolls the preference back when the audit cannot be persisted", async () => {
     const userId = randomUUID();
     await expect(workspacePreferenceService(db).set(randomUUID(), userId, true)).rejects.toThrow();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: false, updatedAt: null });
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, updatedAt: null });
   });
 });
