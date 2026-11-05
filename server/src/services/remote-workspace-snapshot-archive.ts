@@ -227,6 +227,11 @@ async function workspaceArchive(input: {
             if (!tracked) { excludedPaths.add(next); continue; }
           }
         }
+        if (stat.isSocket()) {
+          // Runtime IPC endpoints have no portable file contents. Record the
+          // exclusion without removing the endpoint or dropping adjacent work.
+          excludedPaths.add(next); continue;
+        }
         if (stat.isDirectory()) {
           entries.push({ path: next, type: "directory", mode: stat.mode & 0o777 });
           await visit(next, inRepository);
