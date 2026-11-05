@@ -18,6 +18,33 @@ import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
+import { readTaskRetryIntent } from "./task-retry.js";
+
+const savedRecordOperations = new Set([
+  "PUT /api/issues/{id}/documents/{key}",
+  "POST /api/issues/{id}/comments",
+  "PATCH /api/issues/{id}",
+]);
+
+/** Project duplicate saved content, never the original execution receipt or user input. */
+function continuationApiResult(operationId: string, result: unknown, companyId: string): unknown {
+  const response = object(result);
+  const data = object(response.data);
+  if (!savedRecordOperations.has(operationId) || response.operationId !== operationId
+    || response.ok !== true || typeof response.status !== "number" || response.status < 200 || response.status >= 300
+    || data.companyId !== companyId || !z.string().uuid().safeParse(data.id).success) return result;
+  const serialized = JSON.stringify(data);
+  if (Buffer.byteLength(serialized) <= 4 * 1024) return result;
+  const reference: Record<string, unknown> = {};
+  for (const key of ["id", "companyId", "issueId", "key", "latestRevisionId", "latestRevisionNumber",
+    "identifier", "status", "statusVersion", "createdAt", "updatedAt"]) {
+    const value = data[key];
+    if (value === null || typeof value === "string" && value.length <= 256
+      || typeof value === "number" && Number.isSafeInteger(value)) reference[key] = value;
+  }
+  return { ...response, data: { ...reference, contentOmitted: true,
+    contentSha256: `sha256:${createHash("sha256").update(serialized).digest("hex")}` } };
+}
 
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
@@ -380,7 +407,7 @@ export async function buildExecutionContinuation(input: {
                 runId: run.id,
                 receiptId,
                 operationId: value.operationId,
-                result: value.result,
+                result: continuationApiResult(value.operationId, value.result, companyId),
               },
             ]
           : [];
@@ -424,8 +451,22 @@ export async function buildExecutionContinuation(input: {
       eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.status, "coalesced"),
       eq(agentWakeupRequests.runId, input.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )) : [];
+    const taskRetryId = string(explicitContinuation.taskRetryRequestId);
+    const [taskRetryWake] = taskRetryId && z.string().guid().safeParse(taskRetryId).success
+      ? await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, taskRetryId),
+        eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
+        eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.status, "coalesced"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
+      )) : [];
+    const taskRetry = readTaskRetryIntent(taskRetryWake?.payload);
+    const retryAuthorization = taskRetry && taskRetry.generationId === taskRetryWake?.id
+      && taskRetry.actorId === taskRetryWake.requestedByActorId
+      ? object(object(taskRetryWake.payload?.taskRetry).continuation) : {};
     const continuationAuthorizations = [...reconciliations.map(row => object(row.evidence.explicitUserContinuation)),
-      ...(recordedQueue ? [object(object(recordedQueue.payload?.queuedCommentInterrupt).continuation)] : [])]
+      ...(recordedQueue ? [object(object(recordedQueue.payload?.queuedCommentInterrupt).continuation)] : []),
+      retryAuthorization]
       .filter(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
         value.commentId === explicitContinuation.commentId &&
@@ -441,15 +482,6 @@ export async function buildExecutionContinuation(input: {
         eq(agentWakeupRequests.status, "coalesced"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
-        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
-      )) : [];
-    const taskRetryId = string(explicitContinuation.taskRetryRequestId);
-    const [taskRetryWake] = taskRetryId && z.string().guid().safeParse(taskRetryId).success
-      ? await db.select().from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, taskRetryId),
-        eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.reason, "task_retry"),
-        eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.status, "coalesced"),
-        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
         input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
       )) : [];
     const authorization = continuationAuthorizations.find(value => taskRetryId

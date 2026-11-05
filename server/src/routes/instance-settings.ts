@@ -10,6 +10,7 @@ import {
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
+import { assertAgentsReadyForEnvironmentChange } from "../services/plugin-environment-driver.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
@@ -156,6 +157,10 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
           "instance",
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
+        const previousId = (await svc.get()).defaultEnvironmentId;
+        const environmentById = async (id: unknown) => typeof id === "string" ? environments.getById(id) : null;
+        await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
+          { inheritsDefault: true });
       }
       // An explicit tenant write of the instance default reclassifies its
       // attribution: whatever the default becomes — including a deliberate

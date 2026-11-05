@@ -11,6 +11,7 @@ import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -40,8 +41,11 @@ export async function canSelectFreshWorkspace(input: {
   if (!wake) return null;
   if (input.taskRetryRequestId) {
     const retry = readTaskRetryIntent(wake.payload);
-    if (retry?.generationId !== wake.id || retry.sourceRunId !== input.sourceRunId ||
+    if (retry?.generationId !== wake.id ||
         retry.actorId !== input.actorId || wake.requestedByActorId !== input.actorId) return null;
+    if (retry.sourceRunId !== input.sourceRunId && (system.intentId !== wake.id ||
+      !(await taskRetryRunAncestry({ db: input.db, companyId: input.companyId, issueId: input.issueId,
+        agentId: input.agentId, sourceRunId: retry.sourceRunId }))?.includes(input.sourceRunId))) return null;
     return wake.id;
   }
   const [source] = await input.db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(

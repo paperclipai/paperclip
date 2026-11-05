@@ -14,6 +14,30 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** The requested branch, tag, or commit is absent from a complete fresh clone. */
+export class RepositoryRefNotFoundError extends Error {
+  constructor(message: string, readonly requestedRef: string) {
+    super(message);
+    this.name = "RepositoryRefNotFoundError";
+  }
+}
+
+/**
+ * True only when Git reported an unknown ref and the clone positively cannot
+ * resolve it. `rev-parse --verify --quiet` exits 1 for an unknown name; any
+ * other failure (auth, corruption, timeout) is not evidence of a missing ref.
+ */
+async function isMissingRef(cloneCwd: string, ref: string, checkoutError: unknown): Promise<boolean> {
+  const stderr = String((checkoutError as { stderr?: unknown } | null)?.stderr ?? "");
+  if (!/did not match any file\(s\) known to git|invalid reference/.test(stderr)) return false;
+  for (const candidate of [`${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`]) {
+    const exitCode = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000 })
+      .then(() => 0, (error: { code?: unknown }) => error.code);
+    if (exitCode !== 1) return false;
+  }
+  return true;
+}
+
 export async function materializeManagedProjectWorkspace(
   cwd: string,
   input: {
@@ -122,7 +146,21 @@ export async function materializeManagedProjectWorkspace(
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
-      await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef!], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+      const repoRef = input.repoRef;
+      try {
+        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], {
+          // Untranslated Git messages keep missing-ref classification locale independent.
+          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" },
+        }));
+      } catch (error) {
+        // Only a ref that a complete fresh clone cannot resolve is a missing ref;
+        // every other checkout failure keeps its original cause.
+        if (!await isMissingRef(cloneTmpDir, repoRef, error)) throw error;
+        throw new RepositoryRefNotFoundError(
+          `Requested ref "${repoRef}" does not exist in the repository. Request the repository again with an existing branch, tag, or commit.`,
+          repoRef,
+        );
+      }
     }
     await input.beforePublish?.(cloneTmpDir);
   } catch (error) {
@@ -138,6 +176,7 @@ export async function materializeManagedProjectWorkspace(
       `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
     );
     if (isWorkspaceGitScanError(error)) throw new WorkspaceGitScanError(error.code, message);
+    if (error instanceof RepositoryRefNotFoundError) throw new RepositoryRefNotFoundError(message, error.requestedRef);
     const connectionFailure = readGitConnectionFailure(error);
     if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
     throw new Error(message);

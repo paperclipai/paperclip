@@ -50,6 +50,10 @@ const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 
+vi.mock("@/components/ai-connections/AiConnectionPoolConnector", () => ({
+  AiConnectionPoolConnector: () => <div>Connection pool controls</div>,
+}));
+
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listAggregatorApps: (connectionId: string) => listAggregatorAppsMock(connectionId),
@@ -713,6 +717,55 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("Loading tools…");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("keeps the loaded connection visible when a refetch fails transiently", async () => {
+    mockParams.tab = "permissions";
+    const client = await renderAppDetail();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+
+    getConnectionMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry for a real connection failure", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+
+    await renderAppDetail();
+
+    const errorView = container.querySelector('[data-query-view="error"]');
+    expect(errorView?.textContent).toContain("Couldn't load the connection");
+    expect(container.textContent).not.toContain("Which agents can use this connection?");
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+    await act(async () => retry!.click());
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+  });
+
+  it.each([false, true])("replaces a cached connection with not-found after deletion (router: %s)", async router => {
+    if (router) getConnectionMock.mockResolvedValue(connection({ config: { aiRouter: { pluginKey: "test-router" } } }));
+    const client = await renderAppDetail();
+    const controls = router ? "Connection pool controls" : "Which agents can use this connection?";
+    expect(container.textContent).toContain(controls);
+    getConnectionMock.mockRejectedValue(new ApiError("not_found", 404, null));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+    expect(client.getQueryData(queryKeys.tools.connection("conn-1"))).toBeDefined();
+    expect(container.textContent).toContain("We couldn't find that app.");
+    expect(container.textContent).toContain("Back to connectors");
+    expect(container.textContent).not.toContain(controls);
+    expect(container.textContent).not.toContain("not_found");
   });
 
   it("redirects the retired Test tab into Permissions", async () => {

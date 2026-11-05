@@ -12,6 +12,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
@@ -26,6 +27,7 @@ import { hasPendingNativeChildCompletion } from "./native-child-completion-deliv
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -64,6 +66,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { preservedResultHasStop, readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
@@ -259,6 +262,35 @@ async function claimCoordinator(input: {
   return claimed;
 }
 
+/**
+ * A workspace copy-back cause is server-built text in a fixed grammar (see
+ * remoteWorkspaceFailureCause and the native post-result diagnostic). Re-check the shape before it reaches the run:
+ * no paths, no line breaks, bounded length.
+ */
+export function readWorkspaceFailureCause(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 1024
+    && /^(?:remote_workspace|native_post_result)_[a-z_]+(?::[A-Za-z0-9_=;:,.() -]*)?$/.test(value) ? value : null;
+}
+
+function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,
+  failureCause?: string | null) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted") {
+    // This code also covers local-directory and plugin workspaces, so the
+    // message stays general and defers to the recovery action's next step.
+    return "Saving the workspace failed after 3 attempts. The agent's result is kept; follow the run's recovery action to repair the workspace."
+      + (failureCause ? ` Last cause: ${failureCause}` : "");
+  }
+  if (failureCode === "native_workspace_sync_out_unrecoverable") {
+    return "The sandbox holding unexported workspace changes is unavailable, so its files could not be saved.";
+  }
+  if (failureCode === "native_finalization_retry_exhausted") {
+    return "Native run finalization failed after 3 attempts.";
+  }
+  return failureScope === "workspace"
+    ? `Native workspace finalization failed (${failureCode}).`
+    : `Native run finalization failed (${failureCode}).`;
+}
+
 async function recordRetryableFailure(input: {
   db: Db;
   run: typeof heartbeatRuns.$inferSelect;
@@ -269,9 +301,11 @@ async function recordRetryableFailure(input: {
   projectRunStatus?: boolean;
   failureScope?: "provider" | "workspace";
   permanent?: boolean;
+  failureCause?: string | null;
 }) {
   const now = new Date();
   const nextAttemptAt = new Date(now.getTime() + 30_000);
+  const failureCause = readWorkspaceFailureCause(input.failureCause);
   const acceptedRunTerminalState = record(
     input.run.resultJson,
   ).prpRunTerminalState;
@@ -319,6 +353,8 @@ async function recordRetryableFailure(input: {
     const issue = await tx
       .select({
         lastStatusDecisionId: issues.lastStatusDecisionId,
+        status: issues.status, statusVersion: issues.statusVersion,
+        assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
       })
       .from(issues)
       .where(
@@ -413,6 +449,7 @@ async function recordRetryableFailure(input: {
         failureDetail: {
           message: input.message.slice(0, 2_000),
           originalFailureCode: input.failureCode,
+          ...(failureCause ? { failureCause } : {}),
           ...(priorFailureDetail.workspaceExportRetry ? { workspaceExportRetry: priorFailureDetail.workspaceExportRetry } : {}),
           ...(workspaceFinalizeAttempt === null
             ? {}
@@ -436,6 +473,7 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
+    const terminalRunStatus = input.failureScope === "workspace" ? "failed" : exhaustedRunStatus;
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -445,9 +483,17 @@ async function recordRetryableFailure(input: {
               // Stop can win after the failure's admission snapshot. The
               // UPDATE locks and evaluates the current row, not that snapshot.
               status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
-                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
+                else ${terminalRunStatus} end`,
               finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
                 else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
+              // A failed run names its cause. Keep an earlier root cause, and
+              // leave a run that Stop already cancelled without a failure.
+              ...(terminalRunStatus === "failed"
+                ? explainFailedRun({
+                    errorCode: failureCode,
+                    error: terminalFinalizationFailureMessage(failureCode, input.failureScope, failureCause),
+                  })
+                : {}),
             }
           : {}),
         nativePhase: phase,
@@ -458,6 +504,8 @@ async function recordRetryableFailure(input: {
           finalizationPhase: phase,
           failureCode,
           originalFailureCode: input.failureCode,
+          // The latest attempt's redacted cause; cleared when it named none.
+          failureCause,
           nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
         })}::jsonb`,
         updatedAt: now,
@@ -466,6 +514,7 @@ async function recordRetryableFailure(input: {
       .returning();
     if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
+    let workspaceFinalizationBlock: Record<string, unknown> | undefined;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(
         tx as unknown as Db,
@@ -486,7 +535,7 @@ async function recordRetryableFailure(input: {
         tx,
       );
     } else if (exhausted) {
-      await issueService(tx as unknown as Db).update(
+      const blocked = await issueService(tx as unknown as Db).update(
         input.coordinator.issueId,
         {
           status:
@@ -496,6 +545,25 @@ async function recordRetryableFailure(input: {
         },
         tx,
       );
+      if (input.failureScope === "workspace" && issue && blocked?.status === "blocked"
+        && !["blocked", "done", "cancelled"].includes(issue.status)
+        && issue.assigneeAgentId === input.run.agentId && !issue.assigneeUserId
+        && input.run.status !== "cancelled" && !preservedResultHasStop(input.run.resultJson)
+        && input.coordinator.resultId && input.run.completionContractId && input.run.completionContractSha256) {
+        const [accepted] = await tx.select({ id: nativeRunResults.id, sha256: nativeRunResults.canonicalSha256 })
+          .from(nativeRunResults).where(and(eq(nativeRunResults.companyId, input.run.companyId),
+            eq(nativeRunResults.issueId, input.coordinator.issueId), eq(nativeRunResults.runId, input.run.id),
+            eq(nativeRunResults.id, input.coordinator.resultId), eq(nativeRunResults.schemaStatus, "accepted"),
+            eq(nativeRunResults.completionContractId, input.run.completionContractId))).limit(1);
+        if (accepted) workspaceFinalizationBlock = {
+          schema: "paperclip.native-workspace-finalization-block.v1",
+          companyId: input.run.companyId, issueId: input.coordinator.issueId,
+          runId: input.run.id, agentId: input.run.agentId, resultId: accepted.id, resultSha256: accepted.sha256,
+          contractId: input.run.completionContractId, contractSha256: input.run.completionContractSha256,
+          identityContextId: input.run.activeIdentityContextId, responsibleUserId: input.run.responsibleUserId,
+          statusVersion: Number(blocked.statusVersion), priorDecisionId: issue.lastStatusDecisionId,
+        };
+      }
     }
     if (!supersededByNewerRun) {
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
@@ -509,6 +577,7 @@ async function recordRetryableFailure(input: {
         fingerprint: nativeSha256({ runId: input.run.id, failureCode }),
         evidence: {
           runId: input.run.id,
+          ...(workspaceFinalizationBlock ? { workspaceFinalizationBlock } : {}),
           coordinatorAttempt: input.coordinator.attempt,
           ...(workspaceFinalizeAttempt === null
             ? {}
@@ -555,6 +624,7 @@ export async function recordNativeFinalizationFailure(input: {
   projectRunStatus?: boolean;
   failureScope?: "provider" | "workspace";
   permanent?: boolean;
+  failureCause?: string | null;
 }) {
   const [run, coordinator] = await Promise.all([
     input.db
@@ -595,6 +665,7 @@ export async function recordNativeFinalizationFailure(input: {
     projectRunStatus: input.projectRunStatus,
     failureScope: input.failureScope,
     permanent: input.permanent,
+    failureCause: input.failureCause,
   });
 }
 
@@ -1298,6 +1369,10 @@ export async function finalizeNativeRun(input: {
       .then((rows) => rows[0] ?? null);
     if (!authoritativeIssue)
       throw new Error("native_finalization_issue_missing");
+    const preservedResultFinalization = run.status !== "running"
+      ? await readPreservedNativeResultFinalization(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }) : null;
     const publishedReviewContinuation = assessment.reportedDisposition === "yielded" &&
       isPublishedGitHubReviewCompletionContinuation(assessment.continuation)
       ? await readPublishedGitHubReviewCompletionContinuation({ db: input.db,
@@ -1411,7 +1486,7 @@ export async function finalizeNativeRun(input: {
       ? await readNativeMonitorDelivery(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id })
       : null;
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
-    let proposedDecision = resolveNativeFinalizerStatus({
+    const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
@@ -1438,6 +1513,7 @@ export async function finalizeNativeRun(input: {
         dependencyReadiness.unresolvedBlockerCount > 0,
       governanceResolvedForRun: resolvedInteraction !== null,
       externalChatResponseWaitAuthorization,
+      hasUnprovenPreservedResultStatus: preservedResultFinalization?.statusRestoration === "unproven",
       publishedExternalReview: assessment.reportedDisposition === "yielded" &&
         (externalChatResponseWaitAuthorization === "authorized" || monitorWaitAt !== null)
         ? await hasPublishedGitHubReview(input.db, {
@@ -1453,7 +1529,8 @@ export async function finalizeNativeRun(input: {
         null,
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
-    });
+    };
+    let proposedDecision = resolveNativeFinalizerStatus(statusInput);
     // Already accepted results still require the server-owned first-task decision.
     // Keep the task open without inventing an interaction or rerunning the work.
     if (proposedDecision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(input.db, {
@@ -1461,6 +1538,22 @@ export async function finalizeNativeRun(input: {
     })) {
       proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
         reasonCode: "onboarding_first_task_decision_required", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    }
+    if (proposedDecision.statusAction === "done") {
+      const continuation = record(run.contextSnapshot?.executionContinuation);
+      const objective = typeof continuation.objective === "string" ? continuation.objective
+        : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
+      try {
+        await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+      } catch (error) {
+        if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
+        const incomplete = resolveNativeFinalizerStatus({ ...statusInput,
+          assessment: { ...assessment, hasBlockingRemainingWork: true, continuation: null } });
+        proposedDecision = { ...incomplete, effects: incomplete.effects.map(effect =>
+          effect.kind === "enqueue_continuation" ? { ...effect, summary: error.message }
+            : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
+      }
     }
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
@@ -1521,6 +1614,7 @@ export async function finalizeNativeRun(input: {
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
+        requirePreservedResultFinalization: preservedResultFinalization ?? undefined,
         supersededExternalReviewRequests: supersededReviews.length && !governanceGate &&
           ["completion_claim_policy_accepted", "completion_contract_satisfied", "external_chat_response_waiting", "scheduled_monitor_waiting"].includes(decision.reasonCode ?? "")
           ? { agentId: run.agentId, resultId: resultRow.id, interactionIds: supersededReviews.map(({ interaction }) => interaction.id) } : undefined,
@@ -1551,7 +1645,7 @@ export async function finalizeNativeRun(input: {
             ? (boardResponseWaitOrigin ?? undefined)
             : undefined,
         requireExternalChatResponseWaitAuthorization:
-          decision.reasonCode === "external_chat_response_waiting"
+          ["external_chat_response_waiting", "preserved_result_status_unproven"].includes(decision.reasonCode ?? "")
             ? { agentId: run.agentId, ...(publishedReviewContinuation ? { completionContinuationKey: publishedReviewContinuation.idempotencyKey } : {}) }
             : undefined,
         reviewResponsePresentation:
@@ -1629,12 +1723,20 @@ export async function finalizeNativeRun(input: {
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
-      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.error} end`;
-      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-        else ${providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-          : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode} end`;
+      const nextError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.error}`;
+      const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
+      // A run projected to failed always records why, even when the provider
+      // reported a failed terminal without a classified failure.
+      const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
+      const explained = projectsFailedStatus
+        ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        : null;
+      const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+        else ${nextError} end`;
+      const projectedErrorCode = explained?.errorCode ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+        else ${nextErrorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
@@ -1659,7 +1761,7 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(clearExecutionFailure || providerFailure || projectsFailedStatus ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })
