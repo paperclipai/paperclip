@@ -20,13 +20,14 @@ implementation notes below for where the code differs from this plan.
   first and fall back to the run-derived source. `createdFrom.run` is nullable.
   `origin_run_id` was already harness-only: the create schema does not accept
   it.
-- **Runner and project tool contracts are unchanged.** `create_task`'s input and
-  output schemas are strict pack contracts, so this change adds no
-  `parentTaskId` input or `parentAdjusted` output to them. The tool result
-  already reports the effective `parentId`, and the activity log records
-  `parentAdjusted`. Chat agents build parent + child trees through the issues
-  API (`parentId` set to a task they created) or nested `suggest_tasks`.
-  Extending the tool contract is a follow-up.
+- **`create_task` takes an optional `parentTaskId`.** A local test drive showed
+  that chat agents could not build a parent and subtasks through the tool, so
+  the runner contract gained this input (regenerated manifest and semantic
+  contracts). The run must be able to read and change the named parent; a
+  conversation is never a parent; depth placement still applies. Project tools
+  map it to `parentId` through the issues route. The tool output is unchanged:
+  it reports the effective `parentId`, and the activity log records
+  `parentAdjusted`.
 - **Chat parent scope (Open decision 5).** Not restricted to tasks from the
   same conversation. Chat agents may parent under any task they may write, the
   same as other agents, and the depth limit still applies.

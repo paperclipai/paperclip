@@ -1704,8 +1704,32 @@ export class PaperclipRunnerToolAuthority {
       issue: typeof issues.$inferSelect;
       actor: typeof agents.$inferSelect;
     }) => {
-      const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
-      const projectId = nullableProviderId(input.projectId) ?? (parentIssueId ? context.issue.projectId : null);
+      // Default parent: the current task, or none from a conversation. An
+      // explicit parentTaskId names another task the run may read and change
+      // (for example a top-level task this conversation just created).
+      let parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      let parentProjectId = parentIssueId ? context.issue.projectId : null;
+      const requestedParentId = nullableProviderId(input.parentTaskId);
+      if (requestedParentId && requestedParentId !== parentIssueId) {
+        const [parent] = await tx.select().from(issues).where(and(
+          eq(issues.id, requestedParentId), eq(issues.companyId, this.binding.companyId),
+        ));
+        if (!parent) throw new Error("paperclip_runner_task_not_found");
+        if (parent.conversationAgentId) {
+          throw forbidden("A conversation cannot be a parent; omit parentTaskId to create a top-level task");
+        }
+        const parentActor = this.#privacyActor(context.run);
+        for (const action of ["issue:read", "issue:mutate"] as const) {
+          const decision = await authorizationService(tx).decide({ actor: parentActor, action, resource: {
+            type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
+            parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
+          }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
+          if (!decision.allowed) throw forbidden(decision.explanation);
+        }
+        parentIssueId = parent.id;
+        parentProjectId = parent.projectId;
+      }
+      const projectId = nullableProviderId(input.projectId) ?? parentProjectId;
       if (this.binding.museRuntime && projectId) {
         const access = await authorizationService(tx).decide({ actor: this.#privacyActor(context.run), action: "project:read",
           resource: { type: "project", companyId: this.binding.companyId, projectId } });
@@ -1729,12 +1753,11 @@ export class PaperclipRunnerToolAuthority {
         run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
       });
       if (trust.kind === "denied") throw forbidden(trust.detail);
-      return { projectId, trust };
+      return { projectId, trust, parentIssueId };
     };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
-      const { projectId, trust } = await authorizeCreate(tx, context);
-      const conversation = Boolean(context.issue.conversationAgentId);
+      const { projectId, trust, parentIssueId } = await authorizeCreate(tx, context);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
         eq(issues.originId, durableIdempotencyKey),
@@ -1806,9 +1829,9 @@ export class PaperclipRunnerToolAuthority {
         idempotencyKey: durableIdempotencyKey,
         onDeduplicated: () => { deduplicated = true; },
       };
-      const child = conversation
-        ? await issueService(tx).create(this.binding.companyId, createInput)
-        : (await issueService(tx).createChild(this.binding.issueId, createInput)).issue;
+      const child = parentIssueId
+        ? (await issueService(tx).createChild(parentIssueId, createInput)).issue
+        : await issueService(tx).create(this.binding.companyId, createInput);
       if (deduplicated && child.originFingerprint !== inputFingerprint) {
         throw new Error("paperclip_runner_tool_idempotency_conflict");
       }

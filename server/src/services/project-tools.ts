@@ -47,7 +47,11 @@ export async function callProjectTool(input: {
       } : {}),
       assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
       assigneeUserId: args.assigneeUserId,
-      parentId: input.conversation ? null : input.issueId,
+      // An explicit parent goes through the route's depth placement and
+      // authorization; a conversation itself is never a parent.
+      parentId: typeof args.parentTaskId === "string" && args.parentTaskId
+        ? args.parentTaskId
+        : (input.conversation ? null : input.issueId),
       status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,

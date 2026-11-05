@@ -1416,6 +1416,40 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
   });
 
+  it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {
+    const conversationId = randomUUID();
+    const conversationRunId = randomUUID();
+    await db.insert(issues).values({
+      id: conversationId, companyId, title: "Chat with runner agent", status: "in_progress", workMode: "standard",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: "chat-user", conversationState: "active",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: conversationRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: conversationId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: conversationId },
+    });
+    await db.update(issues).set({ executionRunId: conversationRunId }).where(eq(issues.id, conversationId));
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId: conversationId, runId: conversationRunId, workMode: "standard",
+    });
+    const create = async (key: string, args: Record<string, unknown>) => await authority.execute({
+      tool: "create_task", callId: key, arguments: { idempotencyKey: key, status: "backlog", ...args },
+    }) as { task: { id: string; parentId: string | null } };
+
+    const parent = await create("chat-parent", { title: "Referral launch" });
+    expect(parent.task.parentId).toBeNull();
+    const subtask = await create("chat-subtask", { title: "Landing page", parentTaskId: parent.task.id });
+    expect(subtask.task.parentId).toBe(parent.task.id);
+    const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, subtask.task.id));
+    expect(row?.originIssueId).toBe(parent.task.id);
+
+    // A child of a child is placed beside it.
+    const deeper = await create("chat-deeper", { title: "Landing copy", parentTaskId: subtask.task.id });
+    expect(deeper.task.parentId).toBe(parent.task.id);
+
+    await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
+      .rejects.toThrow(/conversation cannot be a parent/i);
+  });
+
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
     const wakes: Array<{ agentId: string; options: Record<string, unknown> }> =
       [];
