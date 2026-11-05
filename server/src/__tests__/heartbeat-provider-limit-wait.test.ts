@@ -3,10 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { createProviderLimitWait } from "../services/heartbeat/provider-limit-wait.js";
+import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -111,6 +113,11 @@ describePostgres("heartbeat provider usage limit wait", () => {
     expect(events.some(event => event.message?.includes("provider usage limit"))).toBe(true);
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(issue.status).not.toBe("blocked");
+    // The persisted projection names the wait and its reset.
+    expect((await executionProjectionsForRuns(db, f.companyId, [retry!.id])).get(retry!.id)).toMatchObject({
+      label: "Waiting for usage limit reset", phase: "retry_scheduled",
+      nextAction: expect.stringContaining(retry!.scheduledRetryAt!.toISOString()),
+    });
 
     // Nothing is dropped: the wait starts the work once the reset has passed.
     expect((await heartbeat.promoteDueScheduledRetries(new Date())).runIds).not.toContain(retry!.id);
@@ -124,6 +131,32 @@ describePostgres("heartbeat provider usage limit wait", () => {
     const [resumed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
     expect(resumed.status).toBe("succeeded");
   }, 60_000);
+
+  it("releases the task when its retry cannot be scheduled, even if diagnostics fail", async () => {
+    const f = await seed([rateLimited(16)]);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+      invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId: f.issueId } }).returning();
+    const deps = {
+      setRunStatusIfRunning: vi.fn(async () => ({ updated: true, run: { ...run, status: "cancelled" } })),
+      setWakeupStatus: vi.fn(async () => { throw new Error("wakeup write failed"); }),
+      appendRunEvent: vi.fn(async () => { throw new Error("event write failed"); }),
+      scheduleBoundedRetryForRun: vi.fn(async () => { throw new Error("retry write failed"); }),
+      releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
+      finalizeAgentStatus: vi.fn(async () => undefined),
+    };
+    const { deferRunForProviderLimit } = createProviderLimitWait(db, deps as never);
+    await expect(deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false })).resolves.toBe(true);
+    expect(deps.scheduleBoundedRetryForRun).toHaveBeenCalledTimes(2);
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
+    expect(deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+
+    // A scheduled retry keeps the task lock for its successor.
+    deps.scheduleBoundedRetryForRun.mockReset().mockResolvedValue({ outcome: "scheduled" } as never);
+    deps.releaseIssueExecutionAndPromote.mockClear();
+    await expect(deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false })).resolves.toBe(true);
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
 
   it("still dispatches a manual run, and work after a later success or an expired reset", async () => {
     const manual = await seed([rateLimited(16)]);
