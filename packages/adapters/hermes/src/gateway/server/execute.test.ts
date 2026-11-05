@@ -634,6 +634,75 @@ describe("execute", () => {
     }
   });
 
+  it("aborts in-flight cleanup requests when the cleanup deadline expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: Array<AbortSignal | null | undefined> = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-cl" }), { status: 200 });
+        signals.push(init?.signal);
+        return new Promise<Response>(() => {});
+      }));
+      const pending = execute(makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 600, idleTimeoutSec: 1,
+      }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await pending;
+      const cleanupSignals = signals.filter((s) => s);
+      expect(cleanupSignals.length).toBeGreaterThan(0);
+      expect(cleanupSignals.every((s) => s?.aborted)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still enforces the idle timeout and stops the run when post-creation callbacks hang or throw", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-cb" }), { status: 200 });
+      if (url.endsWith("/events")) return new Promise<Response>(() => {});
+      if (url.endsWith("/stop")) return new Response("{}", { status: 200 });
+      if (init?.method === "GET") return new Response(JSON.stringify({ status: "cancelled" }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    for (const mode of ["hang", "throw"] as const) {
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 60, idleTimeoutSec: 0.05 });
+      let calls = 0;
+      ctx.onMeta = vi.fn(async () => {
+        calls += 1;
+        if (calls < 2) return undefined; // initial meta ok; post-creation meta misbehaves
+        if (mode === "throw") throw new Error("db down");
+        return new Promise<undefined>(() => {});
+      });
+      const result = await execute(ctx);
+      expect(result.errorCode).toBe("hermes_gateway_idle_timeout");
+      expect(result.resultJson?.external_run_id).toBe("run-cb");
+    }
+    expect(fetchMock.mock.calls.filter(([i]) => String(i).endsWith("/stop")).length).toBe(2);
+  });
+
+  it("publishes the same session id in run_created and the final result", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-s", session_id: "session-1" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream('event: run.completed\ndata: {"status":"completed","session_id":"session-1"}\n\n'), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    }));
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 30 });
+    const onEvent = vi.fn(async () => undefined);
+    ctx.onEvent = onEvent;
+    const result = await execute(ctx);
+    const created = (onEvent.mock.calls as unknown as Array<[{ eventType: string; payload: { sessionId: string | null } }]>)
+      .map(([e]) => e).find((e) => e.eventType === "hermes_gateway.run_created");
+    expect(created?.payload.sessionId).toBe("session-1");
+    expect(result.sessionId).toBe(created?.payload.sessionId);
+  });
+
   it("aborts with idle timeout when the gateway stays silent, below the hard ceiling", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

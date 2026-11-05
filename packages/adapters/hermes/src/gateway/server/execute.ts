@@ -259,18 +259,41 @@ function publicSessionId(id: string | null, sessionKey: string | null): string |
   return `hsess-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
 }
 
-/** Resolve with `fallback` if `work` does not settle within `ms`. */
-async function withDeadline<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+/**
+ * Run stop + final-status cleanup under a hard deadline. On expiry the shared
+ * AbortSignal cancels any in-flight request and no further requests are issued.
+ */
+async function cleanupRun(input: {
+  ctx: AdapterExecutionContext;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+  redactText?: TextRedactor;
+  deadlineMs: number;
+}): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, input.deadlineMs);
+  });
+  const work = (async () => {
+    await stopRun({ ...input, signal: controller.signal });
+    return fetchFinalStatus({
+      baseUrl: input.baseUrl,
+      headers: input.headers,
+      runId: input.runId,
+      deadlineMs: STOP_GRACE_MS,
+      signal: controller.signal,
+    });
+  })().catch(() => null);
   try {
-    return await Promise.race([
-      work,
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => resolve(fallback), ms);
-      }),
-    ]);
+    return await Promise.race([work, expired]);
   } finally {
     if (timer) clearTimeout(timer);
+    controller.abort();
   }
 }
 
@@ -843,12 +866,15 @@ async function stopRun(input: {
   headers: Record<string, string>;
   runId: string;
   redactText?: TextRedactor;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown> | null> {
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: input.signal,
     });
+    if (input.signal?.aborted) return null;
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
@@ -862,13 +888,15 @@ async function fetchFinalStatus(input: {
   headers: Record<string, string>;
   runId: string;
   deadlineMs: number;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown> | null> {
   const deadline = Date.now() + input.deadlineMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !input.signal?.aborted) {
     try {
       const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
         method: "GET",
         headers: input.headers,
+        signal: input.signal,
       });
       const record = asRecord(status);
       const normalized = extractStatus(status);
@@ -876,7 +904,8 @@ async function fetchFinalStatus(input: {
     } catch {
       return null;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (input.signal) await delay(500, input.signal);
+    else await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return null;
 }
@@ -1036,12 +1065,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
+  let created: unknown = null;
   try {
     // This adapter has no local child process, so crossing into the first
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
+    created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: JSON.stringify(body),
@@ -1060,21 +1090,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } catch (err) {
     return errorResult(err, baseUrl, redactText);
   }
-
-  await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
-  await ctx.onMeta?.({
-    adapterType: ADAPTER_TYPE,
-    command: "POST /v1/runs",
-    commandArgs: [createRunUrl],
-    context: { runId: ctx.runId, externalRunId: runId, sessionKeyStrategy: strategy },
-  });
-  await ctx.onEvent?.({
-    eventType: "hermes_gateway.run_created",
-    stream: "system",
-    level: "info",
-    message: `Hermes run created: ${runId}`,
-    payload: { externalRunId: runId, sessionId: publicSessionId(sessionKey, sessionKey) },
-  });
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -1097,6 +1112,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     redactText,
   }).catch(() => undefined);
 
+  // Post-creation callbacks write to the database; they must neither block
+  // monitoring/timeouts nor abandon an accepted remote run if they fail or stall.
+  const createdSessionId = publicSessionId(extractSessionId(created) ?? sessionKey, sessionKey);
+  const announced = (async () => {
+    try {
+      await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+      await ctx.onMeta?.({
+        adapterType: ADAPTER_TYPE,
+        command: "POST /v1/runs",
+        commandArgs: [createRunUrl],
+        context: { runId: ctx.runId, externalRunId: runId, sessionKeyStrategy: strategy },
+      });
+      await ctx.onEvent?.({
+        eventType: "hermes_gateway.run_created",
+        stream: "system",
+        level: "info",
+        message: `Hermes run created: ${runId}`,
+        payload: { externalRunId: runId, sessionId: createdSessionId },
+      });
+    } catch {
+      // best-effort: observability failures must not affect the run
+    }
+  })();
+
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
@@ -1118,16 +1157,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (timeoutTimer) clearTimeout(timeoutTimer);
   if (idleTimer) clearTimeout(idleTimer);
   controller.abort();
+  let announceTimer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([announced, new Promise((r) => { announceTimer = setTimeout(r, 2_000); })]);
+  if (announceTimer) clearTimeout(announceTimer);
 
   if (outcome === "idle") {
-    const finalStatus = await withDeadline(
-      (async () => {
-        await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-        return fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
-      })(),
-      STOP_GRACE_MS * 2,
-      null,
-    );
+    const finalStatus = await cleanupRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText, deadlineMs: STOP_GRACE_MS * 2 });
     return {
       exitCode: 1,
       signal: null,
@@ -1143,19 +1178,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
       sessionParams: { hermesRunId: runId, externalRunId: runId, strategy },
-      sessionDisplayId: publicSessionId(sessionKey, sessionKey),
+      sessionDisplayId: createdSessionId,
     };
   }
 
   if (outcome === "timeout") {
-    const finalStatus = await withDeadline(
-      (async () => {
-        await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-        return fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
-      })(),
-      STOP_GRACE_MS * 2,
-      null,
-    );
+    const finalStatus = await cleanupRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText, deadlineMs: STOP_GRACE_MS * 2 });
     return {
       exitCode: 1,
       signal: null,
@@ -1175,7 +1203,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         externalRunId: runId,
         strategy,
       },
-      sessionDisplayId: publicSessionId(sessionKey, sessionKey),
+      sessionDisplayId: createdSessionId,
     };
   }
 
