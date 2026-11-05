@@ -45,8 +45,7 @@ function producedTimestamp(value: unknown, field: string): Date {
 type AgentReceipt = { event: string; at: number; pid: number; runId: string; guard: ReturnType<typeof defaultCadenceNetwork> };
 
 describe.skipIf(!enabled)('status and external-object actual signed cold-owner handoff', () => {
-  it(stage === 'identity' ? 'status identity: retains encrypted identity across cold process boots and rejects a changed master key'
-    : `${owner} ${stage}: preserves the produced deadline and publishes useful work after cold wake`, async () => {
+  const runAcceptance = async (): Promise<void> => {
     assert(appUrl && cloudUrl && cloudCheckout && cloudNode && evidence);
     assert.equal(execFileSync('git', ['-C', cloudCheckout, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), cloudSha);
     assert.match(execFileSync(cloudNode, ['--version'], { encoding: 'utf8' }), /^v22\./);
@@ -452,5 +451,20 @@ describe.skipIf(!enabled)('status and external-object actual signed cold-owner h
     }
     if (primary) throw primary.error;
     if (failures.length) throw new AggregateError(failures.map(failure => failure.error), 'Owner acceptance cleanup or guard failed');
-  }, stage === 'identity' ? 240_000 : stage === 'bootstrap' ? 850_000 : 1_250_000);
+  };
+  const registrations = [
+    { owner: 'status', stage: 'bootstrap', diagnostic: false, name: 'status bootstrap: publishes a signed original-deadline alarm before physical stop' },
+    { owner: 'status', stage: 'cycle', diagnostic: false, name: 'status cycle: publishes useful work at the original interval after cold wake' },
+    { owner: 'status', stage: 'identity', diagnostic: false, name: 'status identity: retains encrypted identity across cold boots and rejects a changed master key' },
+    { owner: 'object', stage: 'bootstrap', diagnostic: false, name: 'object bootstrap: publishes a signed built-in GitHub deadline before physical stop' },
+    { owner: 'object', stage: 'cycle', diagnostic: false, name: 'object cycle: refreshes built-in GitHub data at the original deadline after cold wake' },
+    { owner: 'status', stage: 'identity', diagnostic: true, name: 'status identity diagnostic: observes post-generation recovery and preserves the first failed bound' },
+    { owner: 'object', stage: 'bootstrap', diagnostic: true, name: 'object bootstrap diagnostic: retains passive setup SQL and work evidence' },
+  ] as const;
+  for (const registration of registrations) {
+    it.skipIf(owner !== registration.owner || stage !== registration.stage || diagnostic !== registration.diagnostic)(
+      registration.name, runAcceptance,
+      registration.stage === 'identity' ? 240_000 : registration.stage === 'bootstrap' ? 850_000 : 1_250_000,
+    );
+  }
 });
