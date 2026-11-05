@@ -232,6 +232,39 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await readCard(f.card.id)).status).toBe("pending");
     expect(await audit(f.issueId)).toHaveLength(0);
   });
+  // A card the agent itself requested as human_only records the bound user's
+  // verified latest reply. Every other human-only source still needs the card.
+  async function seedHumanOnly(binding: "conversation" | "run" | "unbound" = "conversation") {
+    const f = await seed(false, binding === "conversation");
+    await db.update(issueThreadInteractions).set({ effectiveResolverPolicy: "human_only", requestedResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "requested" }).where(eq(issueThreadInteractions.id, f.card.id));
+    if (binding === "run") await db.update(heartbeatRuns).set({ responsibleUserId: "operator" }).where(eq(heartbeatRuns.id, f.runId));
+    return f;
+  }
+  it.each(["conversation", "run"] as const)("relays the %s user's verified reply to a self-requested human-only card", async binding => {
+    const f = await seedHumanOnly(binding);
+    await resolveConfirmationFromComment(db, f.args);
+    const card = await readCard(f.card.id);
+    expect(card).toMatchObject({ status: "accepted", resolvedByAgentId: f.agentId, resolvedByRunId: f.runId, resolvedByUserId: null,
+      result: { commentId: f.comment.id } });
+    expect(await audit(f.issueId)).toMatchObject([{ action: "issue.thread_interaction_accepted", agentId: f.agentId, runId: f.runId,
+      details: { responseCommentId: f.comment.id, responseUserId: "operator", resolverPolicy: "human_only", resolution: "relayed_human_decision" } }]);
+  });
+  it.each(["agent-comment", "earlier-comment", "wrong-user", "unbound", "company_cap", "governed_action", "qualityReview",
+    "toolAction", "connectionAuthorization", "review-restriction", "other-addressee"])("keeps a human-only card on its card for %s", async kind => {
+    const f = await seedHumanOnly(kind === "unbound" ? "unbound" : "conversation");
+    const card = (set: Record<string, unknown>) => db.update(issueThreadInteractions).set(set).where(eq(issueThreadInteractions.id, f.card.id));
+    if (kind === "agent-comment") await db.update(issueComments).set({ authorType: "agent", authorAgentId: f.agentId }).where(eq(issueComments.id, f.comment.id));
+    if (kind === "earlier-comment") await db.update(issueComments).set({ createdAt: new Date(0) }).where(eq(issueComments.id, f.comment.id));
+    if (kind === "wrong-user") await db.update(issueComments).set({ authorUserId: "somebody-else" }).where(eq(issueComments.id, f.comment.id));
+    if (kind === "company_cap" || kind === "governed_action") await card({ effectiveResolverPolicySource: kind });
+    if (["qualityReview", "toolAction", "connectionAuthorization"].includes(kind)) await card({ payload: { ...f.card.payload, [kind]: {} } });
+    if (kind === "other-addressee") await card({ addresseeUserId: "somebody-else" });
+    const args = kind === "review-restriction" ? { ...f.args, actor: { ...f.args.actor, resolverPolicyRestriction: "human_only" as const } } : f.args;
+    await expect(resolveConfirmationFromComment(db, args)).rejects.toThrow();
+    expect((await readCard(f.card.id)).status).toBe("pending");
+    expect(await audit(f.issueId)).toHaveLength(0);
+  });
   it("rechecks narrowed permissions on an otherwise matching retry", async () => {
     const f = await seed();
     await resolveConfirmationFromComment(db, f.args);
