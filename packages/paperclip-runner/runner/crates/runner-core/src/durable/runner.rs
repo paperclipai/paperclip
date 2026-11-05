@@ -883,6 +883,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 welcome.warm_transition_version,
                 connection.protocol_version,
             )?;
+            #[cfg(unix)]
+            admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -1187,6 +1189,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         welcome.warm_transition_version,
                         connection.protocol_version,
                     )?;
+                    #[cfg(unix)]
+                    admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -1377,6 +1381,29 @@ enum HostAction {
     Park,
     Claim(BootstrapTicket),
     Retire,
+}
+
+#[cfg(unix)]
+fn admit_host_claim(
+    control: Option<&HostedRunnerControl>,
+    command: &Command,
+    next_authority: Option<&DurableRunnerConfig>,
+) -> Result<(), DurableRunnerError> {
+    if control.is_some_and(|control| control.claiming.is_some())
+        && !(matches!(
+            command.command_type.as_str(),
+            "session.snapshot"
+                | "runner.drain"
+                | "runner.suspend"
+                | "runner.shutdown"
+                | "turn.stop"
+        ) || (command.command_type == "run.attach" && next_authority.is_some()))
+    {
+        return Err(DurableRunnerError::invalid(
+            "claimed Runner requires authority attachment before execution",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -3058,6 +3085,17 @@ mod tests {
             exchange(&claim, &mut state, &mut control, &mut executor, false).0,
             HostAction::None
         ));
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        let mut next_authority = config.clone();
+        next_authority.run_id = "next-run".to_owned();
+        assert!(admit_host_claim(
+            Some(&control),
+            &command("run.attach"),
+            Some(&next_authority)
+        )
+        .is_ok());
         let mut changed = claim;
         changed["bootstrapTicket"] = json!("different-private-ticket");
         assert_eq!(
@@ -3130,6 +3168,7 @@ mod tests {
         executor.ready = true;
         // Simulate completed run.attach before a later exact parked cut.
         control.claiming = None;
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
         let mut next_park = park.clone();
         next_park["id"] = json!("park-2");
         assert!(matches!(

@@ -37,6 +37,17 @@ fn host_exchange(host: &mut UnixStream, request: Value) -> Value {
 
 #[test]
 fn hosted_loop_parks_and_reclaims_with_fresh_bootstrap_during_busy_prp() {
+    exercise_hosted_loop(None);
+}
+
+#[test]
+fn hosted_claim_blocks_pending_and_live_work_before_attachment() {
+    for pending in [true, false] {
+        exercise_hosted_loop(Some(pending));
+    }
+}
+
+fn exercise_hosted_loop(blocked_work: Option<bool>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config = config(listener.local_addr().unwrap().port());
     let directory =
@@ -123,6 +134,10 @@ fn hosted_loop_parks_and_reclaims_with_fresh_bootstrap_during_busy_prp() {
                 revocation_epoch: 0,
             },
         );
+        let forbidden = json!({
+            "schema":"paperclip.prp.command.v1", "commandId":"premature-turn",
+            "controllerSeq":1, "type":"turn.start", "issuedAt":"2026-01-01T00:00:00Z", "payload":{}
+        });
         send_secure(
             &mut socket,
             &mut secure,
@@ -133,9 +148,17 @@ fn hosted_loop_parks_and_reclaims_with_fresh_bootstrap_during_busy_prp() {
                 Some("new-private-lease"),
                 expires,
                 0,
-                vec![],
+                if blocked_work == Some(true) { vec![forbidden.clone()] } else { vec![] },
             ),
         );
+        if let Some(pending) = blocked_work {
+            if !pending {
+                send_secure(&mut socket, &mut secure, &server_config,
+                    &control(&server_state, "connection-2", "command", forbidden));
+            }
+            finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            return;
+        }
         send_secure(
             &mut socket,
             &mut secure,
@@ -190,6 +213,17 @@ fn hosted_loop_parks_and_reclaims_with_fresh_bootstrap_during_busy_prp() {
         )["status"],
         "claimed"
     );
+    if blocked_work.is_some() {
+        let error = runner.join().unwrap().unwrap_err();
+        assert_eq!(error.to_string(), "claimed Runner requires authority attachment before execution");
+        finish_tx.send(()).unwrap();
+        server.join().unwrap();
+        let retained = DurableStateStore::new(&directory).unwrap().load_or_create(&config).unwrap().0;
+        assert_eq!(retained.last_controller_command_seq, 0);
+        assert!(retained.processed_commands.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+        return;
+    }
     claimed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     // A stale parked-only retirement cannot kill a newly claimed process.
     assert_eq!(

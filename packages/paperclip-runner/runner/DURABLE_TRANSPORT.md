@@ -179,8 +179,9 @@ still applies. Mount ownership stays with Launcher.
 
 `claim` names the accepted park request and supplies a fresh bootstrap ticket.
 It resumes authenticated PRP under the retained authority; ordinary `run.attach`
-must still establish the next authority before new work. Replaying the same
-claim returns its acknowledgement without consuming another ticket. A parked
+must still establish the next authority before new work. Pending reconnect and
+live commands both reject execution before that attachment; snapshots, drain,
+and cleanup remain available. Replaying the same claim returns its acknowledgement without consuming another ticket. A parked
 retirement names the park request. Cancelling a claim additionally requires its
 claim ID, the unchanged authority and sequence cut, and provider quiescence.
 Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
