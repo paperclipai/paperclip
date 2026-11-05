@@ -16,7 +16,7 @@ overrides:
 
 patchedDependencies:
   '@agentclientprotocol/claude-agent-acp@0.73.0':
-    hash: 7skylip2l7mq67h22wlxbrakhq
+    hash: xjlrz3rllh2ztafbdiywpfh2rq
     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2':
     hash: 2iynuypg76nxmydiylgtffhr7e
@@ -43,7 +43,7 @@ patchedDependencies:
     hash: 6st5fzvttegjv64llnfegwwpca
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
-    hash: ujlgpkxl4mvt34bejc3uxyvthq
+    hash: xh3fclih3ztrbsibpfnxdcx7pe
     path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
@@ -189,7 +189,7 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: ^0.73.0
-        version: 0.73.0(patch_hash=7skylip2l7mq67h22wlxbrakhq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
       '@anthropic-ai/sdk':
         specifier: 0.129.0
         version: 0.129.0(zod@4.6.5)
@@ -514,7 +514,7 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=7skylip2l7mq67h22wlxbrakhq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
+        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
@@ -523,7 +523,7 @@ importers:
         version: 0.160.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -904,7 +904,7 @@ importers:
         version: 0.5.0
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=7skylip2l7mq67h22wlxbrakhq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))
+        version: 0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
@@ -1021,7 +1021,7 @@ importers:
         version: 8.18.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
       ai:
         specifier: 7.0.130
         version: 7.0.130(zod@4.4.3)
@@ -8031,6 +8031,7 @@ packages:
 
   opencode-ai@1.18.34:
     resolution: {integrity: sha512-9WUS2T0t4HHDVzXvuwTHF0nvhXvZ9mQ0r+ozCvKdJu0LVoQpOzqAW4qWTC3ygNc5Oedcc7j+Oct24JYlQYnySA==}
+    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
@@ -9400,7 +9401,7 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=7skylip2l7mq67h22wlxbrakhq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))':
+  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.31.0(zod@4.4.3))(zod@4.4.3)
@@ -9409,7 +9410,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=7skylip2l7mq67h22wlxbrakhq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))':
+  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=xjlrz3rllh2ztafbdiywpfh2rq)(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.4.3)
@@ -13977,7 +13978,7 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  acpx@0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq):
+  acpx@0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe):
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       commander: 15.0.0
