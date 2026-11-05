@@ -56,6 +56,7 @@ type ExecutionState = {
   outputChunks: string[];
   lastEventName: string | null;
   terminal: TerminalState | null;
+  lastActivityAt: number;
   resolveTerminal: (state: TerminalState) => void;
   terminalPromise: Promise<TerminalState>;
 };
@@ -144,6 +145,7 @@ const PAPERCLIP_SESSION_KEY_PATTERN =
   /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
 
 const TERMINAL_STATUSES = new Set([
+  "lost",
   "completed",
   "failed",
   "error",
@@ -525,6 +527,7 @@ function createExecutionState(runId: string): ExecutionState {
     outputChunks: [],
     lastEventName: null,
     terminal: null,
+    lastActivityAt: Date.now(),
     resolveTerminal,
     terminalPromise,
   };
@@ -565,6 +568,7 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  state.lastActivityAt = Date.now();
   const delta = asString(record?.delta, "") || asString(record?.text_delta, "");
   const sanitizedDelta = eventName === "message.delta" && delta ? redactText(delta) : null;
   const redacted = redactForLog(parsed, [], 0, redactText);
@@ -636,6 +640,18 @@ async function pollStatus(input: {
       }
     } catch (err) {
       if (input.signal.aborted) return;
+      // The gateway answered but no longer knows this run (e.g. it restarted and
+      // lost in-memory runs): that is a lost run, not just a dropped stream.
+      if ((err as HermesHttpError).status === 404) {
+        await input.ctx.onLog("stderr", `[hermes-gateway] run ${input.state.runId} not found on gateway (restart?); marking lost\n`);
+        markTerminal(input.state, {
+          runId: input.state.runId,
+          status: "lost",
+          payload: { status: "lost", reason: "run_not_found" },
+          output: null,
+        });
+        return;
+      }
       await input.ctx.onLog("stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err, input.redactText)}\n`);
     }
   }
@@ -740,6 +756,7 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
   if (status === "completed") return { exitCode: 0, signal: null, errorCode: null };
   if (FAILURE_STATUSES.has(status)) return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" };
   if (CANCELLED_STATUSES.has(status)) return { exitCode: 1, signal: "SIGTERM", errorCode: "hermes_gateway_cancelled" };
+  if (status === "lost") return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_lost" };
   return { exitCode: 1, signal: null, errorCode: "hermes_gateway_protocol_error" };
 }
 
@@ -756,7 +773,8 @@ export function mapFinalResultForTest(input: {
     input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
-  const sessionDisplayId = sessionId ? redactText(sessionId) : null;
+  // The session identifier is an opaque correlation id, not a credential: show it as-is.
+  const sessionDisplayId = sessionId;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
@@ -777,13 +795,15 @@ export function mapFinalResultForTest(input: {
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
-      ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
+      ...(sessionId ? { hermesSessionId: sessionId } : {}),
+      externalRunId: input.terminal.runId,
       strategy: input.strategy,
     },
     sessionDisplayId,
     resultJson: {
       run_id: input.terminal.runId,
       status: input.terminal.status,
+      external_run_id: input.terminal.runId,
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",
@@ -938,6 +958,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
+  const idleTimeoutSec = parseNonNegativeNumber(ctx.config.idleTimeoutSec, 0);
+  const idleTimeoutMs = idleTimeoutSec > 0 ? Math.ceil(idleTimeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
   const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -980,6 +1002,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context: {
       runId: ctx.runId,
       timeoutSec,
+      idleTimeoutSec,
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
@@ -1015,6 +1038,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+  await ctx.onMeta?.({
+    adapterType: ADAPTER_TYPE,
+    command: "POST /v1/runs",
+    commandArgs: [createRunUrl],
+    context: { runId: ctx.runId, externalRunId: runId, sessionKeyStrategy: strategy },
+  });
+  await ctx.onEvent?.({
+    eventType: "hermes_gateway.run_created",
+    stream: "system",
+    level: "info",
+    message: `Hermes run created: ${runId}`,
+    payload: { externalRunId: runId, sessionId: sessionKey },
+  });
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -1043,9 +1079,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const idlePromise = new Promise<"idle">((resolve) => {
+    if (idleTimeoutMs <= 0) return;
+    const check = () => {
+      const remaining = idleTimeoutMs - (Date.now() - state.lastActivityAt);
+      if (remaining <= 0) resolve("idle");
+      else idleTimer = setTimeout(check, remaining);
+    };
+    idleTimer = setTimeout(check, idleTimeoutMs);
+  });
+
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, idlePromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (idleTimer) clearTimeout(idleTimer);
   controller.abort();
+
+  if (outcome === "idle") {
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: true,
+      errorCode: "hermes_gateway_idle_timeout",
+      errorMessage: `Hermes gateway run produced no events for ${idleTimeoutSec}s (idle timeout).`,
+      provider: "hermes_gateway",
+      resultJson: {
+        run_id: runId,
+        external_run_id: runId,
+        status: extractStatus(finalStatus) ?? "idle_timeout",
+        last_event: state.lastEventName,
+        final_status: redactForLog(finalStatus, [], 0, redactText),
+      },
+      sessionParams: { hermesRunId: runId, externalRunId: runId, strategy },
+      sessionDisplayId: sessionKey,
+    };
+  }
 
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
@@ -1059,15 +1129,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       resultJson: {
         run_id: runId,
+        external_run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
       sessionParams: {
         hermesRunId: runId,
+        externalRunId: runId,
         strategy,
       },
-      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+      sessionDisplayId: sessionKey,
     };
   }
 

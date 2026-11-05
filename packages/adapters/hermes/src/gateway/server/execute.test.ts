@@ -572,15 +572,115 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("session [redacted-session-key]");
-    expect(result.sessionId).toBe("[redacted-session-key]");
-    expect(result.sessionDisplayId).toBe("[redacted-session-key]");
-    expect(result.resultJson?.session_id).toBe("[redacted-session-key]");
+    expect(result.sessionId).toBe(agentSessionKey);
+    expect(result.sessionDisplayId).toBe(agentSessionKey);
+    expect(result.resultJson?.session_id).toBe(agentSessionKey);
+    expect(result.resultJson?.external_run_id).toBe("run-hermes-1");
     expect(result.sessionParams).toEqual({
       hermesRunId: "run-hermes-1",
+      hermesSessionId: agentSessionKey,
+      externalRunId: "run-hermes-1",
       strategy: "agent",
     });
     expect(logText).toContain("[redacted-session-key]");
     expect(logText).not.toContain(agentSessionKey);
+  });
+
+  it("reports externalRunId via onMeta and onEvent once the run is created", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 5 });
+    const onEvent = vi.fn(async () => undefined);
+    ctx.onEvent = onEvent;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-ext-1" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream('event: run.completed\ndata: {"status":"completed"}\n\n'), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    }));
+    await execute(ctx);
+    const metas = (ctx.onMeta as ReturnType<typeof vi.fn>).mock.calls.map(([m]) => m);
+    expect(metas.some((m) => m.context?.externalRunId === "run-ext-1")).toBe(true);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "hermes_gateway.run_created",
+      payload: expect.objectContaining({ externalRunId: "run-ext-1" }),
+    }));
+  });
+
+  it("aborts with idle timeout when the gateway stays silent, below the hard ceiling", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-idle" }), { status: 200 });
+      if (url.endsWith("/events")) return new Promise<Response>(() => {});
+      if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      if (init?.method === "GET") return new Response(JSON.stringify({ status: "cancelled" }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 60, idleTimeoutSec: 0.05,
+    }));
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("hermes_gateway_idle_timeout");
+    expect(result.resultJson?.external_run_id).toBe("run-idle");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+  });
+
+  it("resets the idle timer on every event so a slow but active run completes", async () => {
+    const encoder = new TextEncoder();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-active" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        const body = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (let i = 0; i < 4; i += 1) {
+              await new Promise((r) => setTimeout(r, 60));
+              controller.enqueue(encoder.encode('event: message.delta\ndata: {"delta":"x"}\n\n'));
+            }
+            controller.enqueue(encoder.encode('event: run.completed\ndata: {"status":"completed"}\n\n'));
+            controller.close();
+          },
+        });
+        return new Response(body, { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    }));
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 60, idleTimeoutSec: 0.15,
+    }));
+    expect(result.errorCode).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("reports a lost run (not a dropped stream) when the gateway no longer knows the run", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-gone" }), { status: 200 });
+      if (url.endsWith("/events")) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    }));
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 30, pollIntervalMs: 250,
+    }));
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_lost");
+    expect(result.sessionParams).toMatchObject({ externalRunId: "run-gone" });
+  });
+
+  it("keeps waiting when only the event stream drops but the run is still known", async () => {
+    let polls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-stream-down" }), { status: 200 });
+      if (url.endsWith("/events")) throw new TypeError("fetch failed");
+      polls += 1;
+      return new Response(JSON.stringify({ status: polls < 2 ? "running" : "completed" }), { status: 200 });
+    }));
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 30, pollIntervalMs: 250,
+    }));
+    expect(result.exitCode).toBe(0);
   });
 
   it("falls back to polling when SSE is unavailable", async () => {
