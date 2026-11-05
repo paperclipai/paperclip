@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, gt, inArray, ne } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { retiredReusableLeasePredecessors } from "../environment-lease-handoff.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 
@@ -42,9 +43,13 @@ export async function retiredSourceAuthorizesNativeBackupRestore(db: Db, input: 
   ));
   const source = leases.filter(lease => lease.companyId === input.companyId
     && lease.providerLeaseId === input.manifest.sourceProviderLeaseId);
-  // One provider allocation maps to one host lease. Anything else is ambiguous.
-  if (source.length !== 1) return false;
-  const lease = source[0]!;
+  // Normal warm handoffs retain the expired predecessor rows. Only the unique
+  // final owner may authorize restore, with every other row accounted for by
+  // the existing two-sided handoff proof. Unlinked or active owners stay held.
+  const tips = source.filter(lease => !Object.hasOwn(lease.metadata ?? {}, "reusableLeaseSuccessor"));
+  if (tips.length !== 1) return false;
+  const lease = tips[0]!;
+  if (!retiredReusableLeasePredecessors(lease, source.filter(row => row.id !== lease.id))) return false;
   const termination = lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined;
   // A released lease can still be selected for resume; only a retired one is final.
   if (!["expired", "failed"].includes(lease.status) || !hasRemoteTerminationReceipt(lease)
