@@ -1,4 +1,4 @@
-// Test preload: follows the qualified Slack prewire and MCP canonical guard.
+
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const net = require('node:net'), tls = require('node:tls'), http = require('node:http'), https = require('node:https'), dns = require('node:dns');
 const { createHash } = require('node:crypto');

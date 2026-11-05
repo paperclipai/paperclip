@@ -30,8 +30,8 @@ if (existsSync(log) && statSync(log).size !== 0) throw new Error('Use a fresh pe
 if (!process.version.startsWith('v24.')) throw new Error('Launch acceptance with the actual Node24 executable');
 const require = createRequire(new URL('../server/package.json', import.meta.url));
 const guard = path.join(root, 'scripts/fixtures/skill-default-cadence-network-guard.cjs');
-// Guard this coordinator before loading/spawning the test runner. Node builtins
-// above do no network work. Each actual worker receives --require independently.
+
+
 require(guard);
 const vitest = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
 const env = { PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG, TMPDIR: process.env.TMPDIR,

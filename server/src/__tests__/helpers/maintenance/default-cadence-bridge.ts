@@ -4,7 +4,7 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-/** Focused IPC adapter; Cloud runs its actual compiled Node22 controller. */
+
 export async function startDefaultCadenceBridge(options: {
   checkout: string; node: string;
   physicalStop(): Promise<void>; physicalWake(): Promise<{ origin: string }>;

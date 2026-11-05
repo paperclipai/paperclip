@@ -28,8 +28,8 @@ const evidence = process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_EVIDENCE;
 if (enabled && (!databaseUrl || !cloudDatabaseUrl || !cloudCheckout || !cloudNode || !evidence || !/^[a-f0-9]{40}$/.test(cloudSha ?? '')
   || process.env.PAPERCLIP_MAINTENANCE_KEEP_ARTIFACTS !== '1')) throw new Error('Default cadence witness requires two explicit owned DBs, pinned Cloud checkout/Node22, and retained evidence');
 
-// Real app+SQL clocks throughout. Two successful automatic five-minute periods
-// take about ten minutes. This opt-in never starts a cluster or builds artifacts.
+
+
 describe.skipIf(!enabled)('default skill cadence actual signed host handoff', () => {
   it(stage === 'bootstrap' ? 'qualifies actual producer, signed legacy refusal and original-D durable ACK only'
     : 'sleeps and cold-reactivates twice under each original default300s deadline', async () => {
@@ -77,8 +77,8 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
           return started;
         };
         server = await boot();
-        // Setup pool exists only before Cloud pool opens. Later reads use a
-        // separately named, short-lived read-only observer(max1).
+
+
         const setupDb = createDb(databaseUrl!, { maxConnections: 1 });
         const company = await provisionManagedSleepCompany(server, setupDb).finally(() => setupDb.$client.end({ timeout: 1 }));
         await server.settled();
@@ -89,7 +89,7 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
         await bridge.rpc('initialize', { databaseUrl: cloudDatabaseUrl, migrationsPath: path.join(cloudCheckout!, 'migrations'),
           appOrigin: `http://127.0.0.1:${server.port}`, privateJwk, jwks });
         await server.settled();
-        // Normal route creates workspace and enqueues the actual source import.
+
         await server.api('POST', `/companies/${company.id}/projects`, { name: 'Default cadence source',
           workspace: { name: 'Repository', repoUrl: 'https://github.com/acme/skills', defaultRef: 'HEAD' } });
         const persisted = async () => {
@@ -129,12 +129,12 @@ describe.skipIf(!enabled)('default skill cadence actual signed host handoff', ()
               initial, requests, boundary: 'Actual initial useful producer/signed gate/durable ACK/physical child stop only. No due wake or second cycle executed.' }, null, 2));
             return;
           }
-          // Wait on real wall time. No SQL deadline edits and no fake Date.
+
           await delay(Math.max(0, wakeAt - Date.now()) + 25);
           const wake = await bridge.rpc('wake');
           assert(server, 'Actual controller provider callback must cold-start a new child');
           await server.settled();
-          // Cold start precedes D by120s: the existing producer still owns D.
+
           const before = await persisted();
           expect(before.current_version_id).toBe(priorVersion);
           const snapBefore = await server.snapshot(), queryCount = server.proxy.queries.length, providerCount = requests.length;

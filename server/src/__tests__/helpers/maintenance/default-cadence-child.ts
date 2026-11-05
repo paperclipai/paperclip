@@ -4,9 +4,9 @@ import { mock } from 'node:test';
 import { githubFixture } from '../github-skills.js';
 import type { openGitSkillSnapshot } from '../../../services/skill-source-git-snapshot.js';
 
-// Only the remote Git download is controlled. The actual GitHub reader still
-// resolves current authority before invoking this transport, and the scanner,
-// package inspection, budget reservation and immutable publication stay real.
+
+
+
 installDefaultCadenceNetwork();
 const send = process.send;
 if (send) process.send = function(message: unknown, ...args: unknown[]) {
