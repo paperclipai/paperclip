@@ -696,7 +696,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
     const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
-    // The fields the issue comment route records for `interrupt: true`.
     await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, errorCode: "operator_interrupted", resultJson: {
       operatorInterrupted: true, interruptionSource: "issue_comment_interrupt", interruptedIssueId: issueId,
       interruptedByActorType: "user", interruptedByActorId: "board-user",
@@ -705,7 +704,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
         intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID() },
     } }).where(eq(heartbeatRuns.id, runId));
-    // The stopped runner is still settling and owns its finalization.
     const leaseExpiresAt = new Date(Date.now() + 60_000);
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed",
       leaseOwner: "settling-executor", leaseExpiresAt });
@@ -721,7 +719,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]).toMatchObject({
       phase: "observed", leaseOwner: "settling-executor", leaseExpiresAt, recoveryState: null,
     });
-    // The redirect sent with the interrupt stays saved for ordinary admission.
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
   });
 
