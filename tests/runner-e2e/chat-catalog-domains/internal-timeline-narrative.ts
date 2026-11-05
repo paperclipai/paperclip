@@ -29,7 +29,7 @@ export function truthfulTimelineAccount(input: {
   const assignment = "\\b(?:reassign(?:ed|ment)?|assign(?:ed|ment)?|hand(?:ed)?(?:\\s+\\w+){0,4}\\s+(?:off|over)|handed|handoff)\\b";
   const target = `\\bto\\s+${escape(repairWorker)}\\b`;
   const actorAction = `${humanActor}(?:\\s+(?:then|later|now|personally|explicitly|actually|had|has|have|also)){0,3}\\s+${assignment}`;
-  const passiveAction = `\\b(?:was|got|had been|has been)\\s+${assignment}`;
+  const passiveAction = `(?:\\b(?:was|got|had been|has been)\\s+${assignment}|\\b(?:the|same|this)\\s+(?:task|work)\\s+(?:reassigned|assigned|handed\\s+(?:off|over))\\b)`;
   const handoffToRepairWorker = new RegExp(`${actorAction}${withinClause}{0,60}${target}|${passiveAction}${withinClause}{0,60}${target}${withinClause}{0,40}\\bby\\s+(?:(?:the|a|an)\\s+)?${humanActor}`, "i");
   const passiveHandoffToRepairWorker = new RegExp(`${passiveAction}${withinClause}{0,60}${target}`, "gi");
   const successorOwnership = new RegExp(`\\b${escape(repairWorker)}\\s+took\\s+(?:over\\s+(?:the\\s+)?(?:same\\s+)?(?:task|work)|over\\s+from\\s+${escape(firstWorker)}|over(?=\\s*(?:[,;.!?\\n]|$))|the\\s+same\\s+(?:task|work))\\b`, "gi");
