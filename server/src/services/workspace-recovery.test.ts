@@ -84,7 +84,7 @@ import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/nati
 import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { withDedicatedDbConnection } from "@paperclipai/db";
-import { getExecutionBlocker } from "./execution-blocker.js";
+import { getExecutionBlocker, hasPendingRunCleanup } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
@@ -2496,11 +2496,9 @@ describe("automatic retained workspace recovery", () => {
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
       const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
         actorSource: "local_implicit", observedRunId: source.id, idempotencyKey: randomUUID() });
-      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0])
-        .toMatchObject({ status: "deferred_issue_execution", payload: { executionWait: { reason: "remote_cleanup" } } });
-      await environmentService(db).releaseLease(settledLease.id, "released", { cleanupStatus: "success",
-        remoteExecutionTermination: remoteTerminationReceipt(settledLease, { providerLeaseId: settledLease.providerLeaseId, state: "destroyed" }) });
+      // The saved, re-stopped sandbox only awaits destroy. That cleanup does not
+      // hold the successor: it continues now instead of on the cleanup retry.
+      expect(settledLease.metadata?.workspaceRecoveryCleanup).toMatchObject({ stopReceipt: { runId: f.runId, leaseId: settledLease.id } });
       await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
       const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
       expect(successor).toBeDefined();
@@ -3688,7 +3686,7 @@ describe("automatic retained workspace recovery", () => {
     expect((await pendingTurns(f)).map(item => item.id)).toEqual([handoff.id]);
   }, 30_000);
 
-  it.each(["no-proof", "turn-event", "provider-event", "unlisted-provider-event", "running-writer", "other-task-writer",
+  it.each(["no-proof", "turn-event", "provider-event", "unlisted-provider-event", "workspace-diff-event", "running-writer", "other-task-writer",
     "unscoped-queued-writer", "non-gating-hold"] as const)
   ("keeps the stopped agent held when provider work cannot be excluded (%s)", async kind => {
     const f = await seed();
@@ -3698,10 +3696,11 @@ describe("automatic retained workspace recovery", () => {
       eventType: "turn.started", stream: "system", level: "info", message: "turn started" });
     if (kind === "provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId, agentId,
       seq: 9_999, eventType: "item.completed", stream: "system", level: "info", message: "provider item", sourceEventId: randomUUID() });
-    // A runner family outside the startup lifecycle counts as work even when unlisted.
-    if (kind === "unlisted-provider-event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.runId,
-      agentId, seq: 9_999, eventType: "delegation.completed", stream: "system", level: "info", message: "delegated",
-      sourceEventId: randomUUID() });
+    // A runner event outside the startup lifecycle counts as work even when unlisted,
+    // including turn-scoped events that share a startup family name.
+    if (kind === "unlisted-provider-event" || kind === "workspace-diff-event") await db.insert(heartbeatRunEvents).values({
+      companyId: f.companyId, runId: f.runId, agentId, seq: 9_999, stream: "system", level: "info", message: kind,
+      eventType: kind === "unlisted-provider-event" ? "delegation.completed" : "workspace.diff.recorded", sourceEventId: randomUUID() });
     if (kind === "running-writer" || kind === "other-task-writer" || kind === "unscoped-queued-writer") {
       // A started turn, or a queued one that this task's dispatch gate does not cover, is a real writer.
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, runtimeMode: "legacy",
@@ -3727,6 +3726,59 @@ describe("automatic retained workspace recovery", () => {
     await recoverRetainedWorkspace(f.input);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId, runId: f.runId });
+  }, 30_000);
+
+  it.each(["verified-stop", "no-stop-receipt", "foreign-receipt"] as const)
+  ("admits the interrupt redirect once recovery saved and stopped the sandbox, before its destroy finishes (%s)", async kind => {
+    // An interrupt comment after the session opened: the run did provider work,
+    // its files were recovered, and the stopped sandbox was queued for destroy.
+    const f = await seed();
+    const source = await run(f.runId);
+    const finishedAt = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted", finishedAt,
+      resultJson: { ...source.resultJson, operatorInterrupted: true, interruptionSource: "issue_comment_interrupt",
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: f.runId, companyId: f.companyId,
+          issueId: f.issueId, scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged",
+          dispatched: true, intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID() } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issueId));
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "complete" });
+    await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
+    const [queued] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(queued).toMatchObject({ status: "pending_cleanup", metadata: { workspaceRecoveryCleanup: { runId: f.runId } } });
+    if (kind !== "verified-stop") {
+      const cleanup = queued.metadata!.workspaceRecoveryCleanup as Record<string, unknown>;
+      const stopReceipt = kind === "foreign-receipt"
+        ? { ...(cleanup.stopReceipt as Record<string, unknown>), runId: randomUUID() } : undefined;
+      await db.update(environmentLeases).set({ metadata: { ...queued.metadata,
+        workspaceRecoveryCleanup: { ...cleanup, stopReceipt } } }).where(eq(environmentLeases.id, f.lease.id));
+    }
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "operator", body: "Use the other approach instead." }).returning();
+    // The same input as a plain message and as a saved native interrupt send.
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: source.agentId,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "system", requestedByActorId: "heartbeat",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [comment.id] },
+        queuedCommentInterrupt: { actorId: "operator", requestedAt: new Date().toISOString() } } });
+    expect(await hasPendingRunCleanup(db, f.companyId, f.runId)).toBe(kind !== "verified-stop");
+    for (const interrupt of [false, true]) {
+      const reasons: string[] = [];
+      const admitted = await admitExplicitNativeContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+        agentId: source.agentId, actorType: "user", actorId: "operator", reason: "issue_commented",
+        commentId: comment.id, successorRunId: randomUUID(), dryRun: true, onBlocked: reason => reasons.push(reason),
+        ...(interrupt ? { queuedCommentInterruptId: queueId } : {}) });
+      if (kind === "verified-stop") {
+        // Destroying a stopped sandbox whose files are saved is cleanup, not ownership.
+        expect(reasons, JSON.stringify({ interrupt, reasons })).toEqual([]);
+        expect(admitted).toMatchObject({ previousRunId: f.runId, commentId: comment.id });
+      } else {
+        expect(admitted).toBeNull();
+        expect(reasons).toContain("remote_cleanup");
+      }
+    }
   }, 30_000);
 
   it("keeps a snapshot-only recovery held for a new assignee because the task workspace lacks the saved files", async () => {
