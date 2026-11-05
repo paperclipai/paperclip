@@ -18,15 +18,16 @@ rl.on("line", (line) => {
     send({
       jsonrpc: "2.0",
       id: message.id,
-      result: { ok: true, supportedMethods: ["emitStream", "emitStreamProactively"] },
+      result: { ok: true, supportedMethods: ["performAction"] },
     });
     return;
   }
 
-  if (method === "emitStream" || method === "emitStreamProactively") {
+  if (method === "performAction") {
     const params = message.params ?? {};
-    const channel = params.channel;
-    const companyId = params.streamCompanyId ?? params.companyId ?? params.targetCompanyId;
+    const action = params.params ?? {};
+    const channel = action.channel;
+    const companyId = action.streamCompanyId ?? params.companyId ?? action.targetCompanyId;
     const invocationId = message.paperclipInvocation
       ? message.paperclipInvocation.id
       : undefined;
@@ -35,7 +36,7 @@ rl.on("line", (line) => {
     send({
       jsonrpc: "2.0",
       method: "streams.emit",
-      params: { channel, companyId, event: params.event },
+      params: { channel, companyId, event: action.event },
       ...mark,
     });
     send({ jsonrpc: "2.0", method: "streams.close", params: { channel, companyId }, ...mark });

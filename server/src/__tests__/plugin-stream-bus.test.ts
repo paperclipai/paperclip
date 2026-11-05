@@ -179,10 +179,10 @@ describe("PluginWorkerManager stream handler wiring", () => {
     );
     try {
       await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
-      await manager.call("test.stream-plugin", "emitStream", {
-        channel: "chat",
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream",
         companyId: "co-1",
-        event: { type: "text", text: "token" },
+        params: { channel: "chat", event: { type: "text", text: "token" } },
       });
     } finally {
       await manager.stopAll();
@@ -200,10 +200,10 @@ describe("PluginWorkerManager stream handler wiring", () => {
     try {
       await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
       manager.setStreamNotificationHandler(second);
-      await manager.call("test.stream-plugin", "emitStream", {
-        channel: "chat",
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream",
         companyId: "co-1",
-        event: { n: 1 },
+        params: { channel: "chat", event: { n: 1 } },
       });
     } finally {
       await manager.stopAll();
@@ -233,10 +233,10 @@ describe("PluginWorkerManager stream handler wiring", () => {
         ...STREAM_START_OPTIONS,
         onStreamNotification: workerHandler,
       });
-      await manager.call("test.stream-plugin", "emitStream", {
-        channel: "chat",
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream",
         companyId: "co-1",
-        event: { n: 2 },
+        params: { channel: "chat", event: { n: 2 } },
       });
     } finally {
       await manager.stopAll();
@@ -256,10 +256,10 @@ describe("PluginWorkerManager stream handler wiring", () => {
     const manager = createPluginWorkerManager({ onStreamNotification: handler });
     try {
       await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
-      await manager.call("test.stream-plugin", "emitStream", {
-        channel: "chat",
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream",
         companyId: "co-1",
-        event: { n: 3 },
+        params: { channel: "chat", event: { n: 3 } },
       });
     } finally {
       await manager.stopAll();
@@ -275,10 +275,9 @@ describe("PluginWorkerManager stream company binding", () => {
     const manager = createPluginWorkerManager({ onStreamNotification: handler });
     try {
       await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
-      await manager.call("test.stream-plugin", "emitStreamProactively", {
-        channel: "chat",
-        targetCompanyId: "co-2",
-        event: { n: 1 },
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream-proactively",
+        params: { channel: "chat", targetCompanyId: "co-2", event: { n: 1 } },
       });
     } finally {
       await manager.stopAll();
@@ -295,10 +294,9 @@ describe("PluginWorkerManager stream company binding", () => {
         ...STREAM_START_OPTIONS,
         proactiveCompanyScopes: ["co-2"],
       });
-      await manager.call("test.stream-plugin", "emitStreamProactively", {
-        channel: "chat",
-        targetCompanyId: "co-2",
-        event: { n: 1 },
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream-proactively",
+        params: { channel: "chat", targetCompanyId: "co-2", event: { n: 1 } },
       });
     } finally {
       await manager.stopAll();
@@ -321,11 +319,10 @@ describe("PluginWorkerManager stream company binding", () => {
     const manager = createPluginWorkerManager({ onStreamNotification: handler });
     try {
       await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
-      await manager.call("test.stream-plugin", "emitStream", {
-        channel: "chat",
+      await manager.call("test.stream-plugin", "performAction", {
+        key: "emit-stream",
         companyId: "co-1",
-        streamCompanyId: "co-2",
-        event: { n: 2 },
+        params: { channel: "chat", streamCompanyId: "co-2", event: { n: 2 } },
       });
     } finally {
       await manager.stopAll();
