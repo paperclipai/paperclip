@@ -2800,7 +2800,9 @@ Legacy runner; incompatible settings return remediation instead of being ignored
 Saved OpenCode agents keep their runner and runtime policies.
 
 Plugin environment drivers can declare `requiresAgent: true` when their leases
-need an agent-owned resource. Setup saves the draft and environment, runs its
+need an agent-owned resource. The host selects that plugin's lifecycle work only for
+agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
 use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
@@ -3037,6 +3039,18 @@ keeps that exact identity; compatibility is a fresh-launch selection rule.
 Older packs without the declaration retain content verification until the image
 is updated. Selected ACPX agent profile checks remain in force.
 Daytona detects gzip/zstd headers and skips redundant transport compression.
+
+### Daytona duplex close receipts
+
+Lease teardown removes duplex routes from command admission before it closes
+their transports. The provider retains up to 4096 route/session bindings and
+their close promises, so a later host close joins the same cleanup and returns
+the original binding. These records grant no write, stop, or open authority.
+Unknown or evicted routes cannot supply a session acknowledgement. A pending
+close still waits; an unconfirmed close still retires the worker through the
+existing host guard. The acknowledgement identifies the channel. Provider stop
+receipts and unresolved external-work checks still determine process termination.
+No command is replayed or worker restarted by this mechanism.
 
 ### Remote GitHub launcher staging
 

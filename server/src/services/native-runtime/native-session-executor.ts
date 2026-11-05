@@ -1,4 +1,5 @@
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
@@ -57,6 +58,7 @@ import { isCloudManagedInstance } from "../cloud-instance.js";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { CURSOR_DISTRIBUTION_PINS, KIMI_DISTRIBUTION_CLOSURE_SHA256, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
+import { codexUsageBaselineForNextRun } from "../../vendor/paperclip-runner/index.js";
 import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
@@ -308,8 +310,6 @@ export class NativeCancellationPendingRecoveryError extends Error {
   }
 }
 
-type NativePostResultFailureCategory = "io_not_found" | "io_permission_denied" | "io_failure" | "execution_failure";
-
 class NativePostResultFailureError extends Error {
   readonly diagnostic: Readonly<{
     stage: "post_result_execution";
@@ -321,10 +321,7 @@ class NativePostResultFailureError extends Error {
     // Keep the existing control classification. These labels explain why its
     // failure write was rejected; they grant no finalization or retry authority.
     super("native_session_lease_lost");
-    const code = record(error).code;
-    const category: NativePostResultFailureCategory = code === "ENOENT" ? "io_not_found"
-      : code === "EACCES" || code === "EPERM" ? "io_permission_denied"
-      : code === "EIO" ? "io_failure" : "execution_failure";
+    const category = nativePostResultFailureCategory(error);
     this.diagnostic = Object.freeze({ stage: "post_result_execution", category, resultAlreadyAccepted: true });
   }
 }
@@ -1839,11 +1836,16 @@ class SessionAuthorityEpoch {
   readonly runId: string;
   #authority: PaperclipRunnerToolAuthority;
   #revoked = false;
+  readonly #drainingRun?: { runId: string; capture?: (event: PrpEvent) => Promise<void> };
 
   constructor(runId: string, authority: PaperclipRunnerToolAuthority, private readonly toolTrace?: NativeToolTrace,
-    private readonly onAccountingEvent?: (event: PrpEvent) => Promise<void>) {
+    private readonly onAccountingEvent?: (event: PrpEvent) => Promise<void>, previous?: SessionAuthorityEpoch) {
     this.runId = runId;
     this.#authority = authority;
+    if (previous) {
+      this.#drainingRun = previous.runId === runId ? previous.#drainingRun
+        : { runId: previous.runId, capture: previous.onAccountingEvent };
+    }
   }
 
   revoke(): void {
@@ -1860,8 +1862,8 @@ class SessionAuthorityEpoch {
   async acceptAccountingEvent(event: PrpEvent) {
     if (!isNativeUsageAccountingEvent(event)) return;
     this.#assertCurrent();
-    if (event.runId !== this.runId) throw new Error("native_usage_run_binding_mismatch");
-    await this.onAccountingEvent?.(event);
+    if (event.runId !== this.runId && event.runId !== this.#drainingRun?.runId) throw new Error("native_usage_run_binding_mismatch");
+    await (event.runId === this.runId ? this.onAccountingEvent : this.#drainingRun?.capture)?.(event);
     this.#assertCurrent();
   }
 
@@ -5198,28 +5200,65 @@ function moveNativeContinuityState(root: string, archiveRoot: string): void {
  * evidence, even an unsuspended receipt, and unknown entries are owner
  * claims that this proof never overrides.
  */
-function readSettledRunnerdProjection(root: string, identity: Record<string, string>): string | null {
+type SettledRunnerdProjection = { bytes: string; refused?: never } | { bytes?: never; refused: string };
+
+function readSettledRunnerdProjection(root: string, identity: Record<string, string>): SettledRunnerdProjection {
+  const refuse = (refused: string): SettledRunnerdProjection => ({ refused });
   try {
-    if (!isSafeNativeStateDirectory(root) ||
-        runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity) !== "absent" ||
-        readdirSync(root).some(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name))) {
-      return null;
-    }
+    if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
+    const lifecycle = runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity);
+    if (lifecycle !== "absent") return refuse(`runner_lifecycle_${lifecycle}`);
+    const unexpected = readdirSync(root).find(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name));
+    if (unexpected !== undefined) return refuse("unexpected_root_entry");
     const bytes = readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
     const control = record(JSON.parse(bytes));
-    const answered = new Set((Array.isArray(control.commands) ? control.commands : []).map(record)
+    const commands = (Array.isArray(control.commands) ? control.commands : []).map(record);
+    const answered = new Set(commands
       .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
       .map(command => record(command.payload).sourceEventId));
-    if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema)) || control.warmTransition != null ||
-        control.stagedRunAttachment != null || !isSettledRemoteWarmControlState(control, identity) ||
-        (control.committedEvents as unknown[]).map(record).some(event =>
-          (event.eventType === "semantic_tool.input" || event.eventType === "mcp_app.tool_input") &&
-          !answered.has(event.sourceEventId))) return null;
-    return bytes;
+    if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema))) return refuse("journal_schema_unsupported");
+    if (control.warmTransition != null) return refuse("journal_warm_transition");
+    if (control.stagedRunAttachment != null) return refuse("journal_staged_attachment");
+    if (Object.entries(identity).some(([key, value]) => record(control.identity)[key] !== value)) {
+      return refuse("journal_identity_mismatch");
+    }
+    if (!isSettledRemoteWarmControlState(control, identity)) {
+      // Closed vocabulary only: known command types and statuses, never payloads.
+      const pending = commands.filter(command => command.status !== "completed")
+        .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
+      return refuse(pending.length > 0 ? `journal_commands_unsettled(${[...new Set(pending)].slice(0, 4).join(",")})`
+        : "journal_terminal_unsettled");
+    }
+    if ((control.committedEvents as unknown[]).map(record).some(event =>
+      (event.eventType === "semantic_tool.input" || event.eventType === "mcp_app.tool_input") &&
+      !answered.has(event.sourceEventId))) return refuse("journal_tool_input_unanswered");
+    return { bytes };
   } catch {
-    return null;
+    return refuse("journal_unreadable");
   }
+}
+
+// Refusal reasons reach run errors, so they draw only from these closed sets.
+// Any other persisted value reports as "other".
+const RETIREMENT_REASON_NAMES = {
+  // Mirrors the durable controller's stored-journal contract (commandTypes and
+  // the command status union in paperclip-runner's durable PRP control plane).
+  commandType: new Set(["run.prepare", "run.attach", "session.open", "turn.start", "turn.steer", "turn.interrupt",
+    "turn.stop", "request.resolve", "interaction.receipt", "semantic_tool.result", "external_provider.operation",
+    "session.snapshot", "session.goal.get", "session.goal.set", "session.goal.clear", "session.close",
+    "session.budget.increase", "session.destroy", "run.cancel", "runner.drain", "runner.suspend", "runner.shutdown"]),
+  commandStatus: new Set(["pending", "failed", "rejected", "indeterminate"]),
+  ownerPhase: new Set(["observed", "retryable_failure", "terminal_failure", "workspace_finalizing",
+    "recovery_needed"]),
+  recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
+  controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
+    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity"]),
+  sandboxOutcome: new Set(["created", "resumed", "replacement"]),
+} as const;
+
+function retirementReasonName(kind: keyof typeof RETIREMENT_REASON_NAMES, value: unknown): string {
+  return typeof value === "string" && RETIREMENT_REASON_NAMES[kind].has(value) ? value : "other";
 }
 
 /**
@@ -5240,21 +5279,27 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-}): Promise<boolean> {
+}): Promise<{ retired: true } | { retired: false; refused: string }> {
   const target = input.runnerExecutionTarget;
   // A resumed sandbox still holds the prior Runner's own lifecycle, which its
   // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
-  if (input.execution.session.lifecyclePolicy.mode !== "per_turn" || target?.kind !== "remote" ||
-      target.transport !== "sandbox" || !target.runner || target.runnerTask ||
-      !["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) return false;
+  const refuse = (refused: string) => ({ retired: false as const, refused });
+  if (input.execution.session.lifecyclePolicy.mode !== "per_turn") return refuse("lifecycle_not_per_turn");
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+    return refuse("target_not_sandbox_runner");
+  }
+  if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+    return refuse(`sandbox_${retirementReasonName("sandboxOutcome", target.sandboxLeaseAcquisition?.outcome)}`);
+  }
   const identity: Record<string, string> = {};
   for (const key of ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"]) {
     const value = input.identity[key];
-    if (typeof value !== "string" || !value) return false;
+    if (typeof value !== "string" || !value) return refuse("durable_identity_incomplete");
     identity[key] = value;
   }
-  const controlBytes = readSettledRunnerdProjection(input.root, identity);
-  if (controlBytes === null) return false;
+  const projection = readSettledRunnerdProjection(input.root, identity);
+  if (projection.refused !== undefined) return refuse(projection.refused);
+  const controlBytes = projection.bytes;
   const { binding } = input.execution;
   let prior: { run: typeof heartbeatRuns.$inferSelect; owner: typeof nativeRunFinalizations.$inferSelect } | undefined;
   try {
@@ -5266,36 +5311,39 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
         eq(nativeRunFinalizations.issueId, binding.issueId)))
       .limit(1);
   } catch {
-    return false;
+    return refuse("owner_unavailable");
   }
-  if (!prior || prior.run.runtimeMode !== "native" || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.run.status) ||
-      prior.owner.phase !== "committed" || !prior.owner.resultId || prior.owner.leaseOwner || prior.owner.recoveryState) {
-    return false;
-  }
+  if (!prior || prior.run.runtimeMode !== "native") return refuse("owner_missing");
+  if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.run.status)) return refuse("owner_run_not_terminal");
+  if (prior.owner.phase !== "committed") return refuse(`owner_${retirementReasonName("ownerPhase", prior.owner.phase)}`);
+  if (!prior.owner.resultId) return refuse("owner_result_missing");
+  if (prior.owner.leaseOwner) return refuse("owner_lease_held");
+  if (prior.owner.recoveryState) return refuse(`owner_recovery_${retirementReasonName("recoveryState", prior.owner.recoveryState)}`);
   // A durable controller is fenced by its released database lease; a legacy
   // controller still needs process evidence, exactly as for warm recovery.
   const finishedHere = () => isCurrentNativeControllerProcess(prior!.owner) &&
     !activeNativeSessions.has(identity.runId) && !nativeSessionStartups.has(identity.runId);
   const profile = record(prior.run.runnerProfileJson);
-  const stopped = finishedHere() ? { allowed: true } : await evaluateNativeControllerTakeover({ owner: prior.owner,
+  const stopped: { allowed: boolean; reason?: string } = finishedHere() ? { allowed: true } : await evaluateNativeControllerTakeover({ owner: prior.owner,
     now: new Date(), requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
-  if (!stopped.allowed) return false;
+  if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
   const provenFinishedHere = finishedHere();
   // Earlier rejected admissions can quarantine the same projection. Each copy
   // must pass the same proof: a rebuilt root never carries the local Runner
   // evidence that held an earlier attempt, so that evidence stays decisive.
   const quarantine = resolve(runnerdStateBase(), "quarantine");
   if (existsSync(quarantine)) {
-    if (!isSafeNativeStateDirectory(quarantine)) return false;
+    if (!isSafeNativeStateDirectory(quarantine)) return refuse("quarantine_unsafe");
     for (const name of readdirSync(quarantine)) {
-      if (name.startsWith(`${basename(input.root)}.`) &&
-          readSettledRunnerdProjection(resolve(quarantine, name), identity) === null) return false;
+      if (!name.startsWith(`${basename(input.root)}.`)) continue;
+      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity);
+      if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
   }
   // Database reads can await. Retire only the exact evidence proven above.
-  if (readSettledRunnerdProjection(input.root, identity) !== controlBytes ||
-      (provenFinishedHere && !finishedHere())) return false;
+  if (readSettledRunnerdProjection(input.root, identity).bytes !== controlBytes) return refuse("journal_changed");
+  if (provenFinishedHere && !finishedHere()) return refuse("controller_restarted_here");
   const archivedAt = Date.now();
   const archiveRoot = resolve(input.root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
   mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
@@ -5305,7 +5353,7 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     "stdout",
     `[paperclip-runner] Run ${identity.runId} finished without a saved runner checkpoint; starting a new runner for this conversation.\n`,
   );
-  return true;
+  return { retired: true };
 }
 
 async function migrateRunnerdStateRootForExecution(input: {
@@ -5445,13 +5493,13 @@ async function migrateRunnerdStateRootForExecution(input: {
         allowVerifiedBackup: input.allowVerifiedBackup,
         retainedWarmOwnerRunId: input.retainedWarmOwnerRunId,
       });
-      if (
-        verification === "terminal_state_indeterminate" &&
-        !input.restartRecovery &&
-        !input.retainedWarmOwnerRunId &&
-        (await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity }))
-      ) {
-        return;
+      // Name the failed retirement proof: the shared error otherwise hides
+      // which of several independent fences held the follow-up.
+      let retirementRefusal = "";
+      if (verification === "terminal_state_indeterminate" && !input.restartRecovery && !input.retainedWarmOwnerRunId) {
+        const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
+        if (retirement.retired) return;
+        if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
       }
       if (
         verification !== "verified" &&
@@ -5465,7 +5513,7 @@ async function migrateRunnerdStateRootForExecution(input: {
               : "identity_indeterminate",
           );
         }
-        throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}`);
+        throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}${retirementRefusal}`);
       }
     }
     return;
@@ -6989,6 +7037,9 @@ function loadWarmNativeCheckpoint(
         terminalTurns: [],
         pendingRuntimeRequests: [],
         governedWait: undefined,
+        ...(envelope.snapshot.codexUsageBaseline
+          ? { codexUsageBaseline: codexUsageBaselineForNextRun(envelope.snapshot.codexUsageBaseline) }
+          : {}),
       };
   if (path !== scopedPath || envelope.configDigest !== configDigest) {
     // Upgrade the validated checkpoint atomically. When moving from a legacy
@@ -7254,6 +7305,12 @@ export function nativeSessionFailureSourceCode(
   // before any prompt, so provider work cannot have started. An indeterminate
   // outcome stays generic.
   if (/\bPRP command session\.open (?:failed|rejected): /.test(message)) {
+    // The sidecar's closed classification says the provider cannot run the
+    // selected model. A same-run bootstrap retry would open the same session
+    // and fail the same way, so this needs a model choice, not a retry.
+    if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
+      return "native_provider_model_rejected";
+    }
     return "provider_session_open_rejected";
   }
   return "native_session_interrupted";
@@ -7261,6 +7318,9 @@ export function nativeSessionFailureSourceCode(
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
+
+const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
+  "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
@@ -10293,6 +10353,24 @@ async function executePaperclipNativeSessionWithinScope(
                   await startup.cancellationSettled;
                   // If startup exceeded the caller's deadline, its late handle
                   // must still be cancelled instead of escaping the Stop fence.
+                  // The caller left its durable run Stop pending; acknowledge it
+                  // against this exact published handle so the run settles as an
+                  // operator cancellation rather than a provider failure.
+                  try {
+                    const [stopRun] = await input.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+                      eq(heartbeatRuns.id, input.execution.binding.runId),
+                      eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+                    )).limit(1);
+                    const pendingStop = record(record(stopRun?.resultJson).nativeCancellation);
+                    if (pendingStop.scope === "run" && pendingStop.dispatchState === "pending") {
+                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup", { db: input.db, scope: "run" });
+                    }
+                  } catch (error) {
+                    // Best effort: the in-memory Stop below still fences this
+                    // handle; the intent stays pending for cancellation recovery.
+                    logger.warn({ runId: input.execution.binding.runId, err: error },
+                      "Late native startup Stop could not acknowledge its durable intent");
+                  }
                   await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup");
                   throw new Error("native_finalization_missing: session returned no semantic result");
                 }
@@ -10695,6 +10773,8 @@ async function executePaperclipNativeSessionWithinScope(
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
+                  : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
+                    ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                     : recoveryEvidence.recoveryMode === "ambiguous_state"
@@ -10946,6 +11026,8 @@ async function executePaperclipNativeSessionWithinScope(
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
+              : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
+                ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                 : recoveryEvidence.recoveryMode === "ambiguous_state"
@@ -13250,6 +13332,7 @@ async function createRunnerdBackendWithinSessionClaim(
     authority,
     input.toolTrace,
     input.onAccountingEvent,
+    sessionToolAuthorityEpochs.get(sessionScopeId),
   );
   let dynamicTools: Awaited<
     ReturnType<SessionAuthorityEpoch["definitions"]>
@@ -13292,6 +13375,28 @@ async function createRunnerdBackendWithinSessionClaim(
           nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
       })
     : undefined;
+  const accountingTransportOptions = {
+    onAccountingEvent: input.onAccountingEvent ? async (event: PrpEvent) => {
+      const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+      if (!current) throw new Error("native_session_authority_unavailable");
+      if (input.remoteWarmRecovery && event.runId === input.remoteWarmRecovery.identity.runId) {
+        if (!recoveryUsage) throw new Error("native_recovery_usage_source_unproven");
+        const source = input.remoteWarmRecovery.identity;
+        await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event, {
+          runnerInstanceId: source.runnerInstanceId, environmentLeaseId: source.environmentLeaseId,
+          runId: source.runId, normalizedSessionId: source.normalizedSessionId,
+          turnId: source.turnId, itemId: source.itemId,
+        }));
+        return;
+      }
+      await current.acceptAccountingEvent(event);
+    } : undefined,
+    onRecoveryAccountingEvent: input.onAccountingEvent ? async (event: PrpEvent, source: Parameters<NonNullable<typeof recoveryUsage>>[1]) => {
+      const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+      if (!current || !recoveryUsage) throw new Error("native_recovery_usage_source_unproven");
+      await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event, source));
+    } : undefined,
+  };
   const effectiveRunnerInstanceId =
     durableBinding?.runnerInstanceId ?? input.runnerInstanceId;
   const effectiveEnvironmentLeaseId =
@@ -13398,6 +13503,7 @@ async function createRunnerdBackendWithinSessionClaim(
         return nativeCompletionFeedback(input.db, current.runId, result);
       },
       codexTransportFactory: recovery => createRunnerdCodexTransport({ provider: provider.kind, stateDirectory: root,
+        ...accountingTransportOptions,
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
@@ -14780,26 +14886,7 @@ async function createRunnerdBackendWithinSessionClaim(
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
-        onAccountingEvent: input.onAccountingEvent ? async event => {
-          const current = sessionToolAuthorityEpochs.get(sessionScopeId);
-          if (!current) throw new Error("native_session_authority_unavailable");
-          if (input.remoteWarmRecovery && event.runId === input.remoteWarmRecovery.identity.runId) {
-            if (!recoveryUsage) throw new Error("native_recovery_usage_source_unproven");
-            const source = input.remoteWarmRecovery.identity;
-            await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event, {
-              runnerInstanceId: source.runnerInstanceId, environmentLeaseId: source.environmentLeaseId,
-              runId: source.runId, normalizedSessionId: source.normalizedSessionId,
-              turnId: source.turnId, itemId: source.itemId,
-            }));
-            return;
-          }
-          await current.acceptAccountingEvent(event);
-        } : undefined,
-        onRecoveryAccountingEvent: input.onAccountingEvent ? async (event, source) => {
-          const current = sessionToolAuthorityEpochs.get(sessionScopeId);
-          if (!current || !recoveryUsage) throw new Error("native_recovery_usage_source_unproven");
-          await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event, source));
-        } : undefined,
+        ...accountingTransportOptions,
         onCredentialsUpdated: (event) => appendNativeCredentialUpdate(input.db, {
           companyId: input.execution.binding.companyId,
           agentId: input.execution.binding.agentId,

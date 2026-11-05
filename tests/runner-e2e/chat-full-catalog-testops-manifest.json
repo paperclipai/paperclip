@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "155dd1bc1c4b85ae107f6a0cd429720caa281367",
+  "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "e026d5c000102f8d50397dc59055d187388304f91dbca9a6ccfbe747004cd16d",
+      "candidateDescriptorSha256": "744a566faaa90b8048fff526e0a30b7475b86c2de88d697783f8da9e02f70e20",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -195,7 +195,7 @@
           "sha256": "33e98171de19c3151391164ebf266b53806f387164ad3c4e35f600044d4c1db2"
         }
       ],
-      "conditions": "New candidate measurements only. Original definitions, prior failed attempts and source6 ab201 remain historical. This target retains that catalog and integrates merged runtime fixes #18711, #18713 and #18718, with the prior-run restoration condition adapted to its existing owner. It adds the reviewed previous-question locator, attributed human-only denial and conditional-outcome oracle, and actor-sensitive timeline narrative/recorded-reassignment fixes. Closed finish diagnostics retain an effective schema digest, hashed call correlation and bounded type/category enums only. Historical MCP timeout and continuation-shape causes remain unresolved; no new all-ten PASS is claimed. Queries, model, human/native counts and original clocks remain fixed; the earlier Studio144 explicit 2..3 accounting stays. Core PRs18717/18734/18742 are now merged. SDK115 completion remains UNKNOWN and the other five SDK cases remain held. Full244 runtime catalog is not merged to master and the196/244 gate is unchanged. This successor binds the seven reviewed scenario repairs plus framework evidence: canonical skill navigation, original announcement phase clock, attributed timeline context, bound hire revision history, credential warning and configuration-question admission, completed team visibility, and canonical private framework evidence. Twelve declaration fields across eleven cases change only oracle versions and skill source-file provenance. All original requests, setup, human/native bounds, model and clocks remain fixed. Historical failed attempts and missing-original UNKNOWN grades remain unchanged; no uniform-ten PASS is claimed. The existing SDK506/efa qualification is reused only for byte-identical registered source inputs.",
+      "conditions": "New candidate measurements only. Original definitions, prior failed attempts and source6 ab201 remain historical. This target retains that catalog and integrates merged runtime fixes #18711, #18713 and #18718, with the prior-run restoration condition adapted to its existing owner. It adds the reviewed previous-question locator, attributed human-only denial and conditional-outcome oracle, and actor-sensitive timeline narrative/recorded-reassignment fixes. Closed finish diagnostics retain an effective schema digest, hashed call correlation and bounded type/category enums only. Historical MCP timeout and continuation-shape causes remain unresolved; no new all-ten PASS is claimed. Queries, model, human/native counts and original clocks remain fixed; the earlier Studio144 explicit 2..3 accounting stays. Core PRs18717/18734/18742 are now merged. SDK115 completion remains UNKNOWN and the other five SDK cases remain held. Full244 runtime catalog is not merged to master and the196/244 gate is unchanged. This successor binds the seven reviewed scenario repairs plus framework evidence: canonical skill navigation, original announcement phase clock, attributed timeline context, bound hire revision history, credential warning and configuration-question admission, completed team visibility, and canonical private framework evidence. Twelve declaration fields across eleven cases change only oracle versions and skill source-file provenance. All original requests, setup, human/native bounds, model and clocks remain fixed. Historical failed attempts and missing-original UNKNOWN grades remain unchanged; no uniform-ten PASS is claimed. The existing SDK506/efa qualification is reused only for byte-identical registered source inputs. This next successor adds reviewed question-surface observation, grounded scenario grading and safe credential-guidance boundaries after the retained uniform attempt. Eleven existing oracle-version leaves advance; all sourceFiles declarations, requests, setup, counts, clocks, model, launcher and private protocol helpers remain fixed. Component qualification does not attest a new uniform-ten pass.",
       "changedFields": [
         {
           "key": "activity.work-timeline",
@@ -232,7 +232,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v7"
+          "current": "paperclip.chat-catalog.work-timeline.v9"
         },
         {
           "key": "activity.work-timeline",
@@ -544,13 +544,13 @@
           "key": "questions-and-approvals.formal-hire-revision",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
-          "current": "paperclip.chat-catalog.hire-revision.native1017.v4"
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v5"
         },
         {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.required-question.v2"
+          "current": "paperclip.chat-catalog.required-question.v3"
         },
         {
           "key": "questions-and-approvals.reject-and-revise",
@@ -635,7 +635,7 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v6"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v7"
         },
         {
           "key": "secrets.personal-secret",
@@ -694,7 +694,7 @@
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v7"
+          "current": "paperclip.chat-catalog.personal-secret.v8"
         },
         {
           "key": "skills.author-skill",
@@ -722,7 +722,7 @@
           "key": "skills.author-skill",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-authoring.v3"
+          "current": "paperclip.chat-catalog.skill-authoring.v4"
         },
         {
           "key": "skills.author-skill",
@@ -906,31 +906,31 @@
           "key": "connection-setup.secure-api-key",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.least-scope-delivery",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.secret-proposal",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.vault-reference",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "teams.install-team",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.team-install.v2"
+          "current": "paperclip.chat-catalog.team-install.v3"
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -970,7 +970,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v7"
+          "current": "paperclip.chat-catalog.work-timeline.v9"
         },
         {
           "key": "agents.choose-primary",
@@ -1252,13 +1252,13 @@
           "key": "questions-and-approvals.formal-hire-revision",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
-          "current": "paperclip.chat-catalog.hire-revision.native1017.v4"
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v5"
         },
         {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.required-question.v2"
+          "current": "paperclip.chat-catalog.required-question.v3"
         },
         {
           "key": "questions-and-approvals.reject-and-revise",
@@ -1343,7 +1343,7 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v6"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v7"
         },
         {
           "key": "secrets.personal-secret",
@@ -1413,7 +1413,7 @@
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v7"
+          "current": "paperclip.chat-catalog.personal-secret.v8"
         },
         {
           "key": "skills.author-skill",
@@ -1441,7 +1441,7 @@
           "key": "skills.author-skill",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-authoring.v3"
+          "current": "paperclip.chat-catalog.skill-authoring.v4"
         },
         {
           "key": "skills.enable-for-agent",
@@ -1669,31 +1669,31 @@
           "key": "connection-setup.secure-api-key",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.least-scope-delivery",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.secret-proposal",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "secrets.vault-reference",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.external.v3"
+          "current": "paperclip.chat-catalog.external.v4"
         },
         {
           "key": "teams.install-team",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.team-install.v2"
+          "current": "paperclip.chat-catalog.team-install.v3"
         }
       ],
       "runtimeConditions": {
@@ -1809,7 +1809,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "155dd1bc1c4b85ae107f6a0cd429720caa281367",
+        "targetSha": "5aef4bffa2b106f2066bf2485338798f04a702bd",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "c88df15f509b2ac8638af826647a97d45f16bd1f"
       }
@@ -2352,7 +2352,7 @@
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.work-timeline.v7",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v9",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -6574,7 +6574,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v3",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secure-key.ts",
         "chat-query-attachments.ts",
@@ -9879,7 +9879,7 @@
         "agents/hire"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v4",
+      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v5",
       "sourceFiles": [
         "chat-catalog-domains/identity-hire-revision.ts",
         "chat-catalog-domains/identity-hire-model-choice.ts",
@@ -9923,7 +9923,7 @@
         "questions-and-approvals/questions"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.required-question.v2",
+      "oracleVersion": "paperclip.chat-catalog.required-question.v3",
       "sourceFiles": [
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -11144,7 +11144,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v6",
+      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v7",
       "sourceFiles": [
         "chat-catalog-domains/external-company-secret.ts",
         "chat-catalog-domains/external-secret-question.ts",
@@ -11196,7 +11196,7 @@
         "secrets/runtime-delivery"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v3",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-delivery.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
@@ -11260,7 +11260,7 @@
         "secrets/user-secrets"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.personal-secret.v7",
+      "oracleVersion": "paperclip.chat-catalog.personal-secret.v8",
       "sourceFiles": [
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-secret-question.ts",
@@ -11321,7 +11321,7 @@
         "secrets/proposals"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v3",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-proposal.ts",
         "chat-catalog-domains/external-secret-scan.ts",
@@ -11384,7 +11384,7 @@
         "secrets/vault-import"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v3",
+      "oracleVersion": "paperclip.chat-catalog.external.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-vault-reference.ts",
         "chat-catalog-domains/external-fixtures.ts",
@@ -11442,7 +11442,7 @@
         "skills/authoring"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.skill-authoring.v3",
+      "oracleVersion": "paperclip.chat-catalog.skill-authoring.v4",
       "sourceFiles": [
         "chat-catalog-domains/integrator-support.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -13240,7 +13240,7 @@
         "agents/hire"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.team-install.v2",
+      "oracleVersion": "paperclip.chat-catalog.team-install.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-team-install.ts",
         "chat-catalog-domains/external-team-conditional.ts",

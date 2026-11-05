@@ -7,6 +7,7 @@ import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paper
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
 import { environmentRunnerIngressErrorData } from "./environment-runner-ingress-error.js";
+import { environmentStopErrorData } from "./environment-stop-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
@@ -1646,7 +1647,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
           ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
           : method === "environmentSyncOut" ? environmentSyncErrorData(err)
-          : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err) : undefined));
+          : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err)
+          : method === "environmentStopLease" ? environmentStopErrorData(err) : undefined));
     } finally {
       done?.();
     }

@@ -165,6 +165,22 @@ creation time. A queued follow-up can predate the prior turn completion. A remot
 stop can also predate a later logical failure caused by recovery timeout. These
 proofs use the recorded execution start and never rewrite lifecycle timestamps.
 
+A missing managed task checkout can still have its runtime-owned branch in the
+verified company and project Git cache. Preserve that exact commit when the
+recorded private path matches, no other workspace owns the branch, and Git has
+no surviving worktree registration or index for it. Pin and recheck the commit
+before publication. This saves the surviving committed tree; it does not
+certify recovery of files that were already absent. An active record requires
+the existing offline provider fence and keeps its original status. Invalid
+restore recipes, live registrations and competing branch owners stay blocked.
+
+For a user-owned retained branch, require its exact successful unforced worktree
+removal receipt after archival. Forced removal or a revoked receipt does not
+grant this authority. Preserve the branch and its ownership metadata unchanged.
+For a deleted private branch, prefer its verified recorded private object source
+while it still exists. A missing project cache or a later project-source change
+must not hide that original retained commit.
+
 ### Existing typed checkpoint authority
 
 When a retained source already has a valid typed database checkpoint, derive its
@@ -205,3 +221,55 @@ and rejection at the archive limit before any object or row is published. This
 finite offline operation adds no idle background work. A resumed rehearsal can
 measure the fix but cannot replace fresh full-image migration and empty-home
 recovery proof.
+
+During offline migration, known task-only assignment, configuration, deliberate-wait and
+disposition warnings can remain unchanged while the owner saves local files.
+They do not certify file recovery and are not resolved by migration. An active
+system recovery, native execution failure marker, declared workspace recovery
+source, export-failure cause or unknown recovery kind retains the existing
+blocker unless the importer already records that exact legacy recovery source.
+Live migration keeps its recovery exclusion. Recheck recovery evidence before
+publishing the saved workspace.
+
+### Online preparation for large provider histories
+
+Parallel offline transfer alone did not fit the copied staging dataset in the
+maintenance window. A resumed attempt reached 1,389 of 1,953 sources. Keep the
+offline deadline and move successful released history before draining the server.
+The inventory contains 1,802 such backups, approximately 48.5 GB of the 54.8 GB
+declared source bytes. This is preparatory publication under recorded runtime
+authority, not permission to detach a volume.
+
+Run the finite operator entry from a normal released image:
+
+```sh
+PAPERCLIP_NATIVE_HARNESS_PRESTAGE=true node --max-old-space-size=512 server/dist-runtime/native-harness-prestage.mjs
+```
+
+The entry loads the stored Cloud configuration and requires shared object storage.
+It processes one source at a time, has a 90-minute deadline, and stops on shutdown.
+It starts no scheduler, does not drain tasks, and always reports
+`enrollmentReady: false`. Check serving memory headroom before running a separate
+process on a tenant. Keep the deployment on normal releases.
+
+Only a successful, finished source with a released committed coordinator and an
+accepted result can publish through this path. At both database fences, hold the
+task share lock and recheck its checkout, related queued/running executions,
+recorded session and Runner, exact backup-stamp lease, and unchanged local
+manifest and suspended state. A concurrent turn, moved source, revoked stamp or
+changed owner defers that source. Unrelated executions continue unchanged.
+No lease, result, task or lifecycle state is rewritten to make a source eligible.
+
+The final offline migration still stops all writers, verifies every durable
+object, imports deferred sources and all other data, and exports only its normal
+complete eligibility receipt. Qualification starts from the saved pristine
+database, records the separate preparation phase, and then proves the normal
+bundled offline entry and empty-home restoration. Preparation alone cannot pass
+enrollment or active-agent release acceptance.
+
+The online preparation command loads the configured app key before copying. It
+requires a valid existing key and retains that key in its process environment
+so a missing file cannot create a replacement during publication. Its database
+connections have five-second lock waits and 30-second statement and idle
+transaction limits. Cancellation closes the command's clients and has a
+ten-second process-exit fallback for a dependency that does not settle.

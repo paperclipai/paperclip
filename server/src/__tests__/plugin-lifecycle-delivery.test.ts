@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { companies, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -211,6 +211,76 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1);
     } finally { release(); worker.dispose(); await coordinator.stop(); }
   });
+  describe("agent runtime events", () => {
+    const runtimeManifest = (capabilities: string[]) => ({ resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe", ...capabilities] }) as never;
+    async function agent(name: string, requiredPluginIds: string[] | null) {
+      const [row] = await db.insert(agents).values({ companyId, name, adapterType: "process" }).returning({ id: agents.id });
+      await db.update(agents).set({ lifecycleRequiredPluginIds: requiredPluginIds }).where(eq(agents.id, row.id));
+      return row.id;
+    }
+    const delivered = (d: ReturnType<typeof delivery>) => new Set(d.call.mock.calls.map(c => c[2].resourceId));
+    async function drain(d: ReturnType<typeof delivery>) {
+      do { await d.run(); } while (await d.pending());
+    }
+
+    it("delivers only the agents a lifecycle plugin owns and acknowledges the rest", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const owned = await agent("Owned", [pluginId]);
+      await agent("Other plugin", [randomUUID()]);
+      await agent("No plugins", []);
+      await agent("Not selected", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([owned]));
+        expect(await pluginLifecycleInbox(db, pluginId).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("delivers a new event after an agent selects the plugin and reaches ready", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Later owned", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(d.call).not.toHaveBeenCalled();
+        await db.update(agents).set({ lifecycleState: "preparing", lifecycleRequiredPluginIds: [pluginId] }).where(eq(agents.id, id));
+        await db.update(agents).set({ lifecycleState: "ready" }).where(eq(agents.id, id));
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([id]));
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("delivers a deleted agent's event to a lifecycle plugin", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest(["agents.lifecycle.manage"]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Removed", [pluginId]);
+      await db.delete(agents).where(eq(agents.id, id));
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(d.call.mock.calls.at(-1)?.[2]).toMatchObject({ resourceId: id, action: "delete" });
+      } finally {
+        d.worker.dispose();
+      }
+    });
+
+    it("keeps delivering to a subscriber that does not manage agent lifecycles", async () => {
+      await db.update(plugins).set({ manifestJson: runtimeManifest([]) }).where(eq(plugins.id, pluginId));
+      const id = await agent("Observed", null);
+      const d = delivery();
+      try {
+        await drain(d);
+        expect(delivered(d)).toEqual(new Set([id]));
+      } finally {
+        d.worker.dispose();
+      }
+    });
+  });
+
   it("drains creation before transitions, recovers acknowledgments across dispatcher replacement, and ignores agent events", async () => {
     const id = await event(); await event(id, "update"); await event(id, "delete");
     await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", randomUUID()));

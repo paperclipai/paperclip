@@ -113,6 +113,7 @@ export function arbitrateNativeStatus(input: {
   governanceResolvedForRun?: boolean;
   externalChatResponseWaitAuthorization?:
     "authorized" | "revoked" | "not_applicable";
+  hasUnprovenPreservedResultStatus?: boolean;
   publishedExternalReview?: boolean;
   /** Server-verified accepted plan request and normal provider terminal. */
   planWaitAuthorized?: boolean;
@@ -526,6 +527,11 @@ export function arbitrateNativeStatus(input: {
     input.assessment.continuation?.kind === "response_wake" &&
     input.externalChatResponseWaitAuthorization === "authorized"
   ) {
+    if (input.hasUnprovenPreservedResultStatus) return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: "preserved_result_status_unproven", unblockDescriptor: null, effects: [],
+    };
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: input.publishedExternalReview ? "in_review" : "in_progress",
