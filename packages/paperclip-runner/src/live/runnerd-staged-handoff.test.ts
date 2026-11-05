@@ -99,7 +99,7 @@ it("delivers a WebSocket message coalesced with the real HTTP upgrade response",
 });
 
 // Real encrypted PRP and real Runner/provider processes; no model or server imports.
-it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every durable boundary without another process", async mode => {
+it.each([["connect", "owned"], ["listen", "owned"], ["connect", "legacy"], ["listen", "legacy"], ["connect", "cleanup"]] as const)("recovers a staged %s %s handoff at every durable boundary without another process", async (mode, policy) => {
   const root = await mkdtemp(join(tmpdir(), "runner-staged-handoff-"));
   const shared = join(root, "shared"), calls = join(root, "calls.log");
   const source = { runnerInstanceId: "runner-staged", environmentLeaseId: "lease-staged", runId: "source-run",
@@ -141,6 +141,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
       const registration = async (core: DurablePrpControlPlane, identity = core.store.state.identity) => {
         currentCore = core;
         if (!registered.has(core)) {
+          if (policy === "cleanup") vi.spyOn(core, "enableSemanticInputDispatch");
           registered.add(core); cores.add(core);
           const epoch = generation;
           core.setCheckpointPersistence(async saved => {
@@ -208,7 +209,8 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
         checkpoint.restoreSessionDirectory(next);
         const noSpawn = vi.fn(() => { throw new Error("Duplicate Runner launch"); });
         const recoveryOptions: Parameters<typeof createCapabilityRunnerdCodexTransport>[0] = { ...options, stateDirectory: next,
-          prpIdentity: target, runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
+          authorityRunId: policy === "legacy" ? undefined : target.runId,
+          recoveryPurpose: policy === "cleanup" ? "stop_cleanup" : undefined, prpIdentity: target, runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
           runnerStateDirectory: join(directory, "runner"), readRunnerState: async () => JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8")),
           prepareExternalRunnerState: async () => { throw new Error("Verified live handoff must not restore a backup"); },
           runnerProcessLauncher: noSpawn, warmTransitionRegistrationMode: mode === "listen" ? "routed_same_endpoint" : "routed_connect",
@@ -216,6 +218,13 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           adoptExistingRunner: { pid: runnerPid, processGroupId: runnerPid, startedAt,
             isAlive: () => !dead(runnerPid!), signal: signal => { if (dead(runnerPid!)) return true; process.kill(-runnerPid!, signal); return true; } } };
         if (boundary === "queued") {
+          if (policy === "owned") {
+            const wrongProvider = createCapabilityRunnerdCodexTransport({ ...recoveryOptions,
+              resumeProviderSession: { ...recoveryOptions.resumeProviderSession!, driverSessionId: "foreign-thread" } });
+            await expect(wrongProvider.transport.request("thread/read", {})).rejects.toThrow("provider_identity_mismatch");
+            await wrongProvider.detachControllerForRestart().catch(() => undefined);
+            checkpoint.restoreSessionDirectory(next);
+          }
           const noProof = createCapabilityRunnerdCodexTransport({ ...recoveryOptions, adoptExistingRunner: undefined });
           await expect(noProof.transport.request("thread/read", {})).rejects.toThrow("queued_attachment_requires_verified_live_source");
           await noProof.detachControllerForRestart().catch(() => undefined);
@@ -250,11 +259,16 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
         await currentCore.flushCheckpoint(); expect(checkpoint).toBe(beforeMark);
         await within(replacement.transport.request("thread/goal/get", {}), "post-checkpoint read");
         expect(currentCore.store.state.stagedRunAttachment).toBeUndefined();
+        if (policy === "cleanup") expect(currentCore.enableSemanticInputDispatch).not.toHaveBeenCalled();
+        else {
+          await within(replacement.transport.request("turn/start", { input: [{ type: "text", text: "Work after recovered attachment" }] }), "target turn");
+          for await (const event of replacement.transport.notifications()) if (event.method === "turn/completed") break;
+        }
         expect(noSpawn).not.toHaveBeenCalled();
         const effects = (await readFile(callLog, "utf8")).trim().split(/\r?\n/);
         expect(effects.filter(line => line === "process-start")).toHaveLength(1);
         expect(effects.filter(line => line === "thread/start")).toHaveLength(1);
-        expect(effects.filter(line => line === "turn/start")).toHaveLength(0);
+        expect(effects.filter(line => line === "turn/start")).toHaveLength(policy === "cleanup" ? 0 : 1);
       } catch (error) {
         const physical = JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8").catch(() => "{}"));
         throw new Error(`${mode}/${boundary}: ${String(error)}; ${JSON.stringify({

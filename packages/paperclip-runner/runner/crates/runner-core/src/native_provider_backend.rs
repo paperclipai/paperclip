@@ -278,6 +278,20 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        if let Some(SelectedExecutor::LocalFacade(executor)) = self.selected.as_mut() {
+            executor.observe_recovery_state(state);
+        }
+        Ok(())
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected
