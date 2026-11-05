@@ -19,13 +19,13 @@ import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recorde
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
-import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
-import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate } from "./execution-blocker.js";
+import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
@@ -227,6 +227,7 @@ export async function admitExplicitNativeContinuation(input: {
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate(),
       blocker?.recoveryActionId ? eq(issueRecoveryActions.id, blocker.recoveryActionId) : undefined) : undefined,
+    not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(executionBlockerPredicate(), and(
       inArray(issueRecoveryActions.cause, ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"]),
       sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,

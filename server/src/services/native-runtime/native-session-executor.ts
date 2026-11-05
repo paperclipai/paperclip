@@ -7305,6 +7305,12 @@ export function nativeSessionFailureSourceCode(
   // before any prompt, so provider work cannot have started. An indeterminate
   // outcome stays generic.
   if (/\bPRP command session\.open (?:failed|rejected): /.test(message)) {
+    // The sidecar's closed classification says the provider cannot run the
+    // selected model. A same-run bootstrap retry would open the same session
+    // and fail the same way, so this needs a model choice, not a retry.
+    if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
+      return "native_provider_model_rejected";
+    }
     return "provider_session_open_rejected";
   }
   return "native_session_interrupted";
@@ -7312,6 +7318,9 @@ export function nativeSessionFailureSourceCode(
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
+
+const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
+  "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
@@ -10344,6 +10353,24 @@ async function executePaperclipNativeSessionWithinScope(
                   await startup.cancellationSettled;
                   // If startup exceeded the caller's deadline, its late handle
                   // must still be cancelled instead of escaping the Stop fence.
+                  // The caller left its durable run Stop pending; acknowledge it
+                  // against this exact published handle so the run settles as an
+                  // operator cancellation rather than a provider failure.
+                  try {
+                    const [stopRun] = await input.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+                      eq(heartbeatRuns.id, input.execution.binding.runId),
+                      eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+                    )).limit(1);
+                    const pendingStop = record(record(stopRun?.resultJson).nativeCancellation);
+                    if (pendingStop.scope === "run" && pendingStop.dispatchState === "pending") {
+                      await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup", { db: input.db, scope: "run" });
+                    }
+                  } catch (error) {
+                    // Best effort: the in-memory Stop below still fences this
+                    // handle; the intent stays pending for cancellation recovery.
+                    logger.warn({ runId: input.execution.binding.runId, err: error },
+                      "Late native startup Stop could not acknowledge its durable intent");
+                  }
                   await cancelNativeSession(input.execution.binding.runId, "Stop requested during native startup");
                   throw new Error("native_finalization_missing: session returned no semantic result");
                 }
@@ -10746,6 +10773,8 @@ async function executePaperclipNativeSessionWithinScope(
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
+                  : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
+                    ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                     : recoveryEvidence.recoveryMode === "ambiguous_state"
@@ -10997,6 +11026,8 @@ async function executePaperclipNativeSessionWithinScope(
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
+              : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
+                ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                 : recoveryEvidence.recoveryMode === "ambiguous_state"

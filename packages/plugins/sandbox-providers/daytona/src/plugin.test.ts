@@ -37,7 +37,7 @@ import plugin, {
   __setDaytonaPluginContextForTest,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
+import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 import * as duplexCommands from "./duplex-command-stream.js";
@@ -2588,6 +2588,95 @@ describe("Daytona sandbox provider plugin", () => {
     else await expect(stop).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
     expect(sandbox.stop).toHaveBeenCalledTimes(1);
     expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
+  describe("explicit stop of a sandbox in the provider error state", () => {
+    const stopParams = (sandboxId: string) => ({ driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandboxId, config: { reuseLease: false } });
+    function erroredSandbox(recoverable: boolean) {
+      const sandbox = { ...createMockSandbox({ id: "sandbox-disk-full", state: "error", recoverable }),
+        errorReason: "Error response from daemon: mkdir /var/lib/docker/overlay2/layer: no space left on device" };
+      sandbox.stop.mockImplementation(async () => {
+        if (sandbox.state === "error") throw new Error("Sandbox failed to stop with status: error");
+        sandbox.state = "stopped";
+      });
+      mockGet.mockResolvedValue(sandbox);
+      return sandbox;
+    }
+    async function stopFailure(sandboxId: string) {
+      const error = await plugin.definition.onEnvironmentStopLease!(stopParams(sandboxId)).then(
+        () => { throw new Error("stop unexpectedly succeeded"); }, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(PluginEnvironmentStopError);
+      return readEnvironmentStopFailure({ data: environmentStopErrorData(error) });
+    }
+    beforeEach(() => { process.env.DAYTONA_API_KEY = "host-key"; });
+
+    it("recovers a recoverable sandbox, then stops and retains it", async () => {
+      const sandbox = erroredSandbox(true);
+      sandbox.recover.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(plugin.definition.onEnvironmentStopLease!(stopParams(sandbox.id)))
+        .resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
+      expect(sandbox.recover).toHaveBeenCalledExactlyOnceWith(20);
+      expect(sandbox.setAutoDeleteInterval.mock.invocationCallOrder[0]).toBeLessThan(sandbox.recover.mock.invocationCallOrder[0]);
+      expect(sandbox.recover.mock.invocationCallOrder[0]).toBeLessThan(sandbox.stop.mock.invocationCallOrder[0]);
+      expect(sandbox.stop).toHaveBeenCalledOnce();
+      expect(sandbox.state).toBe("stopped");
+      for (const method of [sandbox.start, sandbox.delete, sandbox.archive]) expect(method).not.toHaveBeenCalled();
+    });
+
+    it("returns a typed terminal failure for an unrecoverable sandbox without provider lifecycle calls", async () => {
+      const sandbox = erroredSandbox(false);
+      expect(await stopFailure(sandbox.id)).toEqual({ reason: "resource_unrecoverable", terminal: true });
+      expect(sandbox.setAutoDeleteInterval).toHaveBeenCalledWith(-1);
+      for (const method of [sandbox.recover, sandbox.stop, sandbox.start, sandbox.delete, sandbox.archive]) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    });
+
+    it.each([
+      { name: "recovery fails back to the error state", state: "error", recoverable: true,
+        expected: { reason: "recovery_failed", terminal: true } },
+      { name: "the provider marks the sandbox unrecoverable during recovery", state: "error", recoverable: false,
+        expected: { reason: "resource_unrecoverable", terminal: true } },
+      { name: "recovery is still in progress at the deadline", state: "starting", recoverable: true,
+        expected: { reason: "recovery_incomplete", terminal: false } },
+    ])("makes one recovery attempt when $name", async ({ state, recoverable, expected }) => {
+      const sandbox = erroredSandbox(true);
+      sandbox.recover.mockRejectedValue(new Error("Sandbox failed to start with status: error"));
+      sandbox.refreshData.mockImplementation(async () => {
+        if (sandbox.recover.mock.calls.length > 0) Object.assign(sandbox, { state, recoverable });
+      });
+      expect(await stopFailure(sandbox.id)).toEqual(expected);
+      expect(sandbox.recover).toHaveBeenCalledOnce();
+      expect(sandbox.stop).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it("bounds a recovery call that never settles", async () => {
+      const sandbox = erroredSandbox(true);
+      sandbox.recover.mockImplementation(() => new Promise<void>(() => {}));
+      vi.useFakeTimers();
+      try {
+        const failure = stopFailure(sandbox.id);
+        await vi.advanceTimersByTimeAsync(25_000);
+        expect(await failure).toEqual({ reason: "recovery_failed", terminal: true });
+      } finally { vi.useRealTimers(); }
+      expect(sandbox.recover).toHaveBeenCalledOnce();
+      expect(sandbox.stop).not.toHaveBeenCalled();
+    });
+
+    it("does not recover again when the recovered sandbox fails again before it stops", async () => {
+      const sandbox = erroredSandbox(true);
+      sandbox.recover.mockImplementation(async () => { sandbox.state = "started"; });
+      sandbox.stop.mockImplementation(async () => {
+        sandbox.state = "error";
+        throw new Error("Sandbox failed to stop with status: error");
+      });
+      expect(await stopFailure(sandbox.id)).toEqual({ reason: "recovery_failed", terminal: true });
+      expect(sandbox.recover).toHaveBeenCalledOnce();
+      expect(sandbox.stop).toHaveBeenCalledOnce();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
   });
 
   it.each([true, false])("preserves an archived source only after fresh retention confirmation: %s", async confirmed => {

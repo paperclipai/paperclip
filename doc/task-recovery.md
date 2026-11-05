@@ -11,7 +11,10 @@ It requires authenticated board task-mutation authority. It records an
 `agent_wakeup_requests` receipt before physical work. Company/key uniqueness
 covers completed and failed receipts as well as pending ones. Concurrent clicks
 attach to accepted work. A new deliberate click after exhaustion can create a
-new generation; a repeated HTTP request cannot.
+new generation; a repeated HTTP request cannot. A click does not renew an
+exhausted generation that already requires an alternative strategy and has no
+fresh attempt. The click binds to that generation and continues in a fresh
+isolated workspace, so it does not repeat the failed step.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
@@ -117,6 +120,16 @@ runtime's recovery path. This path checks the current source action, run,
 environment, allocation, stop-only intent, and physical ownership claim before
 calling the provider. The retained-source fence still blocks ordinary resume
 and destruction. Recovery does not clear it to gain access to the saved files.
+
+The reopen moves the original stop receipt into the stop-only intent before it
+calls the provider. The lease shows no receipt while the reopen is in progress.
+When the provider returns the reopened allocation, recovery discards the old
+receipt, and the allocation needs a fresh stop. If the reopen fails, recovery
+asks the provider to stop the allocation. If that stop also fails, recovery
+restores the original receipt and lease state, so a stopped source never stays
+without a receipt. A reopen that fails because the sandbox disk is full ends the
+generation with `source_unavailable`. Saved input and Retry then continue in a
+fresh isolated workspace.
 
 Execution containment and file preservation are independent facts:
 

@@ -8374,6 +8374,53 @@ describe("native session cancellation", () => {
     }
   });
 
+  it("acknowledges a timed-out Stop's durable intent when the late startup handle opens", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-late-startup-ack-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let open!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const submitTurn = vi.fn();
+    state.cancel.mockClear();
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started(); await opening;
+      await options.onSession({ cancel: state.cancel });
+      submitTurn();
+      throw new Error("a stopped startup must not reach prompt submission");
+    });
+    const runResultJson: Record<string, unknown> = {};
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const outcome = executePaperclipNativeSession({ db: leaseDb(execution, {}, runResultJson, updates), execution, runnerInstanceId: "runner" })
+      .catch(error => error);
+    const persistence = cancellationDb();
+    try {
+      await admitted;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const stopping = cancelNativeSession(execution.binding.runId, "operator Stop", { db: persistence.db, scope: "run" }).catch(error => error);
+      await new Promise(resolve => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await stopping).toMatchObject({ name: "NativeCancellationPendingRecoveryError" });
+      vi.useRealTimers();
+      // The startup owner reads the same durable run row the Stop caller wrote.
+      Object.assign(runResultJson, persistence.getResultJson());
+      expect(runResultJson.nativeCancellation).toMatchObject({ dispatchState: "pending", scope: "run" });
+      open(); await outcome;
+      expect(state.cancel).toHaveBeenCalledOnce();
+      expect(submitTurn).not.toHaveBeenCalled();
+      const acknowledgement = updates.find(update => update.table === heartbeatRuns &&
+        (update.values.resultJson as Record<string, any> | undefined)?.nativeCancellation?.dispatchState === "acknowledged");
+      expect(acknowledgement?.values.resultJson).toMatchObject({
+        nativeCancellation: { intentId: (runResultJson.nativeCancellation as Record<string, unknown>).intentId, dispatched: true },
+      });
+    } finally {
+      vi.useRealTimers(); open(); await outcome;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("routes control-plane cancellation to the active normalized session and removes the handle", async () => {
     const running = executePaperclipNativeSession({
       db: leaseDb(),
@@ -17978,6 +18025,15 @@ it("classifies only a definite session.open outcome as a bounded pre-session fai
   expect(nativeSessionFailureSourceCode(new Error(`PRP command session.open indeterminate: ${detail}`)))
     .toBe("native_session_interrupted");
   expect(nativeSessionFailureSourceCode(new Error(`PRP command turn.start failed: ${detail}`)))
+    .toBe("native_session_interrupted");
+  // A definite model rejection needs a model choice; an indeterminate one stays unknown.
+  const modelDetail = detail.replace("classification=session_ensure_failed", "classification=grok_model_mismatch");
+  const modelCode = nativeSessionFailureSourceCode(new Error(`PRP command session.open failed: ${modelDetail}`));
+  expect(modelCode).toBe("native_provider_model_rejected");
+  expect(nativeSessionFailureDisposition(1, new Date(), modelCode)).toEqual({
+    phase: "terminal_failure", failureCode: "native_provider_model_rejected", nextAttemptAt: null,
+  });
+  expect(nativeSessionFailureSourceCode(new Error(`PRP command session.open indeterminate: ${modelDetail}`)))
     .toBe("native_session_interrupted");
 });
 describe("HTTP Stop during remote runner staging", () => {

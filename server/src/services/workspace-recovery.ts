@@ -19,7 +19,7 @@ import { logger } from "../middleware/logger.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
-import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, prepareStoppedSandboxForRecovery, settleAbsentSandbox, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { confirmSandboxRecoveryRestart, hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, prepareStoppedSandboxForRecovery, restoreSandboxStopAfterFailedRestart, settleAbsentSandbox, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { requestSandboxAbsenceProof } from "./sandbox-absence-proof.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -38,6 +38,7 @@ import { saveRemoteWorkspace } from "./remote-workspaces.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
+const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 
 type StopEvidenceSource = Omit<Source, "actionId"> & { actionId?: string };
@@ -243,12 +244,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           if (!pending) throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
           // The cleanup service owns exact-allocation termination. No process ID
           // or terminal run status is substituted for its provider receipt.
-          const receipt = await input.environmentRuntime.retryPendingSandboxTeardown({
-            environment: environment as unknown as Environment, lease: pending as EnvironmentLease }).catch(async () => {
-              await settleStopOnlyCleanup(db, pending, { attemptId: ownership.token });
-              throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
-            });
-          const settled = await settleStopOnlyCleanup(db, pending, { attemptId: ownership.token, receipt });
+          const settled = await input.environmentRuntime.retryPendingSandboxTeardown({
+            environment: environment as unknown as Environment, lease: pending as EnvironmentLease })
+            .then(receipt => settleStopOnlyCleanup(db, pending, { attemptId: ownership.token, receipt }),
+              async () => await restoreSandboxStopAfterFailedRestart(db, pending, { attemptId: ownership.token })
+                ?? await settleStopOnlyCleanup(db, pending, { attemptId: ownership.token }));
           if (!settled || !hasRemoteTerminationReceipt(settled))
             throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
           stoppedLease = settled;
@@ -259,7 +259,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.remoteCwd !== remoteCwd)
           throw workspaceSourceBindingFailure("execution_target_invalid");
         await ownership.assertHeld();
-        const cleanupLease = await db.transaction(async tx => {
+        let cleanupLease = await db.transaction(async tx => {
           const [fresh] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
             eq(environmentLeases.id, lease.id))).for("update");
           if (!fresh || !hasRemoteTerminationReceipt(fresh) || fresh.providerLeaseId !== lease.providerLeaseId)
@@ -280,7 +280,13 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         let stopSettled = false;
         try {
           const opened = await input.environmentRuntime.resumeWorkspaceRecoveryLease({ source: input,
-            leaseId: cleanupLease.id, environmentId: environment.id, ownership });
+            leaseId: cleanupLease.id, environmentId: environment.id, ownership }).catch(error => {
+              throw sandboxDiskFull.test((error as Error | undefined)?.message ?? "")
+                ? new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy") : error;
+            });
+          const confirmed = await confirmSandboxRecoveryRestart(db, cleanupLease, { attemptId: ownership.token });
+          if (!confirmed) throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+          cleanupLease = confirmed;
           if (opened?.providerLeaseId !== lease.providerLeaseId) throw workspaceSourceBindingFailure("reopened_allocation_mismatch");
           if (opened.metadata?.remoteCwd !== remoteCwd) throw workspaceSourceBindingFailure("reopened_cwd_mismatch");
           await inspectWorkspaceRecoverySource(db, input);
@@ -359,9 +365,10 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             // The maintenance worker must never turn it into destructive cleanup.
             try {
               await ownership.assertHeld();
-              const receipt = await input.environmentRuntime.retryPendingSandboxTeardown({ environment: environment as unknown as Environment,
-                lease: cleanupLease as EnvironmentLease });
-              await settleStopOnlyCleanup(db, cleanupLease, { attemptId: ownership.token, receipt });
+              const settled = await input.environmentRuntime.retryPendingSandboxTeardown({ environment: environment as unknown as Environment,
+                lease: cleanupLease as EnvironmentLease }).then(receipt => settleStopOnlyCleanup(db, cleanupLease, { attemptId: ownership.token, receipt }), () => null);
+              if (!settled || !hasRemoteTerminationReceipt(settled))
+                await restoreSandboxStopAfterFailedRestart(db, cleanupLease, { attemptId: ownership.token });
             } catch { /* The persisted stop-only obligation remains authoritative. */ }
           }
         }
