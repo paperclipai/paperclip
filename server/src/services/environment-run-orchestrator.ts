@@ -29,7 +29,7 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
+import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -217,6 +217,7 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
+    warmRunnerIdleTimeoutMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -313,6 +314,9 @@ export function environmentRunOrchestrator(
     }
 
     // Step 2: Acquire lease
+    const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
     const acquisitionInput = {
       companyId: input.companyId,
       environment,
@@ -324,6 +328,7 @@ export function environmentRunOrchestrator(
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
+      warmRunnerIdleTimeoutMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
@@ -353,6 +358,7 @@ export function environmentRunOrchestrator(
         // checks) can run. This API cannot acquire a replacement.
         const resumed = await environmentRuntime.resumeRunLease({
           environment, lease, requestedCwd: expected.remoteCwd,
+          ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
         });
         if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
             resumed.metadata?.expired === true) {

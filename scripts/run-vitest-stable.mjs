@@ -103,6 +103,7 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-runner-restart-checkpoint-cost.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
+  "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip

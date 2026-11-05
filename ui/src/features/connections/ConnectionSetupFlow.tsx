@@ -1,3 +1,5 @@
+import { connectionIntentsApi } from "@/api/connection-intents";
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
@@ -83,7 +85,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
-import { navigateTopLevel } from "@/lib/browserNavigation";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { askFirstCatalogEntryIdsFor } from "./connection-defaults";
@@ -833,19 +834,16 @@ function StandardConnectionSetupFlow({
   const [unavailableReconnectId, setUnavailableReconnectId] = useState<string | null>(null);
 
   const reserveOAuthPopup = useCallback(() => {
-    if (host !== "dialog" || oauthPopupRef.current?.closed === false) return;
-    oauthPopupRef.current = window.open(
-      "about:blank",
-      "paperclip-connection-oauth",
-      "popup,width=720,height=760,resizable=yes,scrollbars=yes",
-    );
-  }, [host]);
+    if (oauthPopupRef.current?.closed === false) return;
+    try {
+      oauthPopupRef.current = window.open("about:blank", "_blank", "popup,width=720,height=760,resizable=yes,scrollbars=yes");
+      // Task-bound setup can resume in either host and needs its existing
+      // origin-checked callback. Standalone flows verify saved state instead.
+      if (oauthPopupRef.current && !connectionIntentId) oauthPopupRef.current.opener = null;
+    } catch { oauthPopupRef.current = null; }
+  }, [connectionIntentId]);
 
   const openAuthorization = useCallback((url: string) => {
-    if (host !== "dialog") {
-      navigateTopLevel(url);
-      return;
-    }
     setAuthorizationFallbackUrl(url);
     const popup = oauthPopupRef.current;
     if (!popup || popup.closed) {
@@ -868,7 +866,7 @@ function StandardConnectionSetupFlow({
   }, [onPhaseChange]);
 
   useEffect(() => {
-    if (host !== "dialog" || oauthPhase !== "redirecting") return;
+    if (oauthPhase !== "redirecting") return;
     const timer = window.setInterval(() => {
       if (!oauthPopupRef.current?.closed) return;
       setOAuthPhase("error");
@@ -888,7 +886,7 @@ function StandardConnectionSetupFlow({
     try {
       const target = await prepareOAuthNavigation(start, { signal: controller.signal });
       if (target.kind === "reauthentication") {
-        const destination = host === "dialog" ? oauthPopupRef.current : window;
+        const destination = oauthPopupRef.current;
         if (!destination || destination.closed || !start.handoff) {
           throw new Error("Paperclip couldn’t preserve this sign-in while refreshing your account.");
         }
@@ -899,8 +897,11 @@ function StandardConnectionSetupFlow({
         setOAuthPhase("redirecting");
       }
       openAuthorization(target.url);
+      if (target.kind === "reauthentication") setAuthorizationFallbackUrl(null);
     } catch (error) {
       if (controller.signal.aborted) return;
+      oauthPopupRef.current?.close();
+      oauthPopupRef.current = null;
       setOAuthPhase("error");
       setOAuthError(describeError(error).body);
       onPhaseChange?.("needs_retry");
@@ -912,13 +913,27 @@ function StandardConnectionSetupFlow({
   useEffect(() => () => oauthHandoffAbortRef.current?.abort(), []);
 
   useEffect(() => {
-    if (host !== "dialog" || !connectionIntentId) return;
-    const receiveOAuthOutcome = (event: MessageEvent) => {
+    if (!connectionIntentId) return;
+    let disposed = false;
+    const receiveOAuthOutcome = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
       if (outcome === "connected") {
         setOAuthPhase("entry");
         setAuthorizationFallbackUrl(null);
-        onComplete?.({ resolvedByCallback: true });
+        if (onComplete) onComplete({ resolvedByCallback: true });
+        else if (host === "page") {
+          const account = bindAccount(queryClient);
+          try {
+            const verified = await connectionIntentsApi.setupOptions(connectionIntentId);
+            if (disposed || !account.isCurrentScope()) return;
+            if (verified.interaction.status !== "accepted") throw new Error("Authorization has not been confirmed yet. Try again.");
+            navigate(`/issues/${verified.interaction.issueId}`);
+          } catch (error) {
+            if (disposed || !account.isCurrentScope()) return;
+            setOAuthPhase("error");
+            setOAuthError(describeError(error).body);
+          }
+        }
         return;
       }
       if (outcome === "declined") {
@@ -932,42 +947,43 @@ function StandardConnectionSetupFlow({
       setOAuthError("Authorization did not complete. Try again when you’re ready.");
     };
     window.addEventListener("message", receiveOAuthOutcome);
-    return () => window.removeEventListener("message", receiveOAuthOutcome);
-  }, [connectionIntentId, host, onComplete, onOAuthDeclined]);
+    return () => { disposed = true; window.removeEventListener("message", receiveOAuthOutcome); };
+  }, [connectionIntentId, host, onComplete, onOAuthDeclined, navigate, queryClient, selectedCompanyId]);
 
   // Standalone dialog hosts have no task interaction to receive a callback.
   // Wait for this popup to return to our origin, then verify durable state via
   // the API. Provider-window contents never determine the saved connection.
   useEffect(() => {
-    if (host !== "dialog" || connectionIntentId || !dialogOAuthConnectionId) return;
+    if (connectionIntentId || !dialogOAuthConnectionId) return;
     let cancelled = false;
     let checking = false;
     const timer = window.setInterval(async () => {
       if (checking || cancelled) return;
       const popup = oauthPopupRef.current;
-      if (!popup || popup.closed) {
+      // Native fallback links have no Window handle; leave their saved flow available.
+      if (!popup) return;
+      if (popup.closed) {
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
-        setOAuthError("The sign-in window closed. Try again to finish connecting GitHub.");
+        setOAuthError("The sign-in window closed. Try again to finish connecting.");
         return;
       }
-      let returned: URL;
-      try { returned = new URL(popup.location.href); } catch { return; }
-      if (returned.origin !== window.location.origin || !returned.pathname.includes(dialogOAuthConnectionId)) return;
-      if (returned.searchParams.has("oauth")) {
+      const outcome = readOAuthWindowOutcome(popup, dialogOAuthConnectionId);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
         setDialogOAuthConnectionId(null);
         setOAuthPhase("error");
         setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
         return;
       }
-      if (returned.searchParams.get("success") !== "1") return;
       checking = true;
       try {
         const connection = await toolsApi.getConnection(dialogOAuthConnectionId);
         if (!cancelled && connection.status === "active") {
           setDialogOAuthConnectionId(null);
           popup.close();
-          onComplete?.({ connectionId: connection.id });
+          if (onComplete) onComplete({ connectionId: connection.id });
+          else navigate(`/apps/${connection.id}/permissions`);
         }
       } catch {
         if (!cancelled) {
@@ -1161,18 +1177,14 @@ function StandardConnectionSetupFlow({
       setConnectorEnrollmentError(target.message);
       return;
     }
-    if (host === "dialog") {
-      setEnrollmentAuthorizationUrl(target.url);
-      const popup = oauthPopupRef.current;
-      if (popup && !popup.closed) {
-        popup.location.assign(target.url);
-        popup.focus();
-      } else {
-        setConnectorEnrollmentError("Open authorization in a new tab to continue.");
-      }
-      return;
+    setEnrollmentAuthorizationUrl(target.url);
+    const popup = oauthPopupRef.current;
+    if (popup && !popup.closed) {
+      popup.location.assign(target.url);
+      popup.focus();
+    } else {
+      setConnectorEnrollmentError("Open authorization in a new tab to continue.");
     }
-    navigateTopLevel(target.url);
   }, [host, closeEnrollmentPopup]);
   useEffect(() => {
     if (!enrollmentAuthorizationUrl || connectorEnrollmentQuery.data?.status !== "active") return;
@@ -1387,6 +1399,8 @@ function StandardConnectionSetupFlow({
     },
     onSuccess: (start) => void prepareAndOpenOAuth(start),
     onError: (error) => {
+      oauthPopupRef.current?.close();
+      oauthPopupRef.current = null;
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
@@ -1407,14 +1421,14 @@ function StandardConnectionSetupFlow({
       setWorkspaceConsent(() => () => {
         onPhaseChange?.("authorizing");
         reserveOAuthPopup();
-        if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
+        if (!connectionIntentId) setDialogOAuthConnectionId(connection.id);
         mutateOAuthStart(connection);
       });
       return;
     }
     onPhaseChange?.("authorizing");
     reserveOAuthPopup();
-    if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
+    if (!connectionIntentId) setDialogOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
   }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
 
@@ -1537,32 +1551,25 @@ function StandardConnectionSetupFlow({
         // operator registers themselves. Keep the draft and ask for it in place
         // rather than sending them back to the start.
         if (result.auth.manualClientRequired) {
+          oauthPopupRef.current?.close();
+          oauthPopupRef.current = null;
           setLinkGuidance(genericConnectGuidance("oauth_manual_client_required", null));
           setLinkAuthMode("oauth");
           setLinkAdvancedOpen(true);
           setGenericOAuthPending(false);
           return;
         }
-        if (host === "dialog" || connectionIntentId) {
-          setOAuthPhase("starting");
-          setGenericOAuthPending(!entry);
-          startOAuth(result.connection);
-          return;
-        }
+        setOAuthPhase("starting");
+        setGenericOAuthPending(!entry);
         const startUrl = result.auth.startUrl?.trim();
-        if (!startUrl) {
-          setOAuthPhase("starting");
-          setGenericOAuthPending(true);
-          startOAuth(result.connection);
-          return;
-        }
-        setGenericOAuthPending(true);
-        void prepareAndOpenOAuth({
-          authorizationUrl: startUrl,
-          handoff: result.auth.handoff,
-        });
+        if (startUrl && !connectionIntentId) {
+          setDialogOAuthConnectionId(result.connectionId);
+          void prepareAndOpenOAuth({ authorizationUrl: startUrl, handoff: result.auth.handoff });
+        } else startOAuth(result.connection);
         return;
       }
+      oauthPopupRef.current?.close();
+      oauthPopupRef.current = null;
       setLinkGuidance(null);
       setConnectResult(result);
       const defaults: Record<string, boolean> = {};
@@ -1572,6 +1579,8 @@ function StandardConnectionSetupFlow({
       finishMutation.mutate({ result, enabled: defaults });
     },
     onError: (error) => {
+      oauthPopupRef.current?.close();
+      oauthPopupRef.current = null;
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
@@ -1623,11 +1632,11 @@ function StandardConnectionSetupFlow({
       });
       return;
     }
-    if (method?.auth === "oauth") {
+    if (method?.auth === "oauth" || (!connectEntry && !zapierSource && (linkAuthMode === "auto" || linkAuthMode === "oauth"))) {
       reserveOAuthPopup();
     }
     mutateConnect(entryOverride);
-  }, [connectionMethodKey, entry, identityConnection, mutateConnect, reserveOAuthPopup]);
+  }, [connectionMethodKey, entry, identityConnection, linkAuthMode, zapierSource, mutateConnect, reserveOAuthPopup]);
 
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
@@ -2791,7 +2800,7 @@ function StandardConnectionSetupFlow({
           onBack={backToGallery}
           onConnect={() => {
             setLinkGuidance(null);
-            connectMutation.mutate(undefined);
+            connectApp();
           }}
         />
       )}
@@ -2803,7 +2812,7 @@ function StandardConnectionSetupFlow({
           submitting={connectMutation.isPending}
           defaults={connectionDefaults}
           onBack={backToGallery}
-          onConnect={() => connectMutation.mutate(undefined)}
+          onConnect={() => connectApp()}
         />
       )}
 

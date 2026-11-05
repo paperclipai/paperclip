@@ -22,13 +22,13 @@ import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
-  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -240,7 +240,7 @@ export async function reserveRemoteWorkspace(input: {
           && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
           && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
-          && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
+          && leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease) || (pristinePreparation
             && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
         if (!unusedReservation) {
           // An ended writer still holds the workspace until its save and sandbox
@@ -401,16 +401,42 @@ export async function prepareRemoteWorkspace(input: {
     assertOwned: input.assertOwned ?? (async () => undefined) })) throw new Error("remote_workspace_export_cleanup_pending");
   if (!sameAllocation) {
     if (initial.snapshotId) {
-      const snapshot = await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id, snapshotId: initial.snapshotId });
-      if (!snapshot) throw new Error("remote_workspace_snapshot_missing");
-      const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-restore-"));
+      let step: RemoteWorkspaceRestoreStep = "snapshot_lookup";
       try {
-        const archivePath = path.join(scratch, "workspace.pcws");
-        await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
-        restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
-          allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
-      } finally { await rm(scratch, { recursive: true, force: true }); }
+        const snapshot = await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id, snapshotId: initial.snapshotId });
+        if (!snapshot) throw new Error("remote_workspace_snapshot_missing");
+        const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-restore-"));
+        try {
+          const archivePath = path.join(scratch, "workspace.pcws");
+          step = "snapshot_download";
+          await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
+          step = "sandbox_restore";
+          restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
+            restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+            allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
+        } finally { await rm(scratch, { recursive: true, force: true }); }
+      } catch (error) {
+        // Cancellation keeps its own handling, as do lookup refusals.
+        if ((error instanceof Error && error.name === "AbortError") || (error instanceof HttpError && step === "snapshot_lookup")) throw error;
+        // Storage reports a missing saved object as 404. Retrying cannot restore it.
+        const objectMissing = error instanceof HttpError && step === "snapshot_download" && error.status === 404;
+        if (objectMissing) throw new RemoteWorkspaceRestoreError(step, false, new Error("remote_workspace_snapshot_object_missing"));
+        // A missing saved version cannot be fixed by retrying. Otherwise a retry
+        // is offered only while this run still owns the same unchanged, clean
+        // saved version; a failed restore never publishes over existing files.
+        // A sandbox refusal that names its reason (an occupied folder, a changed
+        // owner, a rejected archive) repeats on retry, so it goes to the board.
+        let retryable = false;
+        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message);
+        if (step !== "snapshot_lookup" && !refused) {
+          const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
+            .where(and(eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id)));
+          const current = readRemoteWorkspaceAuthority(latest?.metadata);
+          retryable = Boolean(current && current.epoch === initial.epoch && current.writerRunId === input.runId
+            && !current.dirty && current.snapshotId === initial.snapshotId);
+        }
+        throw new RemoteWorkspaceRestoreError(step, retryable, error);
+      }
     } else {
       try {
         await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
