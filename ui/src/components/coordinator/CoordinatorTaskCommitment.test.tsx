@@ -10,7 +10,8 @@ import { TooltipProvider } from "../ui/tooltip";
 
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, loaded: true, userId: "viewer" }) }));
 vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a> }));
-vi.mock("@/api/issues", () => ({ issuesApi: { summaries: vi.fn(async () => [{ id: "task-created", identifier: "PAPER-108", title: "Write the launch post", status: "todo" }]) } }));
+const summaries = vi.hoisted(() => ({ rows: null as null | Array<Record<string, unknown>> }));
+vi.mock("@/api/issues", () => ({ issuesApi: { summaries: vi.fn(async () => summaries.rows ?? [{ id: "task-created", identifier: "PAPER-108", title: "Write the launch post", status: "todo" }]) } }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -21,7 +22,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
 });
-afterEach(async () => { await act(() => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); });
+afterEach(async () => { await act(() => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); summaries.rows = null; });
 
 function render(interaction: typeof pendingSuggestedTasksInteraction, onAcceptInteraction = vi.fn(), onRejectInteraction = vi.fn()) {
   return act(() => root.render(<QueryClientProvider client={client}><TooltipProvider>
@@ -133,5 +134,15 @@ describe("Coordinator task commitment", () => {
     expect(onSettled).toHaveBeenCalledTimes(2);
     expect(animate).not.toHaveBeenCalled();
     expect(host.firstElementChild?.hasAttribute("data-motion")).toBe(false);
+  });
+
+  it("draws a created task from its full summary state, matching the task pane (BUG-07)", async () => {
+    summaries.rows = [{ id: "task-created", identifier: "PAPER-108", title: "Write the launch post", status: "blocked", displayStatus: "blocked",
+      externalConversationState: null, blockerAttention: { state: "covered", reason: "active_child", unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+        attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null } }];
+    await render({ ...pendingSuggestedTasksInteraction, status: "accepted", result: { version: 1, createdTasks: [{ clientKey: "launch", issueId: "task-created", identifier: "PAPER-108", title: "Write the launch post" }] } });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const glyph = host.querySelector<SVGElement>(".coordinator-created-task svg[role='img']");
+    expect(glyph?.style.color).toBe("var(--status-task-icon-in_queue)");
   });
 });
