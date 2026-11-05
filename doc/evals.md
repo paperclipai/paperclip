@@ -1,5 +1,19 @@
 # Paperclip evaluation guide
 
+The optional Product regression TestOps lane in `runner-full-stack-e2e.yml`
+maps the standing 20-case plan to existing isolated Product E2E cells: native
+Codex/local, with native OpenCode/local for the task-workspaces case. A manual
+`testops_case` bootstrap accepts `all`, a case name or its TestOps ID. TestOps
+dispatch supplies `ALLURE_JOB_RUN_ID`; its exact case IDs and full names take
+precedence. This lane preserves the existing paid admission, fixture, model,
+timeout, assertion, cleanup and retained-report paths. Reporting credentials
+stay in trusted default-branch jobs. Missing evidence becomes a broken result.
+Subset runs do not qualify the full plan or the historical 355-row snapshot.
+Catalog and projection tests are not live qualification; retain the fresh
+TestOps launch and GitHub run when reporting acceptance.
+
+The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
+
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
 cell checks a native Codex agent on Daytona installing an authorized saved API
 response and delivering unchanged bytes. The oracle binds the source capture,
@@ -111,13 +125,26 @@ reply with the late requirement, and persistence after reload. Its attached and
 managed targets share the same story and permit one steered run or one normal
 successor. Registration and calibration are separate from a live staging pass.
 
+The explicit [dependency continuation journey](../tests/runner-e2e/product-journeys/task-dependency-resume.md) checks a finite blocked wait and one automatic native continuation after a browser-completed blocker. Local evidence controls are separate from a deployed QA pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
 onboarding supplies reusable verified state. The document journey checks exact
-saved content and both revision records through independent API reads. Cloud
-fleet operations and trusted CI remain private. Local eval gateway qualification
+saved content and both revision records through independent API reads. The explicit `chat-continuity` selection verifies browser reload/reopen, prompt-hidden recall,
+ordinary `/new` reset, fresh native context and retained history against an attached target.
+It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
+Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
+
+The explicit [onboarding approval-history journey](../tests/runner-e2e/README.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
+
+The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
 contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task
@@ -653,3 +680,9 @@ run-attributed tool receipts on local and Daytona execution. Its four native
 Claude/Codex cells are explicit-only. Remote registrations remain unqualified
 until retained live attempts prove them. It uses the normal Product E2E report
 and keeps synthetic feedback distinct from actionable product findings.
+# Legacy workspace preservation
+
+The explicit [legacy workspace migration Product E2E suites](../tests/runner-e2e/README.md#legacy-workspace-migration)
+verify a retained session through the production offline migration and an empty
+replacement controller. They complement the rolling deployment suites and do
+not claim uninterrupted service during initial enrollment.

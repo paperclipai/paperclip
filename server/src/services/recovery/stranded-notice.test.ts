@@ -136,6 +136,17 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.body).not.toContain("retried continuation");
     expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
   });
+  it("names an environment plugin that was not running after its bounded retries", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "worker-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "plugin_worker_unavailable" },
+    });
+    expect(notice.presentation.title).toBe("Environment plugin was not running");
+    expect(notice.body).toContain("before the agent started");
+    expect(JSON.stringify(notice.metadata)).toContain("worker status");
+  });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {

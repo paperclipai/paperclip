@@ -16,6 +16,7 @@ import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
 import { taskCreatedItems } from "@/components/task-chat/task-created-items";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useConnectivity } from "@/lib/connectivity";
 import { CoordinatorChatHandoffStatus, CoordinatorChatTaskHandoff, standaloneChatHandoffs, useCoordinatorChatTaskHandoffs, useLiveChatHandoffIds } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
 import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
 import { CoordinatorChatQuestionStatus, useCoordinatorChatPendingQuestions } from "@/components/coordinator/CoordinatorChatPendingQuestions";
@@ -43,6 +44,7 @@ import {
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
   TaskChatTurnStatusIsland,
   taskChatTurnStatusModel,
@@ -508,6 +510,7 @@ function durableInputLabel(
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const coordinatorEnabled = useCoordinatorPresentation();
+  const { status: connectionStatus } = useConnectivity();
   const { enabled: streamlinedPreference } = useStreamlinedUiEnabled();
   const streamlinedUiEnabled = coordinatorEnabled || streamlinedPreference;
   const {
@@ -636,8 +639,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     error: props.scrollingHistory.error,
     load: () => Promise.all([
       props.scrollingHistory?.hasMore ? props.scrollingHistory.load() : undefined,
-      !decisionReceipts.isError && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
-      !taskHandoffs.isError && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
+      decisionReceipts.status !== "error" && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
+      taskHandoffs.status !== "error" && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
     ]),
   } : undefined;
   const conversationWindowStart = props.scrollingHistory?.hasMore && comments.length
@@ -2056,6 +2059,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         return {
           segment,
           parsed,
+          // Historical turns drop provider notices, but a failed MCP start
+          // still explains that run's answer, so take it before the filter.
+          mcpStartupFailures: partitionRunHealthItems(parsed).failures,
           timelineItems: sourceIsPaperclipRunner
             ? paperclipRunnerTimelineItems(visibleActivity)
             : visibleActivity,
@@ -2110,9 +2116,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   allowFallback: sourceAllowSummaryFallback,
                 })
             : undefined;
-        const children = settledRunChildren(
-          timelineItemsBySegment[segmentIndex] ?? [],
-        );
+        const runHealth = {
+          failures: projectedSegments[segmentIndex]?.mcpStartupFailures ?? [],
+          rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
+        };
+        const children = settledRunChildren(runHealth.rest);
         if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
           continue;
         settledRunIds.add(source.id);
@@ -2153,6 +2161,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             continuedAfterSteering: sourceIsPaperclipRunner && segmentIndex > 0,
             animateFold: liveSeenRef.current.has(source.id),
             items: children,
+            ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
             finalResponse,
             summary: buildTurnSummary(segment.entries, {
               durationMs: segmentDurationMs,
@@ -2207,12 +2216,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             liveRun.id === planDocumentSourceRunId && planTurnItem
               ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
               : parsedTranscript;
-          const children = settledRunChildren(
+          const runHealth = partitionRunHealthItems(
             isNativePaperclipRunnerRun(liveRun)
               ? paperclipRunnerTimelineItems(parsed)
               : parsed,
           );
-          if (children.length === 0) continue;
+          const children = settledRunChildren(runHealth.rest);
+          if (children.length === 0 && runHealth.failures.length === 0) continue;
           const turnId = `${liveRun.id}:turn:${segmentIndex}`;
           const segmentDurationMs =
             Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs)
@@ -2248,6 +2258,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               continuedAfterSteering:
                 isNativePaperclipRunnerRun(liveRun) && segmentIndex > 0,
               items: children,
+              ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
               summary: buildTurnSummary(segment.entries, {
                 durationMs: segmentDurationMs,
               }),
@@ -3142,7 +3153,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
   const historyKey = conversationMode && draftKey ? draftKey : issueId;
   const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(undefined);
-  const historyRevealed = revealedHistoryKey === historyKey;
+  const revealCachedHeader = connectionStatus !== "online" && Boolean(threadHeader);
+  const historyRevealed = revealedHistoryKey === historyKey || revealCachedHeader;
+  useEffect(() => {
+    if (revealCachedHeader) setRevealedHistoryKey(historyKey);
+  }, [revealCachedHeader, historyKey]);
   const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
@@ -3273,8 +3288,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} />
                           </div>
                         ) : null}
-                        <div className="px-3 py-10 text-center text-sm text-muted-foreground">
-                          {emptyMessage}
+                        <div role={historyPending ? "status" : undefined} className="px-3 py-10 text-center text-sm text-muted-foreground">
+                          {historyPending ? "Loading task history…" : emptyMessage}
                         </div>
                         {bottomBlockerLinks ? (
                           <div
@@ -3434,7 +3449,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     {composerAccessory}
                     {dismissError ? <p role="alert" className="text-sm text-destructive">{dismissError}</p> : null}
                     {tailTurnStatus ? (
-                      <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                      <TaskChatTurnStatusIsland
+                        key={tailRunId ?? "turn-status"}
+                        model={tailTurnStatus}
+                        defaultCollapsed={isMobile}
+                        compact={composerTakeover != null || pendingRuntimeRequest != null}
+                      />
                     ) : null}
                     <RunnerGoalWidget control={runnerGoal} />
                     <div

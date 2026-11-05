@@ -1,5 +1,9 @@
-import { inArray } from "drizzle-orm";
+import { loadConfig } from "../config.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
 import { migrateAgentFiles, verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
@@ -8,7 +12,10 @@ import { skillInstallationMaintenance } from "../services/skill-installation-mai
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { reconcileOfflineWorkspaceOperations } from "../services/offline-workspace-operation-reconciliation.js";
 import { migrateWorkspaceTrees } from "../services/remote-workspace-migration-batch.js";
+import { migrateNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
+import { migrateNativeControllers } from "../services/native-runtime/native-controller-migration.js";
 
 /** Runs only in the maintenance process after Cloud has confirmed all legacy
  * deployments stopped. Each owner retains its own migration/publication rules;
@@ -19,18 +26,33 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const { signal, phase } = input;
   const counts: Record<string, number> = {};
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.status, ["running", "queued"])).limit(1);
+    .where(offlineMigrationExecutionWhere()).limit(1);
   if (active) throw new Error("active_execution_requires_drain");
   if (await hasUnsettledLocalInstructionCopies(db)) throw new Error("local_instruction_copies_require_settlement");
   const before = await readEphemeralServerDataEligibility(db);
   const unsupported = before.blockers.filter(blocker => ![
     "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration", "workspaces_require_migration",
+    "native_harness_backups_require_migration",
+    "native_controllers_require_migration",
   ].includes(blocker));
   if (unsupported.length) throw new Error(unsupported[0]);
 
-  phase("workspaces");
   const storage = getStorageService();
   if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
+  phase("native_controllers");
+  const controllers = await migrateNativeControllers(db, { writersStopped: true, signal, storage });
+  counts.nativeControllers = controllers.imported;
+  counts.nativeControllersUnchanged = controllers.unchanged;
+  counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
+  counts.nativeControllersArchivedFailed = controllers.archivedFailed;
+  counts.nativeControllersPreservedFailed = controllers.preservedFailed;
+  phase("native_harness_backups");
+  counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
+  phase("workspace_operation_receipts");
+  const operations = await reconcileOfflineWorkspaceOperations(db, { writersStopped: true, signal });
+  counts.workspaceOperationsReconciled = operations.reconciled;
+  counts.workspaceOperationsHeld = operations.held.length;
+  phase("workspaces");
   counts.workspaces = await migrateWorkspaceTrees(db, { storage, signal, phase });
 
   phase("agent_files");
@@ -51,6 +73,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     do {
       signal.throwIfAborted();
       const page = await migrateRunEvidence(db, { apply: true, kinds: [kind], limit: 50, signal,
+        preserveHistoricalFiles: true,
         ...(kind === "log" ? { afterRunId: after } : { afterTraceId: after }) });
       if (page.items.some(item => item.state !== "migrated")) throw new Error(`${kind}_migration_blocked`);
       counts[kind] = (counts[kind] ?? 0) + page.items.length;
@@ -60,6 +83,15 @@ export async function migrateEphemeralServerData(db: Db, input: {
 
   const packages = skillPackageMaintenance(db);
   const skills = skillInstallationMaintenance(db);
+  phase("skill_objects");
+  const localSkillStorage = createStorageService(createLocalDiskStorageProvider(loadConfig().storageLocalDiskBaseDir));
+  after = undefined;
+  for (;;) {
+    const page = await migrateLocalSkillPackageObjects(db, { source: localSkillStorage, destination: storage, writersStopped: true, signal, after });
+    counts.skillObjects = (counts.skillObjects ?? 0) + page.migrated;
+    if (page.inspected < 50 || !page.after) break;
+    after = page.after;
+  }
   for (const [name, migrate] of [["skill_packages", packages.migrateSnapshots], ["skill_versions", packages.migrateVersions]] as const) {
     phase(name);
     after = undefined;

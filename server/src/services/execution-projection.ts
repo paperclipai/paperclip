@@ -37,6 +37,7 @@ const executionRunColumns = {
   status: heartbeatRuns.status,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
@@ -223,6 +224,9 @@ export function projectExecution(
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
   const projection: ExecutionProjection = {
+    canStop: run.runtimeMode === "native" && run.status === "failed" && run.driverKind !== "grok_bot_mcp" && !!run.nativeIssueId
+      && coordinator?.runId === run.id && coordinator.issueId === run.nativeIssueId && coordinator.resultId === null
+      && coordinator.phase === "retryable_failure",
     phase: "queued",
     label: "Queued",
     cause: run.errorCode ?? coordinator?.failureCode ?? null,
@@ -298,6 +302,12 @@ export function projectExecution(
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "ai_connection_busy") {
     projection.nextAction = "Waiting for the AI subscription's current execution to finish; the scheduled check will revalidate access.";
     return set("retry_scheduled", "Waiting for AI subscription");
+  }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "ai_connection_pool_wait"
+      && run.contextSnapshot?.wakeReason === "provider_limit_retry") {
+    const resetAt = run.scheduledRetryAt ? new Date(run.scheduledRetryAt).toISOString() : "its reported reset";
+    projection.nextAction = `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}. To continue sooner, restore the provider allowance or change the agent's AI connection, then start a manual run.`;
+    return set("retry_scheduled", "Waiting for usage limit reset");
   }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";

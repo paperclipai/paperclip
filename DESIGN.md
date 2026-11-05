@@ -162,6 +162,12 @@ Confirmations whose source work is still syncing show “Preparing approval…�
 disable acceptance until the server reports readiness. Refresh that state automatically;
 rejection and revision remain available. Live tool reviews keep their own approval flow.
 
+Confirmation and checkbox confirmation prompts use the shared Markdown renderer.
+Links, lists, emphasis, code and paragraph breaks remain readable in the task
+composer, classic cards and expanded receipts.
+Prompt images appear as references and diagrams as source text. Checkbox groups
+use the rendered prompt as their accessible label.
+
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
 messages while the card is open. Questions use their compact history entry as the
@@ -945,7 +951,7 @@ Standard. Artifact type filters also support Compact for dense standalone uses. 
 patterns. Tabs contains only Playground, Standard and Compact. Playground
 compares the two sizes with local fixture state; narrow width remains a control.
 
-Accepted toolbar foundation for Design Proposals and the opt-in sandbox:
+Accepted toolbar foundation for all production inline collection and audit toolbars:
 
 - Use the shared `ToolbarSearch` and 44px control height, with one token-driven
   border, radius and horizontal padding across Tasks, Decisions, Skills and
@@ -970,6 +976,31 @@ Further consolidation proposals, pending visual review:
 - Use canonical Standard or Compact filled tabs for the compared label strips.
   Keep panel-switching tab semantics separate from exclusive collection
   filters. Closable document tabs retain their additional behavior.
+
+### Collection empty states and roster selection
+
+Projects uses the large artifact stack with a dark grey Paperclip mark on an off-white
+image front. The empty-state action is “Create project”. Artwork, message and
+primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
+fans the same artwork as hovering the graphic. Artifacts uses that stack for
+Tasks and the corresponding single full-size artifact for each other type filter.
+
+Agent lists give chat and status their own vertically centered cells. Chat has a
+screen-reader-only column label and a MessageCircleCheck icon action. Hover and
+focus highlight the entire row; the identity link has no separate background.
+Bulk actions portal to a fixed card centered in the viewport, 48px above the
+bottom safe area, with the shared border and a soft shadow. The card retains its
+contents during the quintic rise/drop transition; reduced motion removes travel.
+Selection never inserts space above the roster.
+
+Agent Overview's Profile uses the bulk-edit avatar/name chips for reporting
+relationships. Within raised modules, their background uses the Skills chip
+surface so they remain distinct from the module. Agent chips have hover/focus
+states and link to the agent's overview. Reports to precedes Direct reports:
+No manager opens the manager picker; an assigned manager has a linked chip and
+an adjacent edit control. The picker disables self/descendant choices to prevent
+reporting loops. The editable heading sizes to its live text so the primary-agent
+crown stays beside the name throughout editing.
 
 ### Segmented controller comparison
 

@@ -3301,7 +3301,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           {
             code: "environment_identity",
             level: "info",
-            message: 'Environment test identity for "Paperclip Computer".',
+            message: 'Environment test identity for "Paperclip Sandbox".',
             detail: "paperclipLeaseId=ff9e58e9; provider=daytona",
           },
         ],
@@ -3451,7 +3451,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pickSource(/OpenAI/);
 
       expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Service unavailable");
+      expect(document.body.textContent).toContain("Paperclip is temporarily unavailable");
 
       await act(async () => root.unmount());
     });
@@ -3467,7 +3467,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pickSource(/Claude/);
 
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Service unavailable");
+      expect(document.body.textContent).toContain("Paperclip is temporarily unavailable");
 
       await act(async () => root.unmount());
     });

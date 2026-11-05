@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, 'fd5e3b1e5a379524c0d1651ed8273e75ffd86541');
+  assert.equal(manifest.targetSha, 'ab0f5246f765058af702b93d9b6637f2ef5b83cd');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -119,6 +119,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "activity.work-timeline",
     "oracleVersion"
+  ],
+  [
+    "activity.work-timeline",
+    "expectedOutcome"
   ],
   [
     "agents.choose-primary",
@@ -233,6 +237,14 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "oracleVersion"
   ],
   [
+    "secrets.personal-secret",
+    "sourceFiles"
+  ],
+  [
+    "secrets.personal-secret",
+    "oracleVersion"
+  ],
+  [
     "skills.author-skill",
     "sourceFiles"
   ],
@@ -283,14 +295,43 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "teams.configure-team",
     "oracleVersion"
+  ],
+  [
+    "connection-setup.secure-api-key",
+    "oracleVersion"
+  ],
+  [
+    "secrets.least-scope-delivery",
+    "oracleVersion"
+  ],
+  [
+    "secrets.secret-proposal",
+    "oracleVersion"
+  ],
+  [
+    "secrets.vault-reference",
+    "oracleVersion"
+  ],
+  [
+    "teams.install-team",
+    "oracleVersion"
+  ],
+  [
+    "questions-and-approvals.multi-part-question",
+    "originalQuery"
   ]
 ]);
   for (const change of repair.changedFields) {
     assert.deepEqual(row(change.key)[change.field], change.current);
     assert.notDeepEqual(change.current, change.previous);
   }
-  assert.equal(repair.descriptorChanges.length, 42);
-  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 28);
+  assert.deepEqual(repair.changedFields.filter(change => change.key === 'questions-and-approvals.multi-part-question' && change.field === 'originalQuery'), [{ key: 'questions-and-approvals.multi-part-question', field: 'originalQuery', previous: "Help me choose the details for the launch page before you build it.", current: "Walk me through the launch-page question form so I can choose the audience and tone and enter my own headline before you build anything." }]);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.changedQueries, 1);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.unchangedOtherCatalogQueries, 243);
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.previousInventoryDigest, '0cf530c11449508e91b5ce664d9375fc8e76466fa908255a1af0ff55169d0220');
+  assert.equal(repair.runtimeConditions.multipart53QuestionClarification.inventoryDigest, '814bb3633268cb0488563aed51fce2f987bd47650ddfb5a3302d0354292c2323');
+  assert.equal(repair.descriptorChanges.length, 49);
+  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 33);
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
     assert.notDeepEqual(change.current, change.previous);
@@ -300,7 +341,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
   }
   assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
-    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml',
+    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml', 'tests/runner-e2e/chat-scenarios/activity.yaml', 'tests/runner-e2e/chat-scenarios/questions-and-approvals.yaml',
   ]);
   assert.ok(repair.changedDefinitionFiles.every(value => /^[a-f0-9]{64}$/.test(value.sha256)));
   for (const declaration of declarations) {
@@ -317,7 +358,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, false);
   assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
   assert.equal(repair.runtimeConditions.sdkPublicProof.sourceInputsChanged, true);
-  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "9169583e54d165dc8d08b9a9010175d11ca87f3590477a7b23032508020ea039");
+  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "efa70621e9fb42aa185f7ee616a1a726aa3eccb367e67e28817cedf26ef2ade8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.plugin558StillHeld, true);
   assert.equal(repair.runtimeConditions.sdkPublicProof.expectedLockSha256, "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.runtimeCompilerParserZodIdentitiesUnchanged, true);

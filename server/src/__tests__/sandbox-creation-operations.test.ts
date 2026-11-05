@@ -154,7 +154,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
       const result = await promisify(execFile)(process.execPath, ["--import", fileURLToPath(import.meta.resolve("tsx")), fixture], {
         cwd: fileURLToPath(new URL("../../..", import.meta.url)), timeout: 60_000,
         env: { ...process.env, CREATION_FIXTURE_ACTION: action, CREATION_FIXTURE_EMPTY_DISK: disk,
-          CREATION_FIXTURE_DATABASE_URL: database.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
+          CREATION_FIXTURE_DATABASE_URL: external ?? database!.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
           CREATION_FIXTURE_COMPANY_ID: companyId, CREATION_FIXTURE_ENVIRONMENT_ID: environmentId, CREATION_FIXTURE_RUN_ID: runId },
       });
       return result.stdout;

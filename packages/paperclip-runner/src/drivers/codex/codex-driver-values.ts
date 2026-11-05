@@ -146,6 +146,14 @@ export function itemText(item: Record<string, unknown>): string {
   for (const key of ["text", "aggregatedOutput", "patch", "delta"]) {
     if (typeof item[key] === "string") return item[key];
   }
+  // Codex reasoning items carry their provider-written summary parts in
+  // `summary[]`; parts are separated the same way as the live stream.
+  if (item.type === "reasoning" && Array.isArray(item.summary)) {
+    return item.summary
+      .map((part) => typeof part === "string" ? part : text(record(part).text))
+      .filter((part) => part.length > 0)
+      .join("\n\n");
+  }
   return "";
 }
 

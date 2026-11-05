@@ -104,7 +104,7 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
-  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "verification" | "provider_notice";
   eventType?: string;
   status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
   title?: string;
@@ -756,7 +756,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
       entry.kind === "provider_activity" ||
-      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text)); // query-error-ok: chat-message entry flag, not a query read
     const isText = entry.kind === "assistant" && !!entry.text;
 
     if (isCoT) {
@@ -1012,7 +1012,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "stdout") continue;
     if (entry.kind === "system") continue;
     if (entry.kind === "result") {
-      if (entry.isError && entry.errors?.length) {
+      if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
           orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
         }

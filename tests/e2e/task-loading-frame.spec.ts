@@ -155,13 +155,14 @@ for (const coordinator of [false, true]) test(`mobile chrome stays fixed when pe
   let release!: () => void;
   const preferenceReady = new Promise<void>(resolve => { release = resolve; });
   await page.addInitScript(() => {
-    const frames: number[][] = [];
-    Object.assign(window, { mobileShellFrames: frames });
+    const frames: number[][] = [], frameTimes: number[] = [];
+    Object.assign(window, { mobileShellFrames: frames, mobileShellFrameTimes: frameTimes });
     const sample = () => {
       const shell = document.querySelector(".paperclip-app-shell");
       if (shell && shell.getBoundingClientRect().width > 0) {
         const rects = [".app-breadcrumb", ".mobile-bottom-nav", "#main-content"].map(selector => document.querySelector(selector)!.getBoundingClientRect());
         frames.push([innerWidth, innerHeight, scrollX, scrollY, ...rects.flatMap((rect, index) => index === 2 ? [rect.x, rect.y, rect.width] : [rect.x, rect.y, rect.width, rect.height])]);
+        frameTimes.push(performance.now());
       }
       requestAnimationFrame(sample);
     };
@@ -184,9 +185,27 @@ for (const coordinator of [false, true]) test(`mobile chrome stays fixed when pe
     release();
     if (coordinator) await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible();
     else await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
-    await page.waitForTimeout(300);
-    const frames = await page.evaluate(() => (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames);
-    await info.attach("mobile-preference-chrome", { body: JSON.stringify(frames), contentType: "application/json" });
+    const ready = await page.evaluate(() => ({
+      count: (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames.length,
+      at: performance.now(),
+    }));
+    let frames: number[][] = [];
+    try {
+      // Observe six real post-ready frames and preserve the original 300ms
+      // interval. Wall time alone does not establish that rAF sampled it.
+      await expect.poll(() => page.evaluate(({ count, at }) => {
+        const state = window as unknown as { mobileShellFrames: number[][]; mobileShellFrameTimes: number[] };
+        return state.mobileShellFrames.length >= count + 6 && (state.mobileShellFrameTimes.at(-1) ?? 0) >= at + 300;
+      }, ready)).toBe(true);
+    } finally {
+      const captured = await page.evaluate(() => {
+        const state = window as unknown as { mobileShellFrames: number[][]; mobileShellFrameTimes: number[] };
+        return { frames: state.mobileShellFrames, times: state.mobileShellFrameTimes };
+      });
+      frames = captured.frames;
+      await info.attach("mobile-preference-chrome", { body: JSON.stringify(frames), contentType: "application/json" });
+      await info.attach("mobile-preference-frame-times", { body: JSON.stringify({ ready, times: captured.times }), contentType: "application/json" });
+    }
     expect(frames.length).toBeGreaterThan(5);
     for (let dimension = 0; dimension < frames[0].length; dimension++) {
       const values = frames.map(frame => frame[dimension]);
@@ -215,6 +234,9 @@ test("a seeded Classic loading title uses the resolved title typography", async 
     await page.getByRole("link").filter({ hasText: fixture.title }).first().click();
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
     await page.route("**/api/issues/*", async route => { await coreReady; await route.continue(); });
+    // Keep the recent-task title seed, but exercise the loading frame without
+    // a persisted full task that would correctly reveal the resolved header.
+    await page.addInitScript(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")).forEach(key => localStorage.removeItem(key)));
     await page.reload({ waitUntil: "domcontentloaded" });
     const loadingTitle = page.getByRole("heading", { name: fixture.title, exact: true });
     await expect(loadingTitle).toBeVisible();

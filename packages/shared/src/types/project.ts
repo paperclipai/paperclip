@@ -108,7 +108,7 @@ export interface ProjectDiscoveryPage {
 }
 
 export interface ProjectWorkspaceProviderConfiguration {
-  source: "project" | "default" | "core";
+  source: "project" | "core";
   pluginId: string | null;
   displayName: string;
   providers: Array<{ id: string; displayName: string; isDefault: boolean }>;

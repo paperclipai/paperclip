@@ -246,7 +246,7 @@ export function AgentActionButtons({
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
-  const isError = agent.status === "error";
+  const isAgentError = agent.status === "error";
   const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
     && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
 
@@ -450,7 +450,7 @@ export function AgentActionButtons({
                 {runLabel}
               </button>
             ) : null}
-            {needsSetup ? null : isError ? (
+            {needsSetup ? null : isAgentError ? (
               <button
                 type="button"
                 className={cn(item, "text-destructive")}
@@ -583,7 +583,7 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {!needsSetup && (isError ? (
+      {!needsSetup && (agent.status === "error" ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}

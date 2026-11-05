@@ -22,6 +22,7 @@ import { Flyout, FlyoutContent, FlyoutTrigger, FlyoutAppearanceProvider } from "
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -41,7 +42,7 @@ function ProjectRecent({ project }: { project: Project }) {
   const [expanded, setExpanded] = useState(false);
   const { data: tasks, isPending, error } = useQuery({
     queryKey: [...queryKeys.issues.listByProject(project.companyId, project.id), "coordinator-recents"],
-    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "index", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
+    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "rows", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
     enabled: expanded,
   });
   return <div>
@@ -54,7 +55,7 @@ function ProjectRecent({ project }: { project: Project }) {
     </div>
     {expanded && <div className="ml-5 border-l border-border pl-1">
       {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">Loading tasks…</p> : error ? <p className="px-3 py-2 text-xs text-muted-foreground">Couldn’t load tasks.</p> : tasks?.length ? tasks.map(task =>
-        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon status={task.status} displayStatus={task.displayStatus} />} />)
+        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon {...taskStatusIconProps(task)} />} />)
         : <p className="px-3 py-2 text-xs text-muted-foreground">No tasks yet.</p>}
     </div>}
   </div>;
@@ -118,6 +119,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Needs you" icon={Bell} badge={attentionCount} badgeLabel="decisions" />
+          {pinnedDestinations.map(({ label, to, icon }) => <div key={to} className="group/coordinator-pin relative">
+            <SidebarNavItem to={to} label={label} icon={icon} className={cn("design-sidebar-item", !rail && "pr-9")} />
+            {!rail && <button type="button" aria-label={`Unpin ${label}`} title={`Unpin ${label}`} onClick={() => pinnedNavigation.toggle(to)} className="absolute right-3 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>}
+          </div>)}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
@@ -140,18 +145,11 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           </FlyoutContent>
         </Flyout>
       </div>
-      {pinnedDestinations.length > 0 && <section className="space-y-1 pt-4" aria-label="Pinned pages">
-        {!rail && <div data-slot="sidebar-group-label" className="px-4 pb-1 text-xs text-muted-foreground">Pinned</div>}
-        {pinnedDestinations.map(({ label, to, icon }) => <div key={to} className="group/coordinator-pin relative">
-          <SidebarNavItem to={to} label={label} icon={icon} className={cn("design-sidebar-item", !rail && "pr-9")} />
-          {!rail && <button type="button" aria-label={`Unpin ${label}`} title={`Unpin ${label}`} onClick={() => pinnedNavigation.toggle(to)} className="absolute right-3 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>}
-        </div>)}
-      </section>}
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label="Recents" tabIndex={0}>
         {recents.map(item => item.kind === "task"
-          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon status={item.task.status} displayStatus={item.task.displayStatus} externalConversationState={item.task.externalConversationState} />} />
+          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}

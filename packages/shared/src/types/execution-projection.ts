@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  canStop?: boolean;
   phase:
     | "working"
     | "waiting_for_provider"
@@ -113,4 +114,6 @@ export interface TaskInterruptionPresentation {
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];
   observedRunId: string | null;
+  /** The saved-work recovery step that must finish before the task continues. */
+  recoveryStep?: "checking_previous_run" | "saving_previous_files" | "finishing_recovery";
 }

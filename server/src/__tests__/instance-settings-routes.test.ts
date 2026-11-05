@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const mockAssertAgentsReadyForEnvironmentChange = vi.hoisted(() => vi.fn(async () => {}));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
@@ -46,6 +47,10 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+  vi.doMock("../services/plugin-environment-driver.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/plugin-environment-driver.js")>(),
+    assertAgentsReadyForEnvironmentChange: mockAssertAgentsReadyForEnvironmentChange,
   }));
 }
 
@@ -357,6 +362,18 @@ describe("instance settings routes", () => {
       { db: TX_SENTINEL },
     );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an instance default that gives inheriting agents an unprepared plugin", async () => {
+    const app = await createApp(localAdminActor());
+    const { conflict } = await import("../errors.js");
+    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(conflict("need setup first"));
+    const res = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    expect(res.status).toBe(409);
+    expect(mockAssertAgentsReadyForEnvironmentChange.mock.lastCall?.at(3)).toEqual({ inheritsDefault: true });
+    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
 
   it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
@@ -1559,7 +1576,7 @@ describe("instance settings routes", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual(drain);
       expect(mockPublishActivity).toHaveBeenCalledTimes(2);
-      expect(mockPublishActivity.mock.calls.map(([publication]: [{ companyId: string }]) => publication.companyId)).toEqual([
+      expect(mockPublishActivity.mock.calls.map(([publication]) => publication.companyId)).toEqual([
         "company-1",
         "company-2",
       ]);

@@ -859,7 +859,7 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it.each(["explicit", "instance", "managed", "env-draft"])("qualifies a saved Daytona Claude agent and upgrades with its legacy turn limit (%s environment)", async mode => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Computer", driver: "sandbox", status: "active",
+    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" }, metadata: { managedByPaperclip: true } });
     const inventory = (qualified: boolean) => [
       { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
@@ -917,7 +917,7 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it.each(["probe", "unsupported", "settings-changed"])("does not save after Daytona %s", async failure => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Computer", driver: "sandbox", status: "active",
+    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" } });
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["legacy"], defaultRunner: "legacy" }, { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" }]);
     let finish!: () => void;
@@ -1680,12 +1680,12 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
   });
 
-  it("labels the platform-managed instance default by name, without the driver key", async () => {
+  it.each(["Paperclip Sandbox", "Paperclip Computer", "Custom managed environment"])("labels the platform-managed instance default %s by its configured name", async (name) => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
     const result = await renderForm([
       makeEnvironment({
         id: "managed-1",
-        name: "Paperclip Computer",
+        name,
         driver: "sandbox",
         config: { provider: "daytona" },
         metadata: { managedByPaperclip: true },
@@ -1695,10 +1695,23 @@ describe("AgentConfigForm environment selector", () => {
 
     const selector = await environmentOptions(result.container);
 
-    expect(selector?.textContent).toContain("Default: Paperclip Computer");
-    expect(selector?.textContent).toContain("Paperclip Computer");
+    expect(selector?.textContent).toContain(`Default: ${name}`);
+    expect(selector?.textContent).toContain(name);
     expect(selector?.textContent).not.toContain("(sandbox)");
     expect(selector?.textContent).not.toContain("· sandbox");
+  });
+
+  it("uses Paperclip Sandbox while the managed default environment is unavailable", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    const result = await renderForm([
+      makeEnvironment({ id: "other-sandbox", name: "Other sandbox", driver: "sandbox", config: { provider: "daytona" } }),
+    ]);
+    roots.push(result.root);
+
+    const selector = await environmentOptions(result.container);
+    expect(selector?.textContent).toContain("Default: Paperclip Sandbox");
+    expect(selector?.textContent).not.toContain("Paperclip Computer");
   });
 
   it("renders non-local adapter config fields in the Adapter card", async () => {
@@ -4019,6 +4032,87 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Authenticated");
     expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
+  });
+
+  it("keeps the loaded adapter models when a refetch fails transiently", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({ adapterConfig: { model: "gpt-6-astra" } })}
+                onSave={vi.fn()}
+                hidePromptTemplate
+                showAdapterTypeField={false}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(container.textContent).toContain("gpt-6-astra");
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
+
+    mockAgentsApi.adapterModels.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flushUntil(() => mockAgentsApi.adapterModels.mock.calls.length > 1);
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(container.textContent).not.toContain("Loading models…");
+
+    // The cached list is still the dropdown's content.
+    const trigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(trigger).toBeTruthy();
+    await clickElement(trigger);
+    expect(document.body.textContent).toContain("gpt-5.6-sol");
+  });
+
+  it("shows readable copy and a Retry button when the adapter models fail to load", async () => {
+    mockAgentsApi.adapterModels
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue([{ id: "gpt-6-astra", label: "gpt-6-astra" }]);
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') !== null);
+
+    expect(result.container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(result.container.textContent).toContain("Boom");
+    expect(result.container.textContent).not.toContain("Failed to load adapter models.");
+    const retry = findButton(result.container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await clickElement(retry);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') === null);
+
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2);
+    expect(result.container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });
 

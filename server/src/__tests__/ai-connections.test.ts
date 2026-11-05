@@ -32,7 +32,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -136,7 +136,7 @@ describe("managed AI connections", () => {
         displayName: "Bootstrap", description: "Bootstrap fixture", author: "Test", categories: ["automation"],
         capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
         environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] } });
-    const [environment] = await db.insert(environments).values({ companyId, name: "Agent computer", driver: "plugin",
+    const [environment] = await db.insert(environments).values({ name: "Agent computer", driver: "plugin",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
     const token = "github_pat_fixture_plugin_bootstrap";
     const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Bootstrap", apiKey: token, agentIds: [], allAgents: false }, token);
@@ -300,7 +300,7 @@ describe("managed AI connections", () => {
     await db.insert(principalPermissionGrants).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", permissionKey: "agents:create" })));
     const token = "github_pat_fixture_shared_discovery";
     const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "shared", name: "Shared discovery", apiKey: token, agentIds: [], allAgents: false }, token);
-    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user", subjectId })));
+    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user" as const, subjectId })));
     const binding = { provider: "github", method: "api_key", mode: "shared", ...account };
     const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
     const app = express(); app.use(express.json());
@@ -1338,7 +1338,7 @@ describe("managed AI connections", () => {
       agentIds: [], allAgents: true,
       routing: { kind: "local", protocol, baseUrl: "http://127.0.0.1:9000/v1", auth: "none", models: [] },
     }, "");
-    const binding = { provider, method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const;
+    const binding = { provider, method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } as const;
     const config = { model: "fixture-model", env: { OPENAI_API_KEY: "host-key", ANTHROPIC_API_KEY: "host-key" } };
     const first = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
     const second = await prepareManagedAiRuntime(db, { ...input, adapterType, responsibleUserId: "alice", binding, config });
@@ -1357,7 +1357,7 @@ describe("managed AI connections", () => {
     }, "fixture-grok-key");
     const taskKey = `grok-history-${randomUUID()}`;
     const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {},
-      binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+      binding: { provider: "xai", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } as const };
     const first = await prepareManagedAiRuntime(db, runInput);
     const scope = createHash("sha256").update(JSON.stringify([
       companyId, agentId, taskKey, first.sessionIdentity,
@@ -1597,12 +1597,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "subscription", ownership: "shared", name: "Shared usage account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "shared-usage-secret");
     const selected = { provider: "anthropic", method: "subscription", mode: "shared", ...account } as const;
     const tools = toolAccessService(db);
-    await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["alice"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["alice"], { actorType: "user", actorId: "alice" });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 100 }, extra_usage: { is_enabled: false } })));
     try {
       await expect(service.probeUsage(companyId, "bob", account.connectionId)).rejects.toThrow("not found");
       expect(fetchSpy).not.toHaveBeenCalled();
-      await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["bob"], { userId: "alice" });
+      await tools.replaceConnectionGrantMembers(account.connectionId, account.grantId, ["bob"], { actorType: "user", actorId: "alice" });
       for (const config of [{ adapterType: "claude_local" }, { adapterType: "paperclip_runner", runnerProvider: "acpx", acpxAgent: "claude" }]) {
         const row = await service.select({ companyId, userId: "bob", agentId, binding: selected, ...config });
         expect(await service.probeUsage(companyId, "bob", row.connection.id, row.grant.id)).toMatchObject({ status: "ok", overage: { available: false }, limits: [{ limitReached: true }, { allowed: false }] });
@@ -1673,7 +1673,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
-    const saved = await service.save(companyId, "alice", { ...input, agentIds: [...input.agentIds] }, "old-gateway-credential");
+    const saved = await service.save(companyId, "alice", { ...input, agentIds: [...input.agentIds], routing: { ...routing, models: [...routing.models] } }, "old-gateway-credential");
     const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
     expect(stored!.config.ai).toMatchObject({ routing });
     expect(stored!.config.sourceTemplateKey).toBe("responses-api");
@@ -1788,7 +1788,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const runId = randomUUID();
     const vault = secretService(db);
     const definition = await vault.createUserSecretDefinition(companyId, {
-      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding",
+      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding", provider: "local_encrypted",
     }, { userId: "alice" });
     const ownerSecret = await vault.createCurrentUserSecretValue(companyId, "alice", {
       definitionId: definition.id, value: "fixture-original-owner-key",
@@ -1877,8 +1877,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       }
       expect(subEnv.HOME).not.toBe(apiEnvValues.HOME);
       expect(subRun.identity).not.toBe(apiRun.identity);
-      expect(subRun.config.model).toBe(bot.config.model);
-      expect(apiRun.config.model).toBe(bot.config.model);
+      expect((subRun.config as Record<string, unknown>).model).toBe(bot.config.model);
+      expect((apiRun.config as Record<string, unknown>).model).toBe(bot.config.model);
       expect(bot).toEqual(original);
       expect(aiConnectionBindingSchema.parse(bot.binding)).toEqual(bot.binding);
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
@@ -1949,6 +1949,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("reports only a found conflict as configuration, naming the files to fix", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const outcome = (exitCode: number | null, timedOut = false) =>
+      ({ exitCode, stdout: "", stderr: "", signal: null, timedOut }) as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>;
+    try {
+      execute.mockResolvedValue(outcome(42));
+      const conflict = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+      expect(isAiConnectionIncompatible(conflict)).toBe(true);
+      expect(String((conflict as Error).message)).toContain(".claude/settings.json");
+      // A check that could not complete is not proof of a configuration conflict.
+      for (const failed of [outcome(43), outcome(null, true), outcome(127)]) {
+        execute.mockResolvedValue(failed);
+        const unavailable = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+        expect(unavailable).toBeInstanceOf(Error);
+        expect(isAiConnectionIncompatible(unavailable)).toBe(false);
+      }
+      expect(isAiConnectionIncompatible(await assertManagedAiProjectAuth({ args: ["--settings=x"] }, "anthropic", target).catch((error: unknown) => error))).toBe(true);
+    } finally { execute.mockRestore(); }
+  });
   it("requires a typed project authentication capability for task-only environments", async () => {
     const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
     const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
@@ -2005,16 +2025,16 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const shared = await create("alice", "Engineering", "shared");
     const sharedBinding = { ...binding, mode: "shared" as const, ...shared };
     const tools = toolAccessService(db);
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { actorType: "user", actorId: "alice" });
     const rejection = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
     expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
     expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(false);
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { actorType: "user", actorId: "alice" });
     expect((await service.select({ ...input, userId: "bob", binding: sharedBinding })).grant.id).toBe(shared.grantId);
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(true);
     await expect(service.select({ ...input, userId: "alice", binding: sharedBinding })).rejects.toThrow("not shared");
-    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, [], { userId: "alice" });
+    await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, [], { actorType: "user", actorId: "alice" });
     for (const userId of ["alice", "bob"]) {
       expect((await service.select({ ...input, userId, binding: sharedBinding })).grant.id).toBe(shared.grantId);
     }
@@ -2062,7 +2082,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const ae = a.config.env as Record<string,string>, be = b.config.env as Record<string,string>;
     expect(ae.ANTHROPIC_API_KEY).toBe("fixture-Alice second"); expect(be.ANTHROPIC_API_KEY).toBe("fixture-Bob first");
     expect(ae.HOME).not.toBe(be.HOME); expect(a.identity).not.toBe(b.identity);
-    expect(a.config.model).toBe("unchanged-model"); expect(config.env.ANTHROPIC_API_KEY).toBe("project-never-use");
+    expect((a.config as Record<string, unknown>).model).toBe("unchanged-model"); expect(config.env.ANTHROPIC_API_KEY).toBe("project-never-use");
     await Promise.all([a.cleanup(), b.cleanup()]); await expect(access(ae.HOME)).rejects.toThrow();
   });
   it("blocks missing identity, incompatible providers, and cross-company explicit selections", async () => {
@@ -2585,7 +2605,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const selectionInput = { ...input, agentId: futureAgentId, userId: "alice", binding: selected };
     await expect(service.select(selectionInput)).rejects.toThrow("not permitted for this agent");
     const run = await prepareManagedAiRuntime(db, { companyId, agentId: futureAgentId, responsibleUserId: "alice", adapterType: "claude_local", binding: selected, config: { cwd: home, model: "same-model" }, allowUninstalledShared: true });
-    expect(run.config.model).toBe("same-model");
+    expect((run.config as Record<string, unknown>).model).toBe("same-model");
     await run.cleanup();
     await db.insert(connectionGrantMembers).values({ companyId, grantId: account.grantId, subjectType: "user", subjectId: "bob" });
     await expect(service.select({ ...selectionInput, allowUninstalledShared: true })).rejects.toThrow("not shared with the responsible user");
@@ -2595,7 +2615,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
   });
 
-  it.each([false, true])("validates runner account adoption in the inherited sandbox (inline: %s)", async (inline) => {
+  it.each([false, true])("validates legacy or task account adoption in the inherited sandbox (inline: %s)", async (inline) => {
     const { agentRoutes } = await import("../routes/agents.js");
     const { instanceSettingsService } = await import("../services/instance-settings.js");
     const targetModule = await import("../services/environment-execution-target.js");
@@ -2609,6 +2629,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
     const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    if (!inline) {
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+      await db.update(toolConnections).set({ healthStatus: "unknown", config: { ...connection.config, aiLegacyAdoption: true } })
+        .where(eq(toolConnections.id, account.connectionId));
+    }
     const tryDeliver = vi.fn(async (interactionId: string) => {
       // Dispatch observes committed adoption, never a partially saved choice.
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
@@ -2624,7 +2649,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: "alice", contextSnapshot: { issueId } });
       interactionId = (await connectionIntentService(db).requestForRunAuthFailure(runId))!.interactionId!;
     }
-    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false })) } } as const;
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn(async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "", timedOut: false, pid: null, startedAt: null })) } } as const;
     const resolveTarget = vi.spyOn(targetModule, "resolveEnvironmentExecutionTarget").mockResolvedValue(target);
     const release = vi.fn(async () => undefined);
     const acquire = vi.fn(async () => ({ lease: { id: randomUUID(), provider: "daytona", providerLeaseId: "test-sandbox", metadata: {} }, leaseContext: {} }));

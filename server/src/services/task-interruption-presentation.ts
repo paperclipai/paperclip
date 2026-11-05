@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
+import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
 import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
@@ -14,12 +14,15 @@ import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { logger } from "../middleware/logger.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
+import { chatActionDeadline } from "./chat-action-work.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
-type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null };
+type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
+  preparationStatus?: string | null; preparationRetryAt?: number | string | null };
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
@@ -105,12 +108,31 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     if (!ready) return { ...base, responsibility: "user", state: "waiting_for_user",
       userAction: "project_access", projectAccess };
   }
+  const recoveryStep: TaskInterruptionPresentation["recoveryStep"] = !system ? undefined
+    : system.phase === "verify_execution" ? "checking_previous_run"
+      : system.phase === "preserve_files" ? "saving_previous_files" : "finishing_recovery";
+  const activeObservation = action?.evidence.systemRecoveryActiveAt;
+  const recoveryRunning = system?.state === "running" && typeof activeObservation === "number"
+    && activeObservation > now - 45_000;
+  const recoveryScheduled = Boolean(system?.nextAttemptAt && system.nextAttemptAt > now);
+  const preparationDeadline = retryWait?.preparationRetryAt == null ? NaN : Number(retryWait.preparationRetryAt);
+  // A pending Retry preparation is already a Retry; never offer another one.
+  const preparationPending = retryWait?.sourceRunId === run.id && Boolean(retryWait.preparationStatus)
+    && ["issued", "processing"].includes(retryWait.preparationStatus!) && Number.isFinite(preparationDeadline);
+  if (retryWait?.sourceRunId === run.id && retryWait.preparationStatus) {
+    const deadline = preparationDeadline;
+    const pending = preparationPending;
+    // Saved-work recovery gates a pending preparation, so it names the wait.
+    // Failed or cancelled preparation stays authoritative.
+    if (pending && !recoveryRunning && !recoveryScheduled)
+      return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
+    if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
+  }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
-    nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
-  const activeObservation = action?.evidence.systemRecoveryActiveAt;
-  if (system?.state === "running" && typeof activeObservation === "number" &&
-      activeObservation > now - 45_000) return { ...base, state: "working" };
+    nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending,
+    ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
+  if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
@@ -181,8 +203,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
-      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80) })
-      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
+      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
+      .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
+        eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
+        eq(chatActions.kind, "failed_run_retry"), sql`${chatActions.payload}->>'taskRetryIntentId' = ${agentWakeupRequests.id}::text`,
+        sql`${chatActions.payload}->>'issueId' = ${wakeIssue}`,
+        sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`,
+        sql`${chatActions.payload}->>'failedRunId' = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
+        inArray(chatActions.status, ["issued", "processing", "failed", "cancelled"])))
+      .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, isRetryWait, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)),
     agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)

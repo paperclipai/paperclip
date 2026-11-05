@@ -61,8 +61,13 @@ pub(crate) fn runtime_notification_codex_args(
         let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
             continue;
         };
-        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
-            filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
+        let Some(channel_directory) = paths[3].parent().filter(|path| path.parent().is_some())
+        else {
+            continue;
+        };
+        filesystem.insert(channel_directory.to_string_lossy().as_ref(), "write".into());
+        for path in &paths[..3] {
+            filesystem.insert(path.to_string_lossy().as_ref(), "read".into());
         }
         extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
     }
@@ -776,6 +781,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    observed_completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
@@ -1196,6 +1202,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            observed_completed_turn_authority: None,
             active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             goal_allows_autonomous_turns: false,
@@ -1502,37 +1509,21 @@ impl CodexProvider {
                         }
                         let names_other_turn = notification_turn_id(&params)
                             .is_some_and(|turn_id| turn_id != completed_turn_id);
-                        let safe_tail_method = matches!(
-                            method.as_str(),
-                            "warning"
-                            | "configWarning"
-                            | "remoteControl/status/changed"
-                            | "mcpServer/startupStatus/updated"
-                            | "account/rateLimits/updated"
-                            | "item/started"
-                            | "item/completed"
-                            | "item/agentMessage/delta"
-                            | "rawResponseItem/completed"
-                            | "rawResponse/completed"
-                            | "thread/goal/updated"
-                            | "thread/goal/cleared"
-                            | "thread/tokenUsage/updated"
-                            // poll() normalizes usage from this settled turn.
-                            // It remains an accounting snapshot, not new work.
-                            | "paperclip/resumeUsageSnapshot"
-                            | "thread/status/changed"
-                            | "turn/diff/updated"
-                            | "turn/plan/updated"
-                        );
-                        if names_other_turn || !safe_tail_method {
+                        // A notification about the settled turn is history. Only
+                        // a new turn means something is live; a provider request
+                        // or process exit has its own fail-closed arm below.
+                        if names_other_turn || method == "turn/started" {
                             return Err(LocalRunnerError::invalid(format!(
-                            "Codex warm run attachment observed unsafe post-terminal provider method {}",
-                            bounded_method(&method)
-                        )));
+                                "Codex warm run attachment observed unsafe post-terminal provider method {}",
+                                bounded_method(&method)
+                            )));
                         }
                         if matches!(
                             method.as_str(),
-                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                            "thread/tokenUsage/updated"
+                                | "paperclip/resumeUsageSnapshot"
+                                | "thread/goal/updated"
+                                | "thread/goal/cleared"
                         ) {
                             accounting.push((method, params));
                             continue;
@@ -1594,6 +1585,28 @@ impl CodexProvider {
             }
         })();
         (accounting, result)
+    }
+
+    /// Provider work that is live or waiting for an answer. Attaching a run now
+    /// could put two actors on one thread or misdirect an answer.
+    pub(crate) fn run_attachment_live_work(&self) -> Vec<&'static str> {
+        let mut blockers = Vec::new();
+        if self.active_provider_turn_id.is_some() {
+            blockers.push("active_turn");
+        }
+        if self.ambiguous_turn_start_pending {
+            blockers.push("ambiguous_turn_start");
+        }
+        if !self.deferred_ambiguous_messages.is_empty() {
+            blockers.push("deferred_messages");
+        }
+        if !self.pending_tool_requests.is_empty() {
+            blockers.push("pending_tool_requests");
+        }
+        if !self.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        blockers
     }
 
     pub(crate) fn warm_run_attachment_blockers(
@@ -1692,6 +1705,21 @@ impl CodexProvider {
                 authority.provider_turn_id.as_str(),
             )
         })
+    }
+
+    pub(crate) fn observed_completed_turn_authority(&self) -> Option<(u64, &str)> {
+        self.observed_completed_turn_authority
+            .as_ref()
+            .map(|authority| {
+                (
+                    authority.process_generation,
+                    authority.provider_turn_id.as_str(),
+                )
+            })
+    }
+
+    pub(crate) fn has_known_descendants(&self) -> bool {
+        !self.descendant_thread_ids.is_empty()
     }
 
     pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
@@ -1809,6 +1837,10 @@ impl CodexProvider {
             return Ok(());
         }
         self.restart_idle_identity_epoch()
+    }
+
+    pub(crate) fn has_active_goal(&self) -> bool {
+        self.goal_allows_autonomous_turns
     }
 
     pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
@@ -2009,6 +2041,12 @@ impl CodexProvider {
         }
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
+        }
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none", so reasoning items carry no text. Request the
+        // provider's own reasoning summaries for every Codex turn.
+        if self.config.provider == "codex" {
+            turn_params_object.insert("summary".to_owned(), json!("auto"));
         }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
@@ -2229,6 +2267,28 @@ impl CodexProvider {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn read_thread_after_recovery_goal(
+        &mut self,
+        goal_is_dormant: fn(&Value) -> bool,
+    ) -> Result<Value, LocalRunnerError> {
+        // The preceding goal reply supersedes earlier notifications. Inspect only
+        // frames received by this read, and leave them queued for normal delivery.
+        let first = self.pending_messages.len();
+        let snapshot = self.read_thread()?;
+        for message in self.pending_messages.iter().skip(first) {
+            if message.value["method"] == "thread/goal/updated" {
+                let params = &message.value["params"];
+                validate_notification_binding(&self.thread_id, None, params)?;
+                if !params["goal"].is_object() || !goal_is_dormant(params) {
+                    return Err(LocalRunnerError::invalid(
+                        "saved dormant Codex session resumed an active or unknown goal",
+                    ));
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     pub fn read_thread(&mut self) -> Result<Value, LocalRunnerError> {
@@ -3178,6 +3238,8 @@ impl CodexProvider {
                 self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
+                // Restored result authority cannot prove this process saw a terminal.
+                self.observed_completed_turn_authority = self.completed_turn_authority.clone();
                 self.completion_reconciliation_pending =
                     terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
@@ -4522,8 +4584,8 @@ mod tests {
         let paths = [
             PathBuf::from("/runtime/runnerd"),
             PathBuf::from("/state/private/runtime-notifications.json"),
-            PathBuf::from("/state/private/runtime-activity.lock"),
-            PathBuf::from("/tmp/prn-channel"),
+            PathBuf::from("/tmp/prn-channel/activity.lock"),
+            PathBuf::from("/tmp/prn-channel/activity.fifo"),
         ];
         let extra =
             runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
@@ -4562,7 +4624,7 @@ mod tests {
                 ("/state/private", "none"),
                 ("/runtime/runnerd", "read"),
                 ("/state/private/runtime-notifications.json", "read"),
-                ("/state/private/runtime-activity.lock", "read"),
+                ("/tmp/prn-channel/activity.lock", "read"),
                 ("/tmp/prn-channel", "write"),
             ] {
                 assert_eq!(
@@ -4570,6 +4632,7 @@ mod tests {
                     Some(mode)
                 );
             }
+            assert!(filesystem.get("/tmp/prn-channel/activity.fifo").is_none());
         }
         assert!(!serialized.contains("network."));
         assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
@@ -4640,6 +4703,28 @@ done
             }
         }
         provider
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_attachment_ignores_an_unknown_notification_that_names_no_other_turn() {
+        let mut provider = completion_tail_provider();
+        provider
+            .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+            .unwrap();
+        provider.active_provider_turn_id = None;
+        provider
+            .pending_messages
+            .push_back(BufferedProviderMessage {
+                value: json!({
+                    "method": "a/future/notification",
+                    "params": {"threadId": "reader-tail-thread"}
+                }),
+                trace_frame_id: None,
+            });
+        let (_, result) = provider.drain_completed_turn_tail_for_warm_attachment();
+        provider.shutdown().unwrap();
+        result.expect("a notification that starts nothing is history");
     }
 
     #[cfg(unix)]

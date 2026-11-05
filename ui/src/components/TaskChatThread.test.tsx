@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
@@ -19,7 +20,7 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
+import { genericPendingRequestConfirmationInteraction, pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
@@ -245,6 +246,37 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
     expect(pausedAgent.status).toBe("paused");
     expect(props.onResumeAssignee).not.toHaveBeenCalled();
+  });
+
+  it.runIf(runtimeMode === "native")("keeps a failed MCP start on a historical settled run while hiding other notices", () => {
+    const prp = (seq: number, eventType: string, payload: Record<string, unknown>) => ({
+      id: seq, companyId: "company", runId: "mcp", agentId: "agent", seq, eventType, stream: "system", level: "info",
+      color: null, message: null, createdAt: new Date(`2025-01-01T10:00:0${seq}Z`),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", sourceEventId: `event-${seq}`, sourceSeq: seq,
+        sourceInstanceId: "runner", sourceKind: "runner", runId: "mcp", normalizedSessionId: "session", eventType,
+        schemaVersion: 1, priority: 1, emittedAt: `2025-01-01T10:00:0${seq}.000Z`, payload } },
+    }) as Parameters<typeof nativeRunEventsToTranscript>[0][number];
+    const notice = (seq: number, category: string, summary: string, details: unknown[] = []) => prp(seq, "provider.notice.recorded", {
+      schema: "paperclip.provider.notice.v1", noticeId: `notice-${seq}`, severity: "warning", category, scope: "session",
+      recoverable: true, userActionable: true, summary, details,
+    });
+    nativeTranscriptState.transcriptByRun.set("mcp", [
+      ...nativeRunEventsToTranscript([
+        notice(1, "mcp_server_startup_failed", "github MCP server failed to start: No such file or directory (os error 2)",
+          [{ name: "server", value: "github" }, { name: "reason", value: "No such file or directory (os error 2)" }]),
+        notice(2, "auth", "Sign in again"),
+      ]),
+      { kind: "assistant", channel: "progress", ts: "2025-01-01T10:00:05Z", text: "Inspected the source." },
+      { kind: "assistant", channel: "final", ts: "2025-01-01T10:00:20Z", text: "I couldn't reach the GitHub MCP server." },
+    ]);
+    render(<TaskChatThread comments={[comment("response", "I couldn't reach the GitHub MCP server.", "mcp")]}
+      linkedRuns={[run("mcp", "succeeded", 0)]} onAdd={async () => {}} issueStatus="done" />);
+    const banners = container.querySelectorAll('[data-testid="task-chat-run-health-banner"]');
+    expect([...banners].map((banner) => banner.textContent)).toEqual([
+      "github MCP server failed to start: No such file or directory (os error 2)",
+    ]);
+    expect(container.textContent).not.toContain("Sign in again");
+    expect(container.textContent).toContain("I couldn't reach the GitHub MCP server.");
   });
 
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
@@ -719,6 +751,31 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
+});
+
+it.each(["offline", "reconnecting"] as const)("reveals a cached task header while history waits through %s and keeps it after recovery", async status => {
+  const store = createConnectivityStore({ probe: () => new Promise(() => {}) });
+  store.setBrowserOnline(false);
+  if (status === "reconnecting") store.setBrowserOnline(true);
+  const show = (pending: boolean) => render(<ConnectivityProvider store={store}>
+    <TaskChatThread issueId="cached-task" comments={[]} onAdd={async () => {}} initialHistoryPending={pending}
+      threadHeader={<h2>Cached task title</h2>} emptyMessage="No comments yet" />
+  </ConnectivityProvider>);
+  try {
+    show(true);
+    const header = container.querySelector('[data-testid="task-chat-thread-header"]');
+    expect(header?.textContent).toContain("Cached task title");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.textContent).toContain("Loading task history…");
+    expect(container.textContent).not.toContain("No comments yet");
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    expect(container.querySelector('[data-testid="task-chat-thread-header"]')).toBe(header);
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    show(false);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Loading task history…");
+    expect(container.textContent).toContain("No comments yet");
+  } finally { store.dispose(); }
 });
 
 it.each([true, false])("reveals saved conversation when initial history stalls (mobile=%s)", async (mobile) => {
@@ -4657,6 +4714,39 @@ describe("TaskChatThread mobile composer dock", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("collapses the turn plan to its header while a saved interaction opens in the composer", () => {
+    nativeTranscriptState.transcriptByRun.set("run-plan-approval", [{
+      kind: "provider_activity",
+      ts: "2026-08-24T12:00:01.000Z",
+      family: "plan",
+      eventType: "plan.updated",
+      status: "running",
+      title: "Plan",
+      payload: {
+        planId: "turn-1",
+        steps: [
+          { stepId: "one", body: "Inspect", status: "completed" },
+          { stepId: "two", body: "Build", status: "in_progress" },
+        ],
+      },
+    }]);
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      activeRun: {
+        id: "run-plan-approval", status: "running" as const, invocationSource: "issue" as const, triggerDetail: null,
+        startedAt: "2026-08-24T12:00:00.000Z", finishedAt: null, createdAt: "2026-08-24T12:00:00.000Z",
+        agentId: "agent-1", agentName: "Codex", adapterType: "paperclip_runner", runtimeMode: "native" as const,
+      },
+      interactions: [{ ...genericPendingRequestConfirmationInteraction, sourceRunId: "run-plan-approval" }],
+    });
+    const island = container.querySelector('[data-testid="task-chat-turn-status-island"]')!;
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent).toBe("Build");
+    expect(island.querySelector('[aria-label="Within-turn checklist"]')).toBeNull();
+    expect(island.querySelector('[data-testid="task-chat-turn-plan-header"]')?.tagName).toBe("DIV");
+  });
+
   it("places the turn status island below composer accessories and hides it when the turn is terminal", () => {
     nativeTranscriptState.transcriptByRun.set("run-status", [
       {
@@ -4730,7 +4820,13 @@ describe("TaskChatThread live transcript", () => {
     const stack = container.querySelector(
       '[data-testid="task-chat-composer-stack"]',
     )!;
-    expect(island.textContent).toContain("Step 2 / 2");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-headline"]')?.textContent,
+    ).toBe("Build");
+    expect(
+      island.querySelector('[data-testid="task-chat-turn-plan-progress"]')?.textContent,
+    ).toContain("1/2");
+    expect(island.querySelector('[aria-current="step"]')?.textContent).toContain("Build");
     expect(island.textContent).toContain("1 file changed");
     expect(accessory.compareDocumentPosition(island)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,

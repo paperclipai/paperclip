@@ -127,7 +127,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
@@ -572,7 +572,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function resumeRemoteStopComments(run: NonNullable<Awaited<ReturnType<typeof getRunExecutionWait>>>, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
     let interruptedPreparation = false;
-    if (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") {
+    if (run.status === "interrupted" && run.runtimeMode === "legacy" &&
+        !run.runtimeModeResolvedAt && run.executionStage === "preparing") {
       const current = await getRun(run.id, { includeExecutionEvidence: true });
       if (current && await isInterruptedNativePreparation(db, current)) {
         const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false });
@@ -1313,7 +1314,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const pendingNativeRetry =
       run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+          .select(nativeManualAdmissionOwnerColumns)
           .from(nativeRunFinalizations)
           .where(
             and(
@@ -1461,13 +1462,25 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
               await dependencies.verifyStartupCleanup(startupCleanupRun);
             } else {
-              await cancelHeartbeatNativeRun({
-                db,
-                runId: run.id,
-                reason,
-                runtimeMode: run.runtimeMode,
-                ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
-              });
+              try {
+                await cancelHeartbeatNativeRun({
+                  db,
+                  runId: run.id,
+                  reason,
+                  runtimeMode: run.runtimeMode,
+                  ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
+                });
+              } catch (error) {
+                // The durable Stop intent is recorded, but its owner (a native
+                // session still opening, or a remote controller) has not yet
+                // acknowledged it. The owner honors it later; answer honestly
+                // instead of reporting an internal failure.
+                if (error instanceof Error && error.message === "native_cancellation_pending_recovery") {
+                  throw conflict("Stop is recorded; the native session is still starting and will stop when it opens.",
+                    { code: "native_stop_pending", runId: run.id });
+                }
+                throw error;
+              }
             }
             if (running) {
               await terminateHeartbeatRunProcess({

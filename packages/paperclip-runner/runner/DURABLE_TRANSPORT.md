@@ -1,14 +1,20 @@
 # Durable PRP transport
 
-This layer gives `paperclip-runnerd` a provider-neutral PRP v1 transport. The
-Paperclip server invokes durable mode only for a selected, flag-enabled
-`paperclip_runner` agent or recovery of its persisted native run. Codex is the
-only installed provider; other providers remain unavailable.
+Core uses durable PRP v1 for a selected, flag-enabled `paperclip_runner`
+agent or recovery of its persisted run. On a fresh launch or restart,
+`paperclip-runnerd` selects durable mode from its connection arguments.
+
+- With `--connect-url <url>`, the Runner dials Core.
+- With `--listen-address 0.0.0.0 --listen-path /api/runner/v1/connect/<run-id>`,
+  the Runner listens for Core. `--listen-port` defaults to `43127`.
+
+Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
+Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
 ## Trust boundary
 
-- The runner accepts only `ws://` destinations whose complete DNS result is
-  loopback. Resolution happens once and reconnects reuse the pinned addresses.
+- For outbound `ws://`, every resolved address must be loopback. The Runner
+  resolves the destination once and reuses the pinned addresses on reconnect.
 - A bootstrap ticket is read from `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`, removed
   from the environment immediately, and never sent over the socket. Both peers
   prove possession through HMAC-SHA-256.
@@ -63,13 +69,73 @@ the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the
 P0 reserve is an explicit unrecoverable condition.
 
-## Current boundary
+## Recovering Codex between turns
 
-Durable mode is selected only when `paperclip-runnerd` receives
-`--connect-url`. Its executor accepts a Codex app-server descriptor and bound
-completion contract through `run.prepare`, owns the provider process group,
-resumes the persisted Codex thread after runner restart, and translates
-provider notifications to PRP events. The server supplies the bootstrap ticket
-only through the child environment, stores the process identity for bounded
-cancellation, and waits for the durable result and terminal pair. The existing
-local fake-runner mode remains unchanged.
+Suppose run A finishes a turn, its Runner exits, and run B wants to continue
+the conversation. Core uses ordinary recovery for A, then attaches B with
+authenticated `run.attach`. If the original process is alive, its owner can
+verify and adopt it instead.
+
+**Is A idle?** Before launch, the host driver (`sourceRecoveryVersion: 1`)
+checks that A’s process stopped and its saved session was idle. After launch,
+the Runner (`recoveryIntegrityVersion: 1`) verifies that Codex restored an idle
+session when no command effect is uncertain. It reads the goal, then the
+thread. An unexpected turn or active goal blocks recovery, even if the goal
+changes during the thread read. Accepted updates stay queued for delivery.
+
+Active runs use same-run recovery. Indeterminate commands follow the replay
+rules above. A prepared session can continue normally, but this handoff
+requires a completed turn. Reads and cleanup leave a prepared provider unopened.
+
+**Who owns the session?** Core matches A’s Runner instance, environment lease,
+run, normalized session, turn and item. History reads require A’s thread. A
+resume request returns saved state without asking Codex to resume twice. Retained events and usage
+belong to A. The authenticated `authorityRunId` identifies the current owner
+(A for same-run recovery). Losing that owner blocks new commands and dispatch.
+
+If Core loses its cached preparation, the preparer uses A’s frozen
+`recoveryLaunch.requirements`, exact identity and authenticated owner. It
+leaves A’s configuration in place and the cache empty. B inherits A’s recorded
+launch policy on later attachments. Explicit settings must agree after
+provider defaults are applied. Authenticated context and instruction grants
+keep their usual precedence and compatibility checks.
+
+**When can B start work?** After authenticated attachment, Core persists B’s
+fresh snapshot and checkpoint and runs any recovery callback. B can then
+start work. If a write or callback fails, Core can retry the handoff.
+Cancellation cleanup only settles retained work.
+
+Live qualification still needs to verify that restoring a provider starts no
+work, deployed storage honors fsync, and the old process has exited.
+
+## Recovering ACPX between turns
+
+`paperclip-runnerd --build-metadata` prints `acpxRecoveryIntegrityVersion: 1`
+when the Runner implements these ACPX checks. The hosted ROM build copies
+that field into its manifest. The host driver advertises a separate
+`acpxSourceRecoveryVersion: 1` and checks whether this run qualifies.
+
+The Runner compares the restored session identity, pending requests, turn
+and goal with A’s saved idle state. After reading the goal, it checks updates
+that arrive during the final status read and keeps them queued for delivery.
+As with Codex, a prepared session can continue or be cleaned up. This handoff
+requires a completed turn. Suspended sessions use their usual recovery path.
+
+## Host park eligibility
+
+`CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
+for the existing process that completed the current turn. An eligibility check
+never selects or restores a provider. A restored process must complete its own
+authoritative turn before it can be eligible. Reconstructing an accepted finish
+during recovery preserves result delivery but does not qualify that process.
+ACPX remains ineligible in this slice, including after qualified recovery.
+Active turns, goals, startup attempts, tool calls, pending credentials, and
+unsettled events block parking. Known helper threads also block it: their
+diagnostic lineage does not prove that their work finished. The bounded
+completed-turn tail drain retains late accounting and goal changes for durable
+state and normal event delivery.
+The check also inspects the live provider
+after that drain, so a late active-goal notification cannot be hidden by the
+older executor journal. This hook does not detach a controller, stop a process,
+or advertise hosted parking support. The host-control consumer must separately
+validate the exact Runner identity and acknowledged sequence cut.
