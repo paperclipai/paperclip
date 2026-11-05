@@ -899,10 +899,12 @@ describe("automatic retained workspace recovery", () => {
     "keeps ancestor Retry held when current proof changes: %s", async gate => {
       const f = await recoveredPreparationRetryChain(["warning_reason", "provider_warning", "extra_after_warning"].includes(gate)
         ? "historical_warning" : "inherited_session");
-      const heartbeat = heartbeatService(db), app = boardRecoveryApp();
+      const heartbeat = heartbeatService(db), resumeNudge = vi.fn(async () => {});
+      const app = boardRecoveryApp(undefined, { ...heartbeat, resumeTaskRetry: resumeNudge });
       const original = readSystemRecovery((await action(f.actionId)).evidence)!;
       const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.failed.id, idempotencyKey: randomUUID() }).expect(202)).body;
+      expect(resumeNudge).toHaveBeenCalledWith(f.companyId, receipt.requestId);
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId));
       expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({
         generationId: original.generationId, attempts: original.attempts, intentId: receipt.requestId });
@@ -1081,9 +1083,12 @@ describe("automatic retained workspace recovery", () => {
         await db.insert(authUsers).values({ id: actorId, name: "Retry owner", email: `${actorId}@example.invalid`, createdAt: new Date(), updatedAt: new Date() });
         await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: actorId, membershipRole: "owner" });
       }
-      const app = boardRecoveryApp({ userId: actorId, source: gate === "actor_permission_revoked" ? "session" : "local_implicit", companyIds: [f.companyId] });
+      const resumeNudge = vi.fn(async () => {});
+      const app = boardRecoveryApp({ userId: actorId, source: gate === "actor_permission_revoked" ? "session" : "local_implicit", companyIds: [f.companyId] },
+        { ...heartbeat, resumeTaskRetry: resumeNudge });
       const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      expect(resumeNudge).toHaveBeenCalledWith(f.companyId, receipt.requestId);
       if (gate === "delayed_provider_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId,
         agentId: source.agentId, eventType: "session.started", stream: "system", payload: { sessionId: randomUUID() },
         nativeSource: { sourceInstanceId: randomUUID(), sourceEventId: randomUUID(), sourceSeq: 1, protocolSchemaVersion: 1,
