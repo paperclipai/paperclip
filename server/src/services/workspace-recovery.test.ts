@@ -3105,7 +3105,7 @@ describe("automatic retained workspace recovery", () => {
     await stopBeforeSessionOpen(f, { errorCode: "cancelled" });
     // Startup lifecycle from the runner opens no turn and is not provider work.
     for (const [seq, eventType] of ["harness.starting", "harness.ready", "workspace.ready", "runtime.phase.changed",
-      "session.starting", "session.started", "session.updated"].entries()) await db.insert(heartbeatRunEvents).values({
+      "session.starting", "session.started", "session.updated", "auth.credentials.updated"].entries()) await db.insert(heartbeatRunEvents).values({
       companyId: f.companyId, runId: f.runId, agentId, seq: 9_000 + seq, eventType, stream: "system", level: "info",
       message: eventType, sourceEventId: randomUUID() });
     const followUp = await queueFollowUp(f, agentId);

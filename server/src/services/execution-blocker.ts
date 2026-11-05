@@ -131,7 +131,7 @@ export function nativeExecutionRecoveryActionPredicate() {
 // the hold (fail closed). Server-side records without a source event (spans,
 // process identity, lifecycle) count only when they name turn or provider work.
 export const PROVIDER_STARTUP_EVENT_PREFIXES = ["harness.", "session.", "workspace.", "runtime.phase.",
-  "runtime.activity.", "provider.notice.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
+  "runtime.activity.", "provider.notice.", "auth.credentials.", "mcp_app.discovered", "mcp_app.initializing", "mcp_app.ready",
   "mcp_app.resource.", "mcp_app.host_context.", "mcp_app.teardown", "mcp_app.failed"] as const;
 export const PROVIDER_STARTUP_EVENT_TYPES = ["run.attached", "run.detached"] as const;
 const SERVER_TURN_WORK_EVENT_PREFIXES = ["turn.", "item.", "tool.", "semantic_tool.", "run.result."] as const;
