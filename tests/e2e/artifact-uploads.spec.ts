@@ -87,6 +87,8 @@ for (const mobile of [false, true]) {
     if (mobile) {
       await page.getByRole("button", { name: "More actions", exact: true }).click();
       await page.getByRole("button", { name: "Properties", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Show properties", exact: true }).click();
     }
     await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
     await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
