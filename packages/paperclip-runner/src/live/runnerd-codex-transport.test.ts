@@ -2741,7 +2741,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     await expect(stat(join(root, "runtime-context.json"))).rejects.toHaveProperty("code", "ENOENT");
     await transport.close();
     if (mode === "removed-context") {
-      const rotated = create(5_000, "run-prepared-removed");
+      const rotated = create(undefined, "run-prepared-removed");
       try {
         await expect(rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id }))
           .rejects.toThrow("cannot change the durable Codex provider profile");
@@ -2758,7 +2758,11 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     }
     if (mode === "rotated-recovery" || mode === "omitted-context") {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const rotated = create(5_000, "run-prepared-rotated");
+        // Close settlement is bounded by the close grace and must prove the
+        // provider drain. A recovered successor needs several drain receipts,
+        // each a runner round trip, so keep the production close budget here.
+        // A shortened budget fails closed on a loaded CI runner.
+        const rotated = create(undefined, "run-prepared-rotated");
         try {
           await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
           expect(requestedRun).toBe("run-prepared-rotated");
@@ -2769,7 +2773,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
       }
       return;
     }
-    const resumed = create(mode === "timeout-attachment" ? 500 : 5_000);
+    const resumed = create(mode === "timeout-attachment" ? 500 : undefined);
     try {
       await resumed.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
       expect(recovered).toBe(true);
