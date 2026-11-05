@@ -145,3 +145,33 @@ describe("identity catalog independent oracle calibration", () => {
     expect(gradeEmptyInstallation(undefined).passed).toBe(false);
   });
 });
+
+describe("multipart continuation on the visible question surface", () => {
+  function cardSummary() {
+    const o = valid("questions-and-approvals.multi-part-question");
+    Object.assign(o.state.original as Interaction, { issueId: "source", companyId: "company" });
+    Object.assign(o.runs[1]!, { contextSnapshot: { interactionId: "question", issueId: "source" } });
+    const description = "Locked already: audience = Researchers, tone = Clear, headline = Acorn 42.";
+    o.interactions.push({ id: "later", companyId: "company", issueId: "source", createdByAgentId: "ceo", sourceRunId: o.runs[1]!.id,
+      kind: "ask_user_questions", status: "pending", payload: { questionSet: { description, questions: [] } } });
+    o.state.afterAnswerReply = "";
+    o.state.visibleContinuationDescriptions = [{ id: "later", description }];
+    return o;
+  }
+  it("accepts the actual visible bound card summary without an extra comment", () => {
+    expect(gradeQuestions(cardSummary()).passed).toBe(true);
+  });
+  it.each(["hidden", "wrong-run", "wrong-issue", "wrong-agent", "historical", "missing-answer"])("rejects %s card evidence", mode => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    if (mode === "hidden") o.state.visibleContinuationDescriptions = [];
+    if (mode === "wrong-run") card.sourceRunId = "unrelated";
+    if (mode === "wrong-issue") card.issueId = "other";
+    if (mode === "wrong-agent") card.createdByAgentId = "other";
+    if (mode === "historical") card.id = "question";
+    if (mode === "missing-answer") {
+      card.payload.questionSet!.description = "Researchers, Clear";
+      o.state.visibleContinuationDescriptions = [{ id: card.id, description: card.payload.questionSet!.description }];
+    }
+    expect(gradeQuestions(o).passed).toBe(false);
+  });
+});

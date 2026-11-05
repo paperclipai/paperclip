@@ -4225,7 +4225,7 @@
       "chat-catalog-domains/identity-questions-and-approvals.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.required-question.v2",
+    "oracleVersion": "paperclip.chat-catalog.required-question.v3",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
