@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -143,5 +143,56 @@ describe("identity catalog independent oracle calibration", () => {
     expect(gradeEmptyInstallation({ ...good, firstAgentReady: false }).passed).toBe(false);
     expect(gradeEmptyInstallation({ ...good, querySent: true }).passed).toBe(false);
     expect(gradeEmptyInstallation(undefined).passed).toBe(false);
+  });
+});
+
+describe("multipart continuation on the visible question surface", () => {
+  function cardSummary() {
+    const o = valid("questions-and-approvals.multi-part-question");
+    Object.assign(o.state.original as Interaction, { issueId: "source", companyId: "company" });
+    Object.assign(o.runs[1]!, { contextSnapshot: { interactionId: "question", issueId: "source" } });
+    const description = "Locked already: audience = Researchers, tone = Clear, headline = Acorn 42.";
+    o.interactions.push({ id: "later", companyId: "company", issueId: "source", createdByAgentId: "ceo", sourceRunId: o.runs[1]!.id,
+      kind: "ask_user_questions", status: "pending", payload: { questionSet: { description, questions: [] } } });
+    o.state.afterAnswerReply = "";
+    o.state.visibleContinuationDescriptions = [{ id: "later", rawDescription: description, visibleText: description }];
+    return o;
+  }
+  it("accepts the actual visible bound card summary without an extra comment", () => {
+    const o = cardSummary();
+    expect(gradeQuestions(o).passed).toBe(true);
+    expect(multipartVisibleSummaries(o)).toHaveLength(1);
+  });
+  it.each(["", "   "])("skips a continuation card without a usable question description: %j", description => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    card.payload.questionSet!.description = description;
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: description,
+      visibleText: "Researchers, Clear, Acorn 42" }];
+    expect(multipartVisibleSummaries(o)).toHaveLength(0);
+    expect(gradeQuestions(o).passed).toBe(false);
+  });
+  it("uses rendered Markdown text rather than its source markup", () => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    card.payload.questionSet!.description = "**Researchers**\n\nTone: `Clear`; headline: **Acorn 42**.";
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description,
+      visibleText: "Researchers\n\nTone: Clear; headline: Acorn 42." }];
+    expect(gradeQuestions(o).passed).toBe(true);
+    o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description,
+      visibleText: "Researchers; tone: Clear" }];
+    expect(gradeQuestions(o).passed).toBe(false);
+  });
+  it.each(["hidden", "wrong-run", "wrong-issue", "wrong-agent", "historical", "missing-answer"])("rejects %s card evidence", mode => {
+    const o = cardSummary(); const card = o.interactions.at(-1)!;
+    if (mode === "hidden") o.state.visibleContinuationDescriptions = [];
+    if (mode === "wrong-run") card.sourceRunId = "unrelated";
+    if (mode === "wrong-issue") card.issueId = "other";
+    if (mode === "wrong-agent") card.createdByAgentId = "other";
+    if (mode === "historical") card.id = "question";
+    if (mode === "missing-answer") {
+      card.payload.questionSet!.description = "Researchers, Clear";
+      o.state.visibleContinuationDescriptions = [{ id: card.id, rawDescription: card.payload.questionSet!.description, visibleText: card.payload.questionSet!.description }];
+    }
+    expect(gradeQuestions(o).passed).toBe(false);
+    if (mode !== "missing-answer") expect(multipartVisibleSummaries(o)).toHaveLength(0);
   });
 });
