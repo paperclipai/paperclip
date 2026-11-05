@@ -855,22 +855,23 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       policies: reservationIndexes.map(i => policies[i]), observations: reservationIndexes.map(i => observations[i]) });
     for (const [index, { scopeType, scopeId }] of scopes.entries()) {
       const scope = records[index];
+      const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
       const scoped = policies.map((policy, i) => ({ policy, observed: observations[i] }))
         .filter(({ policy }) => policy.scopeType === scopeType && policy.scopeId === scopeId);
       const pause = scopePauseBlock(scopeType, scopeId, scope, scoped.length > 0);
       if (pause) return admission(pause);
       for (const { policy, observed } of scoped) {
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
-        if (context?.admittedRecovery ? hardStopReached(policy, observed) : observedBlocks(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name,
+        if (context?.admittedRecovery ? hardStopReached(policy, observed) : observedBlocks(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name, cause,
           reason: observed.waitingRunCount > 0 ? `${title} cannot start work while completed runs await accounting.`
             : unpricedUsageBlocks(policy, observed) ? `${title} cannot start work because recorded usage has no reliable price.`
             : scopeType === "project" ? "Project cannot start work because its budget hard-stop is still exceeded."
               : `${title} is paused because its budget hard-stop was reached.` });
         if (!context?.admittedRecovery && policy.isActive && policy.hardStopEnabled && policy.amount > 0 && observed.recoveringRunCount > 0)
-          return admission({ scopeType, scopeId, scopeName: scope.name,
+          return admission({ scopeType, scopeId, scopeName: scope.name, cause,
             reason: "New work must wait while a native run recovers its unfinished accounting." });
       }
-      if (scope.budgetHeld) return admission({ scopeType, scopeId, scopeName: scope.name,
+      if (scope.budgetHeld) return admission({ scopeType, scopeId, scopeName: scope.name, cause,
         reason: "Budget hold is awaiting reconciliation." });
     }
     if (reservationIndexes.length > 0 && !context?.admittedRecovery) {
@@ -881,6 +882,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           projectId: policy.scopeType === "project" ? policy.scopeId : null });
         if (oldest && now.getTime() - oldest.getTime() > 15_000) return admission({ scopeType: policy.scopeType as BudgetScopeType,
           scopeId: policy.scopeId, scopeName: records.find((_, i) => scopes[i].scopeType === policy.scopeType)?.name ?? "Budget scope",
+          cause: "budget_exhausted",
           reason: "Budget accounting changes are awaiting reconciliation." });
       }
     }
