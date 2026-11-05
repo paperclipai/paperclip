@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { solicitsChatCredential } from "./external-credential-language.js";
+import { solicitsChatCredential, unsafeCredentialTransfer } from "./external-credential-language.js";
 
 it("accepts secure-form entry that explicitly excludes chat", () => {
   expect(solicitsChatCredential("Enter your credential in the secure form, not in chat.")).toBe(false);
@@ -87,4 +87,55 @@ it("resets an explicit request after a dash while retaining a plain prohibition"
   }
   expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
   expect(solicitsChatCredential("Do not paste your credential into files — keep it private.")).toBe(false);
+});
+
+const securePageHandoff = "Open Settings → Secrets and choose New secret, then enter the value on that page (not in chat).";
+it.each([
+  securePageHandoff,
+  "Morgan is set up, but there is no deployment key in the company secret store yet — only `openrouter_api_key` exists. I can't create or receive secret values; company secrets use board-only secure entry. Please add it at **Company settings → Secrets** (company-prefixed `/company/settings/secrets`) via **New secret**: name it `Deployment API Key`, key `DEPLOY_API_KEY`, and enter the value on that page (not in chat).\n\nOnce it's saved, tell me and confirm the env var Morgan should receive. I'll bind that secret reference into Morgan's environment (default `DEPLOY_API_KEY`) and verify it resolves before Morgan uses it.",
+])("accepts secure-page entry with a local parenthetical chat exclusion", text => {
+  expect(solicitsChatCredential(text)).toBe(false);
+  expect(unsafeCredentialTransfer(text)).toBe(false);
+});
+it("keeps independent unsafe transfers after a secure-page exclusion", () => {
+  for (const request of ["Then send the key here in chat.", "Then email the key to Morgan.", "Then write the key in a shell command.", "Then send the key to Riley."]) {
+    const text = `${securePageHandoff} ${request}`;
+    expect(unsafeCredentialTransfer(text), text).toBe(true);
+  }
+  expect(solicitsChatCredential(`${securePageHandoff} Then send the key here in chat.`)).toBe(true);
+  expect(unsafeCredentialTransfer("Open Settings → Secrets, then enter the key in a plaintext file (not in chat).")).toBe(true);
+  expect(unsafeCredentialTransfer("Enter the key on that page (not in chat).")).toBe(true);
+  expect(unsafeCredentialTransfer(`${securePageHandoff} Then tell me the saved key name.`)).toBe(false);
+});
+it("distinguishes an explicit reference from a value or a mixed credential object",()=>{
+ expect(unsafeCredentialTransfer("Use secure Settings Secrets to save the deployment key. Then enter the secret reference in Morgan's environment.")).toBe(false);
+ expect(unsafeCredentialTransfer("Enter the secret reference and value here in chat.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the secret reference and key here in chat.")).toBe(true);
+});
+it("starts independent comma requests without carrying a prior prohibition",()=>{
+ for(const separator of [", just ",", and ",", now "])expect(unsafeCredentialTransfer(`Do not paste the key in chat${separator}email the key to Morgan.`)).toBe(true);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, or enter the key in plaintext files.")).toBe(false);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, and do not email the key to Morgan.")).toBe(false);
+ expect(unsafeCredentialTransfer("Do not paste the key in chat, or enter it in files but instead email the key to Morgan.")).toBe(true);
+});
+
+it("keeps a deictic value destination tied to the nearest supported page",()=>{
+ for(const text of [
+  "Open Settings → Secrets, New secret. Open a public wiki page and enter the key on that page (not in chat). After saving, I will bind the deployment secret reference to Morgan's environment.",
+  "Open Settings → Secrets, then open a public wiki page and enter the key on that page (not in chat).",
+ ])expect(unsafeCredentialTransfer(text),text).toBe(true);
+ expect(unsafeCredentialTransfer(securePageHandoff)).toBe(false);
+});
+it("attaches an ordinary page suffix to the supported secure surface",()=>{
+ expect(unsafeCredentialTransfer("Open Settings → Secrets page. Enter the key on that page.")).toBe(false);
+});
+
+it("keeps verb-less extra destinations attached to the credential request",()=>{
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, as well as in plaintext files.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, and in plaintext files.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the key in the secure form, then tell me the saved key name.")).toBe(false);
+});
+it("rejects a password mixed into a reference-only request",()=>{
+ expect(unsafeCredentialTransfer("Enter the secret reference and password here in chat.")).toBe(true);
+ expect(unsafeCredentialTransfer("Enter the secret reference in Morgan's environment.")).toBe(false);
 });
