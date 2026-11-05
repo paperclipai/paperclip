@@ -232,7 +232,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v3",
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v4",
     async verifyResult(ctx, _state, value) {
       if (await ctx.input.page.getByTestId("task-chat-composer-input").isVisible()) return;
       const o = identityObservation(value);
