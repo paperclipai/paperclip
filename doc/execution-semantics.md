@@ -2878,6 +2878,14 @@ or grant access to the other task. An explicit pending workspace choice takes pr
 
 ### Operator identity and permission for manual dispatch
 
+Routine creation keeps the authenticated responsible user separate from creator
+attribution. An agent-created routine uses the server-resolved on-behalf-of user
+from its run or API key; the agent remains the creator. Without a bound identity,
+the service retains its parent-task and company-default fallback. Automatic
+routine executions use the saved revision's responsible user. A person clicking
+Run now supplies a new execution identity, so that manual task uses the clicking
+person's authority and AI account selection rather than the routine creator's.
+
 A legacy queued-message Interrupt is a new instruction from the user who clicks
 it. The new run uses that user's execution identity, including when someone else
 wrote the queued messages. Message bodies and historical authors stay unchanged.
