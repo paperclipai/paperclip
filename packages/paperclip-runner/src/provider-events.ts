@@ -284,50 +284,65 @@ const UNSAFE_ACP_META_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 export function boundedAcpMeta(
   value: unknown,
 ): Record<string, unknown> | undefined {
+  // The budget is the serialized JSON size of the retained copy: every
+  // scalar at its escaped length, every bracket, separator and key. A value
+  // that does not fit is dropped whole, so the copy never exceeds the bound.
   let budget = MAX_ACP_META_TOTAL_BYTES;
+  const charge = (bytes: number): boolean => {
+    if (bytes > budget) return false;
+    budget -= bytes;
+    return true;
+  };
   const visit = (input: unknown, depth: number): unknown => {
     if (input === null || typeof input === "boolean") {
-      budget -= 4;
-      return input;
+      return charge(String(input).length) ? input : undefined;
     }
     if (typeof input === "number") {
       if (!Number.isFinite(input)) return undefined;
-      budget -= 16;
-      return input;
+      return charge(JSON.stringify(input).length) ? input : undefined;
     }
     if (typeof input === "string") {
       const bounded = boundedAcpxLifecycleText(input, MAX_ACP_META_STRING_BYTES) ?? "";
-      const bytes = Buffer.byteLength(bounded) + 2;
-      if (bytes > budget) return undefined;
-      budget -= bytes;
-      return bounded;
+      return charge(Buffer.byteLength(JSON.stringify(bounded))) ? bounded : undefined;
     }
     if (depth >= MAX_ACP_META_DEPTH || typeof input !== "object") return undefined;
+    if (!charge(2)) return undefined;
     if (Array.isArray(input)) {
       const items: unknown[] = [];
-      for (const item of input.slice(0, MAX_ACP_META_ENTRIES)) {
-        if (budget <= 0) break;
-        const next = visit(item, depth + 1);
+      const limit = Math.min(input.length, MAX_ACP_META_ENTRIES);
+      for (let index = 0; index < limit && budget > 0; index += 1) {
+        if (items.length > 0 && !charge(1)) break;
+        const next = visit(input[index], depth + 1);
         if (next !== undefined) items.push(next);
+        else if (items.length > 0) budget += 1;
       }
       return items;
     }
     const output: Record<string, unknown> = {};
-    let entries = 0;
-    for (const [key, item] of Object.entries(input as Record<string, unknown>)) {
-      if (entries >= MAX_ACP_META_ENTRIES || budget <= 0) break;
+    let retained = 0;
+    let inspected = 0;
+    // for...in stops early; Object.entries would materialize every key of a
+    // wide producer object before any limit applied.
+    for (const key in input as Record<string, unknown>) {
+      if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+      if (retained >= MAX_ACP_META_ENTRIES || inspected >= MAX_ACP_META_ENTRIES * 4 || budget <= 0) break;
+      inspected += 1;
       if (UNSAFE_ACP_META_KEYS.has(key) || Buffer.byteLength(key) > 160) continue;
-      budget -= Buffer.byteLength(key) + 4;
-      const next = visit(item, depth + 1);
-      if (next === undefined) continue;
+      const keyBytes = Buffer.byteLength(JSON.stringify(key)) + 1 + (retained > 0 ? 1 : 0);
+      if (!charge(keyBytes)) break;
+      const next = visit((input as Record<string, unknown>)[key], depth + 1);
+      if (next === undefined) {
+        budget += keyBytes;
+        continue;
+      }
       output[key] = next;
-      entries += 1;
+      retained += 1;
     }
     return output;
   };
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const bounded = visit(value, 0) as Record<string, unknown>;
-  return Object.keys(bounded).length > 0 ? bounded : undefined;
+  const bounded = visit(value, 0) as Record<string, unknown> | undefined;
+  return bounded && Object.keys(bounded).length > 0 ? bounded : undefined;
 }
 
 /** Bound any forwarded `_meta` on a runtime event, whatever its type. */
