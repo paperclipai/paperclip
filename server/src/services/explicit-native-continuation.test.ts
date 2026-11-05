@@ -1,3 +1,4 @@
+import { CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS } from "./recovery/service.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -919,10 +920,23 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const receipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     expect(receipts).toHaveLength(3);
     expect(receipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
+    let latestRun = second.run;
+    for (let attempt = 3; attempt <= CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS; attempt++) {
+      await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", startedAt: nextNow,
+        finishedAt: nextNow }).where(eq(heartbeatRuns.id, latestRun.id));
+      const retry = await heartbeat.scheduleBoundedRetry(latestRun.id, { now: nextNow });
+      expect(retry.outcome).toBe("scheduled");
+      if (retry.outcome !== "scheduled") throw new Error("Expected bounded explicit retry");
+      expect(retry.run).toMatchObject({ retryOfRunId: latestRun.id, scheduledRetryAttempt: attempt });
+      await expect(dispatchExplicitRetry(f, retry.run)).resolves.toMatchObject({ interruptedRunId: latestRun.id });
+      latestRun = retry.run;
+    }
     await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", startedAt: nextNow,
-      finishedAt: nextNow }).where(eq(heartbeatRuns.id, second.run.id));
-    expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: nextNow })).toMatchObject({ outcome: "retry_exhausted" });
-    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(3);
+      finishedAt: nextNow }).where(eq(heartbeatRuns.id, latestRun.id));
+    expect(await heartbeat.scheduleBoundedRetry(latestRun.id, { now: nextNow })).toMatchObject({ outcome: "retry_exhausted" });
+    const finalReceipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(finalReceipts).toHaveLength(CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS + 1);
+    expect(finalReceipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
   });
 
   it("keeps sub-millisecond source ordering when authorizing a timeout retry", async () => {
