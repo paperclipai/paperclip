@@ -4931,11 +4931,15 @@ export async function runChildProcess(
             readable.pause();
           } else if (
             pendingLogBytes > readAheadBytes &&
-            !pausedOverReadAhead.has(readable)
+            !readable.isPaused()
           ) {
+            // child_process resumes every stdio stream when the child exits,
+            // so a stream that is already in the set can be flowing again.
             readable.pause();
-            pausedOverReadAhead.add(readable);
-            outputCapture.readAheadPauses += 1;
+            if (!pausedOverReadAhead.has(readable)) {
+              pausedOverReadAhead.add(readable);
+              outputCapture.readAheadPauses += 1;
+            }
           }
           logChain = logChain
             .then(() => opts.onLog(stream, text))

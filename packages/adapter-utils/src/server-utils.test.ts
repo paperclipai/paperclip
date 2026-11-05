@@ -1115,6 +1115,40 @@ describe("runChildProcess output read-ahead", () => {
     expect(sink.stderr).toMatch(/bound 262144, paused at bound [1-9]\d*x\n$/);
   }, 60_000);
 
+  it("keeps the read-ahead bound after the child exits while a descendant still writes", async () => {
+    const bound = 256 * 1024;
+    const { sink, onLog, onLogError } = slowSink(50);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { spawn } = require('node:child_process');",
+          // Exit as soon as our own bytes are written; the unref'd descendant keeps writing.
+          "process.stdout.write('a'.repeat(400000), () => {",
+          "spawn(process.execPath, ['-e', \"process.stdout.write('b'.repeat(4000000))\"], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();",
+          "});",
+        ].join(""),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 60,
+        graceSec: 1,
+        onLog,
+        onLogError,
+        outputReadAheadBytes: bound,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(sink.stdout.length).toBe(4_400_000);
+    expect(/^a{400000}b{4000000}$/.test(sink.stdout)).toBe(true);
+    expect(result.outputCapture?.readAheadPauses).toBeGreaterThan(0);
+    expect(result.outputCapture?.peakPendingLogBytes).toBeLessThanOrEqual(bound + 4 * 64 * 1024);
+  }, 90_000);
+
   it("resolves with the full output when every onLog append fails", async () => {
     const { sink, onLog, onLogError } = slowSink(0, true);
     const result = await runChildProcess(
