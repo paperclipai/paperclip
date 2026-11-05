@@ -317,7 +317,8 @@ async function setupExecuteEnv(
   await fs.mkdir(binDir, { recursive: true });
   await (options?.commandWriter ?? writeFakeClaudeCommand)(commandPath);
   if (options?.initialSessionIds?.length) {
-    const projectDir = path.join(root, ".claude", "projects", workspace.replace(/[^a-zA-Z0-9-]/g, "-"));
+    const fixtureCwd = process.platform === "win32" ? workspace : await fs.realpath(workspace);
+    const projectDir = path.join(root, ".claude", "projects", fixtureCwd.replace(/[^a-zA-Z0-9-]/g, "-"));
     await fs.mkdir(projectDir, { recursive: true });
     await Promise.all(options.initialSessionIds.map((sessionId) =>
       fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8"),
@@ -701,7 +702,8 @@ if (process.argv.includes('--resume')) {
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const childHome = path.join(root, "child-home");
     const sessionId = "11111111-1111-4111-8111-111111111111";
-    const projectDir = path.join(childHome, ".claude", "projects", workspace.replace(/[^a-zA-Z0-9-]/g, "-"));
+    const fixtureCwd = process.platform === "win32" ? workspace : await fs.realpath(workspace);
+    const projectDir = path.join(childHome, ".claude", "projects", fixtureCwd.replace(/[^a-zA-Z0-9-]/g, "-"));
     await fs.mkdir(projectDir, { recursive: true });
     await fs.writeFile(path.join(projectDir, `${sessionId}.jsonl`), "{}\n", "utf8");
 

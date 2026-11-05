@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -82,7 +82,7 @@ import { execute } from "./execute.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 const writeLocalClaudeTranscript = async (configDir: string, cwd: string, sessionId: string) => {
-  const encodedCwd = cwd.replace(/[^a-zA-Z0-9-]/g, "-");
+  const encodedCwd = (process.platform === "win32" ? cwd : await realpath(cwd)).replace(/[^a-zA-Z0-9-]/g, "-");
   const transcriptPath = path.join(configDir, "projects", encodedCwd, `${sessionId}.jsonl`);
   await mkdir(path.dirname(transcriptPath), { recursive: true });
   await writeFile(transcriptPath, `${JSON.stringify({ type: "result", session_id: sessionId })}\n`);
