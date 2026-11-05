@@ -15,7 +15,7 @@ import { isAgentDirectoryCopy } from "../agent-directory-working-copies.js";
 import { isConversation } from "../agent-conversations.js";
 import { renewLegacyControllerLease } from "../legacy-controller-lease.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
-import { supportsManagedNativeWarmSession } from "../native-runtime/native-warm-capability.js";
+import { resolveHeartbeatNativeLifecyclePolicy, type NativeLifecyclePolicy } from "./native-lifecycle.js";
 import {
   getNativeReviewAssignment,
   readNativeReviewAssignmentContext,
@@ -82,7 +82,6 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-st
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
-import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 
@@ -132,6 +131,7 @@ export interface HeartbeatRuntimeSelectionInput {
     onPhase?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onPhase"];
   };
   config: {
+    nativeLifecyclePolicy?: NativeLifecyclePolicy | null;
     runtimeConfig: Record<string, unknown>;
     runtimeSkillEntries: Parameters<typeof buildNativeRuntimeContext>[0]["runtimeSkillEntries"];
     runScopedMentionedSkillKeys: string[];
@@ -501,28 +501,15 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     let nativeResumeCheckpoint: ReturnType<
       typeof rebindNativeSessionCheckpoint
     > = null;
-    const agentLifecyclePolicy =
-      parseObject(agent.adapterConfig).lifecycleMode === "warm"
-        ? {
-            mode: "warm" as const,
-            idleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(
-              parseObject(agent.adapterConfig).idleTimeoutMs,
-            ),
-          }
-        : { mode: "per_turn" as const, idleTimeoutMs: null };
-    const environmentLifecyclePolicy =
-      executionTarget?.kind === "remote" &&
-      executionTarget.transport === "sandbox"
-        ? (executionTarget.runnerLifecyclePolicy ?? null)
-        : null;
-    // Task providers own credential lifetime; process-backed managed homes retain their provider-specific cleanup policy.
-    const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-      ((executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && !!executionTarget.runnerTask) ||
-        supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution));
-    const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
-      (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
-        ? { mode: "per_turn" as const, idleTimeoutMs: null }
-        : environmentLifecyclePolicy ?? agentLifecyclePolicy);
+    const effectiveLifecyclePolicy = input.config.nativeLifecyclePolicy ?? resolveHeartbeatNativeLifecyclePolicy({
+      adapterType: agent.adapterType, backend: nativeRuntimeResolution.profile.backend,
+      acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
+      agentMode: parseObject(agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(agent.adapterConfig).idleTimeoutMs,
+      environmentPolicy: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerLifecyclePolicy : null,
+      persistedPolicy: persistedNativeExecutionInput?.session.lifecyclePolicy,
+      managedAiSelected: Boolean(managedAiRuntime), managedAiAttribution: managedAiRuntime?.attribution,
+      taskOwned: Boolean(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask),
+    });
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&

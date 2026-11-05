@@ -30,6 +30,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
+import { resolveHeartbeatNativeLifecyclePolicy } from "./heartbeat/native-lifecycle.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
 import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
@@ -3319,7 +3320,16 @@ export function heartbeatService(
         const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
           ? adapter.supportsInstructionsBundle === true
           : nativeRuntimeHasInstructionFilesystem(nativeRuntimeResolution.profile.backend);
-        runtimeConfig = await timePreparation("instructions", () => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem }));
+        const nativeLifecyclePolicy = nativeRuntimeResolution.kind === "native" ? resolveHeartbeatNativeLifecyclePolicy({
+          adapterType: agent.adapterType, backend: nativeRuntimeResolution.profile.backend,
+          acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
+          agentMode: parseObject(agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(agent.adapterConfig).idleTimeoutMs,
+          environmentPolicy: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerLifecyclePolicy : null,
+          persistedPolicy: persistedNativeExecutionInput?.session.lifecyclePolicy,
+          managedAiSelected: Boolean(managedAiRuntime), managedAiAttribution: managedAiRuntime?.attribution,
+          taskOwned: Boolean(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask),
+        }) : null;
+        runtimeConfig = await timePreparation("instructions", () => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
         const runtimeSelection = await timePreparation("runtime_selection", () => selectHeartbeatRuntime(db, {
           run,
           agent,
@@ -3363,6 +3373,7 @@ export function heartbeatService(
             },
           },
           config: {
+            nativeLifecyclePolicy,
             runtimeConfig,
             runtimeSkillEntries,
             runScopedMentionedSkillKeys,
