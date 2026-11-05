@@ -55,6 +55,7 @@ import {
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { createNativeConnectorYield } from "./connection-native-yield.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService, type InteractionResolutionMutationOptions } from "./issue-thread-interactions.js";
@@ -123,6 +124,17 @@ function availableToolConnectionMethods(
   return getAvailableConnectionMethods(app).filter(
     (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "runtime_auth",
   );
+}
+
+// Large enough for first-party catalogs such as GitHub's; aggregator catalogs
+// stay bounded and still report their total.
+const MAX_SCOPED_REQUEST_TOOL_NAMES = 100;
+
+/** Tells an agent outside a connection's grant how to request scoped access to it. */
+function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<{ toolName: string }>) {
+  const names = [...new Set(catalog.map(tool => tool.toolName))].sort();
+  const listed = names.slice(0, MAX_SCOPED_REQUEST_TOOL_NAMES);
+  return `Call connection_request again with connectionId ${JSON.stringify(connectionId)} and toolNames set to only the exact names this task needs. Available indexed tool names (first ${listed.length} of ${names.length}): ${JSON.stringify(listed)}. No access was granted.`;
 }
 
 export function connectionIntentService(db: Db) {
@@ -452,6 +464,9 @@ export function connectionIntentService(db: Db) {
     const inventory = await connectionInventory(run.companyId);
     const candidates: Array<{ item: ConnectionSearchResultItem; score: number; nameScore: number }> = [];
     const authorizedCatalogs = new Map<string, Awaited<ReturnType<typeof indexedCatalog>>>();
+    // New setup of these native services is offered through aggregators instead.
+    const yieldsToAggregators = createNativeConnectorYield(settings);
+    const yieldingServices = new Set<string>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
       .filter(method => method.purpose !== "channel" || app.slug === "agentmail"
         || (method.provider === "github" ? settings.enableGitHubReviewBots : settings.enableChatConnectors));
@@ -496,6 +511,7 @@ export function connectionIntentService(db: Db) {
       const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
+      if (definition && !matching.length && yieldsToAggregators(definition)) yieldingServices.add(service);
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
@@ -527,6 +543,18 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
+    // A yielded native service is not offered for new setup when an aggregator
+    // route can serve it; its routes take its place in ranked results, so broad
+    // and capability-only searches still find the app. Without a route the
+    // native service remains the fallback.
+    const yieldedRoutes: typeof candidates = [];
+    for (const service of yieldingServices) {
+      const candidate = candidates.find(({ item }) => item.service === service);
+      const routes = candidate ? await aggregatorAlternatives(service, candidate.item.name, findAggregatorService(service)) : [];
+      if (!routes.length) continue;
+      candidates.splice(candidates.indexOf(candidate!), 1);
+      yieldedRoutes.push(...routes.map(item => ({ item, score: candidate!.score, nameScore: candidate!.nameScore })));
+    }
     const publicMatches = searchAggregatorServices(preparedQuery);
     const bestMatches = publicMatches.filter(match => Math.floor(match.nameScore / 100) === Math.floor((publicMatches[0]?.nameScore ?? 0) / 100));
     const namedPublicService = findAggregatorService(serviceQuery, publicMatches);
@@ -555,8 +583,13 @@ export function connectionIntentService(db: Db) {
     // A typo match such as Notion must not hide the distinctly named app Motion.
     const exact = candidates.filter(({ item, nameScore }) => ((nameScore >= 200 && Math.floor(nameScore / 100) >= bestExternalTier) || item.service === publicService?.slug)
       && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
-    const ranked = () => candidates.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
+    const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
+    // Aggregator routes need a recorded provider choice before connection_request.
+    const rankedResult = (suggestions = false) => {
+      const results = ranked();
+      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, suggestions);
+    };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
     const targetName = publicService?.name ?? targetService.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
@@ -570,7 +603,7 @@ export function connectionIntentService(db: Db) {
           aggregatorAlternatives(service.slug, service.name, service)))).flat();
         if (otherRoutes.length) return discoverySuggestions([...ranked(), ...otherRoutes]);
       }
-      return directSearchResult(query, ranked());
+      return rankedResult();
     }
     async function aggregatorAlternatives(targetService: string, targetName: string, publicService?: AggregatorServiceDefinition) {
       const alternatives: ConnectionSearchResultItem[] = [];
@@ -636,7 +669,7 @@ export function connectionIntentService(db: Db) {
         aggregatorAlternatives(service.slug, service.name, service)))).flat();
       if (matches.length) return discoverySuggestions([...ranked(), ...matches]);
     }
-    if (!alternatives.length) return directSearchResult(query, ranked(), true);
+    if (!alternatives.length) return rankedResult(true);
     const question = aggregatorProviderQuestion(targetService, targetName, alternatives);
     const latest = previous[0];
     if (latest && (latest.status === "pending" || !options.retryProviderChoice)) {
@@ -657,7 +690,8 @@ export function connectionIntentService(db: Db) {
       instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questionSet:providerQuestionSet} exactly as returned. Otherwise use ask_user_questions with payload {version:1, questions:[providerQuestion]}. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
-      return { version: 1, query, results: results.slice(0, 40),
+      const seen = new Set<string>();
+      return { version: 1, query, results: results.filter(item => !seen.has(item.service) && Boolean(seen.add(item.service))).slice(0, 40),
         instruction: "These are possible connection matches. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods and AgentMail use connection_request to show the inline setup card; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
     }
   }
@@ -810,9 +844,16 @@ export function connectionIntentService(db: Db) {
         }
         const effective = await access.getEffectiveToolAssignmentsForAgent(context.run.companyId, context.agent.id);
         const installed = effective.installedConnections.some(item => item.id === connection.id);
-        const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
+        // Without toolNames the agent is asking whether it can use the service at all.
+        // Existing scoped access answers that; only named tools can request more.
+        const missing = !installed || (options.toolNames
+          ? tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id))
+          : !effective.allowedTools.some(allowed => allowed.connectionId === connection.id));
         if (missing && tools.length && tools.every(tool => Boolean(tool))) {
-          if (tools.length > 20) throw unprocessable("Specify the tools needed for this task (up to 20)");
+          // Without this guidance an agent outside the original grant (for example,
+          // one hired before GitHub was connected) cannot discover what to request
+          // and reports the company's connection as unavailable.
+          if (tools.length > 20) throw unprocessable(`Specify the tools needed for this task (up to 20). ${scopedToolRequestGuidance(connection.id, catalog)}`);
           accessRequest = {
             connectionId: connection.id, connectionName: connection.name,
             tools: tools.map(tool => ({ catalogEntryId: tool!.id, toolName: tool!.toolName, versionHash: tool!.versionHash,

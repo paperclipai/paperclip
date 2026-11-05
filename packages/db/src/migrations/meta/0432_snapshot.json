@@ -1,5 +1,5 @@
 {
-  "id": "5f080e8d-c09f-423e-8422-6b35ecb4f10c",
+  "id": "a87278a8-15b3-4187-94a9-f4bb79d8640d",
   "prevId": "9fcf29d1-a9a6-4ead-8d43-7e087a2b2b24",
   "version": "7",
   "dialect": "postgresql",
@@ -34186,6 +34186,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "heartbeat_run_events_usage_item_run_idx": {
+          "name": "heartbeat_run_events_usage_item_run_idx",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'item.completed' and (\"heartbeat_run_events\".\"payload\" -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_run_events_compaction_session_idx": {
+          "name": "heartbeat_run_events_compaction_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\" -> 'prpEvent' ->> 'normalizedSessionId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'context.compacted'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -42448,12 +42492,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "origin_issue_id": {
-          "name": "origin_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "origin_identity_context_id": {
           "name": "origin_identity_context_id",
           "type": "uuid",
@@ -42887,27 +42925,6 @@
             },
             {
               "expression": "origin_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_origin_issue_idx": {
-          "name": "issues_company_origin_issue_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "origin_issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -43515,19 +43532,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issues_origin_issue_id_issues_id_fk": {
-          "name": "issues_origin_issue_id_issues_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "origin_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issues_execution_workspace_id_execution_workspaces_id_fk": {

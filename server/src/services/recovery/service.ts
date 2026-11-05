@@ -10,6 +10,7 @@ import { boundRunIssueId } from "../run-task-binding.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -561,6 +562,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   REUSABLE_SANDBOX_RESUME_FAILED_CODE,
   REMOTE_WORKSPACE_RESTORE_FAILED_CODE,
   PLUGIN_WORKER_UNAVAILABLE_CODE,
+  RUNNER_REVISION_MISMATCH_CODE,
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
   "low_trust_boundary_mismatch",
@@ -575,6 +577,13 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
+// The accept route resolves an interaction and then enqueues its own
+// continuation wake. A sweep that reads the issue inside that gap would see an
+// accepted interaction with no wake or run and queue a second, redundant
+// continuation for the same response, which then shows as an immutable queued
+// item. Treat an accepted interaction as stranded only once its accept-time
+// wake has had time to appear.
+const INTERACTION_CONTINUATION_RECOVERY_GRACE_MS = 2 * 60_000;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -4995,6 +5004,18 @@ export function recoveryService(
         );
 
         if (!successfulRunSinceResolution) {
+          if (
+            recoveryNow.getTime() - acceptedInteractionResolvedAt.getTime() <
+            INTERACTION_CONTINUATION_RECOVERY_GRACE_MS
+          ) {
+            // Re-check at the deadline so a lost accept-time wake still recovers.
+            opts?.onDeferredDeadline?.(
+              acceptedInteractionResolvedAt.getTime() +
+                INTERACTION_CONTINUATION_RECOVERY_GRACE_MS,
+            );
+            result.skipped += 1;
+            continue;
+          }
           if (!agentInvokable) {
             result.skipped += 1;
             continue;

@@ -294,7 +294,7 @@ export interface TaskChatStatusItem {
 export interface TaskChatMarkerItem {
   id: string;
   kind: "marker";
-  variant: "session_start" | "interrupted" | "turn_boundary";
+  variant: "session_start" | "interrupted" | "turn_boundary" | "context_compacted";
   label: string;
   detail?: string;
   /** False when the recorded run cannot be retried, even after the chat continues. */

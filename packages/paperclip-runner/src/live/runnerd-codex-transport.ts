@@ -1879,8 +1879,19 @@ export function rehydrateRunnerdUsageNotification(
       // authority beside the counters so ACPX/managed driver projections and
       // durable replay cannot certify an incomplete delta as a free receipt.
       runDeltaComplete: rawParams.runDeltaAvailable === true,
+      ...runnerdContextUsage(rawParams.context),
     },
   };
+}
+
+/** Context-window occupancy carried on PRP `usage.reported`, when the provider reported it. */
+function runnerdContextUsage(value: unknown): { context?: { usedTokens: number; windowTokens: number } } {
+  const context = record(value);
+  const usedTokens = context.usedTokens;
+  const windowTokens = context.windowTokens;
+  if (typeof usedTokens !== "number" || !Number.isSafeInteger(usedTokens) || usedTokens < 0) return {};
+  if (typeof windowTokens !== "number" || !Number.isSafeInteger(windowTokens) || windowTokens < 1) return {};
+  return { context: { usedTokens, windowTokens } };
 }
 
 export function rehydrateRunnerdThreadTokenUsage(

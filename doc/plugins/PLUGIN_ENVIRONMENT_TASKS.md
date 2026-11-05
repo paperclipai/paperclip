@@ -46,6 +46,18 @@ See [the schemas](../../packages/plugins/sdk/src/environment-tasks.ts) for all f
 | `stop` | `accepted` | Stop the task and its descendants. Fence a delayed submission. |
 | `complete` | `accepted` | Release task resources after Core saves required results. |
 
+For a refused `submit` with `resumeFrom`, a driver can throw an error with
+`status: 409`, `code: "SESSION_STATE_UNAVAILABLE"`, and `reason` set to
+`"unresolved_operation"` or `"source_state_unverified"`. The SDK worker and
+Core preserve only these closed diagnostic fields. They replace the provider
+message and omit provider identities and text. Read the validated RPC envelope
+with `readEnvironmentTaskErrorDiagnostic`.
+
+This diagnostic does not authorize a retry, replacement, cleanup or state
+change. Other task failures keep the existing generic error. An older SDK
+does not carry this diagnostic. Operation and call identities, when needed,
+must come from Core's own retained records.
+
 Each result must contain the task ID from the request. Core rejects a result
 with a different ID or result kind. A WSS URL must have no user information,
 query, or fragment. Return authentication in the secret headers.
@@ -54,6 +66,27 @@ query, or fragment. Return authentication in the secret headers.
 authorized project IDs, and optional launch limits. It can also contain a saved
 task ID for session reuse and a typed Codex or Claude credential. Core does not
 supply an executable command or a guest path.
+
+## Error codes
+
+Core does not read the text of a task error. To report a failure that Core can
+act on, throw `PluginEnvironmentTaskError` with a code from
+`ENVIRONMENT_TASK_ERROR_CODES`. The SDK sends only the code as structured RPC
+error data.
+
+| Code | When to use it | Core behavior |
+| --- | --- | --- |
+| `runner_revision_mismatch` | The installed Runner does not match the revision that the plugin launches. Throw it from `describe` or `submit` before you prepare or start a task. | A run that has not started provider work is retried for up to 10 minutes. Agent verification checks again every minute. The task is not blocked during this wait. |
+
+```ts
+import { PluginEnvironmentTaskError } from "@paperclipai/plugin-sdk";
+
+if (installed.revision !== expectedRevision) {
+  throw new PluginEnvironmentTaskError("runner_revision_mismatch");
+}
+```
+
+Any other error stays an ordinary setup failure. The source refusal diagnostic above is separate: it uses its own envelope and does not authorize a retry.
 
 ## Launch preparation
 

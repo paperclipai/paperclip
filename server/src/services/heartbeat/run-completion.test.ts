@@ -30,8 +30,11 @@ import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, Re
 import { EnvironmentRunError } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError } from "@paperclipai/plugin-sdk";
+import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { unprocessable } from "../../errors.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
-import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
+import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
@@ -964,6 +967,61 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
+    data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
+
+  it.each(["fresh", "wrapped", "started", "untrusted", "retained"] as const)("waits for the Runner update after a %s Runner mismatch", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
+    const refusal = runnerMismatch();
+    const error = scenario === "untrusted" ? new Error(refusal.message)
+      : scenario === "wrapped" ? new Error("Plugin Runner task failed", { cause: refusal })
+      : classifyManagedProjectAuthFailure(refusal, f.agent.id);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh" || scenario === "wrapped";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "runner_revision_mismatch" : "setup_failed" });
+    expect(failed.resultJson).not.toHaveProperty("configurationIncomplete");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it("waits for the Runner update on an answered interaction instead of its two-attempt continuation retry", async () => {
+    const f = await fixture({ contextSnapshot: { interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" } });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(runnerMismatch()));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("keeps a found project authentication conflict a configuration gap that blocks for the board", async () => {
+    const f = await fixture();
+    const conflict = unprocessable("This agent's managed AI connection conflicts with project authentication settings in .claude/settings.json.",
+      { code: "ai_connection_incompatible" });
+    await f.completion.failRunSetup(f.setup(classifyManagedProjectAuthFailure(conflict, f.agent.id)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${f.agent.id}/runtime` } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an unavailable Runner identity", new Error("Runner identity unavailable")],
+    ["an unreachable execution host", Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })],
+    ["another 422", unprocessable("Select a saved AI account", { code: "ai_connection_busy" })],
+  ])("does not report %s as a project authentication conflict", async (_name, error) => {
+    const f = await fixture();
+    const classified = classifyManagedProjectAuthFailure(error, f.agent.id);
+    expect(classified).toBe(error);
+    await f.completion.failRunSetup(f.setup(classified));
+    const failed = await read(f.run.id);
+    expect(failed.errorCode).not.toBe("configuration_incomplete");
+    expect(failed.resultJson).not.toHaveProperty("configurationIncomplete");
   });
 
   it("routes a lease acquisition refused by a stopped provider worker through bounded bootstrap recovery", async () => {
