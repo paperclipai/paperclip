@@ -731,6 +731,37 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }
   });
 
+  it("does not promote another new-assignee wake when the new assignee already has a queued run after a reassignment stop", async () => {
+    const companyId = await seedCompany();
+    const formerOwnerId = await seedAgent({ companyId, name: "Implementer" });
+    const newOwnerId = await seedAgent({ companyId, name: "Lead" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: newOwnerId, status: "todo" });
+    const runId = await seedRun({
+      companyId, agentId: formerOwnerId, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { issueId },
+    });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", resultJson: {
+      executionCancellation: { state: "acknowledged" },
+      conversationContinuation: "continue_conversation_v1",
+      reassignmentStopConfirmed: true, issueMutationStopId: randomUUID(),
+    } }).where(eq(heartbeatRuns.id, runId));
+    const queuedRunId = await seedRun({ companyId, agentId: newOwnerId, status: "queued", contextSnapshot: { issueId } });
+    const mentionWakeId = await seedDeferredWake({ companyId, agentId: newOwnerId, issueId });
+    await db.update(agentWakeupRequests).set({ reason: "issue_comment_mentioned" }).where(eq(agentWakeupRequests.id, mentionWakeId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+      },
+    });
+    const result = await release({ companyId, runId, now: new Date() });
+    expect(result).toMatchObject({ outcome: { kind: "released" }, postCommitEffects: [] });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, mentionWakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, newOwnerId))).map((r) => r.id))
+      .toEqual([queuedRunId]);
+  });
+
   it("releases an acknowledged interrupt Stop without blocking or retiring the settling executor", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
