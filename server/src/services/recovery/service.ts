@@ -665,6 +665,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 // item. Treat an accepted interaction as stranded only once its accept-time
 // wake has had time to appear.
 const INTERACTION_CONTINUATION_RECOVERY_GRACE_MS = 2 * 60_000;
+const SOURCE_BLOCK_UPDATE_RETRY_MS = 5 * 60_000;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -3694,6 +3695,7 @@ export function recoveryService(
       .where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
         opts?.companyId ? eq(issueRecoveryActions.companyId, opts.companyId) : undefined));
 
+    let sourceBlockRetryAt: number | null = null;
     const result = {
       requeued: 0,
       escalated: 0,
@@ -3776,15 +3778,25 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          try {
+            await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            });
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, actionId: action.id },
+              "recovery: cannot block source on its children, skipping",
+            );
+            result.skipped += 1;
+            sourceBlockRetryAt ??= Date.now() + SOURCE_BLOCK_UPDATE_RETRY_MS;
+            continue;
+          }
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
@@ -3851,7 +3863,7 @@ export function recoveryService(
     const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
     // A failed delivery is reported so the recovery worker retries this pass.
     // The earliest owed wake of a moved legacy subtask is a deadline of this pass too.
-    const retryAts = [stalls.retryAt, rehome?.nextWakeRetryAt, releasedWriter?.nextWakeRetryAt].filter((at): at is number => typeof at === "number");
+    const retryAts = [stalls.retryAt, rehome?.nextWakeRetryAt, releasedWriter?.nextWakeRetryAt, sourceBlockRetryAt].filter((at): at is number => typeof at === "number");
     return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed,
       blockerStallRetryAt: retryAts.length ? Math.min(...retryAts) : null };
   }
