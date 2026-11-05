@@ -7745,16 +7745,6 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
-  /**
-   * Run a write that can take the routine execution slot and translate the
-   * `issues_open_routine_execution_uq` violation into the structured conflict
-   * the API surfaces as 409.
-   *
-   * The catch sits outside the transaction callback on purpose: inside a
-   * transaction the failed statement aborts the transaction, so the driver
-   * error has to surface after the rollback instead of being swallowed where
-   * the next statement would fail with "current transaction is aborted".
-   */
   async function withRoutineExecutionConflict<T>(
     write: () => Promise<T>,
     details: Record<string, unknown>,

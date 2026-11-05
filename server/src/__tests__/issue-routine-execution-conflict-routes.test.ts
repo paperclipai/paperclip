@@ -90,23 +90,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     };
   }
 
-  /**
-   * Seeds a routine with two open execution tasks.
-   *
-   * The first one still holds the routine's execution slot. The second one is
-   * the orphan the upstream issue describes: the run that held it ended, the
-   * task stayed open and assigned, and its checkout and execution locks were
-   * cleared. The partial unique index
-   * `issues_open_routine_execution_uq` therefore rejects a write that binds a
-   * run to the orphan while the first task is still open.
-   *
-   * The index covers (company_id, origin_kind, origin_id, origin_fingerprint),
-   * so **both** the routine id and the dispatch fingerprint have to match for
-   * the two tasks to collide. `slotFingerprint` exists so a test can prove
-   * that a differing fingerprint does not collide — a precondition that would
-   * otherwise let a "same routine" test pass green while production still
-   * returns 500.
-   */
   async function seedRoutineWithOrphanedExecution(options?: {
     slotFingerprint?: string;
   }) {
@@ -215,7 +198,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     expect(res.body?.error).toBe("Issue checkout conflict");
     expect(res.body?.code).toBe("routine_execution_conflict");
 
-    // The rejected write must leave the orphan untouched.
     const row = await db
       .select({
         title: issues.title,
@@ -249,18 +231,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     });
   });
 
-  /**
-   * Covers the route-level guard on the PATCH route itself.
-   *
-   * The adopt path in the service already translates the violation. This test
-   * drives a write that never reaches the adopt path. The target task sits in
-   * the terminal status `done` while it still holds an execution binding. A
-   * terminal task is outside the partial unique index, so the row is free.
-   * Moving it back to `in_progress` puts it back into the index and collides
-   * with the open task that holds the same routine slot. The route has to turn
-   * that driver error into the same 409 instead of letting it reach the error
-   * handler as a 500.
-   */
   it("answers 409 when a PATCH write reaches the unique index outside the adopt path", async () => {
     const { companyId, agentId, actorRunId, slotRunId, slotIssueId } =
       await seedRoutineWithOrphanedExecution();
@@ -280,8 +250,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
       priority: "high",
       assigneeAgentId: agentId,
       checkoutRunId: null,
-      // The execution binding survives the terminal status, so reopening the
-      // task puts it straight back into the partial unique index.
       executionRunId: slotRunId,
       originKind: "routine_execution",
       originId: routineId!,
@@ -296,7 +264,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     expect(res.body?.error).toBe("Issue checkout conflict");
     expect(res.body?.code).toBe("routine_execution_conflict");
 
-    // The rejected write must leave the closed task untouched.
     const row = await db
       .select({ status: issues.status, executionRunId: issues.executionRunId })
       .from(issues)
@@ -306,17 +273,6 @@ describeEmbeddedPostgres("routine execution conflict routes", () => {
     expect(row?.executionRunId).toBe(slotRunId);
   });
 
-  /**
-   * Guards the precondition the conflict test above rests on.
-   *
-   * `issues_open_routine_execution_uq` covers
-   * (company_id, origin_kind, origin_id, origin_fingerprint). Two open examples
-   * of the *same* routine that were dispatched with *different* fingerprints
-   * therefore do not collide, and the write legitimately succeeds. A regression
-   * test that only seeded "same routine" would stay green against a build that
-   * still returns 500 in production, because production collides on the
-   * fingerprint, not on the routine id.
-   */
   it("does not conflict when the same routine carries a different origin fingerprint", async () => {
     const { companyId, agentId, actorRunId, orphanIssueId } =
       await seedRoutineWithOrphanedExecution({
