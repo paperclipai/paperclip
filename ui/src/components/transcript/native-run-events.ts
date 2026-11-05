@@ -93,6 +93,80 @@ function isItemIdentityEvent(eventType: string): boolean {
     || eventType === "item.completed";
 }
 
+/**
+ * Codex plan mode wraps a streaming plan item in `<proposed_plan>` tags. Only
+ * that outer wrapper is removed; example tags inside the plan stay text.
+ */
+function proposedPlanMarkdown(value: string): string {
+  const trimmed = value.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  // A stored preview can end inside the block; hide its cut-off remainder.
+  return unclosedStart === null ? value : value.slice(0, unclosedStart).trim();
+}
+
+function planProposalEntry(
+  ts: string,
+  eventType: string,
+  proposalId: string,
+  markdown: string,
+  completed: boolean,
+  payload: Record<string, unknown>,
+): TranscriptEntry {
+  return {
+    kind: "provider_activity",
+    ts,
+    family: "plan_proposal",
+    eventType,
+    status: completed ? "completed" : "running",
+    title: "Plan",
+    summary: completed ? "Proposed a plan" : "Writing a plan",
+    payload: { ...payload, proposalId, markdown, status: completed ? "completed" : "streaming" },
+  };
+}
+
 const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 const RUN_TERMINAL_SCHEMA = "paperclip.prp.terminal.v1";
@@ -815,6 +889,15 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   // An edit call reports an optimistic patch when it starts and the exact one
   // when it lands. The row shows the latest one, wherever it first appears.
   const fileChangesByExecutionId = new Map<string, unknown[]>();
+  // Messages whose `<proposed_plan>` block became a completed proposal show
+  // it through the proposal card; any other message keeps its text.
+  const proposedMessageIds = new Set<string>();
+  for (const event of orderedEvents) {
+    if (event.eventType !== "plan.proposed") continue;
+    const payload = record(record(event.payload?.prpEvent)?.payload);
+    const proposalId = text(payload?.proposalId);
+    if (proposalId && payload?.status === "completed") proposedMessageIds.add(proposalId);
+  }
   for (const event of orderedEvents) {
     if (!event.eventType.startsWith("tool.execution.")) continue;
     const payload = record(record(event.payload?.prpEvent)?.payload);
@@ -872,6 +955,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   }
 
   const itemIdentityById = new Map<string, ItemIdentity>();
+  const proposalMarkdownById = new Map<string, string>();
+  const completedProposalIds = new Set<string>();
   for (const event of orderedEvents) {
     const envelope = record(event.payload?.prpEvent);
     if (
@@ -906,7 +991,9 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "item.completed" && isAssistantItemKind(itemKind)) {
-      const value = normalizedItemText(payload);
+      // A `<proposed_plan>` block is shown by its plan proposal card instead.
+      const raw = normalizedItemText(payload) ?? "";
+      const value = itemId && proposedMessageIds.has(itemId) ? withoutProposedPlanBlock(raw) : raw;
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
@@ -1029,6 +1116,29 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         summary: text(payload.explanation)?.trim() || "Plan",
         payload,
       });
+      continue;
+    }
+
+    // A proposed plan document (Codex plan item, Claude ExitPlanMode) is the
+    // candidate for the task's Plan document, not the turn checklist.
+    if (event.eventType === "plan.proposed" && payload.schema === "paperclip.plan.proposed.v1" && text(payload.proposalId)) {
+      const proposalId = text(payload.proposalId)!;
+      const completed = payload.status === "completed";
+      // A completed proposal is already the unwrapped document; show it as is.
+      const markdown = text(payload.markdown) ?? proposedPlanMarkdown(proposalMarkdownById.get(proposalId) ?? "");
+      if (completed) completedProposalIds.add(proposalId);
+      proposalMarkdownById.set(proposalId, markdown);
+      entries.push(planProposalEntry(ts, event.eventType, proposalId, markdown, completed, payload));
+      continue;
+    }
+
+    // Codex streams the proposed plan as plan-item deltas before the
+    // completed plan.proposed event carries the whole document.
+    if (event.eventType === "item.delta" && itemKind === "plan" && itemId) {
+      if (completedProposalIds.has(itemId)) continue;
+      const accumulated = (proposalMarkdownById.get(itemId) ?? "") + (normalizedItemText(payload) ?? "");
+      proposalMarkdownById.set(itemId, accumulated);
+      entries.push(planProposalEntry(ts, "plan.proposed", itemId, proposedPlanMarkdown(accumulated), false, {}));
       continue;
     }
 

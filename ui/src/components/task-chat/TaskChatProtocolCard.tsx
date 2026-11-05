@@ -50,6 +50,7 @@ import type {
 import { QuestionForm, QuestionResponseSummary } from "./QuestionForm";
 import { TaskChatComposerTakeoverHeader, TaskChatRequestHistoryContext } from "./TaskChatComposerTakeoverContext";
 import { RichWorkProductCard } from "./RichWorkProductCard";
+import { planPreviewContent, TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { parseUnifiedDiffLines } from "./diff-lines";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
@@ -69,6 +70,7 @@ export interface TaskChatProtocolCardProps {
 
 const FAMILY_ICON = {
   plan: GitBranch,
+  plan_proposal: FileText,
   tool_execution: TerminalSquare,
   research: FileText,
   delegation: Bot,
@@ -260,11 +262,39 @@ function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
   );
 }
 
+/**
+ * A harness's proposed plan. While it streams it is the live plan card; once
+ * complete, the synchronized Plan document and its approval card carry it, so
+ * the turn keeps only a one-line record.
+ */
+function PlanProposalCard({ item }: { item: TaskChatProviderActivityItem }) {
+  if (item.status === "running") {
+    return <TaskChatPlanPreviewCard source={{ kind: "live", activity: item }} testId="task-chat-plan-proposal" />;
+  }
+  const title = item.output ? planPreviewContent(item.output).title : "Plan";
+  // The saved Plan document normally carries the proposal, but a conflicting
+  // edit can keep it out. The proposal itself stays readable here.
+  return (
+    <details className="group" data-testid="task-chat-plan-proposal">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <FileText aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 truncate">Proposed a plan · <span className="text-foreground">{title}</span></span>
+      </summary>
+      {item.output ? (
+        <div className="mt-1 rounded-md border border-border bg-muted/25 px-4 py-3 text-sm" data-testid="task-chat-plan-proposal-body">
+          <MarkdownBody mediaMode="reference">{item.output}</MarkdownBody>
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
 function ProviderActivityCard({
   item,
 }: {
   item: TaskChatProviderActivityItem;
 }) {
+  if (item.family === "plan_proposal") return <PlanProposalCard item={item} />;
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
     item.details.length > 0 ||

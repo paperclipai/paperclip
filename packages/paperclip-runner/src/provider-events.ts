@@ -64,9 +64,10 @@ export const CODEX_THREAD_ITEM_CLASSIFICATION = {
   userMessage: "existing_transcript",
   hookPrompt: "hook",
   agentMessage: "existing_transcript",
-  // Codex's `plan` ThreadItem is proposed-plan document text. The live
-  // execution checklist is a separate `turn/plan/updated` notification.
-  plan: "existing_transcript",
+  // Codex's `plan` ThreadItem is proposed-plan document text (canonical
+  // `plan.proposed`). The live execution checklist is a separate
+  // `turn/plan/updated` notification (canonical `plan.updated`).
+  plan: "plan",
   reasoning: "existing_reasoning",
   commandExecution: "tool_execution",
   fileChange: "existing_workspace_change",
@@ -94,6 +95,7 @@ export const CANONICAL_PROVIDER_EVENT_TYPES = [
   "auth.credentials.updated",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -823,6 +825,91 @@ function turnPlanPayload(
   };
 }
 
+// Matches the provider-event schema; keeps the event under the 256 KiB payload cap.
+/** Same registered Symbol as `RUNNERD_CANONICAL_ITEM` in the Codex driver values. */
+const RUNNERD_CANONICAL_ITEM_KEY = Symbol.for("paperclip.runnerd.canonical-item");
+
+const PLAN_PROPOSAL_MAX_MARKDOWN = 60_000;
+
+/**
+ * A provider-authored proposed plan document. Unlike the `plan.updated`
+ * checklist, a completed proposal is the candidate text for the issue's
+ * durable Plan document and its approval gate.
+ */
+export function planProposalPayload(
+  proposalId: string,
+  status: "streaming" | "completed",
+  markdown: string,
+  source: "codex_plan_item" | "claude_exit_plan_mode",
+): Record<string, unknown> {
+  return {
+    schema: "paperclip.plan.proposed.v1",
+    proposalId,
+    status,
+    markdown: unwrapProposedPlan(markdown).slice(0, PLAN_PROPOSAL_MAX_MARKDOWN),
+    source,
+  };
+}
+
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+export function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+/** Claude Code's ExitPlanMode plan, captured at its permission request. */
+export function claudePlanProposalEvent(proposal: {
+  toolCallId: string;
+  markdown: string;
+}): CanonicalProviderEvent {
+  const itemId = safeId(proposal.toolCallId, "claude-plan-proposal");
+  return {
+    eventType: "plan.proposed",
+    itemId,
+    payload: planProposalPayload(itemId, "completed", proposal.markdown, "claude_exit_plan_mode"),
+  };
+}
+
+/** Codex wraps plan-mode output in `<proposed_plan>` tags; keep only the document. */
+function unwrapProposedPlan(markdown: string): string {
+  // Only a wrapper around the whole document is removed. Literal tags inside
+  // the plan (an inline or fenced example) stay part of its text.
+  const trimmed = markdown.trim();
+  const open = /^<proposed_plan>[ \t]*(?:\n|$)/i.exec(trimmed);
+  if (!open) return trimmed;
+  return trimmed.slice(open[0].length).replace(/(?:^|\n)[ \t]*<\/proposed_plan>[ \t]*$/i, "").trim();
+}
+
 function researchSources(
   item: Record<string, unknown>,
   researchId: string,
@@ -925,6 +1012,32 @@ export function canonicalProviderEventsFromCodex(
         eventType: "plan.updated",
         payload: turnPlanPayload(params),
         itemId: turnPlanId,
+      },
+    ];
+  }
+  // Codex plan mode turns a `<proposed_plan>` block into its own plan item;
+  // agents can also write the block in an ordinary message to ask for plan
+  // approval, so read it there as well.
+  // On the runnerd path Rust already emitted the proposal from the full item;
+  // its forwarded item text is a short display preview and must not repeat it.
+  const runnerdCanonical = (item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM_KEY] === true;
+  if (!runnerdCanonical && completed && type === "agentMessage" && (!text(item.phase) || text(item.phase) === "final_answer")) {
+    const { plan } = splitProposedPlanBlock(text(item.text));
+    if (plan) {
+      return [{ eventType: "plan.proposed", payload: planProposalPayload(itemId, "completed", plan, "codex_plan_item"), itemId }];
+    }
+  }
+  if (!runnerdCanonical && (method === "item/started" || completed) && type === "plan") {
+    return [
+      {
+        eventType: "plan.proposed",
+        payload: planProposalPayload(
+          itemId,
+          completed ? "completed" : "streaming",
+          completed ? text(item.text) : "",
+          "codex_plan_item",
+        ),
+        itemId,
       },
     ];
   }

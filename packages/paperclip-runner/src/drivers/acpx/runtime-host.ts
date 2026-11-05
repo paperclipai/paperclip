@@ -124,6 +124,12 @@ export interface AcpxRuntimeGoalSnapshot {
   updatedAt?: number | string | null;
 }
 
+/** A harness-native proposed plan captured for Paperclip's approval gate. */
+export interface AcpxPlanProposal {
+  toolCallId: string;
+  markdown: string;
+}
+
 export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
@@ -132,6 +138,8 @@ export interface AcpxRuntimeTurnInput {
   onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
   onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
   onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  /** Receives a harness-native proposed plan that Paperclip, not the harness, approves. */
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
   /** Receives the typed AIR failure behind ACPX's generic terminal error. */
   onTerminalSessionFailure?: (failure: AcpxTerminalSessionFailure) => void;
 }
@@ -917,6 +925,7 @@ export class AcpxRuntimeHost {
       ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
       ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
+      ...(input.onPlanProposal ? { onPlanProposal: input.onPlanProposal } : {}),
       ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
     });
     this.#activeTurn = turn;

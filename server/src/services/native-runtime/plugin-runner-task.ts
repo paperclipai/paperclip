@@ -36,6 +36,9 @@ export function createPluginRunnerTaskOwner(input: {
   projectAuthCheckVersion?: 1;
   resumeFrom?: string;
   priorIdentity?: DurableRecoveryIdentity;
+  /** Current authenticated lease owner; the restored PRP identity may belong to its predecessor. */
+  authorityRunId?: string;
+  codexSourceRecoveryVersion?: 1;
   credentialIdentity?: string;
   accountIdentity?: string;
   credential?: PluginEnvironmentTaskCredential;
@@ -55,6 +58,7 @@ export function createPluginRunnerTaskOwner(input: {
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
   let launched = !!input.adoptIdentity;
+  let launchIdentity = input.adoptIdentity;
   let stopRequested = false;
   let released = false;
   let submitted = !!input.adoptIdentity;
@@ -119,6 +123,13 @@ export function createPluginRunnerTaskOwner(input: {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
+    const authorityRunId = input.authorityRunId ?? input.executionContext?.execution.binding.runId;
+    const sourceRecovery = !!authorityRunId && requirements.identity.runId !== authorityRunId;
+    if (sourceRecovery && (input.codexSourceRecoveryVersion !== 1 || !input.resumeFrom || !input.priorIdentity || !input.accountIdentity ||
+        input.harness !== "codex" || input.adoptIdentity || Object.entries(input.priorIdentity).some(([key, value]) =>
+          requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
+      throw new Error("Plugin Runner source reconciliation unavailable");
+    }
     if (input.githubBroker) {
       const description = await call({ kind: "describe" });
       if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
@@ -128,7 +139,8 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
+        ? { resumeFrom: input.resumeFrom } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
         ? { priorIdentity: preparedIdentity } : {}),
@@ -202,6 +214,7 @@ export function createPluginRunnerTaskOwner(input: {
         reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy,
       },
     });
+    launchIdentity = native.identity;
     launched = true;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
@@ -320,6 +333,8 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
+    get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
