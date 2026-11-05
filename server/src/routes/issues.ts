@@ -12,7 +12,7 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { issueSummariesQuerySchema, type IssueBlockerAttention, type IssueSummary } from "@paperclipai/shared";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
@@ -8418,16 +8418,26 @@ export function issueRoutes(
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
-    const summaries: IssueSummary[] = visible.map((row) => ({
-      id: row.id,
-      companyId: row.companyId,
-      title: row.title,
-      identifier: row.identifier,
-      status: row.status as IssueSummary["status"],
-      displayStatus: row.displayStatus,
-      updatedAt: row.updatedAt,
-      externalConversationState: row.externalConversationState,
-    }));
+    // Blocked rows carry their blocker state so every task view resolves the
+    // same glyph (covered → "in queue") as the task pane. At most five IDs.
+    const blockedRows = visible.filter((row) => row.status === "blocked");
+    const blockerAttention = blockedRows.length > 0
+      ? await svc.listBlockerAttention(companyId, blockedRows)
+      : new Map<string, IssueBlockerAttention>();
+    const summaries: IssueSummary[] = visible.map((row) => {
+      const attention = blockerAttention.get(row.id);
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        title: row.title,
+        identifier: row.identifier,
+        status: row.status as IssueSummary["status"],
+        displayStatus: row.displayStatus,
+        updatedAt: row.updatedAt,
+        externalConversationState: row.externalConversationState,
+        ...(attention ? { blockerAttention: attention } : {}),
+      };
+    });
     res.setHeader("Cache-Control", "private, no-store");
     res.json(summaries);
   });

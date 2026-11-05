@@ -22,6 +22,7 @@ import { Flyout, FlyoutContent, FlyoutTrigger, FlyoutAppearanceProvider } from "
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -41,7 +42,7 @@ function ProjectRecent({ project }: { project: Project }) {
   const [expanded, setExpanded] = useState(false);
   const { data: tasks, isPending, error } = useQuery({
     queryKey: [...queryKeys.issues.listByProject(project.companyId, project.id), "coordinator-recents"],
-    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "index", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
+    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "rows", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
     enabled: expanded,
   });
   return <div>
@@ -54,7 +55,7 @@ function ProjectRecent({ project }: { project: Project }) {
     </div>
     {expanded && <div className="ml-5 border-l border-border pl-1">
       {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">Loading tasks…</p> : error ? <p className="px-3 py-2 text-xs text-muted-foreground">Couldn’t load tasks.</p> : tasks?.length ? tasks.map(task =>
-        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon status={task.status} displayStatus={task.displayStatus} />} />)
+        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon {...taskStatusIconProps(task)} />} />)
         : <p className="px-3 py-2 text-xs text-muted-foreground">No tasks yet.</p>}
     </div>}
   </div>;
@@ -148,7 +149,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label="Recents" tabIndex={0}>
         {recents.map(item => item.kind === "task"
-          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon status={item.task.status} displayStatus={item.task.displayStatus} externalConversationState={item.task.externalConversationState} />} />
+          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}

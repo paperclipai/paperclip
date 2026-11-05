@@ -9,6 +9,7 @@ import { Link } from "@/lib/router";
 import { StatusIcon } from "@/components/StatusIcon";
 import { CoordinatorRelativeTime } from "./CoordinatorRelativeTime";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Presentation-only memory. It contains no task text or authority, and prevents
 // revisiting a conversation from replaying its task-creation celebration.
@@ -125,7 +126,7 @@ export function CoordinatorCreatedTaskLink({ task, createdAt }: {
   task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] };
 }) {
   return <Link to={`/issues/${task.identifier ?? task.issueId}`} className="coordinator-created-task">
-    {task.status ? <StatusIcon status={task.status} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
+    {task.status ? <StatusIcon {...taskStatusIconProps({ ...task, status: task.status })} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium">{task.title}</span>
       <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{task.identifier ?? task.issueId}</span> · Created</span>

@@ -4,7 +4,7 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
-  agents, chatConversations, chatEndpoints, issues, toolApplications, toolConnections,
+  agents, chatConversations, chatEndpoints, heartbeatRuns, issueRelations, issues, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
@@ -109,5 +109,23 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const active = (await read()).body[0];
     expect(active.externalConversationState).toBe("active");
     expect(active.updatedAt).toBe(waiting.updatedAt);
+  });
+
+  it("projects the covered-blocker state so every task view picks the same queued glyph (BUG-07)", async () => {
+    const f = await fixture();
+    const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Builder", role: "engineer", adapterType: "process" }).returning();
+    const [parent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Parent", status: "blocked" }).returning();
+    const [child] = await ctx.db.insert(issues).values({
+      companyId: f.companyId, title: "Running child", identifier: "SUM-9", status: "todo", parentId: parent!.id, assigneeAgentId: agent!.id,
+    }).returning();
+    await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: child!.id, relatedIssueId: parent!.id, type: "blocks" });
+    const runId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent!.id, status: "running", contextSnapshot: { issueId: child!.id } });
+    await ctx.db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, child!.id));
+
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: `${parent!.id},${f.rows[0]!.id}` }).expect(200);
+    expect(res.body[0].blockerAttention).toMatchObject({ state: "covered", reason: "active_child", sampleBlockerIdentifier: "SUM-9" });
+    // Unblocked tasks keep the bounded summary shape.
+    expect(res.body[1]).not.toHaveProperty("blockerAttention");
   });
 });
