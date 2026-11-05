@@ -196,17 +196,22 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
   };
 }
 
+export type TransactionBoundHostCallback<K extends keyof WakeQueueHost> = (
+  tx: Db,
+  input: Parameters<WakeQueueHost[K]>[0],
+) => ReturnType<WakeQueueHost[K]>;
+
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: TransactionBoundHostCallback<"resolveResponsibleUserId">;
+  getRoutineEnv: TransactionBoundHostCallback<"getRoutineEnv">;
+  resolveSessionBeforeForWakeup: TransactionBoundHostCallback<"resolveSessionBeforeForWakeup">;
 };
 
-function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+function buildHost(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   return {
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+    resolveResponsibleUserId: (input) => deps.resolveResponsibleUserId(tx, input),
+    getRoutineEnv: (input) => deps.getRoutineEnv(tx, input),
+    resolveSessionBeforeForWakeup: (input) => deps.resolveSessionBeforeForWakeup(tx, input),
   };
 }
 

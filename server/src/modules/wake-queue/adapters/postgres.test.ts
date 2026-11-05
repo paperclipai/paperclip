@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/exter
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1166,6 +1166,100 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow?.executionRunId).toBe(retryRunId);
     expect(issueRow?.checkoutRunId).toBeNull();
   });
+
+  it("binds host callbacks to the release transaction so concurrent releases complete on a bounded pool", async () => {
+    const poolSize = 3;
+    const boundedDb = createDb(tempDb!.connectionString, { maxConnections: poolSize });
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const releasesToRun: Array<{ issueId: string; runId: string }> = [];
+    for (let index = 0; index < poolSize * 3; index += 1) {
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+      releasesToRun.push({ issueId, runId });
+    }
+
+    let concurrentCallbacks = 0;
+    let releaseFirstWave!: () => void;
+    let rejectFirstWave!: (error: Error) => void;
+    const firstWave = new Promise<void>((resolve, reject) => {
+      releaseFirstWave = resolve;
+      rejectFirstWave = reject;
+    });
+    void firstWave.catch(() => undefined);
+    const gateTimeout = setTimeout(() => rejectFirstWave(new Error("release callbacks did not overlap")), 5_000);
+
+    const assertOnReleaseTransaction = async (executor: Db) => {
+      const rows = await executor.execute(sql`select txid_current_if_assigned() as xid`);
+      expect((rows as unknown as Array<{ xid: string | null }>)[0]?.xid).not.toBeNull();
+    };
+    const calls: string[] = [];
+    const deps: WakeQueuePostgresAdapterDeps = {
+      resolveResponsibleUserId: async (tx, input) => {
+        await assertOnReleaseTransaction(tx);
+        calls.push("resolveResponsibleUserId");
+        const [company] = await tx
+          .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+          .from(companies)
+          .where(eq(companies.id, input.companyId));
+        return company?.defaultResponsibleUserId ?? null;
+      },
+      getRoutineEnv: async (tx) => {
+        concurrentCallbacks += 1;
+        if (concurrentCallbacks === poolSize) releaseFirstWave();
+        await firstWave;
+        await assertOnReleaseTransaction(tx);
+        calls.push("getRoutineEnv");
+        return { routineId: null, env: null, responsibleUserId: null };
+      },
+      resolveSessionBeforeForWakeup: async (tx, input) => {
+        await assertOnReleaseTransaction(tx);
+        calls.push("resolveSessionBeforeForWakeup");
+        const [agent] = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)));
+        return agent ? null : null;
+      },
+    };
+
+    const adapter = createPostgresWakeQueueAdapter(boundedDb, deps);
+    const releases = releasesToRun.map(({ issueId, runId }) =>
+      adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
+        const routineEnvContext = await ports.host.getRoutineEnv({ companyId, issue: locked.primaryIssue });
+        await ports.host.resolveSessionBeforeForWakeup({ companyId, agentId, taskKey: issueId });
+        const responsibleUserId = await ports.host.resolveResponsibleUserId({
+          companyId,
+          contextSnapshot: { issueId },
+          issue: locked.primaryIssue,
+          routineEnvContext,
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          source: "automation",
+          triggerDetail: "system",
+          existingRunResponsibleUserId: null,
+        });
+        expect(responsibleUserId).toBe("responsible-user");
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      }),
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("concurrent releases did not finish on a bounded pool")), 15_000);
+    });
+    try {
+      const results = await Promise.race([Promise.all(releases), deadline]);
+      expect(results).toHaveLength(releasesToRun.length);
+      await expect(Promise.race([boundedDb.execute(sql`select 1`), deadline])).resolves.toBeDefined();
+    } finally {
+      clearTimeout(timer);
+      clearTimeout(gateTimeout);
+      await boundedDb.$client.end({ timeout: 0 });
+    }
+    expect(concurrentCallbacks).toBeGreaterThanOrEqual(poolSize);
+    expect(calls.filter((call) => call === "resolveSessionBeforeForWakeup")).toHaveLength(releasesToRun.length);
+  }, 30_000);
 
   // The admission half opens no transaction of its own: `heartbeat.ts` still
   // owns it. These tests drive the admission writer directly against a
