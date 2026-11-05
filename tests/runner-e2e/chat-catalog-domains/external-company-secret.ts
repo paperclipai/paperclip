@@ -54,7 +54,8 @@ export function companyRequestedEnvironmentName(text:string):string|false|undefi
  const unique=[...new Set(names)];return unique.length>1?false:unique[0];
 }
 export function companyOperatorBindingRequested(text:string){
- if(/\b(?:have you|did you)\b[^?]*\b(?:bound|configured)\b/i.test(text))return true;
+ const question=text.match(/\b(?:have you|did you)\b[^?\n]*/i)?.[0];
+ if(question&&(/\bbound\b/i.test(question)||/\bconfigured\b[^?\n]*\b(?:reference|binding|environment)\b/i.test(question)))return true;
  return text.split(/[.!;\n]+|\b(?:then|and)\b/i).some(clause=>/^\s*(?:please\s+)?(?:bind|configure|add|assign)\b[^.!;\n]*\b(?:reference|secret)\b[^.!;\n]*\bMorgan\b/i.test(clause));
 }
 export function companySecretFollowup(body:string,savedKey:string){
