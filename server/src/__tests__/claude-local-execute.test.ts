@@ -373,6 +373,46 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it.skipIf(process.platform !== "win32")("retries a failed Windows resume only after its descendant stops", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-win-retry-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      initialSessionIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    });
+    const scriptPath = path.join(root, "fake-claude.cjs");
+    const cmdPath = `${commandPath}.cmd`;
+    await fs.writeFile(cmdPath, `@"${process.execPath}" "${scriptPath}" %*\r\n`);
+    await fs.writeFile(scriptPath, `
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+if (process.argv.includes('--version')) { console.log('2.1.286 (Claude Code)'); process.exit(0); }
+fs.readFileSync(0, 'utf8');
+const capture = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+if (process.argv.includes('--resume')) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(capture, String(child.pid));
+  console.log(JSON.stringify({type:'result', is_error:true, result:'No conversation found with session ID'}));
+  setTimeout(() => process.exit(1), 100);
+} else {
+  const pid = Number(fs.readFileSync(capture, 'utf8'));
+  let alive = true; try { process.kill(pid, 0); } catch { alive = false; }
+  fs.writeFileSync(capture, alive ? 'overlap' : 'stopped');
+  console.log(JSON.stringify({type:'result', session_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', result:'done'}));
+}
+`);
+    try {
+      const result = await execute({
+        runId: "win-resume-retry", agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: cmdPath, cwd: workspace, model: "claude-sonnet-4-5", env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Do work." },
+        context: {}, onLog: async () => {},
+      });
+      expect(result.exitCode, JSON.stringify(result)).toBe(0);
+      expect(await fs.readFile(capturePath, "utf8")).toBe("stopped");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
   it("passes real assignment markdown and ordered current events once through the CLI", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-context-owner-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);

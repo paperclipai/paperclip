@@ -1019,6 +1019,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
+        windowsProcessTreeGuard: Boolean(resumeSessionId),
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
       localProcessSandbox,
@@ -1413,7 +1414,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
-      !(stoppedAfterTerminalResult && !executionTargetIsRemote && process.platform === "win32") &&
+      !(!executionTargetIsRemote && process.platform === "win32" && initial.proc.processTreeStopped !== true) &&
       ((initial.proc.exitCode ?? 0) !== 0 ||
         (stoppedAfterTerminalResult &&
           !executionTargetIsRemote &&

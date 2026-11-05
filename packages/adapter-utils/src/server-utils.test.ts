@@ -694,6 +694,58 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it.skipIf(process.platform !== "win32")(
+    "confirms a Windows process tree has stopped before returning a failed terminal result",
+    async () => {
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(`descendant:${child.pid}\\n`);",
+        "process.stdout.write(`${JSON.stringify({ type: 'result', is_error: true })}\\n`);",
+        "setTimeout(() => process.exit(1), 100);",
+      ].join(' ')], {
+        cwd: process.cwd(), env: {}, timeoutSec: 15, graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: { graceMs: 500, windowsProcessTreeGuard: true, hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"') },
+      });
+      const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(result.exitCode).toBe(1);
+        expect(result.processTreeStopped).toBe(true);
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (Number.isInteger(pid) && isPidAlive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }, 30_000,
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "does not claim a stopped process tree when the supervisor is killed before its receipt",
+    async () => {
+      let supervisorPid = 0;
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(`descendant:${child.pid}\\n`);",
+        "setInterval(() => {}, 1000);",
+      ].join(' ')], {
+        cwd: process.cwd(), env: {}, timeoutSec: 10, graceSec: 1,
+        onLog: async (_stream, chunk) => { if (chunk.includes('descendant:')) process.kill(supervisorPid, "SIGKILL"); },
+        onSpawn: async ({ pid }) => { supervisorPid = pid; },
+        terminalResultCleanup: { graceMs: 100, windowsProcessTreeGuard: true, hasTerminalResult: () => false },
+      });
+      const pid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(result.processTreeStopped).toBe(false);
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (Number.isInteger(pid) && isPidAlive(pid)) process.kill(pid, "SIGKILL");
+      }
+    }, 30_000,
+  );
+
   it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {
