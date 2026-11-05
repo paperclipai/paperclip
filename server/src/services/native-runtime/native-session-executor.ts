@@ -1931,6 +1931,7 @@ class SessionAuthorityEpoch {
 }
 
 const sessionToolAuthorityEpochs = new Map<string, SessionAuthorityEpoch>();
+const sessionHarnessBackupOwners = new WeakMap<SessionAuthorityEpoch, Awaited<ReturnType<typeof nativeHarnessBackupOwner>>>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
@@ -13741,6 +13742,11 @@ async function createRunnerdBackendWithinSessionClaim(
     return { ...backend, descriptor: () => backend.descriptor(), openSession: input => backend.openSession(input),
       recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options), bindManagedSession: session => session };
   }
+  if (remoteTarget && input.controllerPersistence && durableNativeHarnessStorage()) {
+    sessionHarnessBackupOwners.set(authorityEpoch, await nativeHarnessBackupOwner(input.db, {
+      ...input.execution.binding, bootId: input.controllerPersistence.bootId,
+    }));
+  }
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
@@ -14594,10 +14600,9 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return;
     const durableStorage = durableNativeHarnessStorage();
-    if (durableStorage && !input.controllerPersistence) throw new Error("native_harness_storage_owner_missing");
-    const backupOwner = durableStorage ? await nativeHarnessBackupOwner(input.db, { ...input.execution.binding,
-      runId: sessionToolAuthorityEpochs.get(sessionScopeId)?.runId ?? input.execution.binding.runId,
-      bootId: input.controllerPersistence!.bootId }) : null;
+    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
+    const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
+    if (durableStorage && !backupOwner) throw new Error("native_harness_storage_owner_missing");
     // Transport release also runs when provider bootstrap failed. In that case
     // runnerd has no durable provider identity (and may not have created the
     // provider persistence directory at all), so attempting a failover backup
