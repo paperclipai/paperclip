@@ -602,7 +602,7 @@ describe("provider-neutral events", () => {
       notFinite: Number.POSITIVE_INFINITY,
       fn: () => undefined,
     })!;
-    expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(17_000);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(16_000);
     expect(Object.keys(bounded.wide as object)).toHaveLength(64);
     expect((bounded.long as string).length).toBe(4_000);
     expect(bounded).not.toHaveProperty("notFinite");
@@ -610,6 +610,28 @@ describe("provider-neutral events", () => {
     expect(JSON.stringify(bounded.deep)).not.toContain("leaf");
     expect(boundedAcpMeta([1, 2])).toBeUndefined();
     expect(boundedAcpMeta({})).toBeUndefined();
+  });
+
+  it("charges every retained container, separator and escaped byte against the ACP _meta budget", () => {
+    let tree: unknown = [];
+    for (let level = 0; level < 3; level += 1) tree = Array.from({ length: 64 }, () => tree);
+    const nested = boundedAcpMeta({ a: tree })!;
+    expect(Buffer.byteLength(JSON.stringify(nested))).toBeLessThanOrEqual(16_000);
+    const escaped = boundedAcpMeta({ nulls: "\u0000".repeat(4_000), ok: "kept?" })!;
+    expect(Buffer.byteLength(JSON.stringify(escaped))).toBeLessThanOrEqual(16_000);
+    expect(escaped).not.toHaveProperty("nulls");
+    expect(escaped.ok).toBe("kept?");
+  });
+
+  it("inspects a bounded number of keys on a very wide ACP _meta object", () => {
+    let reads = 0;
+    const wide = new Proxy(
+      Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [`__proto__x${index}`.replace("__proto__x", "k"), index])),
+      { get(target, key, receiver) { reads += 1; return Reflect.get(target, key, receiver); } },
+    );
+    const bounded = boundedAcpMeta({ wide })!;
+    expect(Object.keys(bounded.wide as object)).toHaveLength(64);
+    expect(reads).toBeLessThanOrEqual(64);
   });
 
   it("preserves ACPX identity across title-less progress and completion updates", () => {

@@ -1761,7 +1761,13 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   );
 }
 
+/* Reasoning section prose is supporting text under its provider headline. */
+.paperclip-markdown.task-chat-reasoning-section-body {
+  color: inherit;
+}
+
 .task-chat-expanded-line-wrap,
+.task-chat-reasoning-headline,
 .paperclip-markdown.task-chat-reasoning-markdown,
 .paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
   overflow-wrap: anywhere;
