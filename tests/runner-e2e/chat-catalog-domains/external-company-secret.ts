@@ -1,5 +1,6 @@
 import {isDeepStrictEqual} from "node:util";
 import {visibleSecretSettingsURL} from "./external-secret-route.js";
+import {companySecretMenuDirections,companySecretMenuURL} from "./external-company-secret-menu.js";
 import { chatCatalogSavedSecretNameIntent, chatCatalogNativePhaseRemainingBudget, chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { randomBytes } from "node:crypto";
 import { expect, type Page } from "@playwright/test";
@@ -65,6 +66,7 @@ export function companySecretFollowup(body:string,savedKey:string){
 }
 export async function companySecretSetupURL(page:Page,reply:{body:string;commentId?:string},origin:string,prefix:string,timeout:number){
  if(!deploymentSecretGuidance(reply.body))return;
+ if(companySecretMenuDirections(reply.body)&&!reply.body.includes(`/${prefix}/company/settings/secrets`))return companySecretMenuURL(page,reply,origin,prefix,timeout);
  return visibleSecretSettingsURL(page,reply,origin,prefix,timeout);
 }
 export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBinding,status:"pending"|"answered"="pending",savedKey?:string){
@@ -163,7 +165,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
    ...(o.state.initialQuestionSavedSecretName===true?{companySavedSecretNameAnswer:{questionId:String(o.state.initialQuestionFieldId),payloadHash:String(o.state.initialQuestionPayloadHash),value:String(o.secrets.find(row=>row.id===o.state.secretId)?.key??""),secretId:String(o.state.secretId)}}:{}),
    ...(o.state.initialQuestionEnvironmentName==="DEPLOYMENT_API_KEY"?{companyEnvironmentNameAnswer:{questionId:String(o.state.initialQuestionFieldId),payloadHash:String(o.state.initialQuestionPayloadHash),value:"DEPLOYMENT_API_KEY" as const}}:{})};
  },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v9",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
- sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-secret-route.ts","chat-catalog-contract.ts","chat-catalog-flow.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
+ sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-secret-route.ts","chat-catalog-domains/external-company-secret-menu.ts","chat-catalog-contract.ts","chat-catalog-flow.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   const deadline=chatCatalogOriginalPhaseDeadline(ctx),remaining=()=>remainingIdentityObservationBudget(ctx);
   await waitForReply(ctx,deadline);remaining();
