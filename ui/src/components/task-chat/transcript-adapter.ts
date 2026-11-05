@@ -1864,11 +1864,21 @@ function isCompactionDivider(item: TaskChatItem): boolean {
 
 /** Real provider progress after a retry notice shows the retry succeeded. */
 function statusNoticeResolvesRetry(item: TaskChatItem): boolean {
-  if (item.kind === "usage" || item.kind === "status") return false;
-  if (item.kind === "protocol" && item.surface === "provider_activity") {
-    return !isStatusNotice(item);
+  // Only new provider work proves recovery. Run results, terminal records,
+  // markers and usage also appear when a user stops a reconnecting run.
+  switch (item.kind) {
+    case "message":
+      return item.author === "agent" && item.text.trim().length > 0;
+    case "thinking":
+      return item.lines.some((line) => line.trim().length > 0);
+    case "tool":
+      return true;
+    case "protocol":
+      if (item.surface === "provider_activity") return !isStatusNotice(item);
+      return item.surface === "workspace_change" || item.surface === "workspace_file";
+    default:
+      return false;
   }
-  return true;
 }
 
 /** Segment parsed transcript rows at assistant/request boundaries. */
