@@ -14,7 +14,8 @@ the agent's AI connection, so Core refuses it in the same way. The run fails as
 `configuration_incomplete` with reason `ai_connection_required`. The task is
 blocked with a notice that names the fix: choose an AI connection, or switch to
 an isolated Runner home. Agent verification applies the same rule before it
-resolves the probe target, so it acquires no lease. A setup probe without a
+resolves the probe target, so it acquires no lease. The agent Test route also
+checks before it resolves secrets or allocates a test target. A setup probe without a
 managed AI connection, or with a preconfigured home, fails the
 `ai_connection_required` check and calls no task operation. Verification then
 waits for the configuration to change.
