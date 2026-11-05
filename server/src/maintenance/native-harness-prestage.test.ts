@@ -3,20 +3,59 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const mocks = vi.hoisted(() => ({ close: vi.fn(async () => {}), prestage: vi.fn(), key: vi.fn(async () => {}) }));
+const mocks = vi.hoisted(() => ({ close: vi.fn(async () => {}), prestage: vi.fn(), key: vi.fn(async () => {}), obligations: vi.fn(async () => false) }));
 vi.mock("@paperclipai/db", () => ({ createDb: () => ({}), closeRegisteredClients: mocks.close }));
 vi.mock("../config.js", () => ({ loadConfig: () => ({ secretsMasterKeyFilePath: "/fixture/key" }) }));
 vi.mock("../services/cloud-runtime-config.js", () => ({ cloudRuntimeConfigService: () => ({}) }));
 vi.mock("../services/cloud-runtime-config-snapshot.js", () => ({ setCloudRuntimeConfigSnapshot: () => {} }));
 vi.mock("../services/cloud-instance.js", () => ({ isCloudManagedInstance: () => false }));
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ provider: "s3" }) }));
-vi.mock("../services/native-runtime/native-harness-backup-migration.js", () => ({ prestageNativeHarnessBackups: mocks.prestage }));
+vi.mock("../services/native-runtime/native-harness-backup-migration.js", () => ({
+  prestageNativeHarnessBackups: mocks.prestage, hasLocalNativeHarnessObligations: mocks.obligations,
+}));
 vi.mock("./native-harness-prestage-runtime.js", async importOriginal => ({
   ...await importOriginal<typeof import("./native-harness-prestage-runtime.js")>(), initializeNativeHarnessPrestageKey: mocks.key,
 }));
 
 const initialExitCode = process.exitCode;
-afterEach(() => { process.exitCode = initialExitCode; vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); mocks.close.mockClear(); });
+afterEach(() => { process.exitCode = initialExitCode; vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); mocks.close.mockClear(); mocks.obligations.mockReset().mockResolvedValue(false); });
+
+it.each([true, false])("checks unfulfilled database obligations for an empty source scan (pending: %s)", async pending => {
+  vi.stubEnv("PAPERCLIP_NATIVE_HARNESS_PRESTAGE", "true");
+  vi.stubEnv("DATABASE_URL", "postgres://fixture:fixture@localhost/fixture");
+  const counts = { inspected: 0, published: 0, current: 0, deferred: {} };
+  mocks.prestage.mockResolvedValue(counts);
+  mocks.obligations.mockResolvedValue(pending);
+  const success = vi.spyOn(console, "log").mockImplementation(() => {});
+  const failure = vi.spyOn(console, "error").mockImplementation(() => {});
+  await import("./native-harness-prestage.js");
+  expect(mocks.close).toHaveBeenCalled();
+  if (pending) {
+    expect(process.exitCode).toBe(1);
+    expect(success).not.toHaveBeenCalled();
+    expect(failure).toHaveBeenCalledOnce();
+    expect(JSON.parse(failure.mock.calls[0][0])).toEqual({ schema: "paperclip.native-harness-prestage.v1",
+      state: "blocked", failure: "native_harness_prestage_source_missing", enrollmentReady: false });
+  } else {
+    // Fresh databases and databases whose retained sources are already durable
+    // both have no unfulfilled local obligations, so an empty scan is valid.
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(failure).not.toHaveBeenCalled();
+    expect(success).toHaveBeenCalledWith(JSON.stringify({ schema: "paperclip.native-harness-prestage.v1", counts, enrollmentReady: false }));
+  }
+});
+
+it("keeps a nonempty deferred scan advisory without requiring all obligations to be copied", async () => {
+  vi.stubEnv("PAPERCLIP_NATIVE_HARNESS_PRESTAGE", "true");
+  vi.stubEnv("DATABASE_URL", "postgres://fixture:fixture@localhost/fixture");
+  const counts = { inspected: 1, published: 0, current: 0, deferred: { source_active: 1 } };
+  mocks.prestage.mockResolvedValue(counts); mocks.obligations.mockResolvedValue(true);
+  const success = vi.spyOn(console, "log").mockImplementation(() => {});
+  await import("./native-harness-prestage.js");
+  expect(mocks.obligations).not.toHaveBeenCalled();
+  expect(process.exitCode ?? 0).toBe(0);
+  expect(success).toHaveBeenCalledWith(JSON.stringify({ schema: "paperclip.native-harness-prestage.v1", counts, enrollmentReady: false }));
+});
 
 it("reports a failed deadline with real timers when the dependency holds no event-loop handle", async () => {
   const bundled = await build({
@@ -34,6 +73,7 @@ it("reports a failed deadline with real timers when the dependency holds no even
         export const isCloudManagedInstance = () => false, getStorageService = () => ({ provider: 's3' });
         export const initializeNativeHarnessPrestageKey = async () => {}, nativeHarnessPrestageDatabaseUrl = url => url;
         export const prestageNativeHarnessBackups = () => new Promise(() => {});
+        export const hasLocalNativeHarnessObligations = async () => false;
       ` }));
     } }],
   });

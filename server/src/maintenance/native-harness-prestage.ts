@@ -4,7 +4,7 @@ import { cloudRuntimeConfigService } from "../services/cloud-runtime-config.js";
 import { setCloudRuntimeConfigSnapshot } from "../services/cloud-runtime-config-snapshot.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getStorageService } from "../storage/index.js";
-import { prestageNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
+import { hasLocalNativeHarnessObligations, prestageNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
 import { initializeNativeHarnessPrestageKey, nativeHarnessPrestageDatabaseUrl } from "./native-harness-prestage-runtime.js";
 
 // Operator-only finite preparation. No task drain, scheduler, app routes,
@@ -49,6 +49,11 @@ try {
   if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
   const counts = await prestageNativeHarnessBackups(db, { storage, signal: cancellation.signal });
   cancellation.signal.throwIfAborted();
+  if (counts.inspected === 0) {
+    const obligations = await hasLocalNativeHarnessObligations(db);
+    cancellation.signal.throwIfAborted();
+    if (obligations) throw new Error("native_harness_prestage_source_missing");
+  }
   console.log(JSON.stringify({ schema: "paperclip.native-harness-prestage.v1", counts, enrollmentReady: false }));
 } catch (error) {
   reportBlocked(error);
