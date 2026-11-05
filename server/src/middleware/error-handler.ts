@@ -16,6 +16,8 @@ import {
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isEndedDbPoolError } from "../database-retry.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 
 export interface ErrorContext {
   error: {
@@ -135,12 +137,27 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+/**
+ * The tool gateway rejects requests with its own error type. A route that lets
+ * one reach this handler (such as approving a tool review from a task card)
+ * would otherwise turn an expected rejection, for example a 409 asking for a
+ * new review, into a 500 crash report. Gateway server failures stay on the
+ * crash path so their provider text is not exposed.
+ */
+function clientToolGatewayErrorAsHttpError(err: unknown): unknown {
+  if (!(err instanceof ToolGatewayHttpError) || err.status < 400 || err.status >= 500) return err;
+  const mapped = new HttpError(err.status, err.message, { ...err.details, code: err.reasonCode });
+  mapped.stack = err.stack;
+  return mapped;
+}
+
 export function errorHandler(
-  err: unknown,
+  thrown: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  const err = clientToolGatewayErrorAsHttpError(thrown);
   if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
     const details =
@@ -274,6 +291,18 @@ export function errorHandler(
   ) {
     if (!res.headersSent) res.status(499);
     res.end();
+    return;
+  }
+
+  // Saturated object storage sheds retryable reads (run logs, provider
+  // traces). That is load, not a server fault: ask the client to retry.
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
+    } else {
+      res.end();
+    }
     return;
   }
 
