@@ -169,6 +169,8 @@ type InteractionActor = {
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
+  /** Set only by resolveConfirmationFromComment for its verified reply author. */
+  relayedHumanUserId?: string | null;
 };
 
 async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; companyId: string }, actor: InteractionActor) {
@@ -472,6 +474,7 @@ function resolverActor(actor: InteractionActor) {
       type: "agent" as const,
       agentId: actor.agentId,
       runId: actor.runId,
+      relayedHumanUserId: actor.relayedHumanUserId ?? null,
     };
   }
   if (actor.userId) return { type: "user" as const, userId: actor.userId };

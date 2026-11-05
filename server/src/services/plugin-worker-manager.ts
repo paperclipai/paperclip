@@ -120,6 +120,14 @@ const MAX_CONSECUTIVE_CRASHES = 10;
 /** Time window in which crashes are considered consecutive (10 minutes). */
 const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 
+/**
+ * Maximum fail-closed retirements within {@link CRASH_WINDOW_MS} before the host
+ * stops replacing the worker. Unlike the crash counter, a successful restart does
+ * not reset this count, so a worker that initializes cleanly and is then retired
+ * again cannot restart in an unbounded loop.
+ */
+const MAX_CONSECUTIVE_RETIREMENTS = 5;
+
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
@@ -429,6 +437,16 @@ export interface WorkerStartOptions {
   rpcTimeoutMs?: number;
   /** Whether to auto-restart on crash. Defaults to true. */
   autoRestart?: boolean;
+  /**
+   * Crash-recovery tuning. A test shortens the backoff and the retirement bound
+   * to exercise replacement without long waits.
+   */
+  crashRecovery?: {
+    /** The first restart delay, in milliseconds. Later attempts double it. */
+    minBackoffMs?: number;
+    /** Max fail-closed retirements in the crash window before restarts stop. */
+    maxConsecutiveRetirements?: number;
+  };
   /** Node.js execArgv passed to the child process. */
   execArgv?: string[];
   /** Environment variables passed to the child process. */
@@ -1084,6 +1102,14 @@ export function createPluginWorkerHandle(
   let backoffTimer: ReturnType<typeof setTimeout> | null = null;
   let nextRestartAt: number | null = null;
 
+  // Fail-closed retirement tracking. A retirement kills the current process
+  // because the host cannot prove one of its routes is gone. The exit that
+  // follows replaces the process with a fresh one, bounded by
+  // `maxConsecutiveRetirements` within the crash window.
+  let retirementPending = false;
+  let consecutiveRetirements = 0;
+  let lastRetirementAt: number | null = null;
+
   // Track open stream channels so we can emit synthetic close on crash.
   // Maps channel → companyId.
   const openStreamChannels = new Map<string, string>();
@@ -1093,6 +1119,9 @@ export function createPluginWorkerHandle(
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
+  const minBackoffMs = options.crashRecovery?.minBackoffMs ?? MIN_BACKOFF_MS;
+  const maxConsecutiveRetirements =
+    options.crashRecovery?.maxConsecutiveRetirements ?? MAX_CONSECUTIVE_RETIREMENTS;
 
   // -----------------------------------------------------------------------
   // Status management
@@ -1637,7 +1666,7 @@ export function createPluginWorkerHandle(
         { pluginId },
         "login pseudo-terminal close not acknowledged; retiring worker",
       );
-      void killProcess();
+      retireWorkerProcess();
     }
   }
 
@@ -2128,7 +2157,7 @@ export function createPluginWorkerHandle(
   // overflow. The host never logs the raw frame content on a violation.
   function retireDuplexWorkerOnViolation(reason: string): void {
     log.error({ pluginId }, `duplex channel ownership violation (${reason}); retiring worker`);
-    void killProcess();
+    retireWorkerProcess();
   }
 
   // Install a tombstone for a bound pair atomically with the removal of its live
@@ -2235,7 +2264,7 @@ export function createPluginWorkerHandle(
         { pluginId },
         "duplex channel close not acknowledged; retiring worker",
       );
-      void killProcess();
+      retireWorkerProcess();
     }
   }
 
@@ -3103,6 +3132,8 @@ export function createPluginWorkerHandle(
     signal: NodeJS.Signals | null,
   ): void {
     const wasIntentional = intentionalStop;
+    const wasRetired = retirementPending;
+    retirementPending = false;
 
     // Clean up readline interfaces
     if (readline) {
@@ -3158,9 +3189,15 @@ export function createPluginWorkerHandle(
     emitter.emit("exit", { pluginId, code, signal });
 
     if (wasIntentional) {
-      // Graceful stop — status is already "stopping" or will be set to "stopped"
+      // Graceful stop — status is already "stopping" or will be set to "stopped".
+      // A deliberate stop that races a retirement stays stopped.
       setStatus("stopped");
       log.info({ code, signal }, "worker process stopped");
+      return;
+    }
+
+    if (wasRetired) {
+      handleRetiredProcessExit(code, signal);
       return;
     }
 
@@ -3187,11 +3224,49 @@ export function createPluginWorkerHandle(
     emitter.emit("crash", { pluginId, code, signal, willRestart });
 
     if (willRestart) {
-      scheduleRestart();
+      scheduleRestart(consecutiveCrashes);
     } else {
       log.error(
         { consecutiveCrashes, maxCrashes: MAX_CONSECUTIVE_CRASHES },
         "max consecutive crashes reached, not restarting",
+      );
+    }
+  }
+
+  // The retired process is gone, together with every route, reservation, and
+  // tombstone it held (the exit path above already settled them as failed).
+  // Replace it with a fresh process through the same backoff timer a crash uses.
+  // The fresh process starts with empty route state, and host route ids are
+  // monotonic, so no retired route can resolve against it. The retirement count
+  // survives a successful restart, so repeated retirements stop restarting after
+  // `maxConsecutiveRetirements` within the crash window.
+  function handleRetiredProcessExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    totalCrashes++;
+    const now = Date.now();
+    if (lastRetirementAt !== null && now - lastRetirementAt > CRASH_WINDOW_MS) {
+      consecutiveRetirements = 0;
+    }
+    consecutiveRetirements++;
+    lastRetirementAt = now;
+
+    const willRestart = autoRestart && consecutiveRetirements <= maxConsecutiveRetirements;
+    log.error(
+      { code, signal, consecutiveRetirements, totalCrashes, willRestart },
+      "retired worker process exited",
+    );
+
+    setStatus("crashed");
+    emitter.emit("crash", { pluginId, code, signal, willRestart });
+
+    if (willRestart) {
+      scheduleRestart(consecutiveRetirements);
+    } else {
+      log.error(
+        { consecutiveRetirements, maxRetirements: maxConsecutiveRetirements },
+        "max consecutive worker retirements reached, not restarting",
       );
     }
   }
@@ -3218,23 +3293,23 @@ export function createPluginWorkerHandle(
   // Crash recovery with exponential backoff
   // -----------------------------------------------------------------------
 
-  function computeBackoffMs(): number {
-    // Exponential backoff: MIN_BACKOFF * MULTIPLIER^(consecutiveCrashes - 1)
+  function computeBackoffMs(attempt: number): number {
+    // Exponential backoff: MIN_BACKOFF * MULTIPLIER^(attempt - 1)
     const delay =
-      MIN_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveCrashes - 1);
+      minBackoffMs * Math.pow(BACKOFF_MULTIPLIER, Math.max(attempt, 1) - 1);
     // Add jitter: ±25%
     const jitter = delay * 0.25 * (Math.random() * 2 - 1);
     return Math.min(Math.round(delay + jitter), MAX_BACKOFF_MS);
   }
 
-  function scheduleRestart(): void {
-    const delay = computeBackoffMs();
+  function scheduleRestart(attempt: number): void {
+    const delay = computeBackoffMs(attempt);
     nextRestartAt = Date.now() + delay;
 
     setStatus("backoff");
 
     log.info(
-      { delayMs: delay, consecutiveCrashes },
+      { delayMs: delay, attempt },
       "scheduling restart with backoff",
     );
 
@@ -3244,7 +3319,7 @@ export function createPluginWorkerHandle(
       // A temporary idle hold must not consume the crash-recovery attempt.
       // Keep the bounded backoff until admission reopens.
       if (readTaskDrain(new Date())?.ownerId) {
-        scheduleRestart();
+        scheduleRestart(attempt);
         return;
       }
       try {
@@ -3276,6 +3351,7 @@ export function createPluginWorkerHandle(
     }
 
     intentionalStop = false;
+    retirementPending = false;
     setStatus("starting");
     stderrExcerpt = "";
 
@@ -3431,6 +3507,20 @@ export function createPluginWorkerHandle(
         resolve();
       }
     });
+  }
+
+  // Retire the current process on a fail-closed route violation. Unlike
+  // `killProcess`, this is not a deliberate stop: the exit replaces the process
+  // with a fresh one. A deliberate stop already in progress wins, so a plugin
+  // disable, upgrade, or shutdown still ends stopped.
+  function retireWorkerProcess(): void {
+    if (!childProcess) return;
+    if (!intentionalStop) retirementPending = true;
+    try {
+      childProcess.kill("SIGKILL");
+    } catch {
+      // Process may already be dead; its exit event still runs the exit path.
+    }
   }
 
   async function killProcess(): Promise<void> {

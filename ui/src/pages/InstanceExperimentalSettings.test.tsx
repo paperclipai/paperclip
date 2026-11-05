@@ -96,6 +96,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
+    enableGoogleWorkspaceConnector: false,
     enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
@@ -241,6 +242,18 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       await flushReact();
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMemoryConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
+  it("defaults the Paperclip Google Workspace connector off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Paperclip Google Workspace connector experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGoogleWorkspaceConnector: enabled });
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
     }
   });

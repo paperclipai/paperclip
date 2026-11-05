@@ -954,14 +954,14 @@ describeEmbeddedPostgres("tool access service", () => {
     if (externalDatabaseUrl) {
       await applyPendingMigrations(externalDatabaseUrl);
       db = createDb(externalDatabaseUrl, { maxConnections: 4 });
-      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString, { maxConnections: 4 });
-    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
   }, 20_000);
 
   afterEach(async () => {

@@ -115,6 +115,7 @@ describe("instance settings service", () => {
       enableGitHubReviewBots: false,
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
+      enableGoogleWorkspaceConnector: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,

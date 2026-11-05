@@ -495,6 +495,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Google Workspace connector (Paperclip)"
+          description="Show the built-in Google Workspace connector for Gmail, Drive, and Calendar while Google verification is pending."
+          footnote="Off by default. While off, Google apps are offered through Composio and Arcade instead, and the built-in connector cannot be set up or run."
+          checked={experimentalQuery.data?.enableGoogleWorkspaceConnector === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableGoogleWorkspaceConnector: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGoogleWorkspaceConnector"
+          managed={managedKeys.enableGoogleWorkspaceConnector}
+          ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Grok Bot"
           description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
           footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
