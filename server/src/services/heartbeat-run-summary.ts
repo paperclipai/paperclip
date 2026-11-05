@@ -269,9 +269,26 @@ export function isChatOriginPublicationCandidate(contextSnapshot: unknown): bool
  * solely for the compatibility fallback selected by the resolver. Other
  * channels and item kinds remain activity, never durable reply candidates.
  */
+/**
+ * Item ids whose `<proposed_plan>` block became a completed `plan.proposed`
+ * event. Only those replies leave the plan to its Plan document.
+ */
+export function completedPlanProposalIds(rows: readonly { payload: unknown }[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const payload = record(record(record(row.payload).prpEvent).payload);
+    if (payload.status === "completed" && typeof payload.proposalId === "string") {
+      ids.add(payload.proposalId);
+    }
+  }
+  return ids;
+}
+
 export function readCompletedAssistantMessageCandidate(input: {
   seq: number;
   prpEvent: unknown;
+  /** Item ids with a recorded proposal; other replies keep their plan text. */
+  proposedItemIds?: ReadonlySet<string>;
 }): CompletedFinalAgentMessageCandidate | null {
   const prpEvent = record(input.prpEvent);
   const payload = record(prpEvent.payload);
@@ -284,10 +301,14 @@ export function readCompletedAssistantMessageCandidate(input: {
   if (payload.channel !== "final" && payload.channel !== "unknown") {
     return null;
   }
-  // A harness's `<proposed_plan>` block becomes the task's Plan document and
-  // approval card; the posted reply keeps only the surrounding prose.
+  // A harness's `<proposed_plan>` block that became a recorded proposal is the
+  // task's Plan document and approval card; that reply keeps only the
+  // surrounding prose. Without a recorded proposal the reply keeps the plan.
+  const itemId = typeof prpEvent.itemId === "string" ? prpEvent.itemId
+    : typeof payload.itemId === "string" ? payload.itemId : null;
+  const proposed = itemId !== null && input.proposedItemIds?.has(itemId) === true;
   const text = readCommentText(
-    typeof payload.text === "string" ? withoutProposedPlanBlock(payload.text) : payload.text,
+    typeof payload.text === "string" && proposed ? withoutProposedPlanBlock(payload.text) : payload.text,
   );
   if (!text) return null;
   return {

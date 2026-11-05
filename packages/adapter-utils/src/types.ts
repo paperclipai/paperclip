@@ -700,7 +700,7 @@ export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown"; itemId?: string }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown"; itemId?: string }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string; /** Delegation (subagent) execution that made this call. */ parentToolUseId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean; delta?: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }

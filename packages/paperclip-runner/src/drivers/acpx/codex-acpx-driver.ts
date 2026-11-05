@@ -57,6 +57,7 @@ import {
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
 } from "../../provider-events.js";
+import { createClaudeSubagentLineageTracker } from "../../claude-subagent-lineage.js";
 import {
   canonicalRunnerToolName,
   type RunnerToolCall,
@@ -1504,11 +1505,14 @@ class CodexAcpxSession implements HarnessSession {
       const kimiMessages = this.#agent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
       const normalizeMessage = piMessages ? piMessages.normalize : kimiMessages ? kimiMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+      const trackSubagents = this.#agent === "claude"
+        ? createClaudeSubagentLineageTracker<AcpRuntimeEvent>(activity.toolExecutionId ?? ((id) => id))
+        : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
-        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
+        this.#mapRuntimeEvent(normalizeMessage(trackSubagents(normalizeToolEvent(projected))), turnId, ++index);
       }
       const result = await turn.result;
       if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
