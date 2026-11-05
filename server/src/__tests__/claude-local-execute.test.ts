@@ -403,7 +403,7 @@ if (process.argv.includes('--resume')) {
       const result = await execute({
         runId: "win-resume-retry", agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
-        config: { engine: "cli", command: cmdPath, cwd: workspace, model: "claude-sonnet-4-5", env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Do work." },
+        config: { engine: "cli", command: cmdPath, cwd: workspace, model: "claude-sonnet-4-5", env: { CLAUDE_CONFIG_DIR: path.join(root, ".claude"), PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Do work." },
         context: {}, onLog: async () => {},
       });
       expect(result.exitCode, JSON.stringify(result)).toBe(0);

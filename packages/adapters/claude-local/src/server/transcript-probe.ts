@@ -11,7 +11,7 @@ export function resolveTranscriptConfigDir(
   const paths = platform === "win32" ? path.win32 : path.posix;
   const config = env.CLAUDE_CONFIG_DIR?.trim();
   if (config) return paths.resolve(cwd, config);
-  const home = env.HOME?.trim() || (platform === "win32" ? env.USERPROFILE?.trim() : undefined) || fallbackHome;
+  const home = (platform === "win32" ? env.USERPROFILE?.trim() : env.HOME?.trim()) || fallbackHome;
   return paths.resolve(cwd, home, ".claude");
 }
 

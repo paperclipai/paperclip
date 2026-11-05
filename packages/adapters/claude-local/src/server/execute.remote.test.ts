@@ -600,6 +600,7 @@ describe("claude remote execution", () => {
         stderr: "",
         pid: 123,
         startedAt: new Date().toISOString(),
+        processTreeStopped: true,
       })
       .mockResolvedValueOnce({
         exitCode: 0,
@@ -685,6 +686,7 @@ describe("claude remote execution", () => {
         stderr: "",
         pid: 123,
         startedAt: new Date().toISOString(),
+        processTreeStopped: true,
         terminalResultCleanup: {
           kind: "terminal_result_cleanup",
           stopped: true,
