@@ -422,6 +422,25 @@ describe("TaskChatProtocolCard", () => {
     }
   });
 
+  it("says when a change set counts more files than it lists", () => {
+    renderCard(root, {
+      id: "workspace-large",
+      kind: "protocol",
+      surface: "workspace_change",
+      changeSetId: "changes-large",
+      revision: 1,
+      source: "harness_reported",
+      complete: true,
+      files: [
+        { path: "a.ts", operation: "modify", previousPath: null, additions: 1, deletions: 0, binary: false, diff: null, diffTruncated: true },
+      ],
+      totals: { files: 40, additions: 120, deletions: 3 },
+      patchArtifactRef: null,
+    });
+    expect(container.textContent).toContain("40 files changed");
+    expect(container.querySelector('[data-testid="task-chat-workspace-change-omitted"]')?.textContent).toContain("39 more files changed.");
+  });
+
   it("lists the turn's changed files and opens each diff in place", async () => {
     renderCard(root, {
       id: "workspace",

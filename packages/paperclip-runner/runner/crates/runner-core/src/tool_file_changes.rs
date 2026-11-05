@@ -341,7 +341,7 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
         file.lines.push(line.to_owned());
     }
     let mut budget = MAX_TURN_DIFF_TOTAL_BYTES;
-    let projected: Vec<Value> = files
+    let mut projected: Vec<Value> = files
         .into_iter()
         .filter_map(|file| {
             let created = file.seen_old && file.old.is_none();
@@ -413,12 +413,28 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
                 .sum::<u64>())
         }
     };
+    let totals = json!({ "files": projected.len(), "additions": sum("additions"), "deletions": sum("deletions") });
+    // Over the entry bound, drop patch bodies (from the last file back) before
+    // dropping any file, so names and counts stay visible as long as possible.
+    let entry_len =
+        |file: &Value| serde_json::to_string(file).map_or(usize::MAX, |encoded| encoded.len() + 1);
+    let mut entries_bytes: usize = projected.iter().map(entry_len).sum();
+    for file in projected.iter_mut().rev() {
+        if entries_bytes <= MAX_TURN_ENTRIES_BYTES {
+            break;
+        }
+        if file["diff"].is_string() {
+            let before = entry_len(file);
+            file["diff"] = Value::Null;
+            file["diffTruncated"] = Value::Bool(true);
+            entries_bytes = entries_bytes - before + entry_len(file);
+        }
+    }
     let mut listed_bytes = 0usize;
     let listed: Vec<&Value> = projected
         .iter()
         .take_while(|file| {
-            listed_bytes +=
-                serde_json::to_string(file).map_or(usize::MAX, |encoded| encoded.len() + 1);
+            listed_bytes += entry_len(file);
             listed_bytes <= MAX_TURN_ENTRIES_BYTES
         })
         .collect();
@@ -428,7 +444,7 @@ pub fn codex_turn_diff_snapshot(turn_id: &str, diff: &str, cwd: Option<&str>) ->
         "revision": TURN_DIFF_REVISION.fetch_add(1, Ordering::Relaxed) + 1,
         "source": "harness_reported",
         "complete": false,
-        "totals": { "files": projected.len(), "additions": sum("additions"), "deletions": sum("deletions") },
+        "totals": totals,
         "files": listed,
         "patchArtifactRef": Value::Null,
     })
@@ -552,7 +568,12 @@ mod tests {
             .collect();
         let snapshot = codex_turn_diff_snapshot("t", &many, None);
         assert_eq!(snapshot["totals"]["files"], 2000);
-        assert!(snapshot["files"].as_array().unwrap().len() < 2000);
+        let listed = snapshot["files"].as_array().unwrap();
+        assert!(listed.len() < 2000);
+        // Patch bodies go before any file entry does.
+        assert!(listed
+            .iter()
+            .all(|file| file["diff"].is_null() && file["diffTruncated"] == true));
         assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
             "workspace.change.updated",
             &snapshot
