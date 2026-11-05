@@ -959,6 +959,14 @@ workspace finalization, and environment cleanup to settle. Model incompatibility
 usage-limit exhaustion, unknown failures, and unbound diagnostic text do not
 qualify as capacity failures.
 
+A definite `session.open` rejection whose runner classification says the
+provider cannot run the selected model (`requested_model_unsupported`,
+`grok_model_mismatch`) is a model rejection, not a startup interruption. It
+stops on its first attempt as `native_provider_model_rejected`, with no
+same-run bootstrap retry, and leaves an active board recovery action that asks
+for a supported model. Other `session.open` rejections keep the bounded
+startup retry. An indeterminate `session.open` outcome stays unclassified.
+
 ### Workspace scan failures before provider startup
 
 Workspace source preparation keeps its dedicated advisory-lock connection active
