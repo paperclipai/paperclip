@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
 import { claudeHookCanonicalEvent, codexHookPayload, codexSafetyReviewPayload } from "./governance-events.js";
+import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
 import {
   toolFileChangesFromAcpContent,
   toolFileChangesFromCodexChanges,
@@ -1418,6 +1419,9 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
   }
   if (event.type === "tool_call") {
     const status = canonicalStatus(event.status, "running");
+    const subagent = (event as AcpxSubagentAnnotations).paperclipSubagent;
+    if (subagent) return [acpxSubagentDelegationEvent(event, subagent, status, itemId)];
+    const parentToolCallId = (event as AcpxSubagentAnnotations).paperclipParentToolCallId;
     const output =
       typeof event.rawOutput === "string"
         ? event.rawOutput
@@ -1457,6 +1461,9 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       progress:
         status === "running" ? text(event.text).slice(0, 4000) || null : null,
       ...boundedOutput(output),
+      ...(parentToolCallId
+        ? { parentItemId: safeId(parentToolCallId, "acpx-item") }
+        : {}),
       ...(fileChanges ? { fileChanges } : {}),
     };
     const terminal = status !== "running";
@@ -1518,6 +1525,52 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
     ];
   }
   return [];
+}
+
+/** A Claude Agent/Task call is a delegation with one child, keyed by the call. */
+function acpxSubagentDelegationEvent(
+  event: AcpRuntimeEventShape,
+  subagent: AcpxSubagentIdentity,
+  status: ReturnType<typeof canonicalStatus>,
+  itemId: string,
+): CanonicalProviderEvent {
+  // An async subagent outlives its tool call; its own state wins.
+  const childStatus =
+    subagent.state ??
+    (status === "running"
+      ? "running"
+      : status === "completed"
+        ? "completed"
+        : status === "failed"
+          ? "failed"
+          : "interrupted");
+  return {
+    eventType:
+      childStatus === "running"
+        ? event.tag === "tool_call"
+          ? "delegation.started"
+          : "delegation.updated"
+        : "delegation.completed",
+    payload: {
+      schema: "paperclip.delegation.v1",
+      delegationId: itemId,
+      action: "spawn",
+      status: childStatus,
+      children: [
+        {
+          childId: itemId,
+          role: subagent.role,
+          model: subagent.model,
+          status: childStatus,
+          summary: subagent.description,
+          activitySummary: childStatus === "running" ? subagent.progress : null,
+          prompt: subagent.prompt,
+          result: childStatus === "running" ? null : subagent.result,
+        },
+      ],
+    },
+    itemId,
+  };
 }
 
 export function canonicalOpenCodeDisplayToolName(

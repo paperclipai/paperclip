@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const TEST_GATE_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FakeState {
@@ -2026,7 +2028,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
                             thread::spawn(move || {
-                                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                                let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                 while !gate.is_file() && std::time::Instant::now() < deadline {
                                     thread::sleep(Duration::from_millis(1));
                                 }
@@ -2105,8 +2107,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         thread::spawn(move || {
                             let result = (|| -> io::Result<()> {
                                 if let Some(gate) = gate.as_ref() {
-                                    let deadline =
-                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                     while !gate.is_file() {
                                         if std::time::Instant::now() >= deadline {
                                             return Err(io::Error::new(

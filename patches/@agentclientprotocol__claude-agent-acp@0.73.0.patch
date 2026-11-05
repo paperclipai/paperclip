@@ -1,8 +1,8 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a50..aa6c7b6 100644
+index 0214a50..73f0c16 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2490,8 +2490,59 @@ export class ClaudeAcpAgent {
+@@ -2490,11 +2490,88 @@ export class ClaudeAcpAgent {
                                  break;
                              }
                              case "hook_started":
@@ -62,8 +62,62 @@ index 0214a50..aa6c7b6 100644
 -                            case "hook_response":
                              case "files_persisted":
                                  break;
-                             case "task_progress":
-@@ -2922,9 +2973,19 @@ export class ClaudeAcpAgent {
+-                            case "task_progress":
++                            case "task_progress": {
++                                // Paperclip: a subagent's progress summary (SDK option
++                                // agentProgressSummaries) has no ACP home while native
++                                // subagent sessions are off. Attach it to the spawning
++                                // Agent/Task tool call so the client can show it there.
++                                const progressTask = session.liveBackgroundTasks.get(message.task_id);
++                                if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" &&
++                                    progressTask?.isSubagent &&
++                                    progressTask.parentToolUseId &&
++                                    (message.summary || message.description)) {
++                                    await sendUpdate({
++                                        sessionId: message.session_id,
++                                        update: {
++                                            sessionUpdate: "tool_call_update",
++                                            toolCallId: progressTask.parentToolUseId,
++                                            _meta: {
++                                                claudeCode: {
++                                                    subagentProgress: {
++                                                        ...(message.summary ? { summary: String(message.summary).slice(0, 2000) } : {}),
++                                                        ...(message.description ? { description: String(message.description).slice(0, 2000) } : {}),
++                                                        ...(message.last_tool_name ? { lastToolName: String(message.last_tool_name).slice(0, 160) } : {}),
++                                                    },
++                                                },
++                                            },
++                                        },
++                                    });
++                                }
+                                 await asyncTasks.taskProgress({
+                                     task_id: message.task_id,
+                                     description: message.description,
+@@ -2503,6 +2580,7 @@ export class ClaudeAcpAgent {
+                                     usage: message.usage,
+                                 });
+                                 break;
++                            }
+                             case "task_started":
+                                 // For subagent tasks `task_id` is the subagent's agent id (the
+                                 // SDK keys its task registry by agent id) and `tool_use_id` is
+@@ -2550,6 +2628,7 @@ export class ClaudeAcpAgent {
+                             case "task_notification":
+                                 // The task settled — no further tool calls can originate
+                                 // from it, so its registry entry can be dropped.
++                                await this.paperclipForwardSubagentState(session, message.session_id, message.task_id, message.tool_use_id ?? null, message.status, message.summary, sendUpdate);
+                                 await subagents.finishTask(message.task_id, message.status, sendUpdate, message.tool_use_id);
+                                 await asyncTasks.taskNotification({
+                                     task_id: message.task_id,
+@@ -2571,6 +2650,7 @@ export class ClaudeAcpAgent {
+                                 if (message.patch.status === "completed" ||
+                                     message.patch.status === "failed" ||
+                                     message.patch.status === "killed") {
++                                    await this.paperclipForwardSubagentState(session, message.session_id, message.task_id, undefined, message.patch.status, undefined, sendUpdate);
+                                     await subagents.finishTask(message.task_id, message.patch.status, sendUpdate);
+                                     session.liveBackgroundTasks.delete(message.task_id);
+                                 }
+@@ -2922,9 +3002,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -86,7 +140,56 @@ index 0214a50..aa6c7b6 100644
                                      },
                                  });
                              }
-@@ -5311,14 +5372,22 @@ export class ClaudeAcpAgent {
+@@ -4506,6 +4596,48 @@ export class ClaudeAcpAgent {
+      *  `$/cancel_request`, and our local abort race settles even if the client
+      *  ignores it. A `cancelled` outcome, request rejection, and local abort all
+      *  surface the same "Tool use aborted" the callers already expect. */
++    /**
++     * Paperclip: an async subagent's Agent/Task tool call completes as soon as
++     * the subagent launches. With native subagent sessions off, report the
++     * subagent's own terminal state and summary on that tool call so the
++     * client can settle its subagent card. Sent once per task.
++     */
++    async paperclipForwardSubagentState(session, sessionId, taskId, toolUseId, status, summary, sendUpdate) {
++        if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1")
++            return;
++        // The terminal task_updated branch drops the live registry entry
++        // before task_notification arrives, so remember subagent parents here.
++        const parents = (session.paperclipSubagentParents ??= new Map());
++        const task = session.liveBackgroundTasks.get(taskId);
++        if (task?.isSubagent && task.parentToolUseId)
++            parents.set(taskId, task.parentToolUseId);
++        const parentToolUseId = parents.get(taskId) ?? (task?.isSubagent ? toolUseId : undefined);
++        if (!parentToolUseId)
++            return;
++        // The terminal task_updated patch can precede task_notification, which
++        // alone carries the summary; dedupe only the notification.
++        const forwarded = (session.paperclipForwardedSubagentStates ??= new Set());
++        if (forwarded.has(taskId))
++            return;
++        if (toolUseId !== undefined || summary)
++            forwarded.add(taskId);
++        await sendUpdate({
++            sessionId,
++            update: {
++                sessionUpdate: "tool_call_update",
++                toolCallId: parentToolUseId,
++                _meta: {
++                    claudeCode: {
++                        subagentState: {
++                            status: String(status ?? "completed").slice(0, 40),
++                            // One character past the display bound lets the client mark a cut.
++                            ...(summary ? { summary: String(summary).slice(0, 4001) } : {}),
++                        },
++                    },
++                },
++            },
++        });
++    }
+     async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
+         if (signal.aborted)
+             throw new Error("Tool use aborted");
+@@ -5311,14 +5443,24 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -94,6 +197,8 @@ index 0214a50..aa6c7b6 100644
 +            // user root contains only assigned skills; project/local settings
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
++            // Subagent progress summaries (~30s) feed the task chat's subagent card.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { agentProgressSummaries: true }),
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
@@ -110,7 +215,7 @@ index 0214a50..aa6c7b6 100644
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5398,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5471,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
