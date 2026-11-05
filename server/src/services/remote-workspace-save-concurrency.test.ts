@@ -486,4 +486,33 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     expect(snapshots.filter(snapshot => snapshot.status === "committed")).toHaveLength(1);
     expect(await readFile(path.join(authority.location!.remoteCwd, "saved.txt"), "utf8")).toBe("one preserved result\n");
   }, 30_000);
+
+  it("ends a failed save operation with its redacted cause and reopens it for the retry", async () => {
+    const f = await preparedFailure();
+    const refused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
+      execute: async () => { throw new Error("Daytona sandbox lease SYNTHETIC-private-id is no longer active."); } } };
+    await expect(saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: refused, assertOwned: async () => undefined }))
+      .rejects.toThrow("remote_workspace_operation_failed: operation=archive_helper transport=sandbox_lease_inactive");
+    const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
+    const failed = await snapshotOperation();
+    expect(failed).toMatchObject({ status: "failed", exitCode: 1,
+      stderrExcerpt: "remote_workspace_operation_failed\n"
+        + "remote_workspace_operation_failed: operation=archive_helper transport=sandbox_lease_inactive\n",
+      metadata: { lastFailure: { code: "remote_workspace_operation_failed",
+        cause: "remote_workspace_operation_failed: operation=archive_helper transport=sandbox_lease_inactive" } } });
+    expect(failed.finishedAt).toBeInstanceOf(Date);
+    expect(JSON.stringify(failed)).not.toContain("SYNTHETIC");
+
+    // The bounded retry reuses the same boundary operation and records success.
+    const saved = await saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: f.target, assertOwned: async () => undefined });
+    const succeeded = await snapshotOperation();
+    expect(succeeded.id).toBe(failed.id);
+    expect(succeeded).toMatchObject({ status: "succeeded", metadata: { snapshotId: saved.snapshotId } });
+    expect(await readFile(path.join(readRemoteWorkspaceAuthority(f.workspace.metadata)!.location!.remoteCwd, "saved.txt"), "utf8"))
+      .toBe("one preserved result\n");
+  }, 30_000);
 });

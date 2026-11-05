@@ -27,7 +27,8 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause,
+  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -550,8 +551,12 @@ async function retireQuiescedSaves(tx: Transaction, workspace: Workspace, runId:
   const candidates = await tx.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.heartbeatRunId, runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
-    inArray(workspaceOperations.status, ["running", "pending"]), sql`${workspaceOperations.metadata}->>'epoch' = ${String(epoch)}`)).for("update");
+    // A save that already ended as failed is retired the same way, so its
+    // export staging is still cleaned once the final save commits.
+    inArray(workspaceOperations.status, ["running", "pending", "failed"]), sql`${workspaceOperations.metadata}->>'epoch' = ${String(epoch)}`)).for("update");
   for (const candidate of candidates) {
+    if (candidate.status === "failed" && (object(candidate.metadata?.retiredSave).schema === RETIRED_SAVE_SCHEMA
+      || !candidate.metadata?.lastFailure)) continue;
     const work = readSaveWork(candidate.metadata), generation = Number(candidate.metadata?.generation);
     if (!work || work.unknown || work.activeIds.length || !work.quiescedAt || candidate.metadata?.boundary === "final"
       || !Number.isSafeInteger(generation) || generation >= final.generation
@@ -570,8 +575,20 @@ async function retireQuiescedSaves(tx: Transaction, workspace: Workspace, runId:
   }
 }
 
+/**
+ * The redacted reason a save invocation failed: a server-built remote cause, an
+ * internal snake_case code, or a fixed fallback. Provider text is never kept.
+ */
+export function remoteWorkspaceSaveFailure(error: unknown): { code: string; cause?: string } {
+  const cause = remoteWorkspaceFailureCause(error);
+  const message = error instanceof Error ? error.message.trim() : "";
+  const code = cause ? cause.split(":")[0]! : /^[a-z][a-z0-9_]{2,80}$/.test(message) ? message : "remote_workspace_save_failed";
+  return cause ? { code, cause } : { code };
+}
+
 async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId: string; epoch: number;
-  location: NonNullable<RemoteWorkspaceAuthority["location"]>; operationId: string; invocationId: string }) {
+  location: NonNullable<RemoteWorkspaceAuthority["location"]>; operationId: string; invocationId: string;
+  failure?: { code: string; cause?: string } }) {
   return input.db.transaction(async tx => {
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
     const [operation] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.id, input.operationId),
@@ -581,8 +598,17 @@ async function settleSaveInvocation(input: { db: Db; workspace: Workspace; runId
     if (!operation || !work || !work.activeIds.includes(input.invocationId)) return false;
     const activeIds = work.activeIds.filter(id => id !== input.invocationId);
     if (!activeIds.length && !work.unknown) await notifyRemoteWorkspaceSnapshots(tx, `workspace:${workspace.id}`);
+    const now = new Date();
+    // The last settled invocation of a failed save ends the operation. A later
+    // retry of the same boundary reopens it; a success still records "succeeded".
+    const failure = input.failure;
+    const failed = Boolean(failure) && operation.status === "running" && !activeIds.length && !work.unknown;
     await tx.update(workspaceOperations).set({ metadata: { ...operation.metadata,
-      saveWork: { ...work, activeIds, quiescedAt: activeIds.length ? null : new Date().toISOString() } }, updatedAt: new Date() })
+      saveWork: { ...work, activeIds, quiescedAt: activeIds.length ? null : now.toISOString() },
+      ...(failed && failure ? { lastFailure: { ...failure, at: now.toISOString() } } : {}) },
+      ...(failed && failure ? { status: "failed", exitCode: 1, finishedAt: now,
+        stderrExcerpt: `${[failure.code, failure.cause].filter(Boolean).join("\n")}\n` } : {}),
+      updatedAt: now })
       .where(eq(workspaceOperations.id, operation.id));
     await retireQuiescedSaves(tx, workspace, input.runId, input.epoch, input.location);
     return true;
@@ -611,7 +637,9 @@ export async function saveRemoteWorkspace(input: {
       if (previous.issueId !== issueId) throw new Error("remote_workspace_run_binding_changed");
       if (object(previous.metadata?.retiredSave).schema === RETIRED_SAVE_SCHEMA) throw new Error("remote_workspace_snapshot_retired");
       const work = readSaveWork(previous.metadata);
-      const [registered] = await tx.update(workspaceOperations).set({ metadata: { ...previous.metadata,
+      // A retry of a failed save reopens that boundary's operation.
+      const reopened = previous.status === "failed" ? { status: "running", finishedAt: null, exitCode: null } : {};
+      const [registered] = await tx.update(workspaceOperations).set({ ...reopened, metadata: { ...previous.metadata,
         saveWork: { schema: SAVE_WORK_SCHEMA, activeIds: [...(work?.activeIds ?? []), invocationId],
           unknown: work?.unknown ?? true, quiescedAt: null } }, updatedAt: new Date() }).where(eq(workspaceOperations.id, previous.id)).returning();
       return registered!;
@@ -641,6 +669,7 @@ export async function saveRemoteWorkspace(input: {
     return created!;
   });
   let captured: Awaited<ReturnType<typeof captureRemoteWorkspaceArchive>> | null = null;
+  let failure: { code: string; cause?: string } | undefined;
   try {
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId, workspaceId: input.workspace.id,
       operationId: operation.id, runId: input.runId, parentSnapshotId: operation.metadata?.parentSnapshotId as string | null,
@@ -688,6 +717,9 @@ export async function saveRemoteWorkspace(input: {
         eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id)));
     });
     return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256, savedAt: at.toISOString() };
+  } catch (error) {
+    failure = remoteWorkspaceSaveFailure(error);
+    throw error;
   } finally {
     // Every upload/capture promise has settled before its durable token clears.
     // Missing completion evidence remains pinned; cleanup never masks the save error.
@@ -695,7 +727,7 @@ export async function saveRemoteWorkspace(input: {
     catch { logger.warn({ runId: input.runId, operationId: operation.id }, "Remote workspace local archive cleanup failed"); }
     try {
       if (await settleSaveInvocation({ db: input.db, workspace: input.workspace, runId: input.runId, epoch: expected.epoch,
-        location: expected.location, operationId: operation.id, invocationId })) {
+        location: expected.location, operationId: operation.id, invocationId, failure })) {
         await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
           location: expected.location, target, assertOwned: input.assertOwned });
       }

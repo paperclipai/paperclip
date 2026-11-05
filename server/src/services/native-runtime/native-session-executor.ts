@@ -1,4 +1,5 @@
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
@@ -309,8 +310,6 @@ export class NativeCancellationPendingRecoveryError extends Error {
   }
 }
 
-type NativePostResultFailureCategory = "io_not_found" | "io_permission_denied" | "io_failure" | "execution_failure";
-
 class NativePostResultFailureError extends Error {
   readonly diagnostic: Readonly<{
     stage: "post_result_execution";
@@ -322,10 +321,7 @@ class NativePostResultFailureError extends Error {
     // Keep the existing control classification. These labels explain why its
     // failure write was rejected; they grant no finalization or retry authority.
     super("native_session_lease_lost");
-    const code = record(error).code;
-    const category: NativePostResultFailureCategory = code === "ENOENT" ? "io_not_found"
-      : code === "EACCES" || code === "EPERM" ? "io_permission_denied"
-      : code === "EIO" ? "io_failure" : "execution_failure";
+    const category = nativePostResultFailureCategory(error);
     this.diagnostic = Object.freeze({ stage: "post_result_execution", category, resultAlreadyAccepted: true });
   }
 }

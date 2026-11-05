@@ -16,6 +16,7 @@ import {
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
+import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
 
 const exec = promisify(execFile);
 
@@ -533,6 +534,40 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       pid: process.pid, startedAt: new Date().toISOString() });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_failed: operation=archive_helper signal=SIGKILL$/);
+  });
+
+  it.each([
+    ["Daytona sandbox lease SYNTHETIC-sandbox-id is no longer active.", undefined, "transport=sandbox_lease_inactive"],
+    ["daytona_sandbox_not_found: /home/SYNTHETIC/private", undefined, "transport=daytona_sandbox_not_found"],
+    ["connect to /SYNTHETIC/private failed", "ECONNRESET", "transport=transport_closed code=ECONNRESET"],
+    ["SYNTHETIC_PRIVATE provider response", undefined, "transport=provider_error"],
+  ])("names a copy-back command the provider refused without its text: %j", async (message, code, named) => {
+    const { remote, execute } = target();
+    execute.mockRejectedValueOnce(Object.assign(new Error(message), code ? { code } : {}));
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(`remote_workspace_operation_failed: operation=archive_helper ${named}`);
+    expect(failure?.message).not.toMatch(/SYNTHETIC|private/);
+    // The sandbox-loss classification that stops retries still sees its code.
+    expect(classifyNativeWorkspaceFailure(failure).code).toBe(message.startsWith("daytona_sandbox_not_found")
+      ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed");
+  });
+
+  it("names a failed archive download without the provider text", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic bytes\n");
+    const { remote } = target();
+    remote.runner!.syncOut = vi.fn(async () => { throw new Error("Daytona download of /SYNTHETIC/private timed out"); });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed: operation=download transport=transport_timeout$/);
+  });
+
+  it("keeps an archive-safety refusal exact for its own retry policy", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic bytes\n");
+    const { remote } = target();
+    const refusal = "Daytona syncOut refusing tarball member that escapes the extraction dir: ../private";
+    remote.runner!.syncOut = vi.fn(async () => { throw new Error(refusal); });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(refusal);
   });
 
   it.each([
