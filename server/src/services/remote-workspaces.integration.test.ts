@@ -393,7 +393,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -436,6 +436,19 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
         .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
       await fs.rename(expectedRemoteRoot, path.join(root, "retained-unknown-preparation"));
+    }
+    if (mode === "transient restore") {
+      // An unnamed sandbox failure (an I/O error) is retryable; the retry restores the saved files.
+      const run = second.runner!.execute.bind(second.runner);
+      vi.spyOn(second.runner!, "execute").mockImplementation(async command => command.args?.[1]?.includes("remote_workspace_restore_failed")
+        ? { exitCode: 1, stdout: "", stderr: "remote_workspace_restore_failed: stage=extract code=EIO exit=1", timedOut: false, signal: null,
+          pid: process.pid, startedAt: new Date().toISOString() } : run(command));
+      const transient = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(transient).toMatchObject({ step: "sandbox_restore", retryable: true, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1" });
+      expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      vi.mocked(second.runner!.execute).mockRestore();
     }
     if (mode === "missing object") {
       // Storage reports a lost saved object as 404; retrying cannot bring it back.
