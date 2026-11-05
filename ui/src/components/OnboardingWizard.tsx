@@ -688,6 +688,7 @@ function OnboardingWizardInner({
    * browser. Its arrival is also what moves the step off its waiting beat.
    */
   const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
+  const [retryLogin, setRetryLogin] = useState<(() => void) | null>(null);
   const [submitLoginCode, setSubmitLoginCode] = useState<(() => void) | null>(null);
   /**
    * The key itself, held only for as long as the wizard is open. It is written
@@ -1559,12 +1560,13 @@ function OnboardingWizardInner({
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    setupError ? { label: "Retry", icon: "arrow", disabled: false } : connectProgress
+    setupError ? { label: "Retry", icon: "arrow", disabled: false }
+      : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
       : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
       ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: "Waiting for code", icon: "spinner", disabled: true }
+      ? { label: "Waiting for code…", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: "Connecting", icon: "spinner", disabled: true }
         : connectPhase === "ready"
@@ -1605,6 +1607,7 @@ function OnboardingWizardInner({
     setAdapterEnvLoading(false);
     setConnectAuthUrl(null);
     setSubmitLoginCode(null);
+    setRetryLogin(null);
     connectingSinceRef.current = null;
     setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
@@ -1622,16 +1625,31 @@ function OnboardingWizardInner({
    * a check. This one would be worse: Cmd+Enter would hire before the sign-in
    * it is meant to start, against a source with no credential.
    */
+  function openConnectAuthorization() {
+    if (connectPhase !== "ready" || !connectAuthUrl || retryLogin) return;
+    window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
+    setConnectPhase("waiting");
+  }
+
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (retryLogin) {
+      setConnectAuthUrl(null);
+      setSubmitLoginCode(null);
+      setRetryLogin(null);
+      connectingSinceRef.current = null;
+      setConnectCredentialStored(false);
+      setConnectPhase("loading");
+      retryLogin();
+      return;
+    }
     if ((connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode) {
       submitLoginCode();
       return;
     }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
-      if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
-      setConnectPhase("waiting");
+      openConnectAuthorization();
       return;
     }
     // The hold owns the hire once "Connecting" is showing. That now starts at
@@ -2655,7 +2673,7 @@ function OnboardingWizardInner({
         step === 4 &&
         agentName.trim() &&
         connectStepReady &&
-        (submitLoginCode || !connectStepLoggingIn)
+        (retryLogin || submitLoginCode || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
@@ -3182,8 +3200,9 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
-                        onAuthorizationOpened={() => {
-                          setConnectPhase(phase => phase === "ready" ? "waiting" : phase);
+                        onOpenAuthorization={openConnectAuthorization}
+                        onRetryReady={retry => {
+                          if (connectCardLive) setRetryLogin(() => retry);
                         }}
                         onSubmitReady={submit => setSubmitLoginCode(() => submit)}
                         onCodeSubmitted={() => {

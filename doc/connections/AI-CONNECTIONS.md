@@ -9,10 +9,14 @@ Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 homes. Managed default/shared accounts are additional choices in that same
 selector. Selecting “Sign in to another account” survives background refreshes;
 Claude authorization paste keeps upstream's immediate Connecting feedback.
-Opening the sign-in link in onboarding also puts the footer into Waiting for
-code. A Claude code entered without a paste event can be sent with Submit code
-in the footer or Enter in the field. These actions submit to the current login
-session and do not open another provider window.
+The onboarding sign-in link and footer use the same action. Either opens the
+provider in a new tab and disables the footer with Waiting for code…. The code
+field stays available. A Claude code entered without a paste event can be sent
+with Submit code in the footer or Enter in the field. These actions submit to
+the current login session and do not open another provider window.
+Failed or expired sign-ins show a short message and a Retry sign-in footer
+button. Retry releases the old session before starting a fresh sign-in. It keeps
+the onboarding setup and clears the old code.
 
 New-agent Connect offers three persistent tiles: the provider's subscription,
 the provider's API key, and Advanced. All three stay visible while the selected
