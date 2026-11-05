@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { agents, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
   skillPackageDeletions, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import * as dbModule from "@paperclipai/db";
-import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
+import type { CompanySkill, CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -25,6 +25,11 @@ import { skillFileBytes, skillSnapshotHash } from "../services/skill-snapshot.js
 import { readCustomerSuccessResource } from "../services/customer-success-inspection.js";
 import { repositorySkillProjection } from "../services/skill-repository-package.js";
 import { hasRestorableSnapshot } from "../services/skill-version-cache.js";
+
+function toSkill(row: typeof companySkills.$inferSelect): CompanySkill {
+  return { ...row, sourceType: row.sourceType as CompanySkill["sourceType"], trustLevel: row.trustLevel as CompanySkill["trustLevel"],
+    compatibility: row.compatibility as CompanySkill["compatibility"], fileInventory: row.fileInventory.map(entry => ({ path: String(entry.path), kind: entry.kind as CompanySkill["fileInventory"][number]["kind"] })) };
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("external skill packages", () => {
@@ -67,7 +72,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const recipe = recoverable ? { version: 1 as const, sourceId: randomUUID(), repositoryId: "123", repositoryUrl: "https://github.com/acme/skills",
       commitSha: "a".repeat(40), skillPath: null, manifest: skillPackageManifest(files) } : undefined;
     const id = await store.prepare(companyId, files, false, undefined, recipe);
-    const skills = [];
+    const skills: { skill: CompanySkill; version: typeof companySkillVersions.$inferSelect }[] = [];
     for (const name of ["one", "two"]) {
       const [skill] = await db.insert(companySkills).values({ companyId, key: `company/${companyId}/${name}`, slug: name,
         name, markdown: files.find(file => file.path === `skills/${name}/SKILL.md`)!.content, sourceType: "github",
@@ -76,7 +81,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
         repositorySnapshotId: id, repositorySkillPath: `skills/${name}/SKILL.md`, packageSnapshotId: id, migrationAt: null,
         packageFileMap: [{ path: "SKILL.md", kind: "skill", sourcePath: `skills/${name}/SKILL.md` }] }).returning();
       await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skill!.id));
-      skills.push({ skill: skill!, version: version! });
+      skills.push({ skill: toSkill(skill!), version: version! });
     }
     const service = companySkillService(db);
     const resolve = () => service.listRuntimeSkillEntries(companyId, { onlyKeys: new Set(skills.map(({ skill }) => skill.key)), snapshotLatest: true });
@@ -490,7 +495,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     const [skill] = await db.insert(companySkills).values({ companyId, key: "metadata", slug: "metadata", name: "Metadata", markdown: original[0]!.content }).returning();
     const service = companySkillService(db);
-    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: skill!, skipInventoryRefresh: true, fileInventory: changed });
+    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: toSkill(skill!), skipInventoryRefresh: true, fileInventory: changed });
     expect((await service.getVersion(companyId, skill!.id, saved.id))!.fileInventory).toEqual(changed);
     const [legacy] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 2, fileInventory: changed }).returning();
     await skillPackageMaintenance(db, storage).migrateVersions({ id: legacy!.id, apply: true, clearLegacy: true });

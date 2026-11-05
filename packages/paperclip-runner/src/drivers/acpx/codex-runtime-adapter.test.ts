@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
+import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -48,6 +49,56 @@ describe("Codex ACPX runtime adapter", () => {
         message: rejection.data.details, phase: "startup" },
     });
     expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
+  it("keeps a redacted explanation for an ensure rejection that carries no ACP error", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    options.launchEnvironment = { ANTHROPIC_API_KEY: "fixture-anthropic-secret" };
+    const rejection = new Error("Claude Code exited during startup for fixture-anthropic-secret (sk-ant-api03-fixtureprivate)");
+    vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
+    const failure = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime }).catch((error: unknown) => error);
+    expect(failure).toBe(rejection);
+    expect(failure).toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED", providerFailure: { provider: "anthropic",
+      phase: "startup", category: "unknown", message: "Claude Code exited during startup for [REDACTED] ([REDACTED])" } });
+    expect(JSON.stringify((failure as { providerFailure: unknown }).providerFailure)).not.toMatch(/fixture-anthropic-secret|fixtureprivate/);
+  });
+  it("classifies an ACP authentication-required ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    const message = "Authentication required: This integration does not support using claude.ai subscriptions.";
+    vi.mocked(runtime.ensureSession).mockRejectedValue(Object.assign(new Error(message), { code: -32000 }));
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED",
+      providerFailure: { category: "authentication", message, phase: "startup", retryability: "requires_action" } });
+  });
+  it("attaches a provider cause to a non-error ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.ensureSession).mockRejectedValue({ code: -32603, message: "Internal error", data: { errorKind: "billing_error" } });
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_NON_ERROR",
+      providerFailure: { category: "quota_exhausted", providerCode: "billing_error", phase: "startup" } });
+  });
+  it("does not report Runner cancellation as a provider explanation", async () => {
+    const runtime = fakeRuntime();
+    const controller = new AbortController();
+    const reason = new Error("runtime admission cancelled");
+    const rejection = new Error("ACP connection closed");
+    vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+      controller.abort(reason);
+      throw rejection;
+    });
+    const options = openOptions(fakeCommand());
+    options.signal = controller.signal;
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toBe(reason);
+    await vi.waitFor(() => expect(rejection).toHaveProperty("code", "ACPX_SESSION_ENSURE_FAILED"));
+    expect(rejection).not.toHaveProperty("providerFailure");
+    expect(reason).not.toHaveProperty("providerFailure");
   });
   it.each([false, true])("acknowledges configured Claude effort before admission (restoring=%s)", async restoring => {
     const runtime = fakeRuntime();
@@ -863,6 +914,83 @@ describe("Codex ACPX runtime adapter", () => {
     expect(assertWorkspaceHeld).toHaveBeenCalledOnce();
     expect(command.spawn).not.toHaveBeenCalled();
   });
+  it("exposes only the active Grok prompt response as terminal usage across consecutive turns", async () => {
+    const runtime = fakeRuntime();
+    const durableRecord = { acpxRecordId: "record-1", acpSessionId: "backend-1", agentSessionId: "agent-1", lastRequestId: "previous" };
+    const durableStore: AcpSessionStore = { load: vi.fn(async () => structuredClone(durableRecord) as never), save: vi.fn() };
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "grok" };
+    const port = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
+      createRuntime: value => { created = value; return runtime; } });
+    let sequence = 0;
+    vi.mocked(runtime.startTurn).mockImplementation(input => {
+      const wireId = ++sequence;
+      durableRecord.lastRequestId = input.requestId;
+      created.onAcpMessage?.("outbound", { id: wireId, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("inbound", { id: wireId, result: { _meta: {
+        sessionId: "backend-1", promptId: `prompt-${wireId}`, requestId: `prompt-${wireId}`,
+        usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55, cachedReadTokens: 20, cacheCreationTokens: 0,
+          reasoningTokens: 2, modelCalls: 1, costUsdTicks: wireId === 1 ? 10000000 : 5000000 },
+      } } });
+      return { requestId: input.requestId, promptStarted: Promise.resolve(), events: (async function* () {})(),
+        result: Promise.resolve({ status: "completed" as const }), cancel: async () => undefined, closeStream: async () => undefined };
+    });
+    try {
+      for (const [requestId, amount] of [["runner-1", 0.001], ["runner-2", 0.0005]] as const) {
+        const before = await port.getStatus();
+        const turn = port.startTurn({ requestId, text: "fixture" });
+        await turn.result;
+        const after = await port.getStatus();
+        expect(persistedAcpxTurnUsage(before, after, requestId)).toMatchObject({
+          cost: { amount, currency: "USD", basis: "turn" },
+          breakdown: { inputTokens: 30, outputTokens: 5, cachedReadTokens: 20, thoughtTokens: 0 },
+        });
+        created.onAcpMessage?.("inbound", { id: sequence, error: { message: "late conflicting response" } });
+        expect(await port.getStatus()).toEqual(after);
+      }
+    } finally { await port.close({ reason: "fixture done" }); }
+  });
+
+  it.each(["cancel", "closeStream"] as const)("retains the bound Grok usage response during %s until the prompt settles", async (stop) => {
+    const runtime = fakeRuntime();
+    const durableRecord = { acpxRecordId: "record-1", acpSessionId: "backend-1", agentSessionId: "agent-1", lastRequestId: "previous" };
+    const durableStore: AcpSessionStore = { load: vi.fn(async () => structuredClone(durableRecord) as never), save: vi.fn() };
+    let created!: AcpRuntimeOptions;
+    let settle!: (value: { status: "completed" }) => void;
+    const result = new Promise<{ status: "completed" }>(resolve => { settle = resolve; });
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "grok" };
+    const port = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
+      createRuntime: value => { created = value; return runtime; } });
+    vi.mocked(runtime.startTurn).mockImplementation(input => {
+      durableRecord.lastRequestId = input.requestId;
+      created.onAcpMessage?.("outbound", { id: 1, method: "session/prompt", params: { sessionId: "backend-1" } });
+      return { requestId: input.requestId, promptStarted: Promise.resolve(), events: (async function* () {})(), result,
+        cancel: async () => undefined, closeStream: async () => undefined };
+    });
+    try {
+      const before = await port.getStatus();
+      const turn = port.startTurn({ requestId: "runner-cancelled", text: "fixture" });
+      await turn[stop]({ reason: "fixture stopped" });
+      created.onAcpMessage?.("outbound", { id: 2, method: "session/prompt", params: { sessionId: "backend-1" } });
+      created.onAcpMessage?.("inbound", { id: 1, result: { _meta: {
+        sessionId: "backend-1", promptId: "prompt-1", requestId: "prompt-1",
+        usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55, cachedReadTokens: 20, cacheCreationTokens: 0,
+          reasoningTokens: 2, modelCalls: 1, costUsdTicks: 10000000 },
+      } } });
+      settle({ status: "completed" });
+      await turn.result;
+      const after = await port.getStatus();
+      expect(persistedAcpxTurnUsage(before, after, "runner-cancelled")).toMatchObject({
+        cost: { amount: 0.001, currency: "USD", basis: "turn" },
+        breakdown: { inputTokens: 30, outputTokens: 5, cachedReadTokens: 20, thoughtTokens: 0 },
+      });
+      created.onAcpMessage?.("inbound", { id: 1, error: { message: "late conflicting response" } });
+      expect(await port.getStatus()).toEqual(after);
+    } finally { settle({ status: "completed" }); await port.close({ reason: "fixture done" }); }
+  });
+
   it("reads verified status from durable state without draining live updates", async () => {
     const runtime = fakeRuntime();
     vi.mocked(runtime.getStatus!).mockReturnValue(new Promise(() => {}));

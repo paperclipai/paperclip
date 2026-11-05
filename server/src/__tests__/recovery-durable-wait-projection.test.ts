@@ -145,7 +145,7 @@ const pendingExecution = { status: "pending", currentStageId: null, currentStage
         started(); return gate.then(() => execute(query));
       }
       return execute(query);
-    }) as Db["execute"]);
+    }) as unknown as Db["execute"]);
     const running = recoveryService(db, { enqueueWakeup }).reconcileActiveRecoveryActions({ companyId: f.companyId });
     const operator = createDb(external ?? temporary!.connectionString, { maxConnections: 1 });
     try {

@@ -1,4 +1,5 @@
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -134,6 +135,7 @@ interface TaskChatComposerProps {
   };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
+  confirmedStoppedRunIds?: ReadonlySet<string>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
@@ -389,6 +391,7 @@ export function TaskChatComposer({
   creation,
   confirmedSubmissionIds,
   onStop,
+  confirmedStoppedRunIds,
   stopPending = false,
   workMode,
   onWorkModeChange,
@@ -423,7 +426,7 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const stopControl = useComposerStop(onStop, stopPending);
+  const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
@@ -1241,6 +1244,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1333,17 +1344,6 @@ export function TaskChatComposer({
         }
       }}
         onPasteCapture={handlePasteCapture}
-        onDragOver={(event) => {
-          if (canAcceptFiles && !disabled && !creation && event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDropCapture={(event) => {
-          if (!canAcceptFiles || disabled || creation) return;
-          const files = Array.from(event.dataTransfer.files);
-          if (!files.length) return;
-          event.preventDefault();
-          event.stopPropagation();
-          for (const file of files) void attachPickedFile(file);
-        }}
       >
         {creation?.header}
         {uncertainSubmission ? (

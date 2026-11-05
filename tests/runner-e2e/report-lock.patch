@@ -1,12 +1,24 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index c55bccc..2953e8d 100644
+index f586e6f..ad6952c 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -5039,6 +5039,7 @@ packages:
-   '@smithy/core@3.35.1':
-     resolution: {integrity: sha512-i4YPS4B6ts7bjn7UwLnGjiZdprOvHvgGobFZsYK3GIY3E5hIqtj0rReU69BcTpGp+fvtraSNXeG1l+jtJvF55w==}
-     engines: {node: '>=18.0.0'}
-+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
- 
-   '@smithy/credential-provider-imds@4.5.2':
-     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
+@@ -1216,6 +1216,9 @@ importers:
+       '@dnd-kit/utilities':
+         specifier: ^3.2.2
+         version: 3.2.2(react@19.2.8)
++      '@lexical/clipboard':
++        specifier: 0.48.0
++        version: 0.48.0(typescript@7.0.2)
+       '@lexical/link':
+         specifier: 0.48.0
+         version: 0.48.0(typescript@7.0.2)
+@@ -1343,6 +1346,9 @@ importers:
+         specifier: 13.6.32
+         version: 13.6.32
+     devDependencies:
++      '@lexical/rich-text':
++        specifier: 0.48.0
++        version: 0.48.0(typescript@7.0.2)
+       '@paperclipai/plugin-sdk':
+         specifier: workspace:*
+         version: link:../packages/plugins/sdk

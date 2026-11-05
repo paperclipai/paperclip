@@ -1,4 +1,5 @@
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
+import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
@@ -31,6 +32,7 @@ import {
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
@@ -66,6 +68,7 @@ import {
   dispatchNativeSessionResumptions,
   detachNativeSessionsForRestart,
   isNativeSessionId,
+  NATIVE_RESTART_RECOVERY_FAILED,
   readNativeWorkspaceSyncReference,
   type NativeRestartRecoveryClaim,
   reconcileNativeFinalizations,
@@ -196,9 +199,12 @@ const ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20;
 // A provider or plugin destroy rejection can carry a bearer credential, a
 // signed URL, or provider response detail in its name, code, message, cause, or
 // stack. The exception fields cross the server boundary, so they are not a
-// trusted enum. The pending_cleanup sweep logs never read the exception. Each
-// catch site logs a constant, locally generated `errorKind` instead.
+// trusted enum. The pending_cleanup sweep logs never read these fields. Each
+// catch site logs a constant, locally generated `errorKind` instead, plus at most
+// the closed stop-failure reason that `readEnvironmentStopFailure` validates.
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
+
+const PENDING_CLEANUP_TERMINAL_STOP_ERROR_KIND = "provider_stop_terminal";
 
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
 
@@ -962,6 +968,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           inArray(heartbeatRuns.status, ["running", "failed"]),
           isNull(nativeRunFinalizations.resultId),
           eq(nativeRunFinalizations.phase, "retryable_failure"),
+          legacyWorkspaceRecoveryNotMigrated(),
           or(gt(nativeRunFinalizations.nextAttemptAt, now), eq(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT)),
         ),
       );
@@ -1010,13 +1017,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "bootstrap_incomplete",
       );
       for (const disposition of dispositions) {
-        if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
+        if ((disposition.kind === "awaiting_evidence" || disposition.kind === "blocked") && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
         }
         // No ownership decision was made for a locked row. Writing an event
         // would wait on that same row and defeat the non-blocking startup scan.
         if (disposition.kind === "awaiting_evidence" && disposition.reason === "recovery_rows_busy") continue;
-        const run = await getRun(disposition.runId);
+        if (disposition.kind === "blocked" && disposition.transitionUnchanged) continue;
+        // Claims are already committed and must still dispatch, so one failed
+        // audit write cannot stop the rest of the batch.
+        const auditFailed = (error: unknown) => {
+          logger.warn({ err: error, runId: disposition.runId }, "failed to record native restart recovery transition");
+          return null;
+        };
+        const run = await getRun(disposition.runId).catch(auditFailed);
         if (run) {
           const isClaim =
             disposition.kind === "reattach_existing_runner" ||
@@ -1026,7 +1040,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           await appendRunEvent(run, {
             eventType: "native.recovery.transition",
             stream: "system",
-            level: disposition.kind === "blocked" ? "warn" : "info",
+            level: disposition.kind === "blocked" || (disposition.kind === "awaiting_evidence"
+              && disposition.reason === NATIVE_RESTART_RECOVERY_FAILED) ? "warn" : "info",
             message:
               disposition.kind === "reattach_existing_runner" ||
               disposition.kind === "reattach_remote_runner"
@@ -1035,6 +1050,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   ? "Resuming the durable native provider session after runner process loss"
                   : disposition.kind === "bootstrap_incomplete"
                     ? "Restarting an incomplete native runner bootstrap on the same heartbeat run"
+                    : disposition.kind === "awaiting_evidence" && disposition.reason === NATIVE_RESTART_RECOVERY_FAILED
+                      ? "Native restart recovery failed for this run and will retry"
                     : disposition.kind === "awaiting_evidence"
                       ? "Native restart recovery is waiting for safe ownership evidence"
                       : disposition.kind === "already_finalized"
@@ -1062,7 +1079,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   }
                 : {}),
             },
-          });
+          }).catch(auditFailed);
         }
       }
       for (const claim of claims) {
@@ -1425,10 +1442,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   // Atomically claim the one-time cap warning for a lease. The update only
   // matches when the lease is still pending_cleanup, its stored attempt count is
-  // at or above the cap, and it has not yet carried the warned flag. Two
-  // concurrent sweeps that both reach the cap race here, but only one update
-  // sets the flag and returns a row. The loser skips the warning. This keeps the
-  // warning to one log line per lease.
+  // at or above the cap or the provider reported a terminal stop failure, and it
+  // has not yet carried the warned flag. Two concurrent sweeps that both reach
+  // the cap race here, but only one update sets the flag and returns a row. The
+  // loser skips the warning. This keeps the warning to one log line per lease.
   //
   // The status and cap predicates are the last line of defense. They stop a warn
   // flag write to a lease that left pending_cleanup or dropped below the cap
@@ -1436,6 +1453,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
   async function claimPendingCleanupCapWarning(
     leaseId: string,
+    terminalProviderFailure = false,
   ): Promise<boolean> {
     const now = new Date();
     const claimed = await db
@@ -1448,7 +1466,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         and(
           eq(environmentLeases.id, leaseId),
           eq(environmentLeases.status, "pending_cleanup"),
-          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
+          terminalProviderFailure ? undefined : sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
           sql`${pendingCleanupCapWarnedSql()} = false`,
         ),
       )
@@ -1744,6 +1762,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       pendingCleanupAttemptsInFlight.add(row.id);
       lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
       let activeRenewal: Promise<void> | null = null;
+      let providerStopFailure: PluginEnvironmentStopFailure | null = null;
       const renewal = setInterval(() => {
         if (activeRenewal) return;
         activeRenewal = db.update(environmentLeases).set({
@@ -1790,7 +1809,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             destroyed += 1;
           }
         }
-      } catch {
+      } catch (error) {
+        providerStopFailure = readEnvironmentStopFailure(error);
         // The recorded-data teardown throws on failure, so revert the lease to
         // pending_cleanup for a later sweep. The claimed attempt still counts
         // for backoff, so requests stay bounded. The `destroyRunLease`
@@ -1804,10 +1824,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
         }
         // Log a constant errorKind only. The exception can carry a credential in
-        // its name, code, message, cause, or stack, so the sweep never reads it.
+        // its name, code, message, cause, or stack, so the sweep reads only the
+        // closed, validated provider stop-failure reason from it.
         logger.warn(
           {
-            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
+            errorKind: providerStopFailure?.terminal
+              ? PENDING_CLEANUP_TERMINAL_STOP_ERROR_KIND : PENDING_CLEANUP_RETRY_ERROR_KIND,
+            ...(providerStopFailure ? { providerStopFailure: providerStopFailure.reason } : {}),
             leaseId: row.id,
             environmentId: row.environmentId,
             attempts: attempts + 1,
@@ -1820,15 +1843,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // Late renewals are attempt-fenced and never write the retry cooldown.
         pendingCleanupAttemptsInFlight.delete(row.id);
       }
-      if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+      const escalated = attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP || providerStopFailure?.terminal === true;
+      if (escalated) {
         capped += 1;
         // Warn once, then continue automatic cleanup with backoff. The atomic claim
         // keeps the warning to one log line even when two sweeps overlap.
         if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id);
+          const warned = await claimPendingCleanupCapWarning(row.id, providerStopFailure?.terminal === true);
           if (warned) {
             logger.warn(
-              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              { leaseId: row.id, environmentId: row.environmentId, attempts,
+                ...(providerStopFailure?.terminal ? { providerStopFailure: providerStopFailure.reason } : {}) },
               "environment lease needs operator attention; automatic cleanup continues with backoff",
             );
           }
@@ -1839,7 +1864,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
         metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
           pendingCleanupInFlight: false,
-          pendingCleanupRetryAfterMs: Date.now() + (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP
+          pendingCleanupRetryAfterMs: Date.now() + (escalated
             ? 30 * 60_000 : Math.min(30 * 60_000, Math.max(30_000, backoffMs))),
         })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),
@@ -1860,7 +1885,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   async function nativeProcessIsLocal(run: HeartbeatRun) {
-    if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) return false;
+    const profile = parseObject(run.runnerProfileJson);
+    if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) return false;
     const [identity] = await db.select({
       eventType: heartbeatRunEvents.eventType,
       agentId: heartbeatRunEvents.agentId,
@@ -2051,6 +2077,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           eq(heartbeatRuns.runtimeMode, "native"),
           eq(nativeRunFinalizations.phase, "retryable_failure"),
           isNull(nativeRunFinalizations.resultId),
+          legacyWorkspaceRecoveryNotMigrated(),
           sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`,
         ),
       );
@@ -2065,7 +2092,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (!await nativeProcessIsLocal(run)) {
         if (nextAttemptAt && nextAttemptAt > now) continue;
         if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
-        if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) {
+        const profile = parseObject(run.runnerProfileJson);
+        if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) {
           remoteRetryRunIds.push(run.id);
         } else {
           const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
@@ -2775,7 +2803,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           scope.onDeferredDeadline(Date.now() + 30_000);
           return;
         }
-        await releaseSettledNativeRunProcess(db, scope.runId, scope);
+        const outcome = await releaseSettledNativeRunProcess(db, scope.runId, scope);
+        if (outcome !== "pending") await acknowledgeRemoteStop(scope.runId, scope.companyId);
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
       shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),

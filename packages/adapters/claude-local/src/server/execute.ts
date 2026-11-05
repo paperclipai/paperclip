@@ -84,6 +84,7 @@ import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   resolveManagedClaudeRuntimeStateDir,
+  resolveRemoteClaudeToolShellPrefixPath,
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
@@ -710,18 +711,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const remoteClaudeConfigDir = useManagedRemoteClaudeConfig && remoteClaudeRuntimeRoot
     ? path.posix.join(remoteClaudeRuntimeRoot, "config")
     : null;
-  if (remoteClaudeConfigDir && remoteClaudeConfigSeedDir) {
+  if (remoteClaudeConfigDir && remoteClaudeConfigSeedDir && remoteClaudeRuntimeRoot) {
     env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
     loggedEnv.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+    const remoteToolShellPrefixPath = resolveRemoteClaudeToolShellPrefixPath(env, remoteClaudeRuntimeRoot);
     await onLog(
       "stdout",
       `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`,
     );
-    await materializeRemoteClaudeConfig({
+    const { toolShellPrefixInstalled } = await materializeRemoteClaudeConfig({
       runId,
       target: executionTarget,
       remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir,
+      remoteToolShellPrefixPath,
       options: {
         cwd,
         env,
@@ -730,6 +733,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
       },
     });
+    if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
+      env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
+      loggedEnv.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
+    }
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {

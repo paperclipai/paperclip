@@ -468,13 +468,24 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   });
 
   it.each([
+    ["no finalization fields", { finalizationPhase: undefined, finalizationReasonCode: undefined }],
+    ["an earlier finalization phase", { finalizationPhase: "retryable_failure", finalizationReasonCode: undefined }],
+  ] as const)("keeps a scheduled native capacity retry local when the run row has %s", async (_label, resultJson) => {
+    // A late terminal write can replace the finalizer's fields with an earlier
+    // resultJson. The successor created by the committed decision still proves it.
+    const run = await nativeCapacityFailure({ resultJson });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["the retries are exhausted", { resultJson: { finalizationReasonCode: "native_provider_overloaded_exhausted" }, retry: null }],
     ["the task holds the retry", { resultJson: { finalizationReasonCode: "native_provider_overloaded_held" }, retry: null }],
     ["no retry run exists", { retry: null }],
     ["the successor belongs to another retry lane", { retry: { scheduledRetryReason: "native_safe_replacement" } }],
     ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
     ["the run has no native task", { run: { nativeIssueId: null } }],
-    ["finalization is not committed", { resultJson: { finalizationPhase: "retryable_failure" } }],
+    ["finalization has no fields and no retry run exists", { resultJson: { finalizationPhase: undefined, finalizationReasonCode: undefined }, retry: null }],
     ["the diagnostic is not typed capacity evidence", { resultJson: { nativeProviderFailure: { provider: "codex", category: "turn_failed" } } }],
     ["the diagnostic is missing", { resultJson: { nativeProviderFailure: undefined } }],
     ["the run is legacy", { run: { runtimeMode: "legacy" } }],

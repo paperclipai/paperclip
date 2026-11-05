@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { Component, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -76,7 +77,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
           </p>
         </div>
         <pre className="overflow-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive whitespace-pre-wrap">
-          {error.message}
+          {describeError(error).body}{/* // query-error-ok: error boundary; crash diagnostics, not a query read */}
         </pre>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={this.props.onReset}>

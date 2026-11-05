@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -12,10 +13,12 @@ import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHand
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
 
 export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, onBusy, onSaveExit, autoStart = false, reconnect = false }: ComponentProps<typeof OwnSlackAppSetup> & { autoStart?: boolean; reconnect?: boolean }) {
-  const choices = useQuery({ queryKey: ["slack-managed-workspaces", endpoint.companyId], queryFn: () => chatEndpointsApi.slackSetupOptions(endpoint.companyId), retry: false });
+  const choices = useQuery({ queryKey: ["slack-managed-workspaces", endpoint.companyId], queryFn: () => chatEndpointsApi.slackSetupOptions(endpoint.companyId) });
+  const choicesView = useQueryView(choices);
   const [selectedGrant, setSelectedGrant] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authorizationRequested, setAuthorizationRequested] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const inFlight = useRef(false);
   const requestId = useRef(crypto.randomUUID());
@@ -23,7 +26,8 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
   const started = Boolean(registration);
   const workspaces = choices.data?.workspaces ?? [];
   const grantId = registration?.managerGrantId ?? selectedGrant ?? (workspaces.length === 1 ? workspaces[0]!.grantId : null);
-  const needsAuthorization = !grantId || registration?.errorCode === "slack_manager_reauthorize" || Boolean(grantId && !workspaces.some(workspace => workspace.grantId === grantId));
+  const needsAuthorization = authorizationRequested || !grantId || endpoint.setup?.slackManagerError === "slack_manager_reauthorize" || registration?.errorCode === "slack_manager_reauthorize" || Boolean(grantId && !workspaces.some(workspace => workspace.grantId === grantId));
+  const reconnectWorkspace = needsAuthorization && (started || Boolean(error) || endpoint.setup?.slackManagerError === "slack_manager_reauthorize");
   const uncertain = registration?.status === "uncertain";
   const creating = registration?.status === "creating";
   async function run(action: () => Promise<void>) {
@@ -34,6 +38,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     finally { inFlight.current = false; setBusy(false); onBusy(false); }
   }
   async function authorize() {
+    setAuthorizationRequested(true);
     const authorization = await chatEndpointsApi.authorizeSlackManager(endpoint.id);
     const target = await prepareOAuthNavigation(authorization);
     if (target.kind === "reauthentication" && authorization.handoff) savePendingCloudHandoff(authorization.handoff.session);
@@ -57,7 +62,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     // Only fresh setup can start itself. Declines, uncertain creation, and saved
     // registration recovery require an explicit action and never recreate an app.
     if (!autoStart || autoStarted.current || disabled || !choices.data?.managedAvailable
-      || choices.isFetching || choices.isError || started || endpoint.setup?.slackManagerError
+      || choices.isFetching || (choicesView.kind === "error") || started || endpoint.setup?.slackManagerError
       || workspaces.length > 1) return;
     autoStarted.current = true;
     void run(connect);
@@ -66,26 +71,26 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
     ? "Your app was created. Retry to finish its configuration."
     : code === "slack_creation_uncertain" ? "Slack may have created your app. Check Slack app settings before trying again."
     : slackRegistrationErrorMessage(code);
-  const message = error ?? (endpoint.setup?.slackManagerError ? setupError(endpoint.setup.slackManagerError) : null) ?? (choices.isError ? "Couldn't load your Slack workspaces. Try again." : registration?.errorCode ? setupError(registration.errorCode) : null);
+  const message = error ?? (endpoint.setup?.slackManagerError ? setupError(endpoint.setup.slackManagerError) : null) ?? ((choicesView.kind === "error") ? "Couldn't load your Slack workspaces. Try again." : registration?.errorCode ? setupError(registration.errorCode) : null);
   return <div className="space-y-5">
     {message && <p role="alert" className="text-sm text-destructive">{message}</p>}
     {busy || choices.isPending || creating ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{busy ? needsAuthorization ? "Opening Slack…" : "Connecting your agent…" : creating ? "Setting up your Slack app…" : "Loading Slack…"}</p>
       : !choices.data?.managedAvailable ? <p className="text-sm">Managed Slack setup is unavailable. Try again later.</p>
-      : <>
+      : reconnectWorkspace ? null : <>
         {workspaces.length === 1 && <p className="text-sm">Add <strong>{endpoint.assignedAgentName}</strong> to <strong>{workspaces[0]!.workspaceName}</strong>.</p>}
         {workspaces.length > 1 && <Select value={grantId ?? ""} onValueChange={setSelectedGrant} disabled={busy || started}>
           <SelectTrigger aria-label="Slack workspace"><SelectValue placeholder="Choose a Slack workspace" /></SelectTrigger>
           <SelectContent>{workspaces.map(workspace => <SelectItem key={workspace.grantId} value={workspace.grantId}>{workspace.workspaceName}</SelectItem>)}</SelectContent>
         </Select>}
-        {(!started || registration?.errorCode === "slack_manager_reauthorize") && workspaces.length > 0 && <div><Button variant="link" className="h-auto p-0" disabled={busy} onClick={() => void run(authorize)}>{started ? "Reconnect Slack workspace" : "Connect another Slack workspace"}</Button></div>}
+        {!started && workspaces.length > 0 && <div><Button variant="link" className="h-auto p-0" disabled={busy} onClick={() => void run(authorize)}>Connect another Slack workspace</Button></div>}
       </>}
     {uncertain && <div className="space-y-3 text-sm">
       <a className="underline underline-offset-4" href={registration?.managementUrl ?? "https://api.slack.com/apps"} target="_blank" rel="noopener noreferrer">Open Slack app settings</a>
       <label className="flex items-center gap-2"><Checkbox checked={confirmed} onCheckedChange={value => setConfirmed(value === true)} disabled={busy} />I checked Slack and no app was created. Create a new app.</label>
     </div>}
     <SetupWizardFooter onSaveExit={onSaveExit} disabled={busy}>
-      {choices.isError || !choices.isPending && !choices.data?.managedAvailable ? <Button disabled={busy || choices.isFetching} onClick={() => void choices.refetch()}>Retry</Button> : <Button disabled={busy || disabled || creating || choices.isPending || !choices.data?.managedAvailable || (workspaces.length > 1 && !grantId) || (uncertain && !confirmed)} onClick={() => void run(connect)}>
-        {busy && <Loader2 className="size-4 animate-spin" />}{needsAuthorization && started ? "Reconnect Slack" : registration?.appId ? "Continue in Slack" : "Continue"}
+      {(choicesView.kind === "error") || !choices.isPending && !choices.data?.managedAvailable ? <Button disabled={busy || choices.isFetching} onClick={() => void choices.refetch()}>Retry</Button> : <Button disabled={busy || disabled || creating || choices.isPending || !choices.data?.managedAvailable || (workspaces.length > 1 && !grantId && !reconnectWorkspace) || (uncertain && !confirmed)} onClick={() => void run(connect)}>
+        {busy && <Loader2 className="size-4 animate-spin" />}{reconnectWorkspace ? "Reconnect Slack workspace" : registration?.appId ? "Continue in Slack" : "Continue"}
       </Button>}
     </SetupWizardFooter>
   </div>;

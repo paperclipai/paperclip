@@ -1,3 +1,4 @@
+import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
 import type { GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
@@ -70,7 +71,9 @@ import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
+import { describeError } from "@/api/errors";
 import { InlineBanner } from "@/components/InlineBanner";
+import { useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -609,10 +612,11 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
     ? getAppDefinitionForApplicationKey(application.applicationKey)
     : getConnectableAppDefinition(String(retained?.config?.sourceTemplateKey ?? ""));
   const gatedDefinitions = [persistedDefinition, requestedDefinition].filter(app => app?.experimentalFeatureKey);
+  const existingView = useQueryView(existing);
   const provider = source || existing.data?.config?.sourceTemplateKey;
   const method = searchParams.get("method") || existing.data?.config?.connectionMethodKey;
-  if (lookup && existing.isPending) return <p className="p-6 text-sm text-muted-foreground">Loading connection…</p>;
-  if (lookup && existing.isError) return <div role="alert" className="space-y-3 p-6"><p>Could not load this connection. Your saved access and credentials have not changed.</p><Button variant="outline" onClick={() => void existing.refetch()}>Try again</Button></div>;
+  if (lookup && (existingView.kind === "loading" || existingView.kind === "reconnecting")) return <p className="p-6 text-sm text-muted-foreground">Loading connection…</p>;
+  if (lookup && existingView.kind === "error") return <div role="alert" className="space-y-3 p-6"><p>Could not load this connection. Your saved access and credentials have not changed.</p><Button variant="outline" onClick={() => void existing.refetch()}>Try again</Button></div>;
   if (gatedDefinitions.length) {
     if (!availability.loaded) return <p role="status" className="p-6 text-sm text-muted-foreground">Loading connection settings…</p>;
     if (availability.failed) return <p role="alert" className="p-6 text-destructive text-sm">Could not load connector availability. Refresh to try again.</p>;
@@ -800,6 +804,27 @@ function StandardConnectionSetupFlow({
   const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
   const [authorizationFallbackUrl, setAuthorizationFallbackUrl] = useState<string | null>(null);
   const oauthHandoffAbortRef = useRef<AbortController | null>(null);
+  const oauthLookupScope = JSON.stringify([selectedCompanyId, requestedAppKey, resumeConnectionId, connectionIntentId, credentialSource, host, createNewConnection]);
+  const oauthLookupScopeRef = useRef(oauthLookupScope);
+  oauthLookupScopeRef.current = oauthLookupScope;
+  const pendingOAuthLookupRef = useRef<{ scope: string; account: ReturnType<typeof bindAccount> } | null>(null);
+  const cancelOAuthLookup = useCallback(() => {
+    if (!pendingOAuthLookupRef.current) return false;
+    pendingOAuthLookupRef.current = null;
+    directOAuthRetryingRef.current = false;
+    oauthPopupRef.current?.close();
+    oauthPopupRef.current = null;
+    return true;
+  }, []);
+  useEffect(() => {
+    if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
+      cancelOAuthLookup();
+      setOAuthPhase("entry");
+      setOAuthError(null);
+    }
+  }, [cancelOAuthLookup, oauthLookupScope]);
+  useEffect(() => () => { cancelOAuthLookup(); }, [cancelOAuthLookup]);
+
   const [showConnectionChoice, setShowConnectionChoice] = useState(
     existingConnections.length > 0 && Boolean(onUseExisting),
   );
@@ -877,7 +902,7 @@ function StandardConnectionSetupFlow({
     } catch (error) {
       if (controller.signal.aborted) return;
       setOAuthPhase("error");
-      setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
+      setOAuthError(describeError(error).body);
       onPhaseChange?.("needs_retry");
     } finally {
       if (oauthHandoffAbortRef.current === controller) oauthHandoffAbortRef.current = null;
@@ -1023,6 +1048,7 @@ function StandardConnectionSetupFlow({
   };
 
   const backToGallery = () => {
+    cancelOAuthLookup();
     // Back is a wizard transition, so keep the selected app and entered draft
     // intact. Picking another connector will replace that state explicitly.
     setStep("gallery");
@@ -1052,6 +1078,7 @@ function StandardConnectionSetupFlow({
     } : data, [connectionIntentId, aiConnection?.provider, aiConnection?.method, aiConnection?.mode]),
     enabled: !!selectedCompanyId,
   });
+  const galleryView = useQueryView(galleryQuery);
   const callbackUrlForSetup = oauthCallbackUrlForBrowser(
     window.location.origin,
     galleryQuery.data?.oauthCallbackUrl,
@@ -1112,6 +1139,7 @@ function StandardConnectionSetupFlow({
       && !entryAdvertisesManagedConnector
     ),
   });
+  const connectorEnrollmentView = useQueryView(connectorEnrollmentQuery);
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
   const closeEnrollmentPopup = useCallback(() => {
     oauthPopupRef.current?.close();
@@ -1177,7 +1205,7 @@ function StandardConnectionSetupFlow({
     onError: (error) => {
       closeEnrollmentPopup();
       setConnectorEnrollmentError(
-        error instanceof Error ? error.message : "Paperclip couldn’t reach Paperclip Cloud. Try again.",
+        describeError(error).body,
       );
     },
   });
@@ -1193,6 +1221,8 @@ function StandardConnectionSetupFlow({
     enabled: !!selectedCompanyId && (!!directOAuthSource || !!resumeConnectionId || !!reconnectConnectionId),
     refetchOnMount: "always",
   });
+  const applicationsView = useQueryView(applicationsQuery);
+  const connectionsView = useQueryView(connectionsQuery);
   const existingOAuthConnection = useMemo(
     () => forceNewConnection ? null : reusableOAuthConnection(
       directOAuthSource,
@@ -1366,9 +1396,7 @@ function StandardConnectionSetupFlow({
       setOAuthError(
         details?.code === "invalid_grant"
           ? "Your authorization expired or was revoked. Reconnect to continue."
-          : error instanceof Error
-            ? error.message
-            : "Paperclip couldn’t start secure sign-in. Try again.",
+          : describeError(error).body,
       );
     },
   });
@@ -1554,9 +1582,7 @@ function StandardConnectionSetupFlow({
         setOAuthError(
           details?.code === "invalid_grant"
             ? "Your authorization expired or was revoked. Reconnect to continue."
-            : error instanceof Error
-              ? error.message
-              : "Paperclip couldn’t start secure sign-in. Try again.",
+            : describeError(error).body,
         );
         return;
       }
@@ -1565,7 +1591,7 @@ function StandardConnectionSetupFlow({
       // for a pasted address "check your key" is usually the wrong advice.
       if (!entry && linkUrl) {
         const code = typeof details?.code === "string" ? details.code : null;
-        const guidance = genericConnectGuidance(code, error instanceof Error ? error.message : null);
+        const guidance = genericConnectGuidance(code, describeError(error).body);
         setLinkGuidance(guidance);
         setGenericOAuthPending(false);
         if (guidance.focus === "credentials") {
@@ -1578,7 +1604,7 @@ function StandardConnectionSetupFlow({
       }
       pushToast({
         title: "Couldn’t connect",
-        body: error instanceof Error ? error.message : "Please check your key and try again.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1750,7 +1776,7 @@ function StandardConnectionSetupFlow({
       !connectionsQuery.isFetchedAfterMount
     )) return;
     if (automaticOAuth && directOAuthRetryingRef.current) return;
-    if (automaticOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
+    if (automaticOAuth && (applicationsView.kind === "error" || connectionsView.kind === "error")) {
       setOAuthPhase("error");
       setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
       setStep("key");
@@ -1759,10 +1785,10 @@ function StandardConnectionSetupFlow({
   }, [
     aiConnection,
     requestedMethodKey,
-    applicationsQuery.isError,
+    applicationsView.kind,
     applicationsQuery.isFetchedAfterMount,
     applicationsQuery.data,
-    connectionsQuery.isError,
+    connectionsView.kind,
     connectionsQuery.isFetchedAfterMount,
     connectorEnrollmentQuery.data?.configured,
     connectorEnrollmentQuery.isLoading,
@@ -1916,7 +1942,7 @@ function StandardConnectionSetupFlow({
       setAppStep("key");
       pushToast({
         title: "Couldn’t finish setup",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1928,7 +1954,7 @@ function StandardConnectionSetupFlow({
 
   if (
     (resumeConnectionId || reconnectConnectionId)
-    && (connectionsQuery.isError || applicationsQuery.isError)
+    && (connectionsView.kind === "error" || applicationsView.kind === "error")
   ) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
@@ -1944,7 +1970,7 @@ function StandardConnectionSetupFlow({
                 connectionsQuery.refetch(),
                 applicationsQuery.refetch(),
               ]);
-              if (!connectionsResult.isError && !applicationsResult.isError) {
+              if (connectionsResult.isSuccess && applicationsResult.isSuccess) {
                 setOAuthError(null);
                 setOAuthPhase("entry");
               }
@@ -1956,6 +1982,20 @@ function StandardConnectionSetupFlow({
             Back to apps
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  // An outage before the retained connection has loaded is not a missing
+  // connection: keep the placeholder until the server is back.
+  if (
+    (resumeConnectionId || reconnectConnectionId)
+    && [connectionsView, applicationsView, galleryView].some((view) => view.kind === "reconnecting")
+  ) {
+    return (
+      <div className="mx-auto max-w-xl space-y-4" aria-label={resumeConnectionId ? "Loading saved connection setup" : "Loading retained connection setup"}>
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-40 w-full rounded-xl" />
       </div>
     );
   }
@@ -2015,7 +2055,7 @@ function StandardConnectionSetupFlow({
     );
   }
 
-  if ((resumeConnectionId || reconnectConnectionId) && galleryQuery.isError) {
+  if ((resumeConnectionId || reconnectConnectionId) && galleryView.kind === "error") {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
         <h2 className="text-lg font-semibold text-foreground">Couldn’t load connection setup</h2>
@@ -2023,7 +2063,7 @@ function StandardConnectionSetupFlow({
           Paperclip couldn’t load the provider details needed to restore this connection. The retained connection was not changed.
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
-          <Button type="button" onClick={() => void galleryQuery.refetch()}>
+          <Button type="button" onClick={galleryView.retry} disabled={galleryView.isFetching}>
             Try again
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
@@ -2098,7 +2138,7 @@ function StandardConnectionSetupFlow({
             setExistingConnectionError(null);
             try { await onUseExisting(id); }
             catch (error) {
-              setExistingConnectionError(error instanceof Error ? error.message : "Couldn’t use this connection.");
+              setExistingConnectionError(describeError(error).body);
               setExistingConnectionPendingId(null);
             }
           }}
@@ -2234,7 +2274,7 @@ function StandardConnectionSetupFlow({
     && !entryAdvertisesManagedConnector
     && (
       connectorEnrollmentQuery.isLoading
-      || connectorEnrollmentQuery.isError
+      || connectorEnrollmentView.kind === "error"
       || connectorEnrollmentQuery.data?.configured !== true
     )
   );
@@ -2277,7 +2317,7 @@ function StandardConnectionSetupFlow({
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
-          const firstAttempt = !directOAuthAccessConfirmedRef.current;
+          if (pendingOAuthLookupRef.current) return;
           directOAuthAccessConfirmedRef.current = true;
           setOAuthError(null);
           setOAuthPhase("starting");
@@ -2293,40 +2333,31 @@ function StandardConnectionSetupFlow({
             startOAuth(connection);
             return;
           }
-          if (
-            firstAttempt
-            && !resumeConnectionId
-            && !applicationsQuery.isError
-            && !connectionsQuery.isError
-          ) {
-            connectApp(automaticOAuthEntry);
-            return;
-          }
-
-          // The create request may have reached the server even when its
-          // response did not reach the browser. Re-read both resources before
-          // creating again so Retry resumes that durable draft instead of
-          // duplicating it.
+          // Cached empty lists cannot authorize creation. A fresh lookup also
+          // recovers an earlier create whose response never reached this tab.
+          // Reserve the dialog window while this click still has user activation.
+          if (automaticOAuthEntry?.slug !== "google-workspace" || workspaceSelectionRef.current) reserveOAuthPopup();
+          const lookup = { scope: oauthLookupScope, account: bindAccount(queryClient) };
+          pendingOAuthLookupRef.current = lookup;
+          const isCurrentLookup = () => pendingOAuthLookupRef.current === lookup && oauthLookupScopeRef.current === lookup.scope && lookup.account.isCurrentScope();
           directOAuthRetryingRef.current = true;
           try {
-            const [applicationsResult, connectionsResult] = await Promise.all([
-              applicationsQuery.refetch(),
-              connectionsQuery.refetch(),
+            const [applications, connections] = await Promise.all([
+              toolsApi.listApplications(selectedCompanyId!, { cache: "no-store", fresh: true }),
+              toolsApi.listConnections(selectedCompanyId!, { cache: "no-store", fresh: true }),
             ]);
-            if (applicationsResult.isError || connectionsResult.isError) {
-              setOAuthPhase("error");
-              setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
-              return;
-            }
+            if (!isCurrentLookup()) return;
+            queryClient.setQueryData(queryKeys.tools.applications(selectedCompanyId!), applications);
+            queryClient.setQueryData(queryKeys.tools.connections(selectedCompanyId!), connections);
             const refreshedResumeConnection = resumeConnectionId
-              ? (connectionsResult.data?.connections ?? []).find(
+              ? (connections.connections ?? []).find(
                   (candidate) => candidate.id === resumeConnectionId && candidate.authKind === "oauth",
                 ) ?? null
               : null;
             const refreshedConnection = refreshedResumeConnection ?? reusableOAuthConnection(
               directOAuthSource,
-              applicationsResult.data?.applications ?? [],
-              connectionsResult.data?.connections ?? [],
+              applications.applications ?? [],
+              connections.connections ?? [],
               createNewConnection
                 ? { applicationId: prefill.applicationId, draftOnly: true }
                 : {},
@@ -2345,10 +2376,25 @@ function StandardConnectionSetupFlow({
             if (refreshedConnection) {
               startOAuth(refreshedConnection);
             } else {
-              connectMutation.mutate(automaticOAuthEntry);
+              connectApp(automaticOAuthEntry);
             }
+          } catch {
+            if (!isCurrentLookup()) return;
+            oauthPopupRef.current?.close();
+            oauthPopupRef.current = null;
+            setOAuthPhase("error");
+            setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
           } finally {
-            directOAuthRetryingRef.current = false;
+            if (pendingOAuthLookupRef.current === lookup) {
+              if (!isCurrentLookup()) {
+                cancelOAuthLookup();
+                setOAuthPhase("entry");
+                setOAuthError(null);
+              } else {
+                pendingOAuthLookupRef.current = null;
+                directOAuthRetryingRef.current = false;
+              }
+            }
           }
         }}
         onBack={() => {
@@ -2358,6 +2404,7 @@ function StandardConnectionSetupFlow({
           backToGallery();
         }}
         onCancel={() => {
+          cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
           (onCancel ?? (() => navigate("/apps")))();
         }}
@@ -2403,6 +2450,7 @@ function StandardConnectionSetupFlow({
           setOAuthError(null);
         }}
         onCancel={() => {
+          cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
           (onCancel ?? (() => navigate("/apps")))();
         }}
@@ -2492,7 +2540,7 @@ function StandardConnectionSetupFlow({
 
       {step === "gallery" && (
         <GalleryStep
-          loading={galleryQuery.isLoading}
+          loading={galleryQuery.isLoading || galleryView.kind === "reconnecting"}
           initialLink={linkUrl}
           apps={credentialSourceApps}
           vercelConnect={vercelConnectMode}
@@ -2562,7 +2610,7 @@ function StandardConnectionSetupFlow({
               </Button>
             ) : null}
 
-            {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
+            {connectorEnrollmentView.kind === "error" || connectorEnrollmentError ? (
               <InlineBanner tone="danger" className="mt-4">
                 {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
               </InlineBanner>
@@ -2605,7 +2653,7 @@ function StandardConnectionSetupFlow({
         <KeyStep
           settingsValid={additionalSettingsValid && instructionsValid}
           entry={entry}
-          error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : "Please check your key and try again.") : null}
+          error={connectMutation.error ? describeError(connectMutation.error).body : null}
           values={credentials}
           onChange={setCredentials}
           oauthClientId={curatedOAuthClientId}
@@ -4228,7 +4276,8 @@ export function AccessStep({ companyId, ...props }: Omit<Parameters<typeof Acces
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
   });
-  return <AccessStepContent {...props} agents={(agentsQuery.data ?? []).filter((agent) => agent.status !== "terminated")} agentsLoading={agentsQuery.isLoading} />;
+  const agentsView = useQueryView(agentsQuery);
+  return <AccessStepContent {...props} agents={(agentsQuery.data ?? []).filter((agent) => agent.status !== "terminated")} agentsLoading={agentsQuery.isLoading || agentsView.kind === "reconnecting"} />;
 }
 
 /** Shared Gmail access presentation; callers supply agents so review stories stay offline. */

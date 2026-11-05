@@ -1,3 +1,4 @@
+import { hasMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
@@ -72,7 +73,7 @@ export async function ownedWorkspaceRecoveryLease(db: Db, input: WorkspaceRecove
 /** Resolve only the immutable source recorded by the failed run. Never discover
  * a candidate by recency, mutable adapter configuration, or a provider search. */
 export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRecoverySourceIdentity,
-  options: { maximumSources?: number } = {}) {
+  options: { maximumSources?: number; prepareNativeRetention?: boolean } = {}) {
   const invalid = workspaceSourceBindingFailure;
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
@@ -152,9 +153,12 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     if (!lease.environmentId) throw invalid("lease_environment_missing");
     if (!lease.providerLeaseId) throw invalid("lease_allocation_missing");
     if (!lease.provider || lease.provider === "local") throw invalid("lease_provider_invalid");
+    const preparingRetention = options.prepareNativeRetention && run.runtimeMode === "native" && run.status === "failed"
+      && legacyDescriptor?.state === "prepared" && legacyDescriptor.resourceDisposition === "keep_running"
+      && lease.leasePolicy === "reuse_by_environment" && ["released", "retained"].includes(lease.status);
     const reusableExport = descriptor && (acceptedExportResult || remoteDescriptor && remoteAuthority)
       && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
-    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport)
+    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport && !preparingRetention)
       throw invalid("lease_policy_not_retained", lease.leasePolicy);
     if (typeof remoteCwd !== "string" || !remoteCwd.startsWith("/")) throw invalid("lease_cwd_invalid");
     if (descriptor && lease.providerLeaseId !== descriptor.providerLeaseId) throw invalid("allocation_reference_mismatch");
@@ -211,7 +215,10 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     }
     const [environment] = await db.select().from(environments).where(eq(environments.id, lease.environmentId));
     if (!environment) throw new SystemRecoveryFailure("source_unavailable", "service_required");
-    sources.push({ lease, environment, reference: legacyDescriptor, remoteReference: remoteDescriptor,
+    const preservationOnly = legacyDescriptor ? await hasMigratedLegacyWorkspaceSource(db, {
+      companyId: input.companyId, runId: run.id, reference: legacyDescriptor,
+    }) : false;
+    sources.push({ lease, environment, reference: legacyDescriptor, preservationOnly, remoteReference: remoteDescriptor,
       remoteWorkspace: remoteDescriptor ? remoteWorkspace : null, remoteCwd });
   }
   return { run, action, sources };

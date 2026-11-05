@@ -2315,6 +2315,12 @@ export function DesignGuide() {
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
+        <p className="text-sm text-muted-foreground">
+          When retained-file recovery needs another authorized request, the source task and
+          run inspector offer Recover saved files. This queues the existing file-preservation
+          worker. Work remains held until the server verifies the saved files; a queued
+          acknowledgement does not mean that recovery finished.
+        </p>
       </Section>
 
       <Section title="Cloud sign-in unavailable">
