@@ -130,8 +130,14 @@ async function workspaceArchive(input: {
     // directory's repository. Git would fail with a raw command error that
     // names local paths, or discover an enclosing repository and save that
     // repository's settings, refs and index as this directory's state.
+    // Only Git's own rejection identifies the entry. A full disk, a timeout or
+    // a missing Git binary keeps its existing diagnostic.
     const top = await git(repo, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
-      .catch(() => { check(); return fail("invalid_git_repository"); });
+      .catch((error: { code?: unknown; message?: unknown }) => {
+        check();
+        if (typeof error.code !== "number" || /No space left on device|Disk quota exceeded/iu.test(String(error.message))) throw error;
+        return fail("invalid_git_repository");
+      });
     if (await fs.realpath(top.trim()).catch(() => null) !== repo) fail("invalid_git_repository");
   };
   const assertGitOperationComplete = async (repo: string) => {
@@ -211,6 +217,8 @@ async function workspaceArchive(input: {
   };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
+  const excluded = (next: string) => input.exclude?.some(item => next === item || next.startsWith(`${item}/`))
+    || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/");
   const walk = async (root: string, skipGit = false) => {
     const entries: Entry[] = [];
     const visit = async (relative: string, parentIsRepository = false) => {
@@ -219,11 +227,17 @@ async function workspaceArchive(input: {
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
       const names = (await fs.readdir(directory)).sort();
       const inRepository = parentIsRepository || names.includes(".git");
+      if (skipGit && names.includes(".git") && !excluded(relative ? `${relative}/.git` : ".git")) {
+        // Validate the repository before any Git read below, including the
+        // tracked check for node_modules, can use a damaged entry.
+        if ((await fs.lstat(path.join(directory, ".git"))).isSymbolicLink()) fail("unsafe_git_link");
+        await assertRepositoryRoot(directory);
+      }
       for (const name of names) {
         check();
         const next = relative ? `${relative}/${name}` : name;
         if (!safeRelative(next)) fail("unsupported_filename");
-        if (input.exclude?.some(excluded => next === excluded || next.startsWith(`${excluded}/`)) || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/")) {
+        if (excluded(next)) {
           excludedPaths.add(next); continue;
         }
         const source = path.join(root, next);
@@ -277,7 +291,6 @@ async function workspaceArchive(input: {
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
-        await assertRepositoryRoot(repo);
         const settings = await portableGitSettings(repo);
         gitSignatures.set(relative, await signature(repo, settings));
         const offline = await gitStateHash(repo, "shallow") !== null
