@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, closeRegisteredClients, companies, completionContracts, createDb, executionWorkspaces,
   heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { reconcileOfflineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
+import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("offline workspace operation receipts", () => {
@@ -67,6 +73,26 @@ describe.skipIf(!support.supported)("offline workspace operation receipts", () =
       .toEqual([expect.objectContaining({ action: "workspace_operation.reconciled", details: expect.objectContaining({ supersedingOperationId: f.receiptId }) })]);
     expect(await reconcile(f.companyId)).toMatchObject({ reconciled: 0 });
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.operationId))).toHaveLength(1);
+  });
+
+  it("unblocks the real workspace importer only after reconciling the obsolete attempt", async () => {
+    const f = await fixture(), root = await mkdtemp(path.join(os.tmpdir(), "offline-receipt-import-"));
+    try {
+      const cwd = path.join(root, "source"); await mkdir(cwd);
+      await writeFile(path.join(cwd, "saved.txt"), "Retained local work\n");
+      await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, f.workspaceId));
+      await db.update(issues).set({ executionWorkspaceId: f.workspaceId }).where(eq(issues.id, f.issueId));
+      const storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
+      const request = { db, storage, companyId: f.companyId, workspaceId: f.workspaceId, apply: true, writersStopped: true };
+      expect((await inventoryRemoteWorkspaceMigration(db, request)).reasons).toContain("workspace_operation_unresolved");
+      await expect(migrateRemoteWorkspace(request)).rejects.toThrow("workspace_operation_unresolved");
+      expect(await reconcile(f.companyId)).toMatchObject({ reconciled: 1 });
+      await expect(migrateRemoteWorkspace(request)).resolves.toMatchObject({ applied: true, eligible: true });
+      expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("Retained local work\n");
+      expect((await operation(f.receiptId)).status).toBe("succeeded");
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(workspace.metadata?.remoteWorkspace).toMatchObject({ schema: "paperclip.remote-workspace.v1", snapshotId: expect.any(String) });
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it.each(["missing_receipt", "failed_receipt", "earlier_receipt", "unfinished_receipt", "wrong_workspace", "wrong_run",
