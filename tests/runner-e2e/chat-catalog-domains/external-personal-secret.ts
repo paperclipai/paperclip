@@ -458,7 +458,7 @@ export const personalSecretExternalCases = [
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v11",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v12",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
