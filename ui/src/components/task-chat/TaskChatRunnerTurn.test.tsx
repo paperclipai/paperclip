@@ -40,7 +40,7 @@ describe("TaskChatRunnerTurn", () => {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => void,
-    suppressFinal = false,
+    awaitingContinuation = false,
     continuedAfterSteering = false,
     execution?: ExecutionProjection,
     preparationLabel?: string,
@@ -58,7 +58,7 @@ describe("TaskChatRunnerTurn", () => {
               execution={execution}
               preparationLabel={preparationLabel}
               startedAtMs={Date.now() - 2_000}
-              suppressFinal={suppressFinal}
+              awaitingContinuation={awaitingContinuation}
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />

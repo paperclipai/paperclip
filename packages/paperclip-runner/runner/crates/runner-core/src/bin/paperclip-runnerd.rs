@@ -675,6 +675,7 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["recoveryIntegrityVersion"], 1);
         assert!(metadata.get("sourceRecoveryVersion").is_none());
+        assert!(metadata.get("codexSourceRecoveryVersion").is_none());
         assert_eq!(metadata["acpxRecoveryIntegrityVersion"], 1);
         assert!(metadata.get("acpxSourceRecoveryVersion").is_none());
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
