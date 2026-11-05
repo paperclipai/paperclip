@@ -1,6 +1,6 @@
 {
-  "inputSha256": "ea91060774e3289d5d07bc58f72d8953f5a6dcb9db98aa9a1adf202476bf89ac",
-  "outputSha256": "6f252b0c8099ed837a297f97f1fc5e14e96bc7530b0239065d0789b33b2ee477",
-  "patchSha256": "2adced9a66052ba5752140ec6cc6670f679552a9a8559bd1faea10036afeeb97",
-  "basis": "Reviewed current master after the advanced-imessage 2.2.0 and protobuf 2.16.0 lock update. The existing correction patch is unchanged; its reverse/forward roundtrip reproduces this exact output. Unknown locks, changed patches and wrong outputs still reject."
+  "inputSha256": "6f252b0c8099ed837a297f97f1fc5e14e96bc7530b0239065d0789b33b2ee477",
+  "outputSha256": "7da49598dd6301c519e549233d46054b3a2c38da8b8d848b97c42168bacd60b6",
+  "patchSha256": "4ebb5b9df42fa2a85473edf9737cf20ba87caa28de3d74d7fccb3361f9251cbe",
+  "basis": "Generated with the trusted master lockfile refresh. Review this offline correction and its hashes with the dependency changes."
 }
