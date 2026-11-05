@@ -264,6 +264,80 @@ function boundedAcpxLifecycleLocations(value: unknown): unknown[] | undefined {
   });
 }
 
+const MAX_ACP_META_DEPTH = 6;
+const MAX_ACP_META_ENTRIES = 64;
+const MAX_ACP_META_STRING_BYTES = 4_000;
+const MAX_ACP_META_TOTAL_BYTES = 16_000;
+const UNSAFE_ACP_META_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Bounded, JSON-safe copy of an ACP update `_meta` object. The patched ACPX
+ * runtime forwards `_meta` unvalidated on tool and status events (for example
+ * Claude's `_meta.claudeCode.toolName`, `parentToolUseId`, `terminal_exit`
+ * and `_claude/rateLimit`). The values are producer-controlled hints: they
+ * can name a tool or carry a provider counter, but they never grant authority.
+ *
+ * Limits: depth 6, 64 keys or items per container, 4 KB per string and about
+ * 16 KB in total. Entries beyond a limit are dropped, never partially parsed.
+ * Returns undefined when nothing usable remains.
+ */
+export function boundedAcpMeta(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  let budget = MAX_ACP_META_TOTAL_BYTES;
+  const visit = (input: unknown, depth: number): unknown => {
+    if (input === null || typeof input === "boolean") {
+      budget -= 4;
+      return input;
+    }
+    if (typeof input === "number") {
+      if (!Number.isFinite(input)) return undefined;
+      budget -= 16;
+      return input;
+    }
+    if (typeof input === "string") {
+      const bounded = boundedAcpxLifecycleText(input, MAX_ACP_META_STRING_BYTES) ?? "";
+      const bytes = Buffer.byteLength(bounded) + 2;
+      if (bytes > budget) return undefined;
+      budget -= bytes;
+      return bounded;
+    }
+    if (depth >= MAX_ACP_META_DEPTH || typeof input !== "object") return undefined;
+    if (Array.isArray(input)) {
+      const items: unknown[] = [];
+      for (const item of input.slice(0, MAX_ACP_META_ENTRIES)) {
+        if (budget <= 0) break;
+        const next = visit(item, depth + 1);
+        if (next !== undefined) items.push(next);
+      }
+      return items;
+    }
+    const output: Record<string, unknown> = {};
+    let entries = 0;
+    for (const [key, item] of Object.entries(input as Record<string, unknown>)) {
+      if (entries >= MAX_ACP_META_ENTRIES || budget <= 0) break;
+      if (UNSAFE_ACP_META_KEYS.has(key) || Buffer.byteLength(key) > 160) continue;
+      budget -= Buffer.byteLength(key) + 4;
+      const next = visit(item, depth + 1);
+      if (next === undefined) continue;
+      output[key] = next;
+      entries += 1;
+    }
+    return output;
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const bounded = visit(value, 0) as Record<string, unknown>;
+  return Object.keys(bounded).length > 0 ? bounded : undefined;
+}
+
+/** Bound any forwarded `_meta` on a runtime event, whatever its type. */
+function withBoundedAcpMeta<T extends AcpRuntimeEventShape>(event: T): T {
+  if (!Object.prototype.hasOwnProperty.call(event, "_meta")) return event;
+  const { _meta: raw, ...rest } = event as T & { _meta?: unknown };
+  const meta = boundedAcpMeta(raw);
+  return (meta ? { ...rest, _meta: meta } : rest) as T;
+}
+
 /**
  * ACP tool updates are deltas: a later update may omit the title, kind, and
  * locations that were present on the opening event. ACPX represents a missing
@@ -291,7 +365,8 @@ export function createAcpxToolEventNormalizer<
   T extends AcpRuntimeEventShape,
 >(): (event: T) => T {
   const lifecycle = new Map<string, AcpxToolLifecycleIdentity>();
-  return (event) => {
+  return (input) => {
+    const event = withBoundedAcpMeta(input);
     if (event.type !== "tool_call" || !event.toolCallId) return event;
     const toolCallId = boundedAcpxLifecycleId(event.toolCallId);
     const boundedTitle = boundedAcpxLifecycleText(
