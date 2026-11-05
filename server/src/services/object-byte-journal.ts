@@ -204,17 +204,57 @@ async function qualifyConditionalWrites(
   });
 }
 
+export class ObjectJournalBusyError extends Error {
+  readonly code = "object_journal_io_busy";
+  constructor() {
+    super("Object storage is busy; retry shortly");
+  }
+}
+export function isObjectJournalBusyError(error: unknown): error is ObjectJournalBusyError {
+  return error instanceof ObjectJournalBusyError;
+}
+
+/**
+ * Writer and background operations always queue. Only interactive reads, which
+ * a client can retry, are shed when the process-wide queue is saturated.
+ */
+export type ObjectJournalIOPriority = "background" | "interactive";
+const MAX_ACTIVE_IO = 8;
+const MAX_WAITING_INTERACTIVE_IO = 32;
 let activeIO = 0;
-const waitingIO: Array<() => void> = [];
-async function objectIO<T>(operation: () => Promise<T>): Promise<T> {
-  if (activeIO >= 8) {
-    if (waitingIO.length >= 32) throw new Error("object_journal_io_capacity_exceeded");
-    await new Promise<void>((resolve) => waitingIO.push(resolve));
+const waitingIO: Record<ObjectJournalIOPriority, Array<() => void>> = {
+  background: [],
+  interactive: [],
+};
+async function objectIO<T>(
+  operation: () => Promise<T>,
+  priority: ObjectJournalIOPriority = "background",
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  if (activeIO >= MAX_ACTIVE_IO) {
+    const queue = waitingIO[priority];
+    if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
+      throw new ObjectJournalBusyError();
+    await new Promise<void>((resolve, reject) => {
+      // A granted waiter owns the slot it was handed; an aborted one leaves the queue.
+      const grant = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = queue.indexOf(grant);
+        if (index >= 0) queue.splice(index, 1);
+        reject(signal!.reason);
+      };
+      queue.push(grant);
+      signal?.addEventListener("abort", abort, { once: true });
+    });
   } else activeIO++;
   try {
     return await operation();
   } finally {
-    const next = waitingIO.shift();
+    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
     if (next) next();
     else activeIO--;
   }
@@ -223,6 +263,8 @@ async function objectIO<T>(operation: () => Promise<T>): Promise<T> {
 export interface ObjectByteJournalOptions {
   provider: StorageProvider;
   prefix: string;
+  /** Queue class for this journal's reads. Writes always use the background class. */
+  readPriority?: ObjectJournalIOPriority;
 
   encode?: (bytes: Buffer) => Promise<Buffer>;
   decode?: (bytes: Buffer) => Promise<Buffer>;
@@ -243,9 +285,10 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     throw new Error("Object storage requires conditional writes and scoped listing");
   const headKey = `${prefix}/head.json`;
   const objectPrefix = `${prefix}/objects/`;
+  const readPriority = options.readPriority ?? "background";
   const putConditional = (
     input: Parameters<NonNullable<StorageProvider["putObjectConditional"]>>[0],
-  ) => objectIO(() => provider.putObjectConditional!(input));
+  ) => objectIO(() => provider.putObjectConditional!(input), "background", input.signal);
 
   async function getBytes(key: string, limit: number, signal?: AbortSignal) {
     return objectIO(async () => {
@@ -271,7 +314,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       }
       signal?.throwIfAborted();
       return { bytes: Buffer.concat(chunks), etag: result.etag };
-    });
+    }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {
     let result;
@@ -630,12 +673,18 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
         signal
           ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
           : AbortSignal.timeout(15_000);
-      const page = await objectIO(() =>
-        provider.listObjects!({ prefix: objectPrefix, continuationToken, signal: deadline() }),
+      const page = await objectIO(
+        () => provider.listObjects!({ prefix: objectPrefix, continuationToken, signal: deadline() }),
+        "background",
+        signal,
       );
       for (const key of page.keys) {
         if (!key.startsWith(objectPrefix)) throw new Error("object_journal_invalid_listing");
-        await objectIO(() => provider.deleteObject({ objectKey: key, signal: deadline() }));
+        await objectIO(
+          () => provider.deleteObject({ objectKey: key, signal: deadline() }),
+          "background",
+          signal,
+        );
       }
       continuationToken = page.continuationToken;
     } while (continuationToken);
