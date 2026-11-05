@@ -55,7 +55,7 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(workMode: "standard" | "planning") {
+  async function seed(workMode: "standard" | "planning" | "ask") {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -93,7 +93,7 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
 
   it("saves an agent-initiated proposal on a Standard task as the Plan document and asks for approval", async () => {
     const { issueId, binding } = await seed("standard");
-    const execution = { binding, provider: { kind: "acpx" } } as never;
+    const execution = { binding, provider: { kind: "acpx" }, task: { workMode: "standard" } } as never;
 
     const result = await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent(PLAN) });
 
@@ -117,7 +117,7 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     await documentService(db).upsertIssueDocument({
       issueId, key: "plan", title: "Plan", format: "markdown", body: "# Old plan", createdByAgentId: binding.agentId,
     });
-    const execution = { binding, provider: { kind: "acpx" } } as never;
+    const execution = { binding, provider: { kind: "acpx" }, task: { workMode: "standard" } } as never;
 
     const result = await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent(PLAN) });
 
@@ -130,6 +130,7 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     const execution = {
       binding,
       provider: { kind: "codex" },
+      task: { workMode: "planning" },
       executionMode: "plan",
       planningContext: { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "none", reviewContext: {} },
     } as never;
@@ -160,6 +161,7 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     const execution = {
       binding,
       provider: { kind: "codex" },
+      task: { workMode: "planning" },
       executionMode: "plan",
       planningContext: { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "none", reviewContext: {} },
     } as never;
@@ -170,9 +172,18 @@ describeEmbeddedPostgres("harness-proposed plan synchronization", () => {
     expect((await documentService(db).getIssueDocumentByKey(issueId, "plan"))?.body).toBe("# Human edit");
   });
 
+  it("never writes the Plan document from an Ask-mode run", async () => {
+    const { issueId, binding } = await seed("ask");
+    const execution = { binding, provider: { kind: "acpx" }, task: { workMode: "ask" } } as never;
+
+    expect(await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent(PLAN) })).toBeNull();
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "plan")).toBeNull();
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId))).toEqual([]);
+  });
+
   it("ignores streaming proposals and Standard-mode checklists", async () => {
     const { issueId, binding } = await seed("standard");
-    const execution = { binding, provider: { kind: "codex" } } as never;
+    const execution = { binding, provider: { kind: "codex" }, task: { workMode: "standard" } } as never;
 
     expect(await synchronizeCompletedProviderPlan({ db, execution, event: proposalEvent("# Partial", "streaming") })).toBeNull();
     expect(await synchronizeCompletedProviderPlan({

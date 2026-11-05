@@ -618,6 +618,64 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("requests reasoning summaries and keeps each summary part as its own section", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-reasoning-summary",
+      normalizedSessionId: "normalized-reasoning-summary",
+      workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Think it through." },
+    });
+    expect(transport.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ summary: "auto" });
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "inProgress" },
+    });
+    transport.push("item/started", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: { id: "reason-1", type: "reasoning", summary: [], content: [] },
+    });
+    for (const [summaryIndex, delta] of [[0, "**Tracing the retry path**"], [1, "**Verifying edge cases**"]] as const) {
+      transport.push("item/reasoning/summaryPartAdded", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex,
+      });
+      transport.push("item/reasoning/summaryTextDelta", {
+        threadId: "thread-1", turnId: turn.turnId, itemId: "reason-1", summaryIndex, delta,
+      });
+    }
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: turn.turnId,
+      item: {
+        id: "reason-1",
+        type: "reasoning",
+        summary: ["**Tracing the retry path**", "**Verifying edge cases**"],
+        content: [],
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: turn.turnId, status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    const reasoningDeltas = events.filter(
+      (event) => event.eventType === "item.delta" && event.payload.kind === "reasoning",
+    );
+    expect(reasoningDeltas.map((event) => [event.payload.providerMethod, event.payload.text])).toEqual([
+      ["item/reasoning/summaryTextDelta", "**Tracing the retry path**"],
+      ["item/reasoning/summaryPartAdded", "\n\n"],
+      ["item/reasoning/summaryTextDelta", "**Verifying edge cases**"],
+    ]);
+    expect(reasoningDeltas.every((event) => event.payload.channel === "summary")).toBe(true);
+    expect(
+      events.find((event) => event.eventType === "item.completed" && event.payload.kind === "reasoning")?.payload,
+    ).toMatchObject({ channel: "summary", text: "**Tracing the retry path**\n\n**Verifying edge cases**" });
+  });
+
   it("orders turn.accepted before a terminal event even when the provider notifies the terminal turn ahead of the turn/start response", async () => {
     const transport = new FakeCodexTransport();
     let resolveTurnStart: (value: Record<string, unknown>) => void = () => {};

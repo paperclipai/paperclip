@@ -41,6 +41,7 @@ const DELTA_KINDS: Record<string, string> = {
   "item/agentMessage/delta": "agentMessage",
   "item/plan/delta": "plan",
   "item/reasoning/summaryTextDelta": "reasoning",
+  "item/reasoning/summaryPartAdded": "reasoning",
   "item/reasoning/textDelta": "reasoning",
   "item/commandExecution/outputDelta": "commandExecution",
   "item/fileChange/outputDelta": "fileChange",
@@ -264,6 +265,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       for (const canonical of canonicalProviderEventsFromCodex(
         notification.method,
         params,
+        { workingDirectory: state.workspaceRoots },
       )) {
         state.emit(canonical.eventType, canonical.payload, {
           turnId: turnId || undefined,
@@ -578,6 +580,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const deltaKind = DELTA_KINDS[notification.method];
     if (deltaKind !== undefined) {
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
+      // A new summary part starts a new section: the first part needs no
+      // separator, later parts begin after a blank line like `summary[]`.
+      if (notification.method === "item/reasoning/summaryPartAdded"
+        && !(typeof params.summaryIndex === "number" && params.summaryIndex > 0)) return;
       const methodChannel = channelForDelta(state, notification.method);
       const channel =
         methodChannel !== "unknown"
@@ -591,7 +597,9 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           kind: deltaKind,
           channel,
           providerMethod: notification.method,
-          text: text(params.delta, text(params.patch, text(params.output))),
+          text: notification.method === "item/reasoning/summaryPartAdded"
+            ? "\n\n"
+            : text(params.delta, text(params.patch, text(params.output))),
           update: params,
         }),
         { turnId, itemId: itemId || `${turnId}:${deltaKind}` },
@@ -675,7 +683,7 @@ function channelForDelta(
   state: CodexSessionState,
     method: string,
   ): "progress" | "final" | "summary" | "detail" | "unknown" {
-    if (method === "item/reasoning/summaryTextDelta") return "summary";
+    if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/summaryPartAdded") return "summary";
     if (method === "item/reasoning/textDelta") return "detail";
     return "unknown";
   }

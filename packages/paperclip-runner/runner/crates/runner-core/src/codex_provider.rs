@@ -2043,6 +2043,12 @@ impl CodexProvider {
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none", so reasoning items carry no text. Request the
+        // provider's own reasoning summaries for every Codex turn.
+        if self.config.provider == "codex" {
+            turn_params_object.insert("summary".to_owned(), json!("auto"));
+        }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
         }

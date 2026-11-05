@@ -695,6 +695,22 @@ fn provider_performance_spans(params: &Value) -> Vec<Value> {
     }).collect()
 }
 
+/// A Codex reasoning item's provider-written summary parts, joined the same
+/// way the live stream separates them. `None` when the provider sent none.
+fn reasoning_summary_text(provider_item: &Value) -> Option<String> {
+    let parts: Vec<&str> = provider_item
+        .get("summary")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|part| {
+            part.as_str()
+                .or_else(|| part.get("text").and_then(Value::as_str))
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| bounded_text(&parts.join("\n\n"), MAX_TEXT_CHARS))
+}
+
 fn optional_bounded_text(value: Option<&Value>, max_chars: usize) -> Value {
     match value.and_then(Value::as_str) {
         Some(text) if !text.trim().is_empty() => Value::String(bounded_text(text, max_chars)),
@@ -754,6 +770,16 @@ fn codex_activity_item_fields(item_type: &str, provider_item: &Value) -> Option<
 }
 
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
+    normalize_codex_notification_in(method, params, None)
+}
+
+/// As [`normalize_codex_notification`], resolving provider file paths against
+/// the session working directory so edit rows and turn diffs stay workspace-relative.
+pub fn normalize_codex_notification_in(
+    method: &str,
+    params: &Value,
+    cwd: Option<&str>,
+) -> Vec<NormalizedProviderEvent> {
     let mut events = Vec::new();
     let push = |events: &mut Vec<NormalizedProviderEvent>,
                 event_type: &str,
@@ -824,6 +850,17 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "error": codex_terminal_error(params, event_type),
                 }),
             );
+        }
+        "turn/diff/updated" => {
+            let turn_id = stable_id(string(params.get("turnId")), "codex-turn");
+            if let Some(diff) = params.get("diff").and_then(Value::as_str) {
+                push(
+                    &mut events,
+                    "workspace.change.updated",
+                    EventPriority::P2,
+                    crate::tool_file_changes::codex_turn_diff_snapshot(&turn_id, diff, cwd),
+                );
+            }
         }
         "turn/plan/updated" => {
             let plan_id = stable_id(string(params.get("turnId")), "codex-plan");
@@ -968,12 +1005,86 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "text": bounded_text(string(params.get("delta")), MAX_TEXT_CHARS),
             }),
         ),
+        // Provider-written reasoning summaries. Each later summary part starts
+        // after a blank line, matching the completed item's joined `summary[]`.
+        "item/reasoning/summaryTextDelta" | "item/reasoning/summaryPartAdded" => {
+            let text = if method == "item/reasoning/summaryPartAdded" {
+                if params
+                    .get("summaryIndex")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    == 0
+                {
+                    return events;
+                }
+                "\n\n".to_owned()
+            } else {
+                bounded_text(string(params.get("delta")), MAX_TEXT_CHARS)
+            };
+            push(
+                &mut events,
+                "item.delta",
+                EventPriority::P2,
+                json!({
+                    "provider": "codex",
+                    "itemId": stable_id(string(params.get("itemId")), "codex-item"),
+                    "kind": "reasoning",
+                    "channel": "summary",
+                    "providerMethod": method,
+                    "text": text,
+                }),
+            );
+        }
         "item/started" | "item/updated" | "item/completed" => {
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
+            if item_type == "fileChange" {
+                let file_changes =
+                    crate::tool_file_changes::codex_file_changes(provider_item.get("changes"), cwd);
+                let mut payload = json!({
+                    "schema": "paperclip.tool.execution.v1",
+                    "executionId": item_id,
+                    "transport": "builtin",
+                    "operation": "edit",
+                    "name": "apply_patch",
+                    "target": file_changes.as_ref().and_then(|files| files.get(0)).and_then(|file| file.get("path")).cloned().unwrap_or(Value::Null),
+                    "namespace": Value::Null,
+                    "readOnly": false,
+                    "status": provider_status(string(provider_item.get("status")), completed),
+                    "durationMs": Value::Null,
+                    "exitCode": Value::Null,
+                    "progress": Value::Null,
+                });
+                if let (Some(object), Value::Object(output)) =
+                    (payload.as_object_mut(), bounded_output(""))
+                {
+                    object.extend(output);
+                }
+                if let Some(file_changes) = file_changes {
+                    payload["fileChanges"] = file_changes;
+                }
+                push(
+                    &mut events,
+                    if completed {
+                        "tool.execution.completed"
+                    } else if method == "item/updated" {
+                        "tool.execution.progressed"
+                    } else {
+                        "tool.execution.started"
+                    },
+                    if completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    payload,
+                );
+            }
+            // The fileChange item event above stays alongside the edit row:
+            // recovery and progress projections classify the native item kind.
             if matches!(
                 item_type,
                 "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "builtinToolCall"
@@ -1031,7 +1142,8 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     } else {
                         "detail"
                     },
-                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS))
+                        .or_else(|| (item_type == "reasoning").then(|| reasoning_summary_text(provider_item)).flatten()),
                 });
                 // Preserve only actual terminal invocation identity in the compatibility
                 // projection. Arguments, arbitrary tool names and result bodies stay omitted.
@@ -1443,6 +1555,14 @@ fn normalize_acpx_tool_call(
     if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
         normalized["inputUpdated"] = Value::Bool(input_updated);
     }
+    if let Some(file_changes) =
+        crate::tool_file_changes::sanitize_file_changes(payload.get("fileChanges"))
+    {
+        if normalized["target"].is_null() {
+            normalized["target"] = file_changes[0]["path"].clone();
+        }
+        normalized["fileChanges"] = file_changes;
+    }
     if let (Some(object), Value::Object(output)) =
         (normalized.as_object_mut(), bounded_output(&output))
     {
@@ -1725,6 +1845,60 @@ mod tests {
     }
 
     #[test]
+    fn maps_codex_file_changes_and_turn_diffs_to_workspace_relative_patches() {
+        let started = normalize_codex_notification_in(
+            "item/started",
+            &json!({"item": {"id": "call-1", "type": "fileChange", "status": "inProgress", "changes": [
+                {"path": "/w/repo/a.js", "kind": {"type": "update", "move_path": null}, "diff": "@@ -1 +1 @@\n-a\n+b\n"}
+            ]}}),
+            Some("/w/repo"),
+        );
+        assert_eq!(started[0].event_type, "tool.execution.started");
+        assert_eq!(started[0].payload["operation"], "edit");
+        assert_eq!(started[0].payload["target"], "a.js");
+        assert_eq!(started[0].payload["fileChanges"][0]["additions"], 1);
+        // The native item event remains for recovery and progress projections.
+        assert_eq!(started[1].event_type, "item.started");
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "tool.execution.started",
+            &started[0].payload
+        ));
+
+        let diff = normalize_codex_notification_in(
+            "turn/diff/updated",
+            &json!({"turnId": "turn-1", "diff": "diff --git a//w/repo/a.js b//w/repo/a.js\n--- a//w/repo/a.js\n+++ b//w/repo/a.js\n@@ -1 +1 @@\n-a\n+b\n"}),
+            Some("/w/repo"),
+        );
+        assert_eq!(diff[0].event_type, "workspace.change.updated");
+        assert_eq!(diff[0].payload["files"][0]["path"], "a.js");
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "workspace.change.updated",
+            &diff[0].payload
+        ));
+    }
+
+    #[test]
+    fn forwards_sanitized_acpx_file_changes() {
+        let events = normalize_acpx_tool_call(
+            &json!({"type": "tool_call", "tag": "tool_call_update", "status": "completed", "title": "Edit",
+                "fileChanges": [{"path": "price.js", "operation": "modify", "previousPath": null,
+                    "additions": 1, "deletions": 1, "diff": "@@ -1 +1 @@\n-a\n+b\n", "diffTruncated": false},
+                    {"path": "/etc/passwd", "operation": "modify", "diff": ""}]}),
+            "tool-1",
+            "edit",
+        );
+        assert_eq!(events[0].payload["target"], "price.js");
+        assert_eq!(
+            events[0].payload["fileChanges"].as_array().unwrap().len(),
+            1
+        );
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "tool.execution.completed",
+            &events[0].payload
+        ));
+    }
+
+    #[test]
     fn preserves_dynamic_tool_identity_without_arguments() {
         for method in ["item/started", "item/completed"] {
             let events = normalize_codex_notification(
@@ -1978,6 +2152,50 @@ mod tests {
             assert!(!events[0].payload.to_string().contains("top-secret"));
             assert!(events[0].payload.get("callId").is_none());
         }
+    }
+
+    #[test]
+    fn maps_codex_reasoning_summary_parts_and_completed_summary_text() {
+        let first_part = normalize_codex_notification(
+            "item/reasoning/summaryPartAdded",
+            &json!({"itemId": "rs_1", "summaryIndex": 0}),
+        );
+        assert!(first_part.is_empty());
+        let delta = normalize_codex_notification(
+            "item/reasoning/summaryTextDelta",
+            &json!({"itemId": "rs_1", "summaryIndex": 0, "delta": "**Tracing the retry path**"}),
+        );
+        assert_eq!(delta[0].event_type, "item.delta");
+        assert_eq!(delta[0].payload["kind"], "reasoning");
+        assert_eq!(delta[0].payload["channel"], "summary");
+        assert_eq!(delta[0].payload["itemId"], "rs_1");
+        assert_eq!(delta[0].payload["text"], "**Tracing the retry path**");
+        let next_part = normalize_codex_notification(
+            "item/reasoning/summaryPartAdded",
+            &json!({"itemId": "rs_1", "summaryIndex": 1}),
+        );
+        assert_eq!(next_part[0].payload["text"], "\n\n");
+        assert_eq!(next_part[0].payload["kind"], "reasoning");
+
+        let completed = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": ["**Tracing the retry path**", "**Verifying edge cases**"],
+                "content": [],
+            }}),
+        );
+        assert_eq!(completed[0].payload["channel"], "detail");
+        assert_eq!(
+            completed[0].payload["text"],
+            "**Tracing the retry path**\n\n**Verifying edge cases**"
+        );
+        let empty = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "rs_2", "type": "reasoning", "summary": [], "content": []}}),
+        );
+        assert_eq!(empty[0].payload["text"], Value::Null);
     }
 
     #[test]

@@ -1257,3 +1257,75 @@ describe("nativeRunEventsToTranscript", () => {
     ])).toEqual([]);
   });
 });
+
+describe("edit diffs", () => {
+  const execution = (status: string, fileChanges?: unknown[]) => ({
+    schema: "paperclip.tool.execution.v1",
+    executionId: "edit-1",
+    transport: "builtin",
+    operation: "edit",
+    name: "Edit",
+    target: null,
+    status,
+    output: "",
+    outputBytes: 0,
+    outputTruncated: false,
+    outputDigest: null,
+    ...(fileChanges ? { fileChanges } : {}),
+  });
+  const change = (diff: string, additions: number, deletions: number) => ({
+    path: "src/price.js",
+    operation: "modify",
+    previousPath: null,
+    additions,
+    deletions,
+    diff,
+    diffTruncated: false,
+  });
+
+  it("attaches the latest patch of an edit call to its row", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+optimistic\n", 1, 1)])),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -3,2 +3,2 @@\n ctx\n-a\n+b\n", 1, 1)])),
+    ]);
+    expect(entries.find((entry) => entry.kind === "tool_call")).toMatchObject({
+      toolUseId: "edit-1",
+      input: { path: "src/price.js" },
+    });
+    expect(entries.filter((entry) => entry.kind === "diff")).toEqual([
+      expect.objectContaining({ changeType: "file_header", text: "src/price.js", toolUseId: "edit-1" }),
+      expect.objectContaining({ changeType: "hunk", text: "@@ -3,2 +3,2 @@" }),
+      expect.objectContaining({ changeType: "context", text: "ctx" }),
+      expect.objectContaining({ changeType: "remove", text: "a" }),
+      expect.objectContaining({ changeType: "add", text: "b" }),
+    ]);
+
+    const [tool] = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(tool).toMatchObject({ kind: "tool", target: "src/price.js", diff: { path: "src/price.js", added: 1, removed: 1 } });
+  });
+
+  it("projects the harness change set and ends the turn with it", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "workspace.change.updated", {
+        schema: "paperclip.workspace.diff.v1",
+        changeSetId: "turn-1:workspace",
+        revision: 1,
+        source: "harness_reported",
+        complete: false,
+        files: [
+          { path: "a.js", operation: "create", previousPath: null, additions: 2, deletions: 0, binary: false, diff: "@@ -0,0 +1,2 @@\n+x\n+y\n" },
+          { path: "huge.js", operation: "modify", previousPath: null, additions: 0, deletions: 0, binary: false, diff: null, diffTruncated: true },
+        ],
+        totals: { files: 1, additions: 2, deletions: 0 },
+        patchArtifactRef: null,
+      }),
+      event(2, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
+    ]);
+    const items = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(items.at(-1)).toMatchObject({ surface: "workspace_change", complete: true, totals: { files: 2, additions: 2 } });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files[1]).toMatchObject({ path: "huge.js", diff: null, diffTruncated: true });
+    expect(items.filter((item) => item.kind === "protocol" && item.surface === "workspace_change")).toHaveLength(1);
+  });
+});

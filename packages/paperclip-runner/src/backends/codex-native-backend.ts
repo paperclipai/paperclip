@@ -153,7 +153,7 @@ function createTransportBackedNativeSessionBackend(
           "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
           ...planProposalConstraints(input.provider.kind, claudeAcpx),
         ]
-      : claudeAcpx
+      : claudeAcpx && input.task.workMode === "standard"
         ? [
             // Agents may opt into a plan approval gate on Standard tasks too.
             "If the task asks for a plan first, or the change is risky enough that the user should agree on the approach, you may use EnterPlanMode and then ExitPlanMode with the complete plan. Paperclip saves it as the task's Plan document, asks the user to approve it and ends this turn; continue after approval.",

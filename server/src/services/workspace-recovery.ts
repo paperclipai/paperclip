@@ -422,7 +422,10 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const retryAfterAt = (error as { retryAfterAt?: unknown })?.retryAfterAt;
       // A generic transient code says only that the step can be retried. Keep
       // why it failed in closed labels so a repeated deferral is diagnosable.
-      const cause = error instanceof SystemRecoveryFailure ? undefined : sandboxProviderFailureLabel(error);
+      // A classified failure already names its subsystem.
+      const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
+        && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
+      const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
       await updateSystemRecovery(db, input, current!, failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),
