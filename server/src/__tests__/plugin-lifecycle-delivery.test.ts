@@ -233,7 +233,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       try {
         await drain(d);
         expect(delivered(d)).toEqual(new Set([owned]));
-        expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
+        expect(await pluginLifecycleInbox(db, pluginId).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
       } finally {
         d.worker.dispose();
       }
