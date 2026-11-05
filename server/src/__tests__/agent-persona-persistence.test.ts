@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb } from "@paperclipai/db";
+import { agentConfigRevisions, agents, companies, createDb } from "@paperclipai/db";
 import { agentAppearanceSchema, appearanceForPalette, legacyAgentAppearance } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
@@ -37,6 +37,49 @@ describe("persisted agent personas", () => {
     expect((await agentService(db).getById(original.id))?.avatarUrl).toContain("/arctic-blue/rest.png?size=512");
     const [row] = await db.select().from(agents).where(eq(agents.id, original.id));
     expect(row.appearance).toEqual(appearance);
+  });
+  it("restores the revision's icon and appearance on rollback and records them in the rollback revision", async () => {
+    const service = agentService(db);
+    const appearance = appearanceForPalette("arctic-blue");
+    const newerAppearance = appearanceForPalette("cherry-pop");
+    const original = await createAgentLifecycle(db).requestHire(companyId, { name: "Restored persona", role: "engineer", adapterType: "process", icon: "bot", appearance });
+    await service.update(original.id, { title: "First" }, { recordRevision: { source: "test" } });
+    const [revision] = await service.listConfigRevisions(original.id);
+    await service.update(original.id, { title: "Second", icon: "brain", appearance: newerAppearance });
+    const restored = await service.rollbackConfigRevision(original.id, revision.id, {});
+    expect(restored).toMatchObject({ title: "First", icon: "bot", appearance });
+    const [row] = await db.select().from(agents).where(eq(agents.id, original.id));
+    expect(row).toMatchObject({ icon: "bot", appearance });
+    const [rollbackRevision] = await service.listConfigRevisions(original.id);
+    expect(rollbackRevision.source).toBe("rollback");
+    expect(rollbackRevision.changedKeys).toEqual(expect.arrayContaining(["icon", "appearance"]));
+    expect(rollbackRevision.afterConfig).toMatchObject({ title: "First", icon: "bot", appearance });
+  });
+  it("clears the icon when the rolled back revision recorded no icon", async () => {
+    const service = agentService(db);
+    const original = await createAgentLifecycle(db).requestHire(companyId, { name: "Iconless persona", role: "engineer", adapterType: "process", icon: null });
+    await service.update(original.id, { title: "First" }, { recordRevision: { source: "test" } });
+    const [revision] = await service.listConfigRevisions(original.id);
+    await service.update(original.id, { icon: "brain" });
+    const restored = await service.rollbackConfigRevision(original.id, revision.id, {});
+    expect(restored?.icon).toBeNull();
+  });
+  it.each([
+    ["missing", (config: Record<string, unknown>) => {
+      const { icon: _icon, appearance: _appearance, ...rest } = config;
+      return rest;
+    }],
+    ["invalid", (config: Record<string, unknown>) => ({ ...config, icon: 42, appearance: { paletteId: "not-a-palette" } })],
+  ])("keeps the current icon and appearance when the revision's values are %s", async (kind, rewrite) => {
+    const service = agentService(db);
+    const newerAppearance = appearanceForPalette("cherry-pop");
+    const original = await createAgentLifecycle(db).requestHire(companyId, { name: `Older revision ${kind}`, role: "engineer", adapterType: "process", icon: "bot", appearance: appearanceForPalette("arctic-blue") });
+    await service.update(original.id, { title: "First" }, { recordRevision: { source: "test" } });
+    const [revision] = await service.listConfigRevisions(original.id);
+    await db.update(agentConfigRevisions).set({ afterConfig: rewrite(revision.afterConfig) }).where(eq(agentConfigRevisions.id, revision.id));
+    await service.update(original.id, { title: "Second", icon: "brain", appearance: newerAppearance });
+    const restored = await service.rollbackConfigRevision(original.id, revision.id, {});
+    expect(restored).toMatchObject({ title: "First", icon: "brain", appearance: newerAppearance });
   });
   it("backfills legacy IDs with exactly the same persisted identity as the runtime fallback", async () => {
     const ids = Array.from({ length: 20 }, () => randomUUID());

@@ -255,10 +255,14 @@ export function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agent
     throw unprocessable("Invalid revision snapshot: runtimeConfig");
   }
 
+  const appearance = agentAppearanceSchema.safeParse(snapshot.appearance);
+
   return {
     name: snapshot.name,
     role: snapshot.role,
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
+    ...(typeof snapshot.icon === "string" || snapshot.icon === null ? { icon: snapshot.icon } : {}),
+    ...(appearance.success ? { appearance: appearance.data } : {}),
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
     capabilities:
