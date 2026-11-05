@@ -403,6 +403,22 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("clear-error")
+      .description("Clear an agent's error status")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const cleared = await ctx.api.post<Agent>(apiPath`/api/agents/${agentId}/clear-error`, {});
+          printOutput(cleared, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
       .command("delete")
       .description("Delete an agent")
       .argument("<agentId>", "Agent ID")
