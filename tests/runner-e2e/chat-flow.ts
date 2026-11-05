@@ -22,6 +22,10 @@ import { CHAT_FEATURE_SUITE } from "./chat-feature-cases.js";
 import { runChatFeatureFlow } from "./chat-feature-flow.js";
 import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "./chat-completion-proof.js";
 
+export function retryChatCompletionObservation(error: unknown) {
+  return !(error instanceof Error && error.message.startsWith("Chat completion proof:"));
+}
+
 /** Keep the ordinary-turn bound. Required completion delivery is separately proved real work. */
 export function assertChatFlowRunCount(input: {
   suiteId: string; task: Parameters<typeof matchesRunCount>[0] & { id?: string }; runs: ChatRun[];
@@ -447,6 +451,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       label: "chat turn settles to waiting",
       deadlineAt: Date.now() + 240_000,
       intervalMs: 1000,
+      retryOnError: retryChatCompletionObservation,
       load: async () => {
         const resolved = await api.get<ChatIssue | null>(chatPath);
         if (resolved) issue = resolved;

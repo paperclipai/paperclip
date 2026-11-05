@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { assertChatFlowRunCount, collectChatRunEvidence } from "../../../tests/runner-e2e/chat-flow.js";
+import { describe, expect, it, vi } from "vitest";
+import { assertChatFlowRunCount, collectChatRunEvidence, retryChatCompletionObservation } from "../../../tests/runner-e2e/chat-flow.js";
 import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "../../../tests/runner-e2e/chat-completion-proof.js";
+import { pollUntil } from "../../../tests/runner-e2e/api.js";
 
 // Shape and ordering from run 41915965118's three retained failing journeys.
 // The ordinary turns keep their existing bound; the one real completion turn
@@ -49,6 +50,35 @@ function completionRecording(id = "multi-repository", expectedRunCount = 2) {
 }
 
 describe("delegated chat completion provider accounting", () => {
+  it("reports a permanent completion proof failure without retrying to the idle deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const input = completionRecording();
+      input.completionEvidence.tasks.push({ ...input.completionEvidence.child, id: "extra-child" });
+      const load = vi.fn(async () => verifyChatCompletion(input.runs, input.completionEvidence));
+      const outcome = pollUntil({ label: "chat turn settles to waiting", deadlineAt: Date.now() + 240_000,
+        intervalMs: 1000, load, accept: Boolean, retryOnError: retryChatCompletionObservation })
+        .then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect((await outcome).error?.message).toBe("Chat completion proof: extra_work");
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it("still retries a transient observation error within the original idle deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const input = completionRecording();
+      const load = vi.fn(async () => verifyChatCompletion(input.runs, input.completionEvidence));
+      load.mockRejectedValueOnce(new Error("temporary API observation failure"));
+      const outcome = pollUntil({ label: "chat turn settles to waiting", deadlineAt: Date.now() + 240_000,
+        intervalMs: 1000, load, accept: Boolean, retryOnError: retryChatCompletionObservation });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await outcome).toMatchObject({ ordinaryProviderRuns: 2, totalProviderRuns: 3 });
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
   it("collects the live run API evidence before proving a completion", async () => {
     const input = completionRecording();
     const recorded = input.completionEvidence.runEvidence[0]!;
