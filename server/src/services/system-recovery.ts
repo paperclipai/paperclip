@@ -89,6 +89,26 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
   }, { companyId: source.companyId });
 }
 
+/** Bookkeeping only: an action that was exhausted before the board handoff
+ * existed still reaches the board. It grants no attempt and keeps the generation. */
+export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
+  state: SystemRecoveryState) {
+  if (state.state !== "exhausted") return false;
+  const handoff = exhaustedSystemRecoveryAction(state);
+  const [updated] = await db.update(issueRecoveryActions).set({
+    ownerType: "board", ownerAgentId: null, ownerUserId: null, nextAction: handoff,
+    evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{workspaceRecovery,message}', ${JSON.stringify(handoff)}::jsonb)`,
+    updatedAt: new Date(),
+  }).where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
+    eq(issueRecoveryActions.sourceIssueId, source.issueId), eq(issueRecoveryActions.ownerType, "system"),
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'exhausted'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${state.generationId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,revision}' = ${String(state.revision)}`,
+    sql`jsonb_typeof(${issueRecoveryActions.evidence}->'workspaceRecovery') = 'object'`))
+    .returning({ id: issueRecoveryActions.id });
+  return Boolean(updated);
+}
+
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.sourceIssueId, source.issueId),

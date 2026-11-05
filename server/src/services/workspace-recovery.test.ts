@@ -455,7 +455,16 @@ describe("automatic retained workspace recovery", () => {
       }
       const before = await action(f.actionId);
       await recoverRetainedWorkspace(f.input);
-      expect(await action(f.actionId)).toEqual(before);
+      const after = await action(f.actionId);
+      // An exhausted source that cannot be adopted is only handed to the board.
+      // Its recovery state, evidence and retention stay untouched.
+      const spent = readSystemRecovery(before.evidence)?.state === "exhausted" && before.ownerType === "system";
+      const stable = (row: typeof after) => ({ ...row, updatedAt: null, ownerType: null, nextAction: null,
+        evidence: { ...row.evidence, workspaceRecovery: { ...(row.evidence.workspaceRecovery as object), message: null } } });
+      if (spent) {
+        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry recovery/) });
+        expect(stable(after)).toEqual(stable(before));
+      } else expect(after).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");
       expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
       expect(f.runtime.retryPendingSandboxTeardown).not.toHaveBeenCalled();
@@ -2988,6 +2997,28 @@ describe("automatic retained workspace recovery", () => {
     const retried = await action(f.actionId);
     expect(retried.ownerType).toBe("system");
     expect(readSystemRecovery(retried.evidence)).toMatchObject({ state: "scheduled", attempts: 0 });
+  }, 30_000);
+
+  it("hands a repair that was already exhausted and system-owned to the board without another attempt", async () => {
+    const f = await seed();
+    await adoptSystemRecovery(db, f);
+    const before = await action(f.actionId);
+    const spent = failSystemRecovery({ ...readSystemRecovery(before.evidence)!, attempts: 6, retriesUsed: 5 },
+      new SystemRecoveryFailure("export_interrupted", "retry_transient"));
+    expect(spent.state).toBe("exhausted");
+    await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted", ownerType: "system",
+      evidence: { ...before.evidence, systemRecovery: spent,
+        workspaceRecovery: { ...readWorkspaceRecovery(before.evidence)!, status: "blocked", attempt: 6, retryable: true } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    await recoverRetainedWorkspace(f.input);
+    const handed = await action(f.actionId);
+    expect(handed).toMatchObject({ status: "active", ownerType: "board" });
+    expect(readSystemRecovery(handed.evidence)).toEqual(spent);
+    expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.nextAction).toMatch(/Retry recovery/);
+    expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
+    // Repeat sweeps are idempotent and still grant no attempt.
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toEqual(spent);
   }, 30_000);
 
   it("reconstructs a resolved files-only preservation obligation at startup without replay", async () => {

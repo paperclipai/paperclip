@@ -2429,8 +2429,10 @@ When system workspace recovery exhausts its bounded attempts or deadline, the
 recovery action stays active and its owner changes from system to board. Its
 next action names the attempt count and last failure code and tells the board to
 use **Retry recovery**. The task blocker shows that same text. Retry starts one
-new bounded system generation and returns ownership to the system. Exhaustion
-never submits a provider turn.
+new bounded system generation and returns ownership to the system. A sweep that
+finds an action already exhausted and still system-owned applies the same handoff
+as bookkeeping only; it grants no attempt. Exhaustion never submits a provider
+turn.
 New source-binding failures record a closed reason and, for a rejected lease
 policy, an allowlisted policy value. Neither detail includes paths, provider
 allocation identifiers, credentials, or raw provider errors.
