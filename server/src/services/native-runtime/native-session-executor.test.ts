@@ -17444,9 +17444,10 @@ describe("runnerd provider runtime wiring", () => {
       return query;
     } })) as unknown as Db["select"];
     const storage = vi.spyOn(harnessStorage, "durableNativeHarnessStorage").mockReturnValue({ provider: "s3" } as never);
+    const validateOwner = vi.spyOn(harnessStorage, "assertNativeHarnessBackupOwner").mockResolvedValue(undefined);
     const checkpointRegistration = vi.spyOn(runnerCheckpoint, "nativeRunnerCheckpointRegistration")
       .mockReturnValue(async () => undefined);
-    onTestFinished(() => { storage.mockRestore(); checkpointRegistration.mockRestore(); });
+    onTestFinished(() => { storage.mockRestore(); validateOwner.mockRestore(); checkpointRegistration.mockRestore(); });
     let savingWorkspace = false;
     const remoteExecute = vi.fn(async (command: { args?: string[] }) => {
       if (savingWorkspace && command.args?.[1]?.includes("base64 <")) throw new Error("stopped-provider-inspection-reached");
@@ -17484,6 +17485,8 @@ describe("runnerd provider runtime wiring", () => {
     coordinator.leaseOwner = null;
     savingWorkspace = true;
     await expect(registration.checkpoint!("settled")).rejects.toThrow("stopped-provider-inspection-reached");
+    expect(validateOwner).toHaveBeenCalledWith(db, expect.objectContaining({ runId: current.binding.runId,
+      leaseOwner: "provider-owner", bootId: "backup-boot", generation: 1 }));
   });
 
   it.each([true, false])("restores a migrated warm backup into a created lease only for its exact session (matching: %s)", async matching => {
