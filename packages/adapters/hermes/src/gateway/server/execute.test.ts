@@ -684,24 +684,35 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.filter(([i]) => String(i).endsWith("/stop")).length).toBe(2);
   });
 
-  it("publishes the same session id in run_created and the final result", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-s", session_id: "session-1" }), { status: 200 });
-      if (url.endsWith("/events")) {
-        return new Response(sseStream('event: run.completed\ndata: {"status":"completed","session_id":"session-1"}\n\n'), { status: 200 });
-      }
-      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
-    }));
-    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 30 });
-    const onEvent = vi.fn(async () => undefined);
-    ctx.onEvent = onEvent;
-    const result = await execute(ctx);
-    const created = (onEvent.mock.calls as unknown as Array<[{ eventType: string; payload: { sessionId: string | null } }]>)
-      .map(([e]) => e).find((e) => e.eventType === "hermes_gateway.run_created");
-    expect(created?.payload.sessionId).toBe("session-1");
-    expect(result.sessionId).toBe(created?.payload.sessionId);
-  });
+  for (const [label, createBody, strategy] of [
+    ["create with session_id", { run_id: "run-s", session_id: "session-1" }, undefined],
+    ["create without session_id (documented contract)", { run_id: "run-s", status: "started" }, undefined],
+    ["create without session_id, strategy none", { run_id: "run-s", status: "started" }, "none"],
+  ] as const) {
+    it(`publishes the same session id in run_created and the final result: ${label}`, async () => {
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify(createBody), { status: 200 });
+        if (url.endsWith("/events")) {
+          return new Response(sseStream('event: run.completed\ndata: {"status":"completed","session_id":"session-1"}\n\n'), { status: 200 });
+        }
+        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+      }));
+      const ctx = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k", timeoutSec: 30,
+        ...(strategy ? { sessionKeyStrategy: strategy } : {}),
+      });
+      const onEvent = vi.fn(async () => undefined);
+      ctx.onEvent = onEvent;
+      const result = await execute(ctx);
+      const created = (onEvent.mock.calls as unknown as Array<[{ eventType: string; payload: { sessionId: string | null } }]>)
+        .map(([e]) => e).find((e) => e.eventType === "hermes_gateway.run_created");
+      expect(created?.payload.sessionId ?? null).toBe(result.sessionId ?? null);
+      expect(result.sessionDisplayId ?? null).toBe(result.sessionId ?? null);
+      if (strategy === "none") expect(result.sessionId ?? null).toBeNull();
+      else expect(result.sessionId).toMatch(/^hsess-[0-9a-f]{12}$/);
+    });
+  }
 
   it("aborts with idle timeout when the gateway stays silent, below the hard ceiling", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

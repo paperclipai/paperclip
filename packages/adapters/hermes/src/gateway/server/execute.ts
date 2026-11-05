@@ -785,11 +785,6 @@ function parseCostUsd(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function extractSessionId(value: unknown): string | null {
-  const record = asRecord(value);
-  return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
-}
-
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
@@ -820,7 +815,8 @@ export function mapFinalResultForTest(input: {
   const output = redactText(
     input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
   );
-  const sessionId = publicSessionId(extractSessionId(payload) ?? input.sessionKey, input.sessionKey);
+  // One public id per run, independent of when/whether the gateway reports one.
+  const sessionId = publicSessionId(input.sessionKey, input.sessionKey);
   const sessionDisplayId = sessionId;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
@@ -1114,7 +1110,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Post-creation callbacks write to the database; they must neither block
   // monitoring/timeouts nor abandon an accepted remote run if they fail or stall.
-  const createdSessionId = publicSessionId(extractSessionId(created) ?? sessionKey, sessionKey);
+  const createdSessionId = publicSessionId(sessionKey, sessionKey);
   const announced = (async () => {
     try {
       await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
