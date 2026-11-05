@@ -164,6 +164,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  authorityRunId?: string;
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: unknown;
   environment?: NodeJS.ProcessEnv;
@@ -7924,7 +7925,8 @@ describe("native terminal-turn accounting", () => {
       binding: { ...execution.binding, runId: "plugin-usage-run", executionWorkspaceId: "plugin-usage-workspace" },
       session: { ...execution.session, normalizedSessionId: "plugin-usage-session" } } as NativeExecutionInput;
     const launcher = vi.fn(), registration = vi.fn();
-    const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    let authorityRunId = current.binding.runId;
+    const driver = { get authorityRunId() { return authorityRunId; }, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
       { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
     const task = vi.fn(async (operation: unknown) => {
@@ -7944,6 +7946,9 @@ describe("native terminal-turn accounting", () => {
       await options.onAccountingEvent!(report);
       expect(capture).toHaveBeenCalledExactlyOnceWith(report);
       expect(options.onRecoveryAccountingEvent).toEqual(expect.any(Function));
+      expect(options.authorityRunId).toBe(current.binding.runId);
+      authorityRunId = "next-plugin-owner";
+      expect(options.authorityRunId).toBe("next-plugin-owner");
     } finally {
       owner.mockRestore();
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;

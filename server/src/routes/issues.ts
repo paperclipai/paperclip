@@ -7498,13 +7498,20 @@ export function issueRoutes(
       )
       .orderBy(asc(agentWakeupRequests.requestedAt));
 
+    // A saved card response (an approval, an answer, a declined connection)
+    // is a read-only receipt. It must never hide the user's own later
+    // messages, which are separately queued and remain editable and sendable.
+    let receipt: IssueQueueState | null = null;
     for (const wake of rows) {
       if (
         readObject(wake.payload).issueId !== issue.id ||
         (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
       )
         continue;
+      const isReceipt = Boolean(queuedInteractionId(wake.payload));
+      if (isReceipt && receipt) continue;
       if (wake.status === "deferred_issue_execution") {
+        if (isReceipt) { receipt = { wake, state: "deferred", queueRun: null }; continue; }
         return { wake, state: "deferred", queueRun: null };
       }
       if (!wake.runId) continue;
@@ -7522,9 +7529,10 @@ export function issueRoutes(
         )
         .limit(1)
         .then((runRows) => runRows[0] ?? null);
-      if (queueRun) return { wake, state: "queued", queueRun };
+      if (queueRun && isReceipt) receipt = { wake, state: "queued", queueRun };
+      else if (queueRun) return { wake, state: "queued", queueRun };
     }
-    return null;
+    return receipt;
   }
 
   async function queueCommentsForWake(

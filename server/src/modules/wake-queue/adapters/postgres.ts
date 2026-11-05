@@ -929,6 +929,11 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            // A saved card response (interaction receipt) never absorbs user
+            // input. Skip it so a later message joins the existing message
+            // wake instead of starting another one behind the receipt.
+            sql`${agentWakeupRequests.payload} ->> 'interactionId' is null`,
+            sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> 'interactionId' is null`,
             ...(chatConversationId
               ? [
                   sql`coalesce(${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> ${CHAT_CONVERSATION_ID_KEY}::text, ${chatConversationId}) = ${chatConversationId}`,

@@ -606,6 +606,14 @@ requires separate artifact and ownership admission; this path does not qualify
 that migration. Pending warm-transition receipts
 require their separate exact recovery admission, not an ordinary bootstrap.
 
+A hosted external route keeps the source connection until an independent
+physical-state read proves the target authority through the existing warm
+transition inspector. Recovery first activates the proven source registration
+so the Runner can consume its old receipt acknowledgement. It then activates
+the target registration. Ordinary attachment uses the same bounded barrier.
+External receipt recovery requires exact staged adoption and a physical reader;
+connect routes keep their existing activation order.
+
 ## Backpressure and bounded storage
 
 The runner has a byte limit and a reserved P0 region.
