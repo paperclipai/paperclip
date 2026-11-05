@@ -6295,7 +6295,7 @@ rl.on("line", (line) => {
       });
       await db
         .update(heartbeatRuns)
-        .set({ status: "succeeded", completedAt: new Date() })
+        .set({ status: "succeeded", finishedAt: new Date() })
         .where(eq(heartbeatRuns.id, run.id));
       const finishedRun = await request(app)
         .get("/api/tool-gateway/tools")
@@ -6320,6 +6320,7 @@ rl.on("line", (line) => {
         body: {
           name: "gateway-token",
           clientLabel: "gateway-token",
+          ownerNote: "",
           subjectType: "heartbeat_run",
           subjectId: run.id,
           allowedActions: ["tools/list", "tools/call"],
