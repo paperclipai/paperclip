@@ -1088,7 +1088,10 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
-    match kind {
+    let compaction = matches!(kind, AcpxRuntimeEventKind::ProviderNotice)
+        .then(|| acpx_compaction_notice_completed(payload, turn_id))
+        .flatten();
+    let mut events = match kind {
         AcpxRuntimeEventKind::TextDelta => {
             let text = string(payload.get("text"));
             let mut events = vec![NormalizedProviderEvent {
@@ -1106,18 +1109,10 @@ pub fn normalize_acpx_runtime_event(
             // Claude's ACP agent reports a finished compaction only as this
             // banner text. Sizes come from the surrounding usage updates.
             if text.trim() == ACPX_COMPACTION_COMPLETED_BANNER {
-                events.push(NormalizedProviderEvent {
-                    event_type: "context.compacted".to_owned(),
-                    priority: EventPriority::P1,
-                    payload: json!({
-                        "schema": "paperclip.context.compacted.v1",
-                        "compactionId": stable_id(&format!("{turn_id}:{item_id}"), "acpx-compaction"),
-                        "reason": "provider",
-                        "preTokens": Value::Null,
-                        "postTokens": Value::Null,
-                        "sameSession": true,
-                    }),
-                });
+                events.push(acpx_context_compacted(&stable_id(
+                    &format!("{turn_id}:{item_id}"),
+                    "acpx-compaction",
+                )));
             }
             events
         }
@@ -1155,6 +1150,48 @@ pub fn normalize_acpx_runtime_event(
             true,
         )],
         AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    };
+    events.extend(compaction);
+    events
+}
+
+/// A completed `context_compaction` notice (the sidecar's form of Claude's
+/// compaction banner) also marks a context compaction.
+fn acpx_compaction_notice_completed(
+    payload: &Value,
+    turn_id: &str,
+) -> Option<NormalizedProviderEvent> {
+    if string(payload.get("category")) != "context_compaction" {
+        return None;
+    }
+    let completed = payload
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .any(|detail| {
+            string(detail.get("name")) == "Phase" && string(detail.get("value")) == "completed"
+        });
+    if !completed {
+        return None;
+    }
+    Some(acpx_context_compacted(&stable_id(
+        &format!("{turn_id}:{}", string(payload.get("noticeKey"))),
+        "acpx-compaction",
+    )))
+}
+
+fn acpx_context_compacted(compaction_id: &str) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "context.compacted".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": compaction_id,
+            "reason": "provider",
+            "preTokens": Value::Null,
+            "postTokens": Value::Null,
+            "sameSession": true,
+        }),
     }
 }
 
@@ -1658,6 +1695,27 @@ mod tests {
             0,
         );
         assert_eq!(ordinary.len(), 1);
+    }
+
+    #[test]
+    fn completed_compaction_notice_emits_context_compacted() {
+        let notice = |phase: &str| {
+            normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ProviderNotice,
+                &json!({"severity": "info", "category": "context_compaction",
+                    "summary": "Compacting context", "noticeKey": "compaction-1",
+                    "details": [{"name": "Phase", "value": phase}]}),
+                None,
+                "fallback",
+                "turn-1",
+                0,
+            )
+        };
+        assert_eq!(notice("running").len(), 1);
+        let completed = notice("completed");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[1].event_type, "context.compacted");
+        assert_eq!(completed[1].payload["compactionId"], "turn-1:compaction-1");
     }
 
     #[test]
