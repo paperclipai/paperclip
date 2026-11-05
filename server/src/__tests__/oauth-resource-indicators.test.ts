@@ -228,7 +228,7 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
             clientSecret: null,
             clientSecretEnv: null,
           },
-          source: "static" as const,
+          source: "preconfigured" as const,
         }),
         oauthEndpointsForConnection: async () => ({
           provider: "fixture-provider",
@@ -238,7 +238,10 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
           offlineAccessSupported: true,
           scopes,
         }),
-        assertOAuthEndpointUrl: (_type, url) => url,
+        assertOAuthEndpointUrl: (_type, url) => {
+          if (typeof url !== "string") throw new TypeError("Expected an OAuth endpoint URL");
+          return url;
+        },
       });
     }
 
@@ -341,7 +344,10 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
 
       const protocol = createOAuthClientProtocol({
         fetchRemoteHttpUrl,
-        assertOAuthEndpointUrl: (_type, url) => url,
+        assertOAuthEndpointUrl: (_type, url) => {
+          if (typeof url !== "string") throw new TypeError("Expected an OAuth endpoint URL");
+          return url;
+        },
       });
 
       return { protocol, calls };
