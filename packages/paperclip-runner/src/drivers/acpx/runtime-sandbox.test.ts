@@ -194,6 +194,7 @@ describe("ACPX runtime sandbox", () => {
       expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
         model,
         availableModels: [model],
+        showThinkingSummaries: true,
       });
       expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
     },
