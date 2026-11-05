@@ -4809,6 +4809,53 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     });
   });
 
+  async function seedTerminalRunWithOperations(operations: Array<{ phase: string; status: string; startedAt: string }>) {
+    const seeded = await seedSharedWorkspaceDependency();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: seeded.companyId,
+      agentId: seeded.assigneeAgentId,
+      status: "failed",
+    });
+    await db.insert(workspaceOperations).values(operations.map((operation) => ({
+      companyId: seeded.companyId,
+      executionWorkspaceId: seeded.executionWorkspaceId,
+      issueId: seeded.blockerId,
+      heartbeatRunId: runId,
+      phase: operation.phase,
+      status: operation.status,
+      startedAt: new Date(operation.startedAt),
+    })));
+    return seeded;
+  }
+
+  it("keeps the finalize barrier when a workspace_finalize failed and its run ended", async () => {
+    const { blockerId, dependentId } = await seedTerminalRunWithOperations([
+      { phase: "worktree_prepare", status: "succeeded", startedAt: "2026-05-23T22:00:00.000Z" },
+      { phase: "workspace_finalize", status: "failed", startedAt: "2026-05-23T22:05:00.000Z" },
+    ]);
+
+    expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+    });
+  });
+
+  it("keeps the finalize barrier when a later workspace_finalize failed after an earlier one succeeded", async () => {
+    const { blockerId, dependentId } = await seedTerminalRunWithOperations([
+      { phase: "worktree_prepare", status: "succeeded", startedAt: "2026-05-23T22:00:00.000Z" },
+      { phase: "workspace_finalize", status: "succeeded", startedAt: "2026-05-23T22:05:00.000Z" },
+      { phase: "workspace_finalize", status: "failed", startedAt: "2026-05-23T22:10:00.000Z" },
+    ]);
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+    });
+  });
+
   it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
