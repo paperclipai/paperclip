@@ -9,8 +9,10 @@ const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
 
 function inventory(root, env, group) {
   const args = group === "serialized" ? ["--mode", "serialized"] : ["--mode", "general", "--group", group];
+  const shards = ["general-workspaces-b", "general-workspaces-c"].includes(group) ? []
+    : ["--shard-index", "0", "--shard-count", "1"];
   return JSON.parse(execFileSync(process.execPath, [path.join(root, "scripts/run-vitest-stable.mjs"), ...args,
-    "--shard-index", "0", "--shard-count", "1", "--dry-run"], {
+    ...shards, "--dry-run"], {
     cwd: root, env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
   }));
 }

@@ -219,6 +219,43 @@ test("local chat selection schedules exactly six single-worker partitions", { ti
   assert.deepEqual(shards, Array.from({ length: 6 }, (_, index) => ({ index, count: 6 })));
 });
 
+for (const [group, task, primary, directory] of [
+  ["general-workspaces-b", "ci:workspaces-b", "@paperclipai/shared", "packages/shared"],
+  ["general-workspaces-c", "ci:db", "@paperclipai/db", "packages/db"],
+]) test(`${group} discovers and executes reusable and fresh selected partitions`, { timeout: 180_000 }, t => {
+  const f = fixture(t);
+  const inventory = JSON.parse(execFileSync(process.execPath, [path.join(f.root, "scripts/run-vitest-stable.mjs"),
+    "--mode", "general", "--group", group, "--dry-run"], { cwd: f.root, env: f.env, encoding: "utf8" }));
+  const projects = inventory.workspaceProjects.map((project, index) => {
+    const folder = project === primary ? directory : `packages/fixture-${index}`;
+    f.write(`${folder}/vitest.config.mjs`, `export default {test:{name:${JSON.stringify(project)},include:["src/**/*.test.ts"]}};`);
+    f.write(`${folder}/src/independent.test.ts`, 'import {test,expect} from "vitest"; test("independent workspace",()=>expect(1).toBe(1));');
+    return folder;
+  });
+  f.write("ui/src/leaf.ts", "export const value = 1;\n");
+  f.write("vitest.config.mjs", `export default {test:{projects:${JSON.stringify(projects)}}};`);
+  f.write(".github/ci-task-matrix.json", JSON.stringify({ general_tests: [{ task, group }] }));
+  f.write(`${directory}/src/leaf.ts`, "export const value = 1;\n");
+  f.write(`${directory}/src/reusable.test.ts`, 'import {test,expect} from "vitest"; import {value} from "./leaf"; test("workspace consumer",()=>expect(value).toBeGreaterThan(0));');
+  f.write(`${directory}/src/fresh.test.ts`, 'import {test,expect} from "vitest"; import {readFileSync} from "node:fs"; import {value} from "./leaf"; test("fresh workspace consumer",()=>expect(readFileSync(process.env.LOCAL_VERIFY_INPUT,"utf8")).toBe(String(value)));');
+  f.git("add", "."); f.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "workspace baseline");
+  const base = f.git("rev-parse", "HEAD");
+  f.write(`${directory}/src/leaf.ts`, "export const value = 2;\n");
+  f.write(".turbo/external-input", "2");
+  const env = { LOCAL_VERIFY_INPUT: path.join(f.root, ".turbo/external-input") };
+  const first = f.run(["--base", base], env);
+  assert.equal(first.status, 0, first.text);
+  assert.equal((first.text.match(/Test Files\s+1 passed/g) ?? []).length, 2, first.text);
+  const reused = f.run(["--base", base], env);
+  assert.equal(reused.status, 0, reused.text);
+  assert.ok(reused.text.includes(`Reusing passed ${group}-reusable`), reused.text);
+  assert.equal((reused.text.match(/Test Files\s+1 passed/g) ?? []).length, 1, reused.text);
+  f.write(".turbo/external-input", "changed externally");
+  const changed = f.run(["--base", base], env);
+  assert.equal(changed.status, 1, changed.text);
+  assert.match(changed.text, /fresh workspace consumer/);
+});
+
 test("fingerprints preserve file boundaries when content resembles another input record", t => {
   const f = fixture(t), a = "ui/src/hash-a.ts", b = "ui/src/hash-b.ts";
   f.write(a, ""); f.write(b, "tail");
