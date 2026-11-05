@@ -1721,6 +1721,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleWritableDirs.reset();
   sandboxHandleSessionStore.reset();
   runnerIngressGenerationStore.reset();
+  retiredDaytonaDuplexChannelByRoute.clear();
 }
 
 /**
@@ -2482,10 +2483,22 @@ interface DaytonaDuplexChannelEntry {
 }
 const daytonaDuplexChannelByRoute = new Map<string, DaytonaDuplexChannelEntry>();
 const daytonaDuplexChannelBySession = new Map<string, DaytonaDuplexChannelEntry>();
+const retiredDaytonaDuplexChannelByRoute = new Map<string, { workerSessionId: string; closed: Promise<void> }>();
+const MAX_RETIRED_DAYTONA_DUPLEX_CHANNELS = 4096;
 
 function forgetDaytonaDuplexChannel(entry: DaytonaDuplexChannelEntry): void {
   daytonaDuplexChannelByRoute.delete(entry.hostRouteId);
   daytonaDuplexChannelBySession.delete(entry.workerSessionId);
+}
+
+function closeDaytonaDuplexChannel(entry: DaytonaDuplexChannelEntry): Promise<void> {
+  forgetDaytonaDuplexChannel(entry);
+  const closed = Promise.resolve().then(() => entry.session.close());
+  if (retiredDaytonaDuplexChannelByRoute.size >= MAX_RETIRED_DAYTONA_DUPLEX_CHANNELS) {
+    retiredDaytonaDuplexChannelByRoute.delete(retiredDaytonaDuplexChannelByRoute.keys().next().value!);
+  }
+  retiredDaytonaDuplexChannelByRoute.set(entry.hostRouteId, { workerSessionId: entry.workerSessionId, closed });
+  return closed;
 }
 
 // Close every open duplex channel that belongs to one provider lease and drop its
@@ -2497,8 +2510,7 @@ async function closeDaytonaDuplexChannelsForLease(providerLeaseId: string): Prom
   const matches = [...daytonaDuplexChannelByRoute.values()].filter(
     (entry) => entry.providerLeaseId === providerLeaseId,
   );
-  for (const entry of matches) forgetDaytonaDuplexChannel(entry);
-  await Promise.allSettled(matches.map(entry => entry.session.close()));
+  await Promise.allSettled(matches.map(closeDaytonaDuplexChannel));
 }
 
 async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt> {
@@ -3717,6 +3729,9 @@ const plugin = definePlugin(trackDaytonaHooks({
   // `ctx.duplexChannel`, bound to the returned worker session id. Fail closed when
   // no cached sandbox matches the lease.
   async onDuplexChannelOpen(params) {
+    if (daytonaDuplexChannelByRoute.has(params.hostRouteId) || retiredDaytonaDuplexChannelByRoute.has(params.hostRouteId)) {
+      throw new Error("Daytona duplex channel: host route has already been used.");
+    }
     const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
     if (!sandbox) {
       throw new Error(
@@ -3795,9 +3810,13 @@ const plugin = definePlugin(trackDaytonaHooks({
     const entry = daytonaDuplexChannelByRoute.get(params.hostRouteId);
     if (entry) {
       const boundWorkerSessionId = entry.workerSessionId;
-      forgetDaytonaDuplexChannel(entry);
-      await entry.session.close().catch(() => undefined);
+      await closeDaytonaDuplexChannel(entry).catch(() => undefined);
       return { hostRouteId: params.hostRouteId, workerSessionId: boundWorkerSessionId };
+    }
+    const retired = retiredDaytonaDuplexChannelByRoute.get(params.hostRouteId);
+    if (retired) {
+      await retired.closed;
+      return { hostRouteId: params.hostRouteId, workerSessionId: retired.workerSessionId };
     }
     return { hostRouteId: params.hostRouteId };
   },
@@ -3815,6 +3834,7 @@ const plugin = definePlugin(trackDaytonaHooks({
     const openChannels = [...daytonaDuplexChannelByRoute.values()];
     daytonaDuplexChannelByRoute.clear();
     daytonaDuplexChannelBySession.clear();
+    retiredDaytonaDuplexChannelByRoute.clear();
     for (const entry of openChannels) {
       await entry.session.close().catch(() => undefined);
     }
