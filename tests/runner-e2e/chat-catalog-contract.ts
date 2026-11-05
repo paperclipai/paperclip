@@ -1,4 +1,5 @@
-import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
+import { createHash } from "node:crypto";
+import type { RequestConfirmationInteraction, AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import type { ChatFlowInput, ChatIssue, ChatRun } from "./chat-flow.js";
 import type { CredentialName } from "./types.js";
 import type { ChatExternalInputRequirement } from "./chat-private-inputs.js";
@@ -242,6 +243,7 @@ export function chatCatalogHumanHistoryMatches(input: {
 }): boolean {
   const count = input.implementation.setupHumanMessageCount ?? 0;
   return (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
+    && (!input.questionAnswer?.personalSecretConfirmation || input.implementation.scenarioId === "secrets.personal-secret")
     && validChatCatalogHumanCounts(input.implementation)
     && input.boundary.humanCommentIds.length === count
     && input.boundary.humanCommentIds.every((id, index) => input.human[index]?.id === id)
@@ -257,7 +259,12 @@ export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown
     .every(policy => policy === "anyone" || policy === "human_only");
 }
 
-export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string }
+export function chatCatalogHasExactDefinitionId(text: string, definitionId: string): boolean {
+  return !!definitionId && new RegExp(`(?<![A-Za-z0-9_-])${definitionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`).test(text);
+}
+
+
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
@@ -266,9 +273,33 @@ export interface ChatCatalogHumanQuestionAudit {
 export function verifyChatCatalogHumanQuestionAnswer(input: {
   expected: ChatCatalogExpectedHumanQuestionAnswer; companyId: string; issueId: string; agentId: string;
   canonicalComment: { id: string; authorUserId?: string };
+  personalSecrets?: Array<{ definition: { id: string }; secret: { id: string; companyId: string; scope: string; ownerUserId?: string | null; userSecretDefinitionId?: string | null; status: string; createdAt: string } | null }>;
   interactions: Array<Partial<AskUserQuestionsInteraction>>; activity: ChatCatalogHumanQuestionAudit[];
   runs: Array<{ id: string; companyId?: string; agentId: string; status: string; runtimeMode?: string; startedAt?: string | null; contextSnapshot?: Record<string, unknown> | null }>;
 }): ChatCatalogVerifiedHumanQuestionAnswer | undefined {
+  if (input.expected.personalSecretConfirmation) {
+    const b = input.expected, binding = b.personalSecretConfirmation!, rows = input.interactions.filter(row => row.id === b.interactionId);
+    const row = rows[0] as unknown as Partial<RequestConfirmationInteraction> | undefined;
+    const source = input.runs.find(run => run.id === b.sourceRunId), continuations = input.runs.filter(run => run.contextSnapshot?.interactionId === b.interactionId), continuation = continuations[0];
+    const entries = input.personalSecrets?.filter(entry => entry.definition.id === binding.definitionId), secret = entries?.[0]?.secret;
+    const audits = input.activity.filter(event => event.action === "issue.thread_interaction_accepted" && event.details?.interactionId === b.interactionId), audit = audits[0];
+    const resolvedAt = Date.parse(String(row?.resolvedAt));
+    if ((b as unknown as Record<string, unknown>).companyEnvironmentNameAnswer || (b as unknown as Record<string, unknown>).companySavedSecretNameAnswer || rows.length !== 1 || !row || row.kind !== "request_confirmation" || row.status !== "accepted"
+      || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId || row.createdByAgentId !== input.agentId || row.createdByUserId
+      || (row.addresseeUserId != null && row.addresseeUserId !== b.userId) || row.addresseeAgentId || !row.originCommentIds?.includes(input.canonicalComment.id)
+      || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || row.continuationPolicy !== "wake_assignee"
+      || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted" || row.result.resumeFailure || row.dismissedAt
+      || !row.payload || row.payload.target || row.payload.toolAction || row.payload.secretProposal || row.payload.connectionAuthorization || row.payload.qualityReview
+      || !chatCatalogHasExactDefinitionId([row.payload.prompt, row.payload.detailsMarkdown].filter(Boolean).join("\n"), binding.definitionId) || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== binding.payloadHash
+      || entries?.length !== 1 || !secret || secret.id !== binding.secretId || secret.companyId !== input.companyId || secret.scope !== "user" || secret.status !== "active"
+      || secret.ownerUserId !== b.userId || secret.userSecretDefinitionId !== binding.definitionId || !Number.isFinite(Date.parse(secret.createdAt)) || !Number.isFinite(resolvedAt) || Date.parse(secret.createdAt) > resolvedAt || Date.parse(secret.createdAt) < Date.parse(source?.startedAt ?? "")
+      || audits.length !== 1 || audit?.companyId !== input.companyId || audit.entityId !== input.issueId || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "request_confirmation" || audit.details.interactionStatus !== "accepted"
+      || !source || source.companyId !== input.companyId || source.agentId !== input.agentId || source.status !== "succeeded" || source.runtimeMode !== "native" || source.contextSnapshot?.issueId !== input.issueId || source.contextSnapshot.commentId !== input.canonicalComment.id
+      || !Number.isFinite(Date.parse(source.startedAt ?? "")) || Date.parse(source.startedAt!) > resolvedAt
+      || continuations.length !== 1 || !continuation || continuation.id === source.id || continuation.companyId !== input.companyId || continuation.agentId !== input.agentId || continuation.status !== "succeeded" || continuation.runtimeMode !== "native" || continuation.contextSnapshot?.issueId !== input.issueId
+      || !Number.isFinite(Date.parse(continuation.startedAt ?? "")) || Date.parse(continuation.startedAt!) < resolvedAt) return;
+    return { ...b, continuationRunId: continuation.id, resolvedAt: new Date(resolvedAt).toISOString() };
+  }
   const b = input.expected, rows = input.interactions.filter(row => row.id === b.interactionId), row = rows[0];
   if (rows.length !== 1 || !row || b.userId !== input.canonicalComment.authorUserId
     || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId

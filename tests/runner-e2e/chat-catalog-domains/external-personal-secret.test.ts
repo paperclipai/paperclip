@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 import { expect, it } from "vitest";
 import {
@@ -281,4 +282,21 @@ it("accepts an excluded chat destination without hiding a later positive request
 
 it("rejects an affirmative chat destination after an excluded destination", () => {
   expect(personalSecretGuidance("Enter your personal publishing credential in the secure form — not here, but in chat.")).toBe(false);
+});
+
+it("accepts a saved-value confirmation without a fabricated initial reply and rejects consumer-before-confirm or absent source proof", () => {
+  const o = valid();
+  const payload = { version: 1, prompt: "Open Settings Secrets, My secrets, Set my value for your personal publishing credential PERSONAL_PUBLISHING_KEY definition definition. Never paste the value in chat. When you have saved it, confirm this card.", acceptLabel: "Confirm" };
+  const row = { id: "confirmation", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], kind: "request_confirmation", status: "accepted", resolverPolicy: "anyone", continuationPolicy: "wake_assignee", resolvedByUserId: "person", resolvedAt: "2026-11-03T23:59:59Z", result: { version: 1, outcome: "accepted" }, payload };
+  Object.assign(o.state, { sourceIssueId: "source", initialConfirmationId: row.id, canonicalHumanCommentId: "human", initialConfirmationPayloadHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
+  Object.assign(o.state.currentSecret, { createdAt: "2026-11-03T23:59:58Z" });
+  Object.assign(o.runs[2]!, { agentId: "ceo", contextSnapshot: { issueId: "source", interactionId: row.id } });
+  o.phaseReplies.shift();
+  (o.interactions as unknown[]).push(row);
+  (o.activity as unknown[]).push({ companyId: "company", entityId: "source", action: "issue.thread_interaction_accepted", actorType: "user", actorId: "person", details: { interactionId: row.id, interactionStatus: "accepted" } });
+  expect(gradePersonalSecret(o).passed).toBe(true);
+  const started = o.runs[1]!.startedAt; o.runs[1]!.startedAt = "2026-11-03T23:59:57Z";
+  expect(gradePersonalSecret(o).passed).toBe(false); o.runs[1]!.startedAt = started;
+  o.state.workerReceiptEvidence.events = [];
+  expect(gradePersonalSecret(o).passed).toBe(false);
 });

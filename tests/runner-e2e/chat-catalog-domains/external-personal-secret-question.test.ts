@@ -25,12 +25,13 @@ function measuredQuestion() {
           { id: "not-yet", label: "Not yet / need help", description: "I have not saved it yet or need help locating the page." }] }] }),
   };
 }
-it("actual personal-secret act admits a bound secure-entry question before any private human action", async () => {
+it.each(["question", "confirmation"])("actual personal-secret act admits a bound secure-entry %s before any private human action", async kind => {
   vi.useFakeTimers(); vi.setSystemTime(10_000);
   const query = "Set up my personal publishing credential for this task.";
   const run = { id: "initial", companyId: "company", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "source", commentId: "human" } };
   const human = { id: "human", companyId: "company", issueId: "source", authorUserId: "person", body: query };
-  port.observation = { companyId: "company", phaseReplies: [], links: [], interactions: [measuredQuestion()] };
+  const confirmation = { id: "confirmation", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", originCommentIds: ["human"], resolverPolicy: "anyone", continuationPolicy: "wake_assignee", kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Set your personal publishing credential in Settings Secrets, My secrets, Set my value, PERSONAL_PUBLISHING_KEY definition definition. Never paste credentials in chat. When you have saved it, confirm this card.", acceptLabel: "Confirm" } };
+  port.observation = { companyId: "company", phaseReplies: [], links: [], interactions: [kind === "confirmation" ? confirmation : measuredQuestion()] };
   let reached = false;
   const ctx = { observationDeadlineAt: 640_000, scenario: { query }, input: { fixtures: { company: { id: "company", issuePrefix: "ACORN" }, agent: { id: "ceo" } }, api: { get: async (path: string) => {
     if (path.endsWith("/comments?order=asc")) return [human];
