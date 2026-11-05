@@ -267,7 +267,6 @@ async function openedFilePath(fd: number): Promise<string> {
           encoding: "buffer",
           maxBuffer: 16_384,
           timeout: 1_000,
-          // lsof escapes non-ASCII names under the C locale, breaking descriptor verification.
           env: { LC_ALL: "C" },
         },
         (error, stdout) => {
