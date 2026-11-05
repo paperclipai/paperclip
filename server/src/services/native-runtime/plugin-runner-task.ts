@@ -330,6 +330,8 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
+    get sourceRecoveryVersion() { return input.sourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},

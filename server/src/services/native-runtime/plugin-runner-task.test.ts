@@ -54,6 +54,16 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  it("publishes current trusted recovery authority through warm owner rebind", () => {
+    const { task } = provider();
+    const input = { task, projectIds: [], harness: "codex", authorityRunId: "first-owner", sourceRecoveryVersion: 1 as const, adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    expect(owner.driver.authorityRunId).toBe("first-owner");
+    expect(owner.driver.sourceRecoveryVersion).toBe(1);
+    owner.rebind({ ...input, authorityRunId: "next-owner", sourceRecoveryVersion: undefined });
+    expect(owner.driver.authorityRunId).toBe("next-owner");
+    expect(owner.driver.sourceRecoveryVersion).toBeUndefined();
+  });
   it.each(["capability", "source", "identity", "account", "provider", "adoption"])("refuses an unqualified predecessor preparation: %s", async mode => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: mode === "provider" ? "claude" : "codex",
