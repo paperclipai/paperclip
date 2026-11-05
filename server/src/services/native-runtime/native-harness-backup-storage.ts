@@ -142,7 +142,7 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
 
 export async function persistNativeHarnessBackup(input: {
   db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
-  scopeDigest: string; root: string; signal?: AbortSignal;
+  scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
   const manifestBytes = await readFile(join(input.root, "manifest.json"));
@@ -152,7 +152,7 @@ export async function persistNativeHarnessBackup(input: {
   const key = randomBytes(32);
   try {
     const archive = join(scratch, "archive"), encrypted = join(scratch, "encrypted");
-    await captureNativeHarnessArchive(input.root, archive, input.signal);
+    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes);
     const plaintext = await digest(archive, input.signal), iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad(binding));
     await pipeline(createReadStream(archive), cipher, createWriteStream(encrypted, { flags: "wx", mode: 0o600 }), { signal: input.signal });

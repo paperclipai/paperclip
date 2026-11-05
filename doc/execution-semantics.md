@@ -459,6 +459,13 @@ continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
 
+A remote task workspace stays held by its last writer run until that writer's
+save and sandbox release settle. This hold continues after the writer run ends.
+A new run that finds such a recently ended writer waits for the workspace. It does
+not fail setup. The wait uses the same one-hour holder cutoff as a quiet live
+writer, measured from the time the writer ended. After the cutoff, preparation
+fails with the unfinished-writer error and leaves the held files unchanged.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's
@@ -1683,6 +1690,24 @@ interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
 
+### Late provider usage
+
+A provider can report more usage after its run's charge was posted. That usage
+already happened, so it never fails a run or blocks a session. Codex usage totals
+are cumulative, so the Runner reports the exact increment above the known total and
+names its owning run when the provider turn proves the owner. A report at or below
+the known total was already counted by the run that saw it, and it adds nothing, so
+the sum across runs always equals the thread total. For a remote session, Core posts the increment to that run as a
+separate cost event and records `cost.late_usage_posted` in the activity log. If
+the owner is not proven, Core charges the session's last finished run, or the
+delivering run if the session has none, and records the attribution as inferred. A late charge can put an agent over budget after later
+work started; budget evaluation runs after each correction. Conflicting evidence,
+such as a lower total or a changed model, stays visible as accounting debt for
+an operator to review. It does not change the charge or stop the session. A local
+session has no durable path for this, so its late usage stays with the run that is
+active when it arrives, or the next run. The total stays exact, but the attribution
+can be off by those tokens.
+
 ### Session settlement after a run
 
 Attaching a later run to a session asks whether anything is live or waiting: an
@@ -1958,6 +1983,14 @@ ordinary Retry can continue. Finalized workspaces, mismatched sources and
 accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
 
+The deadline is a backstop, not the normal failure path. When native task
+preparation fails after a fresh controller claim and before any provider turn,
+the controller stops renewal and releases only that exact claim. Ordinary
+failure settlement then retains the source and fails the run with its original
+error, as it does for a failure before the claim. A restart-recovery claim,
+startup cleanup, Stop, restart detach, accepted result or different owner keeps
+its existing owner and settlement path.
+
 For older failed native runs that lack this bookkeeping, a deliberate Retry
 registers preservation from the exact prepared workspace descriptor and assigns
 the existing bounded maintenance owner. A live finalization owner or mismatched
@@ -1974,6 +2007,28 @@ indefinitely for an export that has no owner. A live executor or finalizer, acce
 remains protected. Cleanup never interprets this registration as a stop receipt
 or permission to replay provider work. Repeated cleanup visits register the source
 once; settled sources add no continuing discovery or new maintenance timer.
+
+Unfinished prepared native exports also fence ordinary warm reuse of the same
+physical allocation, including a different historical lease row. Candidate
+selection excludes that allocation from reuse and obsolete-lease cleanup. It may
+reuse another clean allocation or acquire a fresh sandbox; workspace recovery and
+task admission still decide whether execution is allowed. Exact same-run
+reattachment keeps its existing controller checks. A saved board Retry can adopt
+one files-only maintenance generation when its first source-verification attempt
+failed before export because the exact warm source lacked retention policy.
+The old generation remains in the audit record. Adoption requires current user
+authority, unchanged source identity, no competing allocation or workspace writer,
+and the existing physical finalization owner. It grants no provider turn and does
+not repeat a consumed Retry. Other failures and an already adopted source remain
+held. Warm policy returns only after verified file persistence and exact stopped
+allocation evidence. Policy restoration and the recovered receipt commit together;
+failed settlement keeps the existing recovery obligation. Task continuation still
+passes ordinary admission.
+If local merge metadata is missing, a verified snapshot can settle preservation
+while the unfinished allocation stays retained. Its exact snapshot operation
+remains bound to the source and maintenance generation. Only verified native
+copyback can reopen an accepted result's original workspace finalizer. A saved
+Retry can instead use fresh isolation and attach the verified snapshot.
 
 Retry and authenticated new messages also inspect the task's bound remote
 workspace for its exact failed writer. A newer setup failure cannot hide that

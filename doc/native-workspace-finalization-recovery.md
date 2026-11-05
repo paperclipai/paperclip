@@ -306,6 +306,12 @@ extracted. No host path or link target is copied into the informational run even
 
 ## Repairing a failed workspace export without rerunning the agent
 
+The background workspace worker runs up to four copy-backs at once, one per
+task, so a slow sandbox export does not hold every other task's retry. Due work
+runs oldest first. Work without a saved retry time, such as a copy-back that a
+restart interrupted, is ordered by when it became pending; it does not go ahead
+of older retries that are already due.
+
 Transient export failures retry three times, then produce
 `native_workspace_sync_out_retry_exhausted`. The accepted result stays saved,
 and the exact sandbox is stopped and retained for export-only recovery. The

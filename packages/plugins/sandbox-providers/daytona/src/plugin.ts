@@ -539,8 +539,15 @@ async function terminateAtProvider<T>(scope: SandboxScope, operation: string, ac
   return withLivenessTimeout(operation, timeoutMs + LIVENESS_START_TIMEOUT_MARGIN_MS, action);
 }
 
-async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): Promise<void> {
+// Start (or recover) a sandbox that is not running. Every restart path goes
+// through here with the lease scope, because a restart destroys every Daytona
+// process session. The stored session id for the lease is dropped before the
+// restart, so the next command opens a fresh session instead of sending a dead
+// id and failing with "session not found". A running sandbox keeps its live
+// session, so the id is left in place when no restart happens.
+async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
   if (sandbox.state === "started") return;
+  sandboxHandleSessionStore.clear(scope);
   // Bound the lifecycle call just past its own SDK deadline. A normal slow start
   // finishes within `timeoutSeconds`; only a connection-level hang the SDK
   // deadline misses reaches this wrapper bound.
@@ -2903,7 +2910,7 @@ const plugin = definePlugin(trackDaytonaHooks({
           await traceLeaseStep("lease.channel_cleanup", () => closeDaytonaDuplexChannelsForLease(params.providerLeaseId));
         }
         const resumedFromState = sandbox.state ?? null;
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
         try {
           return await traceLeaseStep("lease.verify", async () => {
             const remoteCwd = await traceLeaseStep("lease.workspace", () => resolveSandboxWorkingDirectory(sandbox, false));
@@ -3156,7 +3163,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       };
       await withSandboxActivityGate(scope, async () => {
         const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
         await sandbox.fs.createFolder(remoteCwd, "755");
       });
     }
@@ -3251,7 +3258,7 @@ const plugin = definePlugin(trackDaytonaHooks({
         };
       }
 
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
     const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     const connection = params.includeConnectionPayload === true
@@ -3470,13 +3477,10 @@ const plugin = definePlugin(trackDaytonaHooks({
         providerLeaseId,
         config,
       };
-      if (sandbox.state !== "started") {
-        // A provider restart destroys Daytona process sessions. Drop the stale
-        // session id before starting the sandbox so runnerd recovery opens a
-        // new session instead of retrying a dead one for its whole grace.
-        sandboxHandleSessionStore.clear(scope);
-      }
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
+      // A provider restart destroys Daytona process sessions; the start helper
+      // drops the stale session id so runnerd recovery opens a new session
+      // instead of retrying a dead one for its whole grace.
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)), scope);
       // Dispatch the command. A normal command runs in the persistent session:
       // the provider opens the one session on a cache miss and runs every command
       // in it. The provider never falls back to a one-shot command to open a
@@ -3519,23 +3523,18 @@ const plugin = definePlugin(trackDaytonaHooks({
       throw new Error("Daytona runner ingress requires a provider lease id.");
     }
     const config = parseDriverConfig(params.config);
+    const scope: SandboxScope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId,
+      config,
+    };
     return await withSandboxActivityGate(
-      {
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId,
-        config,
-      },
+      scope,
       async () => {
-        const sandbox = await acquireRunnerIngress("sandbox_lookup", () => getSandbox({
-          driverKey: params.driverKey,
-          companyId: params.companyId,
-          environmentId: params.environmentId,
-          providerLeaseId,
-          config,
-        }));
-        await acquireRunnerIngress("sandbox_start", () => ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs)));
+        const sandbox = await acquireRunnerIngress("sandbox_lookup", () => getSandbox(scope));
+        await acquireRunnerIngress("sandbox_start", () => ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope));
         await acquireRunnerIngress("sandbox_refresh", () => withLivenessTimeout(
           "sandbox.refreshData",
           config.livenessTimeoutMs,
@@ -3596,7 +3595,7 @@ const plugin = definePlugin(trackDaytonaHooks({
     sandboxHandleWritableDirs.recordWritableTargets(scope, params.operations);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      await ensureSandboxStarted(sandbox, timeoutSeconds, scope);
       const result = await performSyncIn({
         sandbox,
         operations: params.operations,
@@ -3629,7 +3628,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       return await withSandboxActivityGate(scope, async () => {
         const sandbox = await withEnvironmentSyncTransferStep("sandbox_access", async () => {
           const resolved = await getSandbox(scope, { bypassTeardownGate: true });
-          await ensureSandboxStarted(resolved, timeoutSeconds);
+          await ensureSandboxStarted(resolved, timeoutSeconds, scope);
           return resolved;
         });
         const result = await performSyncOut({
