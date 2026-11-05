@@ -1,5 +1,7 @@
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
+
+type TranscriptToolDetail = NonNullable<Extract<TranscriptEntry, { kind: "tool_call" }>["detail"]>;
 import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
 import { workspaceChangeEntry } from "@/adapters/paperclip-runner";
 import { createUnifiedDiffClassifier } from "@/components/task-chat/diff-lines";
@@ -644,6 +646,27 @@ function serializedNativeToolResult(item: NativeToolItemDetails): string {
   }
 }
 
+/** Names the task-chat tool taxonomy already knows, for a process that only read, searched or listed. */
+const PROCESS_OPERATION_NAMES: Record<string, string> = { read: "Read", search: "Grep", list: "Glob" };
+
+function toolExecutionDetail(payload: Record<string, unknown>): TranscriptToolDetail {
+  const status = text(payload.status);
+  const number = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+  return {
+    ...(text(payload.operation) ? { operation: text(payload.operation)! } : {}),
+    ...(text(payload.subject) ? { subject: text(payload.subject)! } : {}),
+    ...(text(payload.target) ? { target: text(payload.target)! } : {}),
+    ...(text(payload.description) ? { description: text(payload.description)! } : {}),
+    ...(text(payload.blockedReason) ? { blockedReason: text(payload.blockedReason)! } : {}),
+    ...(status && status !== "running" && number(payload.exitCode) !== null
+      ? { exitCode: number(payload.exitCode) }
+      : {}),
+    ...(status && status !== "running" && number(payload.durationMs) !== null
+      ? { durationMs: number(payload.durationMs) }
+      : {}),
+  };
+}
+
 function toolPresentation(
   payload: Record<string, unknown>,
   item?: NativeToolItemDetails,
@@ -653,17 +676,16 @@ function toolPresentation(
   const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
     return {
-      name: "Bash",
+      // A read or listing without one concrete file stays a visible command.
+      name: (operation && (operation === "search" || text(payload.target)) && PROCESS_OPERATION_NAMES[operation]) || "Bash",
       input: reportedName ? { command: reportedName } : { operation: operation ?? "execute" },
     };
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: item?.input ?? {
-      ...(operation ? { operation } : {}),
-      ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
-      ...(text(payload.target) ? { target: text(payload.target) } : {}),
-    },
+    // Operation and namespace are classification data, not something a
+    // person reads; only a concrete target belongs in the row's input summary.
+    input: item?.input ?? (text(payload.target) ? { path: text(payload.target) } : {}),
   };
 }
 
@@ -715,6 +737,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (id) delegationIds.add(id);
   }
   const startedToolIds = new Set<string>();
+  const toolSignatures = new Map<string, string>();
   const completedToolIds = new Set<string>();
   let usageSummary: {
     ts: string;
@@ -1075,14 +1098,28 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
-    if (event.eventType === "tool.execution.started" || event.eventType === "tool.execution.completed") {
+    if (
+      event.eventType === "tool.execution.started" ||
+      event.eventType === "tool.execution.progressed" ||
+      event.eventType === "tool.execution.completed"
+    ) {
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
       if (!executionId || delegationIds.has(executionId)) continue;
       const nativeToolItem = nativeToolItemsById.get(executionId);
       const presentation = toolPresentation(payload, nativeToolItem);
       const parentToolUseId = text(payload.parentItemId);
-      if (!startedToolIds.has(executionId)) {
+      const detail = toolExecutionDetail(payload);
+      // Providers refine a call as its input streams in ("Terminal" becomes
+      // "node --test") and report the outcome at the end. Re-emit the call
+      // whenever its canonical facts change; the adapter merges by id.
+      const signature = JSON.stringify([presentation.name, detail]);
+      const refines = Object.keys(detail).some((key) => key !== "operation");
+      if (!startedToolIds.has(executionId) || (refines && toolSignatures.get(executionId) !== signature)) {
+        // The latest patch is attached once, with the call's first row; a
+        // refinement only updates the call's facts.
+        const firstEmission = !toolSignatures.has(executionId);
+        toolSignatures.set(executionId, signature);
         startedToolIds.add(executionId);
         const fileChanges = fileChangesByExecutionId.get(executionId);
         const editedPath = text(record(fileChanges?.[0])?.path);
@@ -1095,9 +1132,10 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
             ? { ...presentation.input as Record<string, unknown>, path: editedPath }
             : presentation.input,
           toolUseId: executionId,
+          detail,
           ...(parentToolUseId ? { parentToolUseId } : {}),
         });
-        entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
+        if (firstEmission) entries.push(...fileChangeDiffEntries(fileChanges, executionId, ts));
       }
       if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
         completedToolIds.add(executionId);
