@@ -1154,3 +1154,14 @@ describe("install-time agent enablement", () => {
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
   });
 });
+
+it.each(["overview", "files"] as const)("exposes the real named Edit control only in the %s tab", async activeTab => {
+  const version = makeVersion(1, "# Demo skill\n\nSaved body");
+  const setEditMode = vi.fn();
+  const node = await renderSkillDetail([version], { activeTab, setEditMode,
+    file: { skillId: "skill-1", path: "SKILL.md", kind: "skill", content: "# Demo skill\n\nSaved body", language: "markdown", markdown: true, editable: true, encoding: "utf8" } });
+  expect(buttonsNamed(node, "Files")).toHaveLength(1);
+  const edit = buttonsNamed(node, "Edit");
+  expect(edit).toHaveLength(activeTab === "files" ? 1 : 0);
+  if (activeTab === "files") { await click(edit[0]!); expect(setEditMode).toHaveBeenCalledExactlyOnceWith(true); }
+});

@@ -9,16 +9,18 @@ afterEach(()=>vi.restoreAllMocks());
 function fixture(){
  const markdown=websiteChecklist.join("\n"),source="https://fixture.test/ACORN/chats/ceo";let current=source,reloads=0,editorReads=0;
  const version={id:"revision",companyId:"company",companySkillId:"skill",revisionNumber:1,authorAgentId:"ceo",authorUserId:null,fileInventory:[{path:"SKILL.md",kind:"skill",content:markdown}]};
- const skill={id:"skill",companyId:"company",name:"Website review checklist",editable:true,currentVersionId:"revision",markdown,usedByAgents:[]};
+ const skill={id:"skill",companyId:"company",name:"Website review checklist",slug:"website-review-checklist",editable:true,currentVersionId:"revision",markdown,usedByAgents:[]};
  const state:Record<string,unknown>={},o={scenarioId:"skills.author-skill",origin:"https://fixture.test",companyId:"company",leadId:"ceo",state,skills:[skill],versions:{skill:[version]},policy:{},editDecision:{allowed:true},tasks:[],projects:[],goals:[],comments:[],documents:[],revisions:[],humanQueries:["Turn our website review checklist into a reusable skill."],runs:[{id:"native",status:"succeeded",agentId:"ceo",companyId:"company"}],activity:[{action:"company.skill_created",entityId:"skill",agentId:"ceo"}],links:[],reply:"Created the reusable company skill, saved in the library and not assigned to any agent."} as unknown as InternalObservation;
  observed.base=o;
- const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,delayedHydration:false};const events:string[]=[];
- const editor={get visible(){return ui.studio;},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
+ const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false};const events:string[]=[];
+ const editor={get visible(){return ui.studio && (ui.inEdit || ui.directStudio);},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
  const page={url:()=>current,getByRole:(role:string,options?:{name?:string})=>{
   if(role==="textbox")return editor;
+  if(role==="tab" && options?.name==="Files")return{click:async()=>{ui.filesSelected=true;events.push("Files");}};
+  if(role==="button" && options?.name==="Edit")return{click:async()=>{if(!ui.editable||!ui.filesSelected)throw Error("No Edit control outside Files");ui.inEdit=true;events.push("Edit");}};
   if(role==="link")return{first:()=>({click:async()=>{events.push(options!.name!);current=options?.name==="Skills"?"https://fixture.test/ACORN/skills":"https://fixture.test/ACORN/skills/studio";}})};
-  return{filter:()=>({first:()=>({get visible(){return ui.library;},click:async()=>{events.push("open-skill");current=ui.wrongRoute?"https://fixture.test/ACORN/skills/studio/other":"https://fixture.test/ACORN/skills/studio/skill";}})})};
- },getByText:()=>({first:()=>({get visible(){return ui.studio;}})}),getByTestId:()=>({get visible(){return current===source;}}),reload:async()=>{reloads++;events.push("reload");},goto:async(url:string)=>{current=url;events.push("return-chat");}};
+  return{filter:()=>({first:()=>({get visible(){return ui.library;},click:async()=>{events.push("open-skill");current=ui.foreignRoute?"https://fixture.test/FOREIGN/skills/website-review-checklist":ui.wrongRoute?"https://fixture.test/ACORN/skills/other":ui.directStudio?"https://fixture.test/ACORN/skills/studio/skill":"https://fixture.test/ACORN/skills/website-review-checklist";}})})};
+ },getByText:()=>({first:()=>({get visible(){return ui.studio;}})}),getByTestId:()=>({get visible(){return current===source;}}),reload:async()=>{reloads++;ui.inEdit=false;ui.filesSelected=false;events.push("reload");},goto:async(url:string)=>{current=url;events.push("return-chat");}};
  const after=structuredClone(skill),get=vi.fn(async(route:string)=>{
   if(route.endsWith("/skills"))return[{id:"skill"}];
   if(route.endsWith("/skills/skill"))return after;
@@ -30,21 +32,22 @@ function fixture(){
  const ctx={scenario:{id:"skills.author-skill"},observationDeadlineAt:Date.now()+270000,input:{fixtures:{company:{id:"company",issuePrefix:"ACORN"},agent:{id:"ceo"}},api:{baseURL:o.origin,get,post},page,evidence},refreshIssue:async()=>{},issue:()=>({conversationState:"waiting"}),allRuns:async()=>o.runs} as unknown as ChatCatalogContext;
  return{ctx,state,o,skill,version,ui,events,after,get,post,evidence};
 }
-it("the actual authoring act performs readonly normal library/Studio inspection and keeps a single native/human turn",async()=>{
+it("the actual authoring act performs nonmutating canonical-library/Edit inspection and keeps a single native/human turn",async()=>{
  const f=fixture(),d=integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!;
  await d.act!(f.ctx,f.state);
- expect(f.events).toEqual(["Skills","My Skills","open-skill","reload","return-chat"]);
- expect(f.state.authoredSkillInspection).toMatchObject({skillId:"skill",versionId:"revision",readbackMatched:true});
+ expect(f.events).toEqual(["Skills","My Skills","open-skill","Files","Edit","reload","Files","Edit","return-chat"]);
+ expect(f.state.authoredSkillInspection).toMatchObject({skillId:"skill",versionId:"revision",editorSurface:"detail",editorVisible:true,readbackMatched:true});
  expect(gradeIntegratorSkills({...f.o,state:f.state}).passed).toBe(true);
  expect(d.expectedRunCount).toBe(1);expect(d.expectedHumanMessageCount).toBe(1);
  expect(f.post).toHaveBeenCalledExactlyOnceWith("/api/companies/company/skill-policy/evaluate",expect.anything());
 });
-it.each(["missing library","missing Studio","readonly","wrong UI route","wrong UI content","lost after reload","wrong saved version","wrong author","foreign company","no saved version"])("rejects %s before recording inspection success",async invalid=>{
+it.each(["missing library","missing Studio","readonly","wrong UI route","foreign UI route","wrong UI content","lost after reload","wrong saved version","wrong author","foreign company","no saved version"])("rejects %s before recording inspection success",async invalid=>{
  const f=fixture();
  if(invalid==="missing library")f.ui.library=false;
  if(invalid==="missing Studio")f.ui.studio=false;
  if(invalid==="readonly")f.ui.editable=false;
  if(invalid==="wrong UI route")f.ui.wrongRoute=true;
+ if(invalid==="foreign UI route")f.ui.foreignRoute=true;
  if(invalid==="wrong UI content")f.ui.body="Review the site.";
  if(invalid==="lost after reload")f.ui.changedAfterReload=true;
  if(invalid==="wrong saved version")f.after.currentVersionId="other";
@@ -77,4 +80,12 @@ it("inspects real rich-text blocks without applying Markdown marker assumptions 
  for(let index=0;index<4;index++)expect(preservesVisibleWebsiteChecklist(websiteChecklist.filter((_,i)=>i!==index))).toBe(false);
  expect(preservesVisibleWebsiteChecklist(["Website review checklist","Type here to edit"])).toBe(false);
  expect(preservesVisibleWebsiteChecklist([...websiteChecklist.slice(0,3),"375 pixel viewport"])).toBe(false);
+});
+
+it("retains exact direct Studio card navigation when the UI uses it", async()=>{ const f=fixture();f.ui.directStudio=true;await inspectAuthoredSkill(f.ctx,f.state,f.o);expect(f.events).toEqual(["Skills","My Skills","open-skill","reload","return-chat"]);expect(f.state.authoredSkillInspection).toMatchObject({readbackMatched:true,editorSurface:"studio"}); });
+
+it.each([undefined, null, ""])("rejects missing company prefix %s before any UI navigation", async prefix => {
+ const f=fixture();Object.assign(f.ctx.input.fixtures.company,{issuePrefix:prefix});
+ await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("company prefix");
+ expect(f.events).toEqual([]);expect(f.state.authoredSkillInspection).toBeUndefined();
 });
