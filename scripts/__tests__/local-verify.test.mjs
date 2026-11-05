@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -173,6 +173,28 @@ test("fingerprints preserve file boundaries when content resembles another input
   const first = snapshot(f.root, f.env).hash;
   f.write(a, ""); f.write(b, `payload${boundary}tail`);
   assert.notEqual(snapshot(f.root, f.env).hash, first);
+});
+
+test("an edit between diff discovery and fingerprinting cannot certify a partial selection", { skip: process.platform === "win32" }, t => {
+  const f = fixture(t);
+  const executable = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  f.write(".turbo/bin/package.json", '{"type":"commonjs"}');
+  f.write(".turbo/bin/git", `#!${process.execPath}
+const {execFileSync}=require('node:child_process');
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+const result=execFileSync(${JSON.stringify(executable)},args,{stdio:['ignore','pipe','pipe']});
+if(args[0]==='diff'&&!args.includes('--cached')&&!fs.existsSync('.turbo/diff-edited')){
+  fs.writeFileSync('ui/src/other.ts','export const other = 2;\\n');
+  fs.writeFileSync('.turbo/diff-edited','done');
+}
+process.stdout.write(result);
+`);
+  chmodSync(path.join(f.root, ".turbo/bin/git"), 0o755);
+  const result = f.run([], { PATH: `${path.join(f.root, ".turbo/bin")}${path.delimiter}${f.env.PATH}` });
+  assert.equal(result.status, 1, result.text);
+  assert.match(result.text, /Inputs changed/);
+  assert.doesNotMatch(result.text, /Local Vitest verification passed/);
 });
 
 test("documentation-only changes and empty diffs do not start a full suite", async t => {

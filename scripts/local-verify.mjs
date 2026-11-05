@@ -18,11 +18,12 @@ function describe(plan, cached) {
 
 export async function verify({ root = process.cwd(), base, full = false, explain = false, noCache = false, env = localEnvironment() } = {}) {
   root = realpathSync(root);
-  const diff = comparison(root, base), before = snapshot(root, env), key = requestKey(before, diff, full);
+  const before = snapshot(root, env), diff = comparison(root, base), key = requestKey(before, diff, full);
   const canReuse = !noCache && before.cacheable && mayReuseAttempt(root, key);
   const cached = canReuse ? readPass(root, key) : null;
   console.log(`[verify] Base ${diff.base.slice(0, 12)}; ${diff.changed.length} changed paths, including local edits`);
   if (cached) {
+    if (snapshot(root, env).hash !== before.hash) throw new Error("Inputs changed during cache lookup. Run verification again.");
     describe(cached.plan, true);
     console.log(`[verify] Passed result from ${cached.completedAt}; input fingerprint ${before.hash.slice(0, 12)}`);
     if (explain) console.log(JSON.stringify({ ...diff, inputFingerprint: before.hash, cacheable: before.cacheable, plan: cached.plan }, null, 2));
@@ -35,6 +36,7 @@ export async function verify({ root = process.cwd(), base, full = false, explain
   const plan = (canReuse ? readPlan(root, key) : null)
     ?? await planVerification({ root, env, diff, full });
   if (plan.manifest) plan.manifest.head = diff.head;
+  if (snapshot(root, env).hash !== before.hash) throw new Error("Inputs changed during selection. Run verification again.");
   describe(plan, false);
   if (explain) {
     console.log(JSON.stringify({ ...diff, inputFingerprint: before.hash, cacheable: before.cacheable, plan }, null, 2));
@@ -45,7 +47,6 @@ export async function verify({ root = process.cwd(), base, full = false, explain
     writeRecord(root, `attempt-${key}`, { version: protocolVersion, key, status: "broad", plan });
     return 2;
   }
-  if (snapshot(root, env).hash !== before.hash) throw new Error("Inputs changed during selection. Run verification again.");
   if (before.cacheable && !noCache && plan.kind === "selected") {
     writeRecord(root, `plan-${key}`, { version: protocolVersion, key, status: "planned", plan });
   }
