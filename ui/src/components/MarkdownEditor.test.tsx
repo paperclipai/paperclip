@@ -980,6 +980,30 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("stores intraword underscores as typed instead of the exporter's escaped form", async () => {
+    const value = "Your final answer must be exactly E2E_ASK_12_journey_1793913565974_507b01b8.";
+    // The real exporter escapes every literal underscore, including inside words.
+    mdxEditorMockState.emitMountChange =
+      "Your final answer must be exactly E2E\\_ASK\\_12\\_journey\\_1793913565974\\_507b01b8.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
+    expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\_"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not notify the parent when a prop sync echoes escaped markdown back", async () => {
     const handleChange = vi.fn();
     const root = createRoot(container);
