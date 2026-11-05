@@ -39,7 +39,7 @@ export function useNewAgentFixtures(agent: Agent, outcome: TestOutcome, delayMs:
           const timer = window.setTimeout(() => { timers.delete(timer); resolve(); }, delay);
           timers.set(timer, resolve);
         });
-        const environment = request.environmentId === "environment-storybook-sandbox" ? "Paperclip Computer"
+        const environment = request.environmentId === "environment-storybook-sandbox" ? "Paperclip Sandbox"
           : request.environmentId === "environment-storybook-local" ? "Local machine" : "Organization default";
         return Response.json(runtimeTestResult(test[1], result, request.adapterConfig?.model ?? "", environment));
       }
