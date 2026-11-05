@@ -26,6 +26,7 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
+  intakeAgentId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;

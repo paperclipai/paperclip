@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "intake_agent_id" uuid;

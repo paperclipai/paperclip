@@ -42,6 +42,7 @@ export function queueIssueAssignmentWakeup(input: {
   chatConversationId?: string | null;
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
+  intakeRouting?: { requestedAssigneeAgentId: string | null; queueCounts?: Record<string, number | null> } | null;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
 
@@ -55,6 +56,13 @@ export function queueIssueAssignmentWakeup(input: {
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
+        ...(input.intakeRouting
+          ? {
+              intakeRouted: true,
+              requestedAssigneeAgentId: input.intakeRouting.requestedAssigneeAgentId,
+              ...(input.intakeRouting.queueCounts ? { queueCounts: input.intakeRouting.queueCounts } : {}),
+            }
+          : {}),
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
@@ -65,6 +73,13 @@ export function queueIssueAssignmentWakeup(input: {
         issueId: input.issue.id,
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
+        ...(input.intakeRouting
+          ? {
+              intakeRouted: true,
+              requestedAssigneeAgentId: input.intakeRouting.requestedAssigneeAgentId,
+              ...(input.intakeRouting.queueCounts ? { queueCounts: input.intakeRouting.queueCounts } : {}),
+            }
+          : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
         ...(input.chatConversationId ? { chatConversationId: input.chatConversationId } : {}),
         ...(input.wakeCommentId && input.attachmentOmissionReasons
