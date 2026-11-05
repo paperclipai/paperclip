@@ -1129,6 +1129,27 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     return Math.max(100, Math.min(30_000, Math.trunc(requestedGraceMs)));
   }
 
+  async function releaseLeasesOfCancelledRunWithoutExecutor(
+    run: typeof heartbeatRuns.$inferSelect,
+    reason: string,
+  ) {
+    if (run.runtimeMode !== "legacy" || activeRunExecutions.has(run.id)) return;
+    try {
+      await releaseEnvironmentLeasesForRun({
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        status: run.status,
+        failureReason: reason,
+      });
+    } catch (err) {
+      logger.error(
+        { err, runId: run.id },
+        "failed to release environment leases of a run cancelled without an executor",
+      );
+    }
+  }
+
   async function cancelRunInternal(
     runId: string,
     reason = "Cancelled by control plane",
@@ -1652,6 +1673,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           message: options.eventMessage ?? "run cancelled",
           payload: { ...options.eventPayload, cancellation: readRunCancellation(cancelled.resultJson) },
         });
+        await releaseLeasesOfCancelledRunWithoutExecutor(cancelled, reason);
         await releaseIssueExecutionAndPromote(cancelled, {
           suppressImmediateRecovery: options.suppressImmediateRecovery,
         });
