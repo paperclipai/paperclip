@@ -177,6 +177,16 @@ describe("readCompletedAssistantMessageCandidate", () => {
     },
   );
 
+  it("leaves a proposed plan to its Plan document and posts only the surrounding reply", () => {
+    const candidate = (text: string) => readCompletedAssistantMessageCandidate({
+      seq: 3,
+      prpEvent: { sourceEventId: "runner:plan", payload: { kind: "agentMessage", channel: "final", text } },
+    });
+    expect(candidate("Plan ready for approval.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>")?.text)
+      .toBe("Plan ready for approval.");
+    expect(candidate("<proposed_plan>\n# Fix\n</proposed_plan>")).toBeNull();
+  });
+
   it("keeps the persisted PRP v1 assistant_message alias readable", () => {
     expect(
       readCompletedAssistantMessageCandidate({

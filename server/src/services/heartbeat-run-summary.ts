@@ -244,7 +244,13 @@ export function readCompletedAssistantMessageCandidate(input: {
   if (payload.channel !== "final" && payload.channel !== "unknown") {
     return null;
   }
-  const text = readCommentText(payload.text);
+  // A harness's `<proposed_plan>` block becomes the task's Plan document and
+  // approval card; the posted reply keeps only the surrounding prose.
+  const text = readCommentText(
+    typeof payload.text === "string"
+      ? payload.text.replace(/<proposed_plan>[\s\S]*?(?:<\/proposed_plan>|$)/gi, "").trim()
+      : payload.text,
+  );
   if (!text) return null;
   return {
     seq: input.seq,
