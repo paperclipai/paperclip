@@ -1,7 +1,7 @@
 import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
-import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, not, notInArray, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
 import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, type Db } from "@paperclipai/db";
@@ -15,6 +15,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -126,16 +127,44 @@ export function nativeExecutionRecoveryActionPredicate() {
       and ${heartbeatRuns.runtimeMode} = 'native')`;
 }
 
+const RESTORE_HOLD_SCAN_LIMIT = 20;
+type BlockerRun = Awaited<ReturnType<typeof readBlockerRun>>;
+async function readBlockerRun(db: Db, companyId: string, runId: string) {
+  const [run] = await db.select(blockerRunFields).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+  )).limit(1);
+  return run;
+}
+
+/** True when a verified workspace repair settled a restore hold whose stopped
+ * run belongs to an agent that no longer owns the task's execution. */
+async function restoreHoldReleasedForCurrentOwner(
+  readRun: (runId: string) => Promise<BlockerRun | undefined>, db: Db, hold: typeof issueRecoveryActions.$inferSelect,
+  task: { assigneeAgentId: string | null; status: string; executionState: unknown } | undefined,
+): Promise<boolean> {
+  if (!task?.assigneeAgentId || !hasRequiredWorkspaceRecovery(hold.evidence)) return false;
+  const parsedRunId = z.string().guid().safeParse(hold.evidence.runId ?? hold.evidence.sourceRunId);
+  if (!parsedRunId.success) return false;
+  const run = await readRun(parsedRunId.data);
+  if (!run?.finishedAt || !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)) return false;
+  const review = task.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
+  const currentReviewer = review?.status === "pending" && review.currentParticipant?.type === "agent"
+    ? review.currentParticipant.agentId : null;
+  if (run.agentId === task.assigneeAgentId || run.agentId === currentReviewer) return false;
+  return hasVerifiedWorkspaceRepair(db, run);
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
     assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
-    executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+    executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
+    executionState: issues.executionState }).from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   )).limit(1);
   // Resetting model context cannot repair or recover a workspace. This hold
   // survives conversation boundaries until the existing repair/reconciliation path clears it.
-  const [restoreHold] = await db.select().from(issueRecoveryActions).where(and(
+  const restoreHolds = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
@@ -144,7 +173,21 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
       sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
       sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
     ),
-  )).orderBy(desc(issueRecoveryActions.updatedAt)).limit(1);
+  )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(RESTORE_HOLD_SCAN_LIMIT);
+  // A restore hold binds a newer owner only until the stopped run's files are
+  // recovered. That owner's turn is a fresh assignment, not a replay, so the
+  // stopped run's unknown outcomes stay with its own agent, which keeps the hold.
+  const runReads = new Map<string, ReturnType<typeof readBlockerRun>>();
+  const readRun = (runId: string) => {
+    if (!runReads.has(runId)) runReads.set(runId, readBlockerRun(db, companyId, runId));
+    return runReads.get(runId)!;
+  };
+  const releasedHoldIds: string[] = [];
+  let restoreHold: typeof restoreHolds[number] | undefined;
+  for (const hold of restoreHolds) {
+    if (!await restoreHoldReleasedForCurrentOwner(readRun, db, hold, conversation)) { restoreHold = hold; break; }
+    releasedHoldIds.push(hold.id);
+  }
   // A persisted user /new is an ordered context command, not a retry of uncertain work.
   // The normal issue execution lock still serializes it behind any active turn.
   if (!restoreHold && conversation?.agentId && options?.conversationResetCommentId) {
@@ -166,14 +209,13 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
+    releasedHoldIds.length ? notInArray(issueRecoveryActions.id, releasedHoldIds) : undefined,
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
   const runId = parsedRunId.success ? parsedRunId.data : null;
-  const [run] = runId ? await db.select(blockerRunFields).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
-  )).limit(1) : [];
+  const run = runId ? await readRun(runId) : undefined;
   const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));
   const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace && (!run || !await hasVerifiedWorkspaceRepair(db, run)));
   const workspaceRecovery = workspaceRecoveryDisplay(action.evidence, runId);
