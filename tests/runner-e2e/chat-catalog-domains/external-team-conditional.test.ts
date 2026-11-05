@@ -441,3 +441,14 @@ describe("current named-skill state and historical disclosure", () => {
     expect(gradeTeamConditions(o, "initial").passed).toBe(false);
   });
 });
+
+
+it.each(["recovered", "missing"] as const)("does not let later collision history erase a current named claim when state is %s", state => {
+  const prefix = "The existing CTO was preserved and the imported role is CTO 2. ";
+  for (const phase of [0, 1]) {
+    const o = state === "recovered" ? recovered().o : valid();
+    const claim = state === "recovered" ? "is not installed" : "is installed";
+    o.phaseReplies[phase]!.body = prefix + `Launch Checklist's slug is occupied. Launch Checklist ${claim}, although its slug collision was resolved earlier.`;
+    expect(gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed).toBe(false);
+  }
+});
