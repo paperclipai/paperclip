@@ -8,7 +8,8 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
+import { materializeManagedProjectWorkspace, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
+import { readGitConnectionFailure } from "./git-connection-failure.js";
 import { promisify } from "node:util";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
@@ -85,8 +86,54 @@ export async function verifiedManagedGitObjectSource(workspace: Workspace, sourc
   return sourcePath;
 }
 
+export type GitCacheRestorationStep = "recipe" | "trash_recovery" | "source_check" | "source_materialize" | "source_verify"
+  | "restore_point" | "saved_commit";
+export type WorkspaceRestorationFailureKind = "remote_unavailable" | "auth_rejected" | "commit_unavailable" | "timeout"
+  | "verification" | "filesystem" | "git_command" | "unknown";
+
 export class GitCacheRestorationFailure extends Error {
-  constructor() { super("The saved workspace commit could not be restored. Check repository access and retry."); }
+  readonly step: GitCacheRestorationStep | null;
+  readonly kind: WorkspaceRestorationFailureKind | null;
+  constructor(diagnostic: { step: GitCacheRestorationStep; kind: WorkspaceRestorationFailureKind } | null = null) {
+    super("The saved workspace commit could not be restored. Check repository access and retry.");
+    this.step = diagnostic?.step ?? null;
+    this.kind = diagnostic?.kind ?? null;
+  }
+}
+
+export function classifyWorkspaceRestorationError(error: unknown): WorkspaceRestorationFailureKind {
+  if (error instanceof GitCacheRestorationFailure) return error.kind ?? "verification";
+  if (!(error instanceof Error)) return "unknown";
+  const connection = readGitConnectionFailure(error);
+  if (connection) {
+    if (connection.reason === "authentication_failed") return "auth_rejected";
+    return connection.reason === "connection_timeout" ? "timeout" : "remote_unavailable";
+  }
+  if (error instanceof RepositoryRefNotFoundError) return "commit_unavailable";
+  const details = error as Error & { code?: unknown; killed?: unknown; stderr?: unknown };
+  const code = typeof details.code === "string" ? details.code : null;
+  if (details.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "git_command";
+  if (details.killed === true || details.code === "ETIMEDOUT" || error.name === "AbortError" || error.name === "TimeoutError") return "timeout";
+  if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"].includes(code ?? "")) return "remote_unavailable";
+  if (["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ENOSPC", "EROFS", "EMFILE", "ENFILE", "ELOOP", "ENAMETOOLONG", "EBUSY", "EIO", "EDQUOT"].includes(code ?? "")) return "filesystem";
+  const stderr = typeof details.stderr === "string" ? details.stderr.slice(0, 16_384)
+    : Buffer.isBuffer(details.stderr) ? details.stderr.subarray(0, 16_384).toString("utf8") : error.message.slice(0, 16_384);
+  if (/authentication failed|could not read (username|password)|terminal prompts disabled|permission denied|returned error: 40[13]/i.test(stderr)) {
+    return "auth_rejected";
+  }
+  if (/not our ref|couldn't find remote ref|no such remote ref|unadvertised object|did not send all necessary objects/i.test(stderr)) {
+    return "commit_unavailable";
+  }
+  if (/could not resolve host|unable to access|could not read from remote repository|does not appear to be a git repository|repository .*not found|connection (refused|timed out|reset)/i.test(stderr)) {
+    return "remote_unavailable";
+  }
+  if (typeof details.stderr === "string" || typeof details.code === "number") return "git_command";
+  return "unknown";
+}
+
+function restorationFailureAt(step: GitCacheRestorationStep, error: unknown) {
+  if (error instanceof GitCacheRestorationFailure && error.step) return error;
+  return new GitCacheRestorationFailure({ step, kind: classifyWorkspaceRestorationError(error) });
 }
 
 export function readGitCacheRestoration(workspace: Workspace): GitCacheRestoration | null {
@@ -719,9 +766,12 @@ export function gitRestorePointExpired(recipe: GitCacheRestoration) {
 
 export async function restoreGitCacheBase(workspace: Workspace, recipe: GitCacheRestoration, resolveGitAuth: GitRemoteAuthProvider,
   storage?: StorageService, options: { freshStart?: boolean } = {}) {
-  if (readGitCacheRestoration(workspace)?.commit !== recipe.commit) throw new GitCacheRestorationFailure();
+  let step: GitCacheRestorationStep = "recipe";
   try {
+    if (readGitCacheRestoration(workspace)?.commit !== recipe.commit) throw new GitCacheRestorationFailure();
+    step = "trash_recovery";
     await finishGitCacheTrash(workspace);
+    step = "source_check";
     const present = await fs.lstat(recipe.sourcePath).then(() => true, (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return false;
       throw error;
@@ -736,21 +786,25 @@ export async function restoreGitCacheBase(workspace: Workspace, recipe: GitCache
         if (!entry.isDirectory() || entry.isSymbolicLink() || await fs.realpath(parent) !== parent) throw new GitCacheRestorationFailure();
       }
     }
+    step = present ? "source_verify" : "source_materialize";
     const cwd = present ? await verifiedGitCacheSource(workspace, recipe.sourcePath)
       : recipe.sourceKind === "isolated_remote"
         ? await materializeIsolatedRemoteWorkspaceSource({ companyId: recipe.companyId, issueId: recipe.sourceIssueId,
           repoUrl: recipe.repoUrl, resolveGitAuth })
         : (await materializeManagedProjectWorkspace(recipe.sourcePath, { repoUrl: recipe.repoUrl, resolveGitAuth })).cwd;
+    step = "source_verify";
     await verifiedGitCacheSource(workspace, recipe.sourcePath);
     if (!cwd) throw new GitCacheRestorationFailure();
     if (options.freshStart) return cwd;
+    step = "restore_point";
     if (recipe.restorePoint) {
       await ensureGitRestorePointCommit({ storage: storage ?? getStorageService(), workspace: { companyId: workspace.companyId, id: workspace.id },
         ref: recipe.restorePoint, repositoryCwd: cwd });
     }
+    step = "saved_commit";
     await ensureSavedGitCommit(cwd, recipe.repoUrl, recipe.commit, resolveGitAuth);
     return cwd;
-  } catch { throw new GitCacheRestorationFailure(); }
+  } catch (error) { throw restorationFailureAt(step, error); }
 }
 
 export async function ensureSavedGitCommit(cwd: string, repoUrl: string, commit: string, resolveGitAuth: (url: string) => Promise<{ configArgs: string[]; env: Record<string, string> } | null>) {
@@ -762,7 +816,7 @@ export async function ensureSavedGitCommit(cwd: string, repoUrl: string, commit:
       timeout: 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
     });
     if ((await gitCacheCommand(cwd, ["rev-parse", `${commit}^{commit}`])).trim() !== commit) throw new GitCacheRestorationFailure();
-  } catch { throw new GitCacheRestorationFailure(); }
+  } catch (error) { throw restorationFailureAt("saved_commit", error); }
 }
 
 /** Runtime callers must bind the recipe to the selected workspace and base. */

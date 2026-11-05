@@ -986,13 +986,32 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     const f = await fixture();
     expect((await f.expire()).baseExpired).toBe(true);
     await fs.rename(f.remote, `${f.remote}.offline`);
-    expect(await f.reopen()).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry." });
+    const failed = await f.reopen();
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry.",
+      diagnostic: { step: "source_materialize", kind: "remote_unavailable" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
     expect(await f.reopen(randomUUID())).toMatchObject({ ok: false, code: "not_reopenable" });
     expect(await exists(f.cwd)).toBe(false);
     await fs.rename(`${f.remote}.offline`, f.remote);
     expect(await f.reopen()).toMatchObject({ ok: true });
     expect(git(f.cwd, "rev-parse", "HEAD")).toBe(f.commitA);
   });
+  it("reports the failed step and kind when the saved commit is gone from upstream", async () => {
+    const f = await fixture();
+    expect((await f.expire()).baseExpired).toBe(true);
+    git(f.source, "checkout", "--orphan", "rewritten");
+    await fs.writeFile(path.join(f.source, "marker.txt"), "rewritten\n");
+    git(f.source, "add", "."); git(f.source, "commit", "-m", "Rewritten");
+    git(f.source, "push", "--force", "origin", "rewritten:main");
+    git(f.remote, "reflog", "expire", "--expire=now", "--all"); git(f.remote, "gc", "--prune=now");
+    const failed = await f.reopen();
+    expect(failed).toMatchObject({ ok: false, code: "rebuild_failed", message: "The saved workspace commit could not be restored. Check repository access and retry.",
+      diagnostic: { step: "saved_commit", kind: "commit_unavailable" } });
+    expect(JSON.stringify(failed)).not.toContain(root);
+    expect(JSON.stringify(failed)).not.toContain(f.commitA);
+    expect((await f.row()).metadata?.gitCacheRestoration).toMatchObject({ commit: f.commitA });
+  });
+
   it("serializes concurrent reopening after deletion and publishes one transition", async () => {
     const f = await fixture();
     let release!: () => void, entered!: () => void;
