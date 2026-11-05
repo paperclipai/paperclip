@@ -1716,14 +1716,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentName: meta?.agentName,
         running: false,
       });
-      const sourceHasPendingAttention = (interactions ?? []).some(
+      // A run that posted a card yielded to that card. Its wake summary
+      // describes the wait, not an answer, so it never becomes the turn's
+      // reply, even after the card is answered.
+      const sourceHasAttentionCard = (interactions ?? []).some(
         (interaction) =>
           interaction.sourceRunId === source.id &&
-          interaction.status === "pending",
+          !isSuppressedThreadInteraction(interaction),
       );
       const sourceAcceptedResponseWake =
         source.status === "succeeded" &&
-        !sourceHasPendingAttention &&
+        !sourceHasAttentionCard &&
         paperclipRunnerAcceptedResponseWake(parsedSource, source.id);
       const sourceYielded =
         (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||

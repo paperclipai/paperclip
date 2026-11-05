@@ -3242,6 +3242,29 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain(
       "Waiting for user answers on the interview question card.",
     );
+
+    // 4. Answered: the card leaves pending and the turn becomes an accepted
+    // response wake. The authored reply must keep its slot, not be replaced
+    // by the wait summary.
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "in_progress",
+      interactions: [
+        {
+          ...question,
+          status: "answered",
+          resolvedAt: new Date("2026-08-25T18:01:00.000Z"),
+          updatedAt: new Date("2026-08-25T18:01:00.000Z"),
+        } as IssueThreadInteraction,
+      ],
+      activeRun: undefined,
+      linkedRuns: [linkedRun("succeeded")],
+    });
+    expect(container.textContent).toContain("I've posted a question card");
+    expect(container.textContent).not.toContain(
+      "Waiting for user answers on the interview question card.",
+    );
   });
 
   it("keeps a yielded question turn out of the final-response slot", () => {

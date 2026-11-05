@@ -1237,6 +1237,14 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     } satisfies TaskChatItem;
     expect(paperclipRunnerFinalResponse([reply, result])).toBe(reply);
     expect(paperclipRunnerFinalResponse([reply], { yielded: true })).toBe(reply);
+    // A provider may echo the wait stub after its authored reply.
+    expect(
+      paperclipRunnerFinalResponse([
+        reply,
+        { ...reply, id: "stub", text: result.summary },
+        result,
+      ]),
+    ).toBe(reply);
     expect(
       paperclipRunnerFinalResponse(
         [{ ...reply, text: "Waiting for Which tools should the storefront use?." }],

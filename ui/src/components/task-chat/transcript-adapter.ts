@@ -1483,7 +1483,8 @@ export function paperclipRunnerFinalResponse(
     // The wait itself is not an answer, but prose the agent wrote for the user
     // before yielding (e.g. explaining the question card it just posted) is.
     // It streamed into view while the turn was live; dropping it on settle
-    // makes the conversation flash and lose that reply.
+    // makes the conversation flash and lose that reply. Wait stubs are
+    // skipped, not terminal: a provider may echo one after its reply.
     const waitSummaries = [
       options?.waitSummary,
       ...yieldedResults.map((result) => result.summary),
@@ -1491,7 +1492,7 @@ export function paperclipRunnerFinalResponse(
     for (let index = parsed.length - 1; index >= 0; index -= 1) {
       const item = parsed[index];
       if (item.kind !== "message" || item.channel !== "final") continue;
-      if (isYieldedWaitStub(item.text, waitSummaries)) return undefined;
+      if (isYieldedWaitStub(item.text, waitSummaries)) continue;
       return item;
     }
     return undefined;
