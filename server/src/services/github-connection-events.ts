@@ -228,6 +228,7 @@ export function githubConnectionEventService(
   const now = options.now ?? (() => new Date());
   let nextPollAt = 0;
   let nextEnrollmentAt: number | null = null;
+  let nextEnrollmentDiagnosticAt = 0;
   const slackDiagnostics = new Map<string, number>();
   let configuredConnector: {
     config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
@@ -508,7 +509,23 @@ export function githubConnectionEventService(
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
-    nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
+    try {
+      return await drainConnectorEvents(connector);
+    } finally {
+      try {
+        nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
+      } catch {
+        const time = now().getTime();
+        nextEnrollmentAt = time + 5_000;
+        if (time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "enrollment_reconcile_unavailable" }, "Slack enrollment responsibility retained");
+        }
+      }
+    }
+  }
+
+  async function drainConnectorEvents(connector: PaperclipCloudConnector): Promise<GitHubConnectionEventPollResult> {
     const bindings = await activeBindings();
     const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
     const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));

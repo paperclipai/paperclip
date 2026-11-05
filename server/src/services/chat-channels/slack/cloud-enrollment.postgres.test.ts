@@ -78,6 +78,8 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
   let normalService: ReturnType<typeof chatChannelService> | undefined;
   let secretDirectory: string | undefined;
   let normalHeartbeat: ReturnType<typeof heartbeatService> | undefined;
+  let releaseEnrollmentLease: (() => void) | undefined;
+  let heldEnrollmentLease: Promise<void> | undefined;
   try {
     await new CloudStackProvisioner({ provider: new FakeCloudStackProvider(), registry }).provisionDevelopmentStack({
       idempotencyKey: id, accountGroup: { id: `account-${id}`, slug: stackId, displayName: "Slack fixture" },
@@ -236,16 +238,39 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
       if (lostAck) { lostAck = false; throw new Error("fixture ACK request lost before broker settlement"); }
       return connector.acknowledgeEvents(input);
     } };
+    const busyEndpointId = randomUUID(), busyConnectionId = randomUUID();
+    await db.insert(toolConnections).values({ id: busyConnectionId, companyId, applicationId, name: "Retirement waiting for credential mutation", uid: busyEndpointId,
+      transport: "chat_sdk", connectionPurpose: "channel", enabled: false, status: "disabled" });
+    await db.insert(chatEndpoints).values({ id: busyEndpointId, companyId, connectionId: busyConnectionId, assignedAgentId: agentId,
+      publicId: "f".repeat(43), provider: "slack", status: "archived", setup: { runtimeGeneration: 1 } as InternalSetupState });
+    await db.transaction(tx => stageSlackCloudEnrollmentIntent(tx as unknown as typeof db, busyEndpointId, actorId));
+    const [busyEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
+    let acquired!: () => void;
+    const acquiredPromise = new Promise<void>(resolve => { acquired = resolve; });
+    const releasePromise = new Promise<void>(resolve => { releaseEnrollmentLease = resolve; });
+    heldEnrollmentLease = withLease(busyEndpoint!, async lease => { await lease.assertOwned(); acquired(); await releasePromise; });
+    await acquiredPromise;
     const eventOwner = githubConnectionEventService(db, { connector: ownerConnector });
     await expect(eventOwner.pollOnce({ forDelivery: true })).rejects.toThrow("ACK request lost");
     expect(captured).toHaveLength(1); const actualReceiptId = captured[0]!.id; deliveryIds.push(actualReceiptId);
     const beforeRedelivery = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
     expect(beforeRedelivery).toHaveLength(1);
+    const [retainedBusy] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
+    expect((retainedBusy!.setup as InternalSetupState).slackCloudIntent).toMatchObject({ active: false, attempts: 0 });
+    expect(eventOwner.nextPollAt()).not.toBeNull();
+    expect(eventOwner.nextPollAt()!).toBeGreaterThan(Date.now());
+    expect(eventOwner.nextPollAt()!).toBeLessThanOrEqual(Date.now() + 5_000);
+    releaseEnrollmentLease!(); await heldEnrollmentLease;
+
     const expired = await pool.query("UPDATE cloud_harness.connector_webhook_delivery_targets SET lease_expires_at=$3 WHERE connector_instance_id=$1 AND delivery_id=$2 AND status='leased' RETURNING delivery_id",
       [instanceId, actualReceiptId, new Date(Date.now() - 1)]);
     expect(expired.rowCount).toBe(1);
     expect((await eventOwner.pollOnce({ forDelivery: true })).processed).toBe(1);
     expect(captured.map(value => value.id)).toEqual([actualReceiptId, actualReceiptId]);
+    const [settledBusy] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, busyEndpointId));
+    expect((settledBusy!.setup as InternalSetupState).slackCloudIntent).toBeUndefined();
+    expect((settledBusy!.setup as InternalSetupState).slackCloudRetiredGeneration).toBe(1);
+
     expect(captured[1]!.createdAt).toBe(captured[0]!.createdAt); expect(captured[1]!.payload).toEqual(captured[0]!.payload);
     expect(sdkCallbacks).toHaveLength(2); expect(sdkCallbacks[0]!.message.id).toBe(sdkCallbacks[1]!.message.id);
     expect(sdkCallbacks[0]!.thread.id).toBe(sdkCallbacks[1]!.thread.id);
@@ -272,6 +297,15 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     expect(marker).toMatchObject({ runId: completedRuns[0]!.id, marker: markerText });
     expect(marker.pid).not.toBe(process.pid);
     expect(((await endpoint()).setup as InternalSetupState).slackCallbackSurfaces).toEqual(callbackEvidence);
+    const signingRef = refs.find(ref => ref.configPath === "credentials.signingSecret")!;
+    await vault.update(signingRef.secretId, { status: "disabled" });
+    try {
+      await expect(dispatchSlackCloudEvent(db, captured[1]!)).rejects.toMatchObject({
+        code: "signing_credential_unavailable", disposition: "attention",
+      });
+      expect(sdkCallbacks).toHaveLength(2);
+    } finally { await vault.update(signingRef.secretId, { status: "active" }); }
+
     expect(await connector.leaseEvents({ subject: actorId, companyId, eventWakeVersion: 1 })).toBeNull();
     for (const transport of transports) await transport.assertNoErrors();
     await normalService.shutdown(); normalService = undefined;
@@ -370,6 +404,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     console.error("Slack paired fixture body failure", error);
     throw error;
   } finally {
+    releaseEnrollmentLease?.(); await heldEnrollmentLease;
     await normalHeartbeat?.drainActiveRunExecutions();
     await normalService?.shutdown();
     unregister?.(); await runtime?.shutdown();

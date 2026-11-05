@@ -6,6 +6,8 @@ import type { createChatCredentials } from "../credentials.js";
 import type { EndpointRow, InternalSetupState } from "../runtime-types.js";
 import { receiveSlackCloudEvent, type CurrentSlackCloudBinding, type SlackCloudEvent } from "./cloud-event.js";
 
+import { resolveSlackCloudSigningSecret } from "./cloud-signing-secret.js";
+
 type Handler = (event: SlackCloudEvent) => Promise<void>;
 const handlers = new WeakMap<Db, Handler>();
 
@@ -48,11 +50,11 @@ export function createSlackCloudEventIngress(db: Db, options: {
       if (!enrolled) throw new Error("Slack Cloud enrollment is not locally committed");
       if (enrolled.version !== 1 || enrolled.runtimeGeneration !== options.runtimeGeneration(endpoint)
         || enrolled.teamId !== endpoint.providerAccountId) throw new Error("Slack Cloud enrollment is unsettled");
-      const credentials = await options.resolveCredentials(endpoint, db, ["signingSecret"]);
+      const signingSecret = await resolveSlackCloudSigningSecret(options.resolveCredentials, endpoint, db, ["signingSecret"]);
       await lease.assertOwned();
       return { companyId: endpoint.companyId, endpointId: endpoint.id,
         publicId: endpoint.publicId, connectionId: endpoint.connectionId, runtimeGeneration: options.runtimeGeneration(endpoint),
-        bindingId: enrolled.bindingId, teamId: enrolled.teamId, appId: enrolled.appId, signingSecret: credentials.signingSecret };
+        bindingId: enrolled.bindingId, teamId: enrolled.teamId, appId: enrolled.appId, signingSecret };
     });
     if (!binding) return;
     await receiveSlackCloudEvent(event, binding,
