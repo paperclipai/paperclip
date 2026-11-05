@@ -11732,8 +11732,14 @@ export function issueService(db: Db) {
         if (patch.status === "done" && receiptExisting.status !== "done") {
           const nextCompletionRequirement =
             issueData.completionRequirement !== undefined ? issueData.completionRequirement : receiptExisting.completionRequirement;
+          // prepareTaskWorkspaceUpdate can replace the target workspace in this
+          // same write (an execution workspace selection carries its own project
+          // workspace), so check the value that is actually saved rather than the
+          // requested or previously stored one.
           const nextProjectWorkspaceId =
-            issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : receiptExisting.projectWorkspaceId;
+            patch.projectWorkspaceId !== undefined
+              ? patch.projectWorkspaceId
+              : issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : receiptExisting.projectWorkspaceId;
           await assertDeliveryAttestationSatisfied(tx as Db, {
             companyId: receiptExisting.companyId,
             issueId: id,
