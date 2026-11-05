@@ -4,12 +4,12 @@ import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/s
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 const port=vi.hoisted(()=>({observation:{} as Record<string,unknown>}));
 vi.mock("./external-support.js",async original=>({...await original<typeof import("./external-support.js")>(),observeExternal:async()=>port.observation}));
-import { companySecretExternalCases,companySecretQuestionHandoff,companySavedNameBinding,companyOperatorBindingRequested } from "./external-company-secret.js";
+import { companySecretExternalCases,companySecretQuestionHandoff,companySavedNameBinding,companyOperatorBindingRequested,companyRequestedEnvironmentName } from "./external-company-secret.js";
 const binding={companyId:"company",issueId:"source",agentId:"ceo",userId:"person",runId:"initial"};
 function question(){return {id:"question",companyId:"company",issueId:"source",sourceRunId:"initial",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:"human_only",continuationPolicy:"wake_assignee",kind:"ask_user_questions",status:"pending",payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets to add the deployment credential, then bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key in chat.",questions:[{id:"saved",prompt:"Have you saved and bound the deployment key for Morgan?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"},{id:"later",label:"Not yet"}]}]})};}
 it("admits a bound secure company-entry confirmation",()=>expect(companySecretQuestionHandoff(question(),binding)).toMatchObject({interactionId:"question",optionId:"yes"}));
-it.each(["key","owner","run","actor","company","source","unsafe chat","unsafe optional note"])("rejects %s",fault=>{const row=question();
- if(fault==="key")row.payload.questionSet!.description=row.payload.questionSet!.description!.replace("DEPLOYMENT_API_KEY","OTHER_API_KEY");
+it.each(["ambiguous key","owner","run","actor","company","source","unsafe chat","unsafe optional note"])("rejects %s",fault=>{const row=question();
+ if(fault==="ambiguous key")row.payload.questionSet!.description+=" Use env key OTHER_API_KEY.";
  if(fault==="owner")row.addresseeUserId="other";
  if(fault==="run")row.sourceRunId="other";
  if(fault==="actor")row.createdByAgentId="other";
@@ -170,4 +170,18 @@ it.each(["Which name did you use for the saved deployment secret?","What alias i
 });
 it.each(["What name and value did you save for the deployment secret?","What name did you save the deployment secret under for Ada?"])("rejects mixed-value or foreign-recipient metadata: %s",prompt=>{
  const row=savedNameQuestion();row.payload.questionSet!.questions[0]!.prompt=prompt;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
+
+it.each(["Enter the key in the secure Settings Secrets form or email it to Morgan.","Do not paste the key in chat, or enter the key in the secure Settings Secrets form and email it to Morgan."])("rejects a mixed secure/unsafe value destination: %s",helpText=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=helpText;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
+it("rejects an unsafe value destination in the environment-question prefix",()=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.prompt="After saving the key in a plaintext file and then opening Settings → Secrets, what environment variable name should Morgan receive? (Do not include the key value.)";
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
+
+it("extracts only explicit environment identifiers and does not treat the actual4714 qualifier as one",()=>{
+ expect(companyRequestedEnvironmentName("Use secure secret settings for the deployment key, then bind its reference in Morgan's environment variables. Do not paste the key here.")).toBeUndefined();
+ expect(companyRequestedEnvironmentName("Once it's saved, I'll add a secret reference to Morgan's environment. I'll use DEPLOY_API_KEY as the variable name unless you specify another.")).toBeUndefined();
+ expect(companyRequestedEnvironmentName("Bind Morgan's Environment AS `other_api_key`.")).toBe("other_api_key");
 });
