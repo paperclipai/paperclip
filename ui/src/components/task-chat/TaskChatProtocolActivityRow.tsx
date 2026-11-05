@@ -47,7 +47,7 @@ function stepStatusIcon(status: TaskChatProtocolStep["status"], neutral = false)
   return <Circle className="h-3 w-3 text-muted-foreground" aria-hidden />;
 }
 
-function DetailList({ details }: { details: readonly TaskChatProtocolDetail[] }) {
+export function DetailList({ details }: { details: readonly TaskChatProtocolDetail[] }) {
   if (details.length === 0) return null;
   return (
     <dl className="flex min-w-0 flex-col gap-1.5" data-testid="task-chat-provider-detail-list">
