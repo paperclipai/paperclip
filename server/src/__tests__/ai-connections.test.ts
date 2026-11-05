@@ -2177,6 +2177,28 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await expect(service.save(companyId, "bob", reconnect, "fixture-stale", undefined, beforeRevocation)).rejects.toThrow("changed");
     await expect(service.select({ ...input, userId: "bob" })).rejects.toThrow("Reconnect");
   });
+  it.each(["personal", "shared"] as const)("reconnects a removed %s connection by reusing its private credential slot", async (ownership) => {
+    const owner = `removed-reconnect-${ownership}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const intent = { provider: "anthropic" as const, method: "api_key" as const, ownership, name: owner, apiKey: "fixture", agentIds: [] as string[], allAgents: true };
+    const saved = await service.save(companyId, owner, intent, "fixture-original");
+    await toolAccessService(db).archiveConnection(saved.connectionId, companyId);
+    const [removed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    expect(removed).toMatchObject({ status: "revoked", credentialSecretRefs: [] });
+
+    const reconnected = await service.save(companyId, owner, { ...intent, connectionId: saved.connectionId }, "fixture-reconnected");
+    expect(reconnected.grantId).toBe(saved.grantId);
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    expect(grant.status).toBe("active");
+    expect(grant.credentialSecretRefs).toHaveLength(1);
+    const slotKey = `ai_${saved.grantId.replaceAll("-", "_")}`;
+    const slots = ownership === "personal"
+      ? await db.select().from(userSecretDefinitions).where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, slotKey)))
+      : await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.name, `ai-${saved.grantId}`)));
+    expect(slots).toHaveLength(1);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(await service.credential({ connection, grant })).toBe("fixture-reconnected");
+  });
   it("rejects invalid purpose/transport combinations in the database", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
     await expect(db.update(toolConnections).set({ transport: "mcp_remote" }).where(eq(toolConnections.id, selected.connection.id))).rejects.toThrow();
