@@ -84,6 +84,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(call.mock.calls.map(args => args[2].phase)).toContain("resuming");
   });
 
+  it("returns a verifying agent to preparing when it moves to the plugin's environment", async () => {
+    const id = await agent(otherEnvironmentId, { lifecycleState: "verifying", status: "paused", lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 } });
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    expect((await current(id)).lifecycleState).toBe("preparing");
+    await worker().process(id);
+    expect((await current(id)).lifecycleRequiredPluginIds).toEqual([boundPluginId]);
+    expect(call.mock.calls.map(args => args[2].phase)).toContain("preparing");
+  });
+
+  it("adds the plugin when an agent moves to its environment while preparing", async () => {
+    const id = await agent(otherEnvironmentId, { lifecycleState: "preparing", status: "paused", lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: true, completedPluginIds: [], attempts: 0 } });
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    await worker().process(id);
+    expect((await current(id)).lifecycleRequiredPluginIds).toEqual([boundPluginId]);
+    expect(call.mock.calls.map(args => args[2].phase)).toContain("preparing");
+  });
+
+  it("keeps a verifying agent in verifying when the new environment needs no new plugin", async () => {
+    const id = await agent(boundEnvironmentId, { lifecycleState: "verifying", status: "paused", lifecycleRequiredPluginIds: [boundPluginId],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 } });
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: otherEnvironmentId });
+    expect((await current(id)).lifecycleState).toBe("verifying");
+  });
+
   it("refuses to move a ready agent to an environment whose plugin it has not selected", async () => {
     const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
     await expect(agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId })).rejects.toThrow("Pause the agent");

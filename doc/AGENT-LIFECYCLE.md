@@ -199,7 +199,7 @@ driver is selected for all agents.
 When an agent moves to such an environment, the host adds the plugin at the next
 `preparing` or `resuming` step. An agent in `ready` cannot move to it until it is
 paused, because the plugin must finish its work before the agent uses that
-environment. An agent that moves away keeps the selection until it is terminated,
+environment. An agent in `verifying` returns to `preparing`. An agent that moves away keeps the selection until it is terminated,
 so the plugin keeps its resources until then. If the instance default changes to
 such an environment, agents that use it need a pause and resume.
 
