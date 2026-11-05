@@ -2687,10 +2687,6 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        {contextUsage !== undefined
-          ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
-          : <IssueContextUsageRow issueId={issue.id} hasActiveRun={hasActiveRun} />}
-
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
           <PropertyRow label="Workspace">
             <span className="text-sm text-muted-foreground">Waiting for workspace</span>
@@ -2748,6 +2744,10 @@ export function IssueProperties({
         >
           {watchdogContent}
         </PropertyPicker>
+
+        {contextUsage !== undefined
+          ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
+          : <IssueContextUsageRow issueId={issue.id} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
