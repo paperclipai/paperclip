@@ -56,7 +56,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   }
   const taskId = row.lease.providerLeaseId;
   const metadata = lease.metadata ?? {};
-  const sourceRecovery = (operation.kind === "prepare" || operation.kind === "submit") && operation.recoveryPurpose === "source_reconcile"
+  // A different launch identity is authorized by the saved consumer claim, never by the mismatch alone.
+  const sourceRecovery = run && ((operation.kind === "prepare" && operation.requirements.identity.runId !== run.id && (operation.resumeFrom || metadata.runnerTaskSourceRecovery)) ||
+      (operation.kind === "submit" && operation.runner.runId !== run.id && (operation.resumeFrom || metadata.runnerTaskSourceRecovery)))
     ? await assertPluginTaskSourceRecovery(db, { companyId: input.companyId, leaseId: lease.id,
       context: context instanceof NativeExecutionContext ? context : undefined, operation }) : undefined;
   const probe = metadata.runnerTaskProbe as { runId?: unknown; sessionId?: unknown; expiresAtMs?: unknown } | undefined;

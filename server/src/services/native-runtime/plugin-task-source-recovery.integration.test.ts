@@ -99,7 +99,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       if (p.operation.kind === "check_project_auth") return { kind: "project_auth", taskId: p.taskId, provider: "openai", configurationId: p.operation.configurationId, allowed: true };
       return { kind: "accepted", taskId: p.taskId };
     }) };
-    const operation = { kind: "prepare" as const, resumeFrom: input.resumeFrom, recoveryPurpose: "source_reconcile" as const,
+    const operation = { kind: "prepare" as const, resumeFrom: input.resumeFrom,
       accountIdentity: input.accountIdentity, projectIds: [], requirements: { schema: "paperclip.runner.launch-requirements.v1" as const,
         identity, provider: "codex" as const, model: null, instructions: "Source policy", runtimeContext: null, settings: {}, approvalPolicy: "never" as const,
         readOnly: false, preparedConversation: false, includeCollaborationModeInstructions: false } };
@@ -108,19 +108,19 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     return { ...input, runId, sourceRunId, sourceLeaseId, environmentId, agentId, issueId, owner, oldOwner, oldWriter, checkpoint, execution, operation, workers, task };
   }
 
-  it("authorizes only the explicit source request while preserving A's accepted outcome", async () => {
+  it("authorizes only the claimed predecessor identity while preserving A's accepted outcome", async () => {
     const f = await fixture();
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     await expect(f.task()).rejects.toThrow("ownership_unverified");
     await claimPluginTaskSourceRecovery(db, f);
-    const attachment = { ...f.operation, recoveryPurpose: undefined, resumeFrom: undefined, priorIdentity: f.identity,
+    const attachment = { ...f.operation, resumeFrom: undefined, priorIdentity: f.identity,
       requirements: { ...f.operation.requirements, identity: { ...f.identity, runId: f.runId, turnId: `turn-${f.runId}`, itemId: `item-${f.runId}` } } };
     await expect(f.task(attachment)).rejects.toThrow("ownership_unverified");
     expect(f.workers.call).not.toHaveBeenCalled();
     await expect(f.task()).resolves.toMatchObject({ kind: "prepared" });
-    expect(f.workers.call.mock.calls[0][2]).toMatchObject({ runId: f.runId, operation: { recoveryPurpose: "source_reconcile", requirements: { identity: f.identity } } });
+    expect(f.workers.call.mock.calls[0][2]).toMatchObject({ runId: f.runId, operation: { requirements: { identity: f.identity } } });
     await f.task({ kind: "check_project_auth", configurationId: "source-configuration", provider: "openai", projectIds: [] });
-    await expect(f.task({ kind: "submit", recoveryPurpose: "source_reconcile", resumeFrom: f.resumeFrom,
+    await expect(f.task({ kind: "submit", resumeFrom: f.resumeFrom,
       accountIdentity: f.accountIdentity, preparedLaunchId: "source-configuration", projectIds: [], bootstrapTicket: "synthetic-test-ticket",
       runner: { runnerId: f.identity.runnerInstanceId, leaseId: f.identity.environmentLeaseId, runId: f.sourceRunId,
         sessionId: f.identity.normalizedSessionId, turnId: f.identity.turnId, itemId: f.identity.itemId, harness: "codex", protocolMin: 1, protocolMax: 1 },
@@ -128,7 +128,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
         maxOutboxBytes: 262144, p0ReserveBytes: 65536, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
     })).resolves.toMatchObject({ kind: "accepted" });
     expect(f.workers.call.mock.calls.at(-1)![2]).toMatchObject({ runId: f.runId, operation: {
-      kind: "submit", recoveryPurpose: "source_reconcile", runner: { runId: f.sourceRunId },
+      kind: "submit", runner: { runId: f.sourceRunId },
     } });
     for (const key of ["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId"]) {
       await expect(f.task({ ...attachment, requirements: { ...attachment.requirements,
@@ -140,11 +140,32 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call.mock.calls.at(-1)![2]).toMatchObject({ runId: f.runId, operation: {
       kind: "prepare", priorIdentity: f.identity, requirements: { identity: { runId: f.runId } },
     } });
-    await expect(f.task({ ...f.operation, recoveryPurpose: undefined } as never)).rejects.toThrow("execution identity mismatch");
+    await expect(f.task({ ...f.operation, resumeFrom: undefined })).rejects.toThrow("ownership_unverified");
     const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     expect(after).toEqual(before);
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(JSON.stringify(lease.metadata)).not.toContain(f.owner.leaseOwner);
+  });
+
+  it("requires a complete claimed launch before any predecessor RPC", async () => {
+    const f = await fixture(); await claimPluginTaskSourceRecovery(db, f);
+    for (const operation of [
+      { ...f.operation, resumeFrom: undefined }, { ...f.operation, accountIdentity: undefined },
+      { ...f.operation, priorIdentity: f.identity },
+      { ...f.operation, requirements: { ...f.operation.requirements, provider: "acpx" as const } },
+    ]) await expect(f.task(operation)).rejects.toThrow("ownership_unverified");
+    const submit = { kind: "submit" as const, resumeFrom: f.resumeFrom, accountIdentity: f.accountIdentity,
+      preparedLaunchId: "source-configuration", projectIds: [], bootstrapTicket: "synthetic-test-ticket",
+      runner: { runnerId: f.identity.runnerInstanceId, leaseId: f.identity.environmentLeaseId, runId: f.sourceRunId,
+        sessionId: f.identity.normalizedSessionId, turnId: f.identity.turnId, itemId: f.identity.itemId, harness: "codex", protocolMin: 1, protocolMax: 1 },
+      launch: { runnerVersion: "source-fixture", runnerDigest: `sha256:${"a".repeat(64)}`,
+        maxOutboxBytes: 262144, p0ReserveBytes: 65536, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } };
+    for (const operation of [
+      { ...submit, resumeFrom: undefined }, { ...submit, accountIdentity: undefined },
+      { ...submit, preparedLaunchId: undefined }, { ...submit, launch: undefined },
+      { ...submit, runner: { ...submit.runner, harness: "claude" } },
+    ]) await expect(f.task(operation)).rejects.toThrow("ownership_unverified");
+    expect(f.workers.call).not.toHaveBeenCalled();
   });
 
   it.each(["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"] as const)("rejects a different source %s", async key => {

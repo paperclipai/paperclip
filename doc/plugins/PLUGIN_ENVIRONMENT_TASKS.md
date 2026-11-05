@@ -87,9 +87,10 @@ and saves the result before it submits its configuration ID.
 ### Stopped source reconciliation
 
 `sourceRecoveryVersion: 1` in `describe` declares support for restoring a stopped
-Codex source without starting another turn. Core can send
-`recoveryPurpose: "source_reconcile"` on `prepare` and `submit`. Both operations
-must name the same `resumeFrom`, exact source Runner identity, and current
+Codex source without starting another turn. The authenticated request belongs to
+the current run while `prepare` and `submit` carry the predecessor Runner identity.
+Core derives this relationship from its saved source-consumer claim; a mismatched
+run ID alone never grants recovery. Both operations must name the same `resumeFrom`, exact source Runner identity, and current
 `accountIdentity`. The request and lease still belong to the current run.
 Preparation must save this source binding with its new configuration. Submission
 must verify the same binding before it starts the source process.
@@ -103,12 +104,13 @@ After source submission, the same current owner can prepare its attachment with
 the exact source as `priorIdentity`. This does not grant ordinary warm reuse.
 
 The provider must verify the original account, workspace, runtime, and source
-ownership before launch. The native Runner must reject active goals, pending
-tools, ambiguous starts, and uncertain work before it restores the provider.
+ownership before launch. The provider must reject saved active goals, pending tools, ambiguous starts, and
+uncertain work before launch. Runner verifies that a saved idle provider remains
+idle when restored.
 Until the existing authenticated `run.attach` operation changes authority, the
-restored source can only reconcile its journal and known cleanup. It cannot start
-new work. Ordinary suspended recovery and live attachment keep their existing
-checks. Providers that omit the capability do not support this mode.
+Core retains semantic inputs and sends no fresh predecessor business commands
+while the restored source reconciles its journal and known cleanup. Ordinary suspended recovery and live attachment keep their existing
+checks. Providers that omit the capability do not support predecessor recovery.
 
 ## Launch authentication validation
 

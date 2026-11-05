@@ -174,7 +174,9 @@ export async function assertPluginTaskSourceRecovery(db: Db, input: {
   operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" | "submit" }>;
 }): Promise<PluginTaskSourceRecovery> {
   const operation = input.operation;
-  if (operation.recoveryPurpose !== "source_reconcile" || !operation.resumeFrom) return deny();
+  if (!operation.resumeFrom || !operation.accountIdentity ||
+      (operation.kind === "prepare" ? operation.requirements.provider !== "codex" || !!operation.priorIdentity
+        : operation.runner.harness !== "codex" || !operation.preparedLaunchId || !operation.launch)) return deny();
   const identity = operation.kind === "prepare" ? operation.requirements.identity : {
     runnerInstanceId: operation.runner.runnerId, environmentLeaseId: operation.runner.leaseId, runId: operation.runner.runId,
     normalizedSessionId: operation.runner.sessionId, turnId: operation.runner.turnId, itemId: operation.runner.itemId,
@@ -188,7 +190,7 @@ export async function assertPluginTaskSourceAttachment(db: Db, input: {
   operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>;
 }): Promise<PluginTaskSourceRecovery> {
   const { operation } = input, target = operation.requirements.identity;
-  if (!operation.priorIdentity || operation.recoveryPurpose || operation.resumeFrom || operation.requirements.provider !== "codex") return deny();
+  if (!operation.priorIdentity || operation.resumeFrom || operation.requirements.provider !== "codex") return deny();
   const recovery = await assertSourceIdentity(db, { ...input, identity: operation.priorIdentity, accountIdentity: operation.accountIdentity, requireDispatched: true });
   if (target.runId !== recovery.consumerRunId || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key =>
     target[key as keyof Identity] !== recovery.identity[key as keyof Identity])) return deny();

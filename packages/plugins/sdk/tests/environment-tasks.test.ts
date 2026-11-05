@@ -24,33 +24,15 @@ const prepare = {
   },
 };
 
-describe("stopped source reconciliation", () => {
-  const recoveryPrepare = { ...prepare, accountIdentity: "selected-account", resumeFrom: "source-task", recoveryPurpose: "source_reconcile" };
-  const recoverySubmit = { ...submit, accountIdentity: "selected-account", preparedLaunchId: "source-configuration", resumeFrom: "source-task", recoveryPurpose: "source_reconcile" };
-  it("preserves the source purpose and existing source identity fields", () => {
-    expect(environmentTaskOperationSchema.parse(recoveryPrepare)).toEqual(recoveryPrepare);
-    expect(environmentTaskOperationSchema.parse(recoverySubmit)).toEqual(recoverySubmit);
+describe("retained source launch fields", () => {
+  it("uses the existing source identity and resume reference without a recovery mode", () => {
+    for (const operation of [prepare, submit]) {
+      const recovery = { ...operation, accountIdentity: "selected-account", resumeFrom: "source-task" };
+      expect(environmentTaskOperationSchema.parse(recovery)).toEqual(recovery);
+      expect(environmentTaskOperationSchema.safeParse({ ...recovery, recoveryPurpose: "source_reconcile" }).success).toBe(false);
+    }
     expect(environmentTaskResultSchema.parse({ kind: "description", taskId: "task", sourceRecoveryVersion: 1,
       runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } })).toHaveProperty("sourceRecoveryVersion", 1);
-  });
-  it.each(["source", "account", "provider", "live-prior", "purpose"])("rejects invalid source preparation: %s", mode => {
-    expect(environmentTaskOperationSchema.safeParse({ ...recoveryPrepare,
-      ...(mode === "source" ? { resumeFrom: undefined } : {}),
-      ...(mode === "account" ? { accountIdentity: undefined } : {}),
-      ...(mode === "provider" ? { requirements: { ...prepare.requirements, provider: "acpx" } } : {}),
-      ...(mode === "live-prior" ? { priorIdentity: prepare.requirements.identity } : {}),
-      ...(mode === "purpose" ? { recoveryPurpose: "execution" } : {}),
-    }).success).toBe(false);
-  });
-  it.each(["source", "account", "provider", "configuration", "launch", "purpose"])("rejects invalid source submission: %s", mode => {
-    expect(environmentTaskOperationSchema.safeParse({ ...recoverySubmit,
-      ...(mode === "source" ? { resumeFrom: undefined } : {}),
-      ...(mode === "account" ? { accountIdentity: undefined } : {}),
-      ...(mode === "provider" ? { runner: { ...submit.runner, harness: "claude" } } : {}),
-      ...(mode === "configuration" ? { preparedLaunchId: undefined } : {}),
-      ...(mode === "launch" ? { launch: undefined } : {}),
-      ...(mode === "purpose" ? { recoveryPurpose: "execution" } : {}),
-    }).success).toBe(false);
   });
 });
 

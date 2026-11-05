@@ -65,12 +65,9 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("prepare"), requirements: environmentRunnerLaunchRequirementsSchema,
     githubBroker: githubBroker.optional(),
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
-    /** Restore the stopped source identity before the current run can attach. */
-    recoveryPurpose: z.literal("source_reconcile").optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
-  }).strict().refine(value => !value.recoveryPurpose || (value.resumeFrom && value.accountIdentity && value.requirements.provider === "codex" && !value.priorIdentity),
-    "Source reconciliation requires a retained Codex source, not a live attachment"),
+  }).strict(),
   z.object({
     kind: z.literal("submit"),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
@@ -85,7 +82,6 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     bootstrapTicket: z.string().min(1).max(65_536),
     /** Opaque prior provider task; Core authorizes the saved session before supplying it. */
     resumeFrom: z.string().min(1).optional(),
-    recoveryPurpose: z.literal("source_reconcile").optional(),
     preparedLaunchId: providerId.max(1024).optional(),
     /** Require the externally installed account to match this Core-selected credential revision. */
     credentialIdentity: z.string().min(1).max(1024).optional(),
@@ -103,8 +99,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
         z.object({ mode: z.literal("warm"), idleTimeoutMs: z.number().int().positive().max(86_400_000) }).strict(),
       ]),
     }).strict().optional(),
-  }).strict().refine(value => !value.recoveryPurpose || (value.resumeFrom && value.accountIdentity && value.runner.harness === "codex" && value.preparedLaunchId && value.launch),
-    "Source reconciliation requires a prepared retained Codex source"),
+  }).strict(),
   z.object({ kind: z.literal("check_project_auth"), configurationId: providerId.max(1024),
     provider: identifier, projectIds: z.array(z.string().uuid()).max(64)
       .refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs") }).strict(),
