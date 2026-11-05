@@ -11,15 +11,16 @@ import plugin, { __resetDaytonaSandboxHandleCacheForTest } from "./plugin.js";
 
 function fixture() {
   const process = { executeCommand: vi.fn() };
-  getSandbox.mockResolvedValue({ id: "fixture-sandbox", state: "started", process });
-  // A bypass-session probe such as `opencode --version` takes the one-shot path.
-  const execute = () => plugin.definition.onEnvironmentExecute!({
+  const fs = { uploadFile: vi.fn().mockResolvedValue(undefined), deleteFile: vi.fn().mockResolvedValue(undefined) };
+  getSandbox.mockResolvedValue({ id: "fixture-sandbox", state: "started", process, fs });
+  const execute = (stdin?: string) => plugin.definition.onEnvironmentExecute!({
     driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
     config: { apiKey: "fixture-not-a-key", timeoutMs: 300_000 }, bypassSession: true,
     lease: { providerLeaseId: "fixture-sandbox", metadata: {} },
     command: "/pack/bin/opencode", args: ["--version"], timeoutMs: 30_000,
+    ...(stdin !== undefined ? { stdin } : {}),
   });
-  return { process, execute };
+  return { process, fs, execute };
 }
 
 describe("Daytona one-shot exec request deadline", () => {
@@ -41,7 +42,6 @@ describe("Daytona one-shot exec request deadline", () => {
     await vi.advanceTimersByTimeAsync(34_999);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    // The host abandons the RPC at 60 s; the plugin must answer first.
     expect(await pending).toMatchObject({
       exitCode: null, timedOut: true,
       metadata: { timeoutScope: "provider_exec_request", commandExitConfirmed: false },
@@ -56,5 +56,21 @@ describe("Daytona one-shot exec request deadline", () => {
     const pending = execute();
     await vi.advanceTimersByTimeAsync(34_000);
     expect(await pending).toMatchObject({ exitCode: 0, timedOut: false, stdout: "1.2.3" });
+  });
+
+  it("bounds a stalled stdin cleanup after a timed-out exec request", async () => {
+    const { process, fs, execute } = fixture();
+    process.executeCommand.mockImplementation(() => new Promise(() => undefined));
+    fs.deleteFile.mockImplementation(() => new Promise(() => undefined));
+    let settled = false;
+    const pending = execute("input").finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(39_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({
+      exitCode: null, timedOut: true,
+      metadata: { timeoutScope: "provider_exec_request", commandExitConfirmed: false },
+    });
+    expect(fs.deleteFile).toHaveBeenCalledOnce();
   });
 });
